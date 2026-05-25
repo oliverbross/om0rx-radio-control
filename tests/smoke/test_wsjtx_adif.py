@@ -5,18 +5,14 @@ Test script to verify WSJT-X QSO logging with ADIF backup
 
 import asyncio
 import json
-import sys
-from pathlib import Path
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
-
+import _bootstrap  # noqa: F401
 from services.wsjtx import WSJTXService
-from adif_handler import ADIFHandler
-from wavelog_api import WavelogClient
-from qrz_api import QRZClient
-from rotor_api import RotorController
-from cty_resolvers import CtyDatResolver
+from radio_control.adif_handler import ADIFHandler
+from radio_control.wavelog_api import WavelogClient
+from radio_control.qrz_api import QRZClient
+from radio_control.rotor_api import RotorController
+from radio_control.cty_resolvers import CtyDatResolver
 
 
 async def test_wsjtx_qso_with_adif():

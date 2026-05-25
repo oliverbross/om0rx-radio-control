@@ -12,10 +12,10 @@ import concurrent.futures
 from functools import partial
 
 # Import required modules
-from spot_processor import band_from_khz, infer_mode, extract_special, clean_comment
-from spots_logger import get_spots_logger, log_spot
-from cty_resolvers import CtyDatResolver
-from classifier_api import ClassifierAPI
+from radio_control.spot_processor import band_from_khz, infer_mode, extract_special, clean_comment
+from radio_control.spots_logger import get_spots_logger, log_spot
+from radio_control.cty_resolvers import CtyDatResolver
+from radio_control.classifier_api import ClassifierAPI
 
 logger = logging.getLogger(__name__)
 

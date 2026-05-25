@@ -1,7 +1,8 @@
 import duckdb
-from pathlib import Path
+import _bootstrap  # noqa: F401
+from radio_control import config
 
-db_path = Path(__file__).resolve().parent / 'logs' / 'adif_qsos.duckdb'
+db_path = config.LOGS_DIR / 'adif_qsos.duckdb'
 conn = duckdb.connect(db_path)
 
 print("Tables in database:")

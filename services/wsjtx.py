@@ -10,10 +10,9 @@ from typing import Optional, Dict, Any
 from fastapi import HTTPException
 
 # Import required modules
-from spot_processor import band_from_khz
-from rotor_math import grid_to_latlon, initial_bearing
-import config
-
+from radio_control.spot_processor import band_from_khz
+from radio_control.rotor_math import grid_to_latlon, initial_bearing
+from radio_control import config
 logger = logging.getLogger(__name__)
 
 

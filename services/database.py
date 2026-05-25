@@ -7,13 +7,7 @@ import mysql.connector as mysql
 import logging
 from typing import Optional
 
-# Import config from parent directory
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-import config
-
+from radio_control import config
 logger = logging.getLogger(__name__)
 
 # Global database connection

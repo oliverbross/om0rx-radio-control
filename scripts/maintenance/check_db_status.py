@@ -3,9 +3,10 @@
 
 import duckdb
 import time
-from pathlib import Path
+import _bootstrap  # noqa: F401
+from radio_control import config
 
-db_path = Path(__file__).resolve().parent / 'data' / 'qso_log.duckdb'
+db_path = config.DATA_DIR / 'qso_log.duckdb'
 
 # Try to open with read-only access
 try:

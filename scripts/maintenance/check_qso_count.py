@@ -2,9 +2,10 @@
 """Quick script to check how many QSOs are in DuckDB"""
 
 import duckdb
-from pathlib import Path
+import _bootstrap  # noqa: F401
+from radio_control import config
 
-db_path = Path(__file__).parent / 'data' / 'qso_log.duckdb'
+db_path = config.DATA_DIR / 'qso_log.duckdb'
 
 try:
     conn = duckdb.connect(str(db_path))

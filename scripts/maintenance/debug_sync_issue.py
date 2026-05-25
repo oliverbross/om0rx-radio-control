@@ -2,13 +2,20 @@
 """Debug the sync issue - check what wavelog_ids are in DuckDB vs being fetched"""
 
 import pymysql
-from config import WAVELOG_CONFIG
+import _bootstrap  # noqa: F401
+from radio_control import config
 
 def check_sync_issue():
     """Check what's happening with the sync"""
     
     # Connect to Wavelog
-    wavelog_conn = pymysql.connect(**WAVELOG_CONFIG)
+    wavelog_conn = pymysql.connect(
+        host=config.DB_HOST,
+        port=config.DB_PORT,
+        user=config.DB_USER,
+        password=config.DB_PASS,
+        database=config.DB_NAME,
+    )
     
     print("\n=== WAVELOG DATABASE CHECK ===")
     with wavelog_conn.cursor() as cursor:

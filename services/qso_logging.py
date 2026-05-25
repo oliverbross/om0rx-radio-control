@@ -10,10 +10,10 @@ from fastapi import HTTPException, APIRouter
 from pydantic import BaseModel
 
 # Import required clients and handlers
-from wavelog_api import WavelogClient
-from qrz_api import QRZClient
-from adif_handler import ADIFHandler
-from cty_resolvers import CtyDatResolver
+from radio_control.wavelog_api import WavelogClient
+from radio_control.qrz_api import QRZClient
+from radio_control.adif_handler import ADIFHandler
+from radio_control.cty_resolvers import CtyDatResolver
 
 logger = logging.getLogger(__name__)
 

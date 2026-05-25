@@ -1,15 +1,10 @@
-﻿"""
+"""
 FlexRadio Web Control - Main Application
 Clean orchestrator that imports and registers all modular components
 """
 
 import asyncio
 import logging
-import sys
-from pathlib import Path
-
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # === Core Imports ===
 from backend.core import (
@@ -53,16 +48,16 @@ from backend.api.ft8 import router as ft8_router
 from backend.api.static_files import setup_static_files
 
 # === Additional Imports for Initialization ===
-from dxbridge import FlexCtl
-import config
-from cluster_client import ClusterClient
-from classifier_api import get_classifier_api
-from cty_resolvers import CtyDatResolver
-from wavelog_duckdb_sync import init_wavelog_sync, periodic_wavelog_sync
-from rotor_api import RotorController
-from wavelog_api import WavelogClient
-from qrz_api import QRZClient
-from adif_handler import ADIFHandler
+from radio_control.dxbridge import FlexCtl
+from radio_control import config
+from radio_control.cluster_client import ClusterClient
+from radio_control.classifier_api import get_classifier_api
+from radio_control.cty_resolvers import CtyDatResolver
+from radio_control.wavelog_duckdb_sync import init_wavelog_sync, periodic_wavelog_sync
+from radio_control.rotor_api import RotorController
+from radio_control.wavelog_api import WavelogClient
+from radio_control.qrz_api import QRZClient
+from radio_control.adif_handler import ADIFHandler
 
 # === Module-level global variables ===
 wavelog_client = None

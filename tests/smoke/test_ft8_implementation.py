@@ -6,6 +6,7 @@ Tests encoding/decoding pipeline
 import sys
 import numpy as np
 import logging
+import _bootstrap  # noqa: F401
 from services.ft8_protocol import FT8Protocol
 from services.ft8_audio import FT8AudioProcessor
 

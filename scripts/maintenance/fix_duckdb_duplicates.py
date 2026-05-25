@@ -10,9 +10,11 @@ import duckdb
 import os
 from pathlib import Path
 from datetime import datetime
+import _bootstrap  # noqa: F401
+from radio_control import config
 
 # Paths
-DB_PATH = Path(__file__).resolve().parent / 'data' / 'qso_log.duckdb'
+DB_PATH = config.DATA_DIR / 'qso_log.duckdb'
 
 def fix_duplicates():
     """Remove duplicate QSO records from the database"""

@@ -3,11 +3,8 @@ Quick test to check QTH vs Country data in Wavelog database
 """
 import pymysql
 from pymysql.cursors import DictCursor
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-import config
-
+import _bootstrap  # noqa: F401
+from radio_control import config
 # Connect to database
 conn = pymysql.connect(
     host=config.DB_HOST,

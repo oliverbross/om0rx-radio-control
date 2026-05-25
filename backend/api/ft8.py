@@ -8,7 +8,7 @@ from typing import Optional, List
 import logging
 import asyncio
 import json
-import config
+from radio_control import config
 from pathlib import Path
 
 from services.ft8_service import get_ft8_service, init_ft8_service

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from fastapi import APIRouter, HTTPException
 import json
+from radio_control import config
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ def load_country_data():
     if _country_data_cache is not None:
         return _country_data_cache
 
-    data_path = Path(__file__).parent.parent / "data" / "countries-110m.json"
+    data_path = config.DATA_DIR / "countries-110m.json"
     if not data_path.exists():
         logger.warning(f"Country data file not found: {data_path}")
         return None

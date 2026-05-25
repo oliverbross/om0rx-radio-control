@@ -12,10 +12,11 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 import concurrent.futures
 from pathlib import Path
+from radio_control import config
 
 # Import required modules
-from adif_sync import get_adif_sync, init_adif_sync
-from adif_handler import ADIFHandler
+from radio_control.adif_sync import get_adif_sync, init_adif_sync
+from radio_control.adif_handler import ADIFHandler
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
@@ -286,7 +287,7 @@ class ADIFService:
 
             start_time = time.time()
 
-            db_path = Path(__file__).parent.parent / "data" / "qso_log.duckdb"
+            db_path = config.DATA_DIR / "qso_log.duckdb"
 
             if not db_path.exists():
                 logger.error(f"❌ DuckDB file not found: {db_path}")
@@ -383,7 +384,7 @@ class ADIFService:
             start_time = time.time()
             callsign = call.strip().upper()
 
-            db_path = Path(__file__).parent.parent / "data" / "qso_log.duckdb"
+            db_path = config.DATA_DIR / "qso_log.duckdb"
 
             if not db_path.exists():
                 logger.error(f"❌ DuckDB file not found: {db_path}")

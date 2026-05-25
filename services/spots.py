@@ -9,14 +9,15 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 from pathlib import Path
 from datetime import datetime
+from radio_control import config
 
 # Import required modules
-from spots_logger import get_spots_logger
-from dxbridge import FlexCtl
-from spot_processor import band_from_khz, infer_mode, extract_special, clean_comment
-from cty_resolvers import CtyDatResolver
-from classifier_api import ClassifierAPI
-from rotor_math import grid_to_latlon, latlon_to_grid, initial_bearing, calculate_bearing_for_station, get_band_from_frequency
+from radio_control.spots_logger import get_spots_logger
+from radio_control.dxbridge import FlexCtl
+from radio_control.spot_processor import band_from_khz, infer_mode, extract_special, clean_comment
+from radio_control.cty_resolvers import CtyDatResolver
+from radio_control.classifier_api import ClassifierAPI
+from radio_control.rotor_math import grid_to_latlon, latlon_to_grid, initial_bearing, calculate_bearing_for_station, get_band_from_frequency
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +273,7 @@ async def export_spots_csv(date: Optional[str] = None):
     """Export spots to CSV file"""
     try:
         spots_logger = get_spots_logger()
-        export_path = Path(__file__).parent.parent / "data" / f"spots_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        export_path = config.DATA_DIR / f"spots_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         count = spots_logger.export_csv(str(export_path), date)
         return {
             "ok": True,

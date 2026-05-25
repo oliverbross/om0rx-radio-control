@@ -40,12 +40,13 @@ Copy-Item config_local.example.py config_local.py
 backend/          FastAPI app, route modules, backend helpers
 bridge/           Node.js SDC and WSJT-X bridge
 frontend/         Browser UI assets
+radio_control/    Core Python package for station, radio, logging, and integration logic
 services/         Backend service modules used by FastAPI routes
+settings/         Tracked non-secret runtime settings
 scripts/launch/   Desktop/browser launcher helpers
 scripts/start/    Alternate service startup scripts
 scripts/maintenance/ Maintenance and database utility scripts
 tests/smoke/      Lightweight smoke checks
-tests/diagnostics/ Historical diagnostic scripts
 docs/             Current docs, references, and archived notes
 vendor/           Vendored/reference source used for local development
 data/             Tracked static data plus ignored runtime databases
@@ -57,9 +58,9 @@ logs/             Ignored runtime logs
 - `start_all.ps1` is the primary entry point.
 - `backend/main.py` runs the FastAPI application.
 - `bridge/sdc-bridge-server.js` handles SDC/WSJT-X bridge traffic.
-- `config.py` contains defaults and loads overrides from environment variables or `config_local.py`.
+- `radio_control/config.py` contains defaults and loads overrides from environment variables or `config_local.py`.
 - `frontend/index.html` is the main browser UI.
 
 ## Cleanup Notes
 
-Legacy implementation notes and historical troubleshooting files are archived under `docs/archive/`. They are kept out of the project root so the active code is easier to navigate while still preserving useful context.
+Legacy implementation notes, historical troubleshooting files, and one-off diagnostics are archived under `docs/archive/`. They are kept out of the project root and active test tree so the maintained code is easier to navigate while still preserving useful context.

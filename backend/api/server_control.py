@@ -4,8 +4,7 @@ import logging
 import os
 import signal
 from datetime import datetime
-import config
-
+from radio_control import config
 logger = logging.getLogger(__name__)
 
 router = APIRouter()

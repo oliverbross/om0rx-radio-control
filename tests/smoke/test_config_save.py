@@ -5,8 +5,8 @@ import re
 import os
 from pathlib import Path
 
-project_root = Path(__file__).resolve().parent
-config_path = project_root / "config.py"
+project_root = Path(__file__).resolve().parents[2]
+config_path = project_root / "radio_control" / "config.py"
 
 print(f"📝 Reading config from: {config_path}")
 with open(config_path, 'r', encoding='utf-8') as f:
@@ -15,7 +15,8 @@ with open(config_path, 'r', encoding='utf-8') as f:
 print(f"✅ Read {len(original_txt)} bytes")
 
 # Show current WINKEYER_ENABLED value
-import config
+import _bootstrap  # noqa: F401
+from radio_control import config
 print(f"🔍 Current WINKEYER_ENABLED in memory: {config.WINKEYER_ENABLED}")
 
 # Try to replace it

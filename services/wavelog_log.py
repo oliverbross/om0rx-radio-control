@@ -8,8 +8,7 @@ from typing import List, Dict, Optional
 from datetime import datetime
 import pymysql
 from pymysql.cursors import DictCursor
-import config
-
+from radio_control import config
 logger = logging.getLogger(__name__)
 
 

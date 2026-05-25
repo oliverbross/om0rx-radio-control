@@ -6,6 +6,7 @@ Tests if FT8 service is running and processing audio
 import asyncio
 import sounddevice as sd
 import numpy as np
+import _bootstrap  # noqa: F401
 from services.ft8_service import FT8Service
 from services.ft8_audio import FT8AudioProcessor
 

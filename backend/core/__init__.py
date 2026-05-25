@@ -20,24 +20,21 @@ from pathlib import Path
 import json
 import mysql.connector as mysql
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
 # Import existing code
-from dxbridge import FlexCtl, DX_RE
-import config
-from cluster_client import ClusterClient, ClusterManager
-from classifier_api import ClassifierAPI, get_classifier_api
-from cty_resolvers import CtyDatResolver
-from spot_processor import band_from_khz, infer_mode, extract_special, clean_comment
-from spots_logger import get_spots_logger, log_spot
-from wavelog_api import WavelogClient
-from qrz_api import QRZClient
-from adif_handler import ADIFHandler
-from wavelog_duckdb_sync import get_wavelog_sync, init_wavelog_sync, periodic_wavelog_sync
-from wavelog_sync import start_wavelog_sync, stop_wavelog_sync
-from rotor_api import RotorController
-from rotor_math import (
+from radio_control.dxbridge import FlexCtl, DX_RE
+from radio_control import config
+from radio_control.cluster_client import ClusterClient, ClusterManager
+from radio_control.classifier_api import ClassifierAPI, get_classifier_api
+from radio_control.cty_resolvers import CtyDatResolver
+from radio_control.spot_processor import band_from_khz, infer_mode, extract_special, clean_comment
+from radio_control.spots_logger import get_spots_logger, log_spot
+from radio_control.wavelog_api import WavelogClient
+from radio_control.qrz_api import QRZClient
+from radio_control.adif_handler import ADIFHandler
+from radio_control.wavelog_duckdb_sync import get_wavelog_sync, init_wavelog_sync, periodic_wavelog_sync
+from radio_control.wavelog_sync import start_wavelog_sync, stop_wavelog_sync
+from radio_control.rotor_api import RotorController
+from radio_control.rotor_math import (
     grid_to_latlon, latlon_to_grid, initial_bearing,
     calculate_bearing_for_station, get_band_from_frequency
 )
@@ -105,10 +102,9 @@ def _load_rotor_config():
     """Load rotor configuration from JSON file if it exists"""
     global config
     try:
-        rotor_config_file = os.path.join(os.path.dirname(__file__), '..', '..', 'rotor_config.json')
-        rotor_config_file = os.path.abspath(rotor_config_file)
+        rotor_config_file = config.ROTOR_CONFIG_PATH
 
-        if os.path.exists(rotor_config_file):
+        if rotor_config_file.exists():
             with open(rotor_config_file, 'r', encoding='utf-8') as f:
                 rotor_data = json.load(f)
 

@@ -3,13 +3,8 @@ Reset Wavelog→DuckDB Sync
 Clears sync metadata and optionally all synced data to force a fresh initial sync
 """
 
-import sys
-from pathlib import Path
-
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
-
-from wavelog_duckdb_sync import get_wavelog_sync
+import _bootstrap  # noqa: F401
+from radio_control.wavelog_duckdb_sync import get_wavelog_sync
 import logging
 
 # Setup logging

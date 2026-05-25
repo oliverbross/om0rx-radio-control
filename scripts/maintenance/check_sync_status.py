@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import sqlite3
 import json
-from pathlib import Path
+import _bootstrap  # noqa: F401
+from radio_control import config
 
-db_path = Path(__file__).resolve().parent / 'data' / 'wavelog.db'
+db_path = config.DATA_DIR / 'wavelog.db'
 try:
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()

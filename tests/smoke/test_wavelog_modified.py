@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 """Test if Wavelog records have last_modified"""
 
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
 import pymysql
 from pymysql.cursors import DictCursor
-import config
-
+import _bootstrap  # noqa: F401
+from radio_control import config
 try:
     # Connect to Wavelog
     conn = pymysql.connect(

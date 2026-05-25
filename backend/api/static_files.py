@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from radio_control import config
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ def setup_static_files(app):
     """
     # Define paths
     frontend_path = Path(__file__).parent.parent.parent / "frontend"
-    logs_path = Path(__file__).parent.parent.parent / "logs"
+    logs_path = config.LOGS_DIR
 
     # Mount static files from frontend directory
     app.mount("/static", StaticFiles(directory=str(frontend_path)), name="static")

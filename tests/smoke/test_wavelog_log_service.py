@@ -3,12 +3,7 @@ Test script for Wavelog Log Service
 Verify database connection and data retrieval
 """
 
-import sys
-from pathlib import Path
-
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
-
+import _bootstrap  # noqa: F401
 from services.wavelog_log import get_wavelog_log_service
 
 def test_log_service():

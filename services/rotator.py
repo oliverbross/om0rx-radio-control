@@ -13,13 +13,12 @@ from typing import Optional, Dict, Any
 from fastapi import HTTPException
 
 # Import required modules
-from rotor_api import RotorController
-from rotor_math import (
+from radio_control.rotor_api import RotorController
+from radio_control.rotor_math import (
     grid_to_latlon, latlon_to_grid, initial_bearing,
     calculate_bearing_for_station, get_band_from_frequency
 )
-import config
-
+from radio_control import config
 logger = logging.getLogger(__name__)
 
 
@@ -65,10 +64,9 @@ class RotatorService:
     def _load_rotor_config(self):
         """Load rotor configuration from JSON file if it exists"""
         try:
-            rotor_config_file = os.path.join(os.path.dirname(__file__), '..', 'rotor_config.json')
-            rotor_config_file = os.path.abspath(rotor_config_file)
+            rotor_config_file = config.ROTOR_CONFIG_PATH
 
-            if os.path.exists(rotor_config_file):
+            if rotor_config_file.exists():
                 with open(rotor_config_file, 'r', encoding='utf-8') as f:
                     rotor_data = json.load(f)
 
@@ -207,8 +205,8 @@ class RotatorService:
 
             # Persist to JSON file (won't trigger file watcher)
             try:
-                rotor_config_file = os.path.join(os.path.dirname(__file__), '..', 'rotor_config.json')
-                rotor_config_file = os.path.abspath(rotor_config_file)
+                rotor_config_file = config.ROTOR_CONFIG_PATH
+                rotor_config_file.parent.mkdir(parents=True, exist_ok=True)
 
                 rotor_config_data = {
                     "ROTOR_HOME_GRID": config.ROTOR_HOME_GRID,
