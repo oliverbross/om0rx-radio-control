@@ -1,0 +1,202 @@
+/**
+ * Prev QSOs Modal Styles - Compact Version
+ * (Duplicate of Callsign Search Modal for independent customization)
+ */
+
+.prev-qsos-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #1a1a2e;
+    border: 2px solid #10b981;
+    border-radius: 6px;
+    padding: 0;
+    z-index: 1000;
+    width: 85%;
+    max-width: 1000px;
+    max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+.prev-qsos-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 15px;
+    background: #0f3460;
+    border-bottom: 2px solid #10b981;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.prev-qsos-header h3 {
+    margin: 0;
+    color: #10b981;
+    font-size: 16px;
+}
+
+.prev-qsos-close {
+    background: none;
+    border: none;
+    color: #fff;
+    font-size: 28px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    transition: color 0.2s;
+}
+
+.prev-qsos-close:hover {
+    color: #ff6666;
+}
+
+/* Loading/Error States */
+.prev-qsos-loading,
+.prev-qsos-error,
+.prev-qsos-no-results {
+    padding: 25px;
+    text-align: center;
+}
+
+.prev-qsos-loading p {
+    color: #fbbf24;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.prev-qsos-error p {
+    color: #ff6666;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.prev-qsos-no-results p {
+    color: #888;
+    font-size: 14px;
+}
+
+/* Results */
+.prev-qsos-results {
+    padding: 12px 15px;
+}
+
+.prev-qsos-summary-header {
+    background: #2a2a3e;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    border-radius: 4px;
+    border-left: 3px solid #10b981;
+}
+
+.prev-qsos-summary-header h4 {
+    margin: 0;
+    color: #10b981;
+    font-size: 15px;
+}
+
+/* Previous Contacts Table */
+.prev-qsos-table-container {
+    margin-bottom: 15px;
+    border: 1px solid #444;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.prev-qsos-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #1a1a2e;
+}
+
+.prev-qsos-table thead {
+    background: #0f3460;
+}
+
+.prev-qsos-table thead th {
+    padding: 6px 8px;
+    text-align: left;
+    font-size: 12px;
+    font-weight: bold;
+    color: #fff;
+    border-bottom: 2px solid #10b981;
+}
+
+.prev-qsos-table tbody td {
+    padding: 5px 8px;
+    border-bottom: 1px solid #2a2a3e;
+    font-size: 12px;
+    color: #ccc;
+}
+
+.prev-qsos-table tbody tr:hover {
+    background: #252540;
+}
+
+.prev-qsos-note {
+    padding: 6px;
+    text-align: center;
+    font-size: 11px;
+    color: #888;
+    background: #252540;
+    font-style: italic;
+}
+
+/* Summary Badges */
+.prev-qsos-badges {
+    margin-bottom: 15px;
+    padding: 10px 12px;
+    background: #252540;
+    border-radius: 4px;
+}
+
+.prev-qsos-summary-text {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #444;
+    text-align: center;
+    color: #888;
+    font-size: 11px;
+    font-style: italic;
+}
+
+/* Matrix cell states */
+.matrix-cell-empty {
+    background: #1a1a2e;
+    color: #444;
+}
+
+.matrix-cell-worked {
+    background: #dc2626;
+    color: white;
+}
+
+.matrix-cell-confirmed {
+    background: #10b981;
+    color: white;
+}
+
+.matrix-cell-needed {
+    background: #a3b40b;
+    color: white;
+}
+
+/* Scrollbar */
+.prev-qsos-modal::-webkit-scrollbar {
+    width: 12px;
+}
+
+.prev-qsos-modal::-webkit-scrollbar-track {
+    background: #1a1a2e;
+}
+
+.prev-qsos-modal::-webkit-scrollbar-thumb {
+    background: #10b981;
+    border-radius: 6px;
+}
+
+.prev-qsos-modal::-webkit-scrollbar-thumb:hover {
+    background: #0d9668;
+}

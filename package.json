@@ -1,0 +1,24 @@
+{
+  "name": "flexradio-web-control",
+  "version": "2.0.0",
+  "description": "FlexRadio Web Control with SDC Skimmer Integration",
+  "type": "module",
+  "main": "sdc-bridge-server.js",
+  "scripts": {
+    "start:sdc": "node sdc-bridge-server.js",
+    "start:sdc:debug": "node --inspect sdc-bridge-server.js"
+  },
+  "dependencies": {
+    "ws": "^8.14.2",
+    "@pgogas/wsjtx-js": "^1.4.2"
+  },
+  "keywords": [
+    "flexradio",
+    "sdc",
+    "websocket",
+    "cw",
+    "skimmer"
+  ],
+  "author": "",
+  "license": "MIT"
+}

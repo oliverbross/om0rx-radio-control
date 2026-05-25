@@ -1,0 +1,347 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║          ROTOR AUTO CONTROL - VISUAL MOCKUP OF UI CHANGES                      ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+═══════════════════════════════════════════════════════════════════════════════════
+PART 1: MAIN UI - AUTO BUTTON LOCATION
+═══════════════════════════════════════════════════════════════════════════════════
+
+BEFORE:
+┌─ LEFT SIDE: Rotor Control ──────────────────────────────────────────────────┐
+│                                                                             │
+│  Az: [     0    ] °  [GO]                                                  │
+│                                                                             │
+│  [Director ▼] [N] [S] [E] [W]                                              │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+AFTER:
+┌─ LEFT SIDE: Rotor Control ──────────────────────────────────────────────────┐
+│                                                                             │
+│  Az: [     0    ] °  [GO] [AUTO]  ← NEW BUTTON HERE!                       │
+│                                                                             │
+│  [Director ▼] [N] [S] [E] [W]                                              │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+AUTO BUTTON STATES:
+┌──────────────────────┐
+│  GRAY (Disabled)     │  [AUTO]  ← Click to enable
+│  GREEN (Enabled)     │  [AUTO]  ← Click to disable (glowing effect)
+│  AMBER (Counting)    │  [CANCEL] ← Click to cancel (pulsing effect)
+└──────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+PART 2: SETTINGS PANEL - ROTOR AUTO CONFIGURATION SECTION
+═══════════════════════════════════════════════════════════════════════════════════
+
+Settings Panel (Click ⚙️ button in top right)
+
+BEFORE:
+┌─────────────────────────────────────────────────────────────┐
+│  [Flex & UDP]  [Rotor]  [CTY/Paths]  [Logging]  [Colours]  │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ☑ Rotator Enabled                                         │
+│                                                             │
+│  Rotator Type: [Microham ARCO____________]                │
+│                                                             │
+│  Rotator IP Address: [192.168.0.198____________]           │
+│                                                             │
+│  Rotator TCP Port: [4001]                                  │
+│                                                             │
+│  Rotator Protocol: [DCU-1 / Rotor-EZ ▼]                   │
+│                                                             │
+│  Read Timeout (seconds): [2.5]                             │
+│                                                             │
+│  ────────────────────────────────────────────────────      │
+│                                                             │
+│  Configure your Microham ARCO rotator connection here...   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+
+AFTER:
+┌─────────────────────────────────────────────────────────────┐
+│  [Flex & UDP]  [Rotor]  [CTY/Paths]  [Logging]  [Colours]  │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ☑ Rotator Enabled                                         │
+│                                                             │
+│  Rotator Type: [Microham ARCO____________]                │
+│                                                             │
+│  Rotator IP Address: [192.168.0.198____________]           │
+│                                                             │
+│  Rotator TCP Port: [4001]                                  │
+│                                                             │
+│  Rotator Protocol: [DCU-1 / Rotor-EZ ▼]                   │
+│                                                             │
+│  Read Timeout (seconds): [2.5]                             │
+│                                                             │
+│  ────────────────────────────────────────────────────────  │
+│                                                             │
+│  🤖 AUTO MODE CONFIGURATION  ← NEW SECTION!                │
+│  ────────────────────────────────────────────────────────  │
+│                                                             │
+│  ☑ Enable Rotor AUTO (auto-turn to spots/stations)        │
+│                                                             │
+│  📍 Your Home Location (Maidenhead Gridsquare)            │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │ Grid: [JN88TQ__________] Format: 2/4/6/8 chars       │ │
+│  │                                                       │ │
+│  │ Lat: [48.6875_] Lon: [17.6250_]                     │ │
+│  └───────────────────────────────────────────────────────┘ │
+│                                                             │
+│  📡 Select Bands for Rotor Control                         │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │ ☑160m  ☑80m   ☑60m   ☑40m                           │ │
+│  │ ☑30m   ☑20m   ☑17m   ☑15m                           │ │
+│  │ ☑12m   ☑10m   ☐6m    ☐2m                            │ │
+│  └───────────────────────────────────────────────────────┘ │
+│                                                             │
+│  ℹ️ When AUTO is enabled, the rotor will automatically     │
+│  calculate and move toward DX spots based on your          │
+│  gridsquare and the spot's gridsquare (from QRZ) or        │
+│  coordinates (from CTY.DAT). The 2-second delay before     │
+│  moving allows you to click CANCEL to prevent movement.    │
+│                                                             │
+│  ────────────────────────────────────────────────────────  │
+│                                                             │
+│  Configure your Microham ARCO rotator connection here...   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+PART 3: AUTO MODE OPERATION - VISUAL SEQUENCE
+═══════════════════════════════════════════════════════════════════════════════════
+
+STEP 1: User clicks a DX spot
+┌─────────────────────────────────────────────────────┐
+│ Cluster Window                                      │
+│                                                     │
+│ 14.074 USB  W1AW    599     Massachusetts          │
+│ 14.215 LSB  N0N     579     Colorado         ← [CLICK]
+│ 14.280 USB  G3XYZ   589     England                │
+│                                                     │
+└─────────────────────────────────────────────────────┘
+
+STEP 2: Radio tunes, logging form populated
+┌──────────────────────────────────────────┐
+│ Logging Form                             │
+│                                          │
+│ Callsign: [N0N_________________________]  │
+│ Name: [Dave________________]             │
+│ Country: [USA______________]             │
+│ QTH: [Colorado_____________]             │
+│                                          │
+└──────────────────────────────────────────┘
+
+STEP 3: AUTO button shows normal (green when enabled)
+┌─────────────────────────────────┐
+│ Rotor Control                   │
+│ Az: [205____] ° [GO] [AUTO]    │
+│    (GREEN = enabled, ready)     │
+└─────────────────────────────────┘
+
+STEP 4: QRZ lookup (1-3 seconds) - AUTO button still normal
+┌─────────────────────────────────────┐
+│ Auto-populated from QRZ:            │
+│                                     │
+│ Grid: [EN90BT________________] ← From QRZ.com
+│ Lat: [39.8765_______________]       │
+│ Lon: [-104.5432_____________]       │
+│                                     │
+│ Rotor Control:                      │
+│ Az: [205____] ° [GO] [AUTO]        │
+│    (GREEN = ready)                  │
+│                                     │
+└─────────────────────────────────────┘
+
+STEP 5: rotorAutoGoto() called - Button changes to CANCEL (pulsing amber)
+┌──────────────────────────────────────────────┐
+│ Rotor Control (2-second countdown starts)    │
+│                                              │
+│ Az: [205____] ° [GO] [CANCEL]              │
+│    ↑                   ↑ (AMBER, pulsing)   │
+│    │                   └─ Click to prevent! │
+│    └─ Calculated bearing                    │
+│                                              │
+│ [User can click CANCEL here to prevent      │
+│  rotor from moving]                         │
+│                                              │
+└──────────────────────────────────────────────┘
+
+OPTION A: User clicks CANCEL within 2 seconds
+┌──────────────────────────────────────────────┐
+│ Rotor Control (action cancelled)             │
+│                                              │
+│ Az: [205____] ° [GO] [AUTO]                │
+│    ↑                (GREEN again)            │
+│    └─ Reverted to previous azimuth          │
+│                                              │
+│ Status: "⏸️ Rotor AUTO action cancelled"    │
+│ Console: "✅ Rotor movement cancelled"      │
+│                                              │
+└──────────────────────────────────────────────┘
+
+OPTION B: 2 seconds elapse (no CANCEL clicked)
+┌──────────────────────────────────────────────┐
+│ Rotor Control (rotor moved!)                 │
+│                                              │
+│ Az: [205____] ° [GO] [AUTO]                │
+│    ↑                (GREEN again)            │
+│    └─ New bearing toward N0N                │
+│                                              │
+│ Status: "🤖 Rotor → 205° for N0N"          │
+│ Console: "✅ AUTO rotor moved to 205°"      │
+│                                              │
+│ [Physical rotor turns to 205°]              │
+│                                              │
+└──────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+PART 4: BUTTON STATE COLORS
+═══════════════════════════════════════════════════════════════════════════════════
+
+State 1: AUTO Disabled (Default)
+┌────────────────┐
+│ [AUTO]         │  ← Gray background
+│ 🟦 #3a3a3a     │  ← Click to enable
+└────────────────┘
+
+State 2: AUTO Enabled (Ready)
+┌────────────────┐
+│ [AUTO]         │  ← Green background with glow
+│ 🟩 #10b981     │  ← Click to disable
+│ ✨ Glowing     │  ← Box shadow for emphasis
+└────────────────┘
+
+State 3: Countdown Active (Pending)
+┌────────────────┐
+│ [CANCEL]       │  ← Amber background, pulsing
+│ 🟧 #f59e0b     │  ← Click to cancel
+│ 💫 Pulsing     │  ← Animation effect
+│ 1...2...3...   │  ← Countdown
+└────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+PART 5: CONFIGURATION FIELDS IN DETAIL
+═══════════════════════════════════════════════════════════════════════════════════
+
+AUTO ENABLE CHECKBOX:
+☑ Enable Rotor AUTO (auto-turn to spots/stations)
+├─ Checked: AUTO mode is ACTIVE
+└─ Unchecked: AUTO mode is OFF
+
+HOME LOCATION SECTION:
+📍 Your Home Location (Maidenhead Gridsquare)
+
+Grid Input:
+┌─────────────────────────────────────┐
+│ Grid: [JN88TQ__________] Format:   │
+│       ^^^^^^^              2-8 chars │
+│       └─ Maidenhead locator         │
+│       └─ 4 chars = 2.5 km precision │
+│       └─ 6 chars = 500m precision   │
+│       └─ 8 chars = 100m precision   │
+└─────────────────────────────────────┘
+
+Coordinates:
+┌─────────────────────────────────────┐
+│ Lat: [48.6875_] Lon: [17.6250_]   │
+│       ^^^^^^^^       ^^^^^^^^       │
+│       └ Degrees      └ Degrees     │
+│       └ 48.6875°N    └ 17.6250°E   │
+│       └ Auto from grid, can edit   │
+│       └ 4 decimals = 11m precision │
+└─────────────────────────────────────┘
+
+BAND SELECTION:
+📡 Select Bands for Rotor Control
+
+┌─────────────────────────────────────────┐
+│ ☑160m  ☑80m   ☐60m   ☑40m            │
+│ ☐30m   ☑20m   ☑17m   ☑15m            │
+│ ☑12m   ☑10m   ☐6m    ☐2m             │
+│                                       │
+│ ✓ = Rotor active on this band        │
+│ ☐ = No rotor coverage on this band   │
+└─────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+PART 6: BROWSER CONSOLE OUTPUT
+═══════════════════════════════════════════════════════════════════════════════════
+
+Press F12 to open Developer Console:
+
+INITIALIZATION:
+✅ Rotor AUTO config loaded: { 
+  grid: 'JN88TQ', 
+  auto: true, 
+  home_lat: 48.17, 
+  home_lon: 17.08,
+  bands: {20m: true, 17m: true, ...}
+}
+
+WHEN USER CLICKS SPOT:
+📞 Callsign changed to: N0N
+🌐 Fetching QRZ profile...
+✅ QRZ profile loaded: {name: 'Dave', grid: 'EN90BT', ...}
+
+WHEN AUTO TRIGGERS:
+🤖 Rotor AUTO ENABLED
+⏱️ Rotor AUTO pending: N0N - waiting 2s for cancellation
+
+WHEN COUNTDOWN COMPLETES:
+✅ AUTO rotor moved to 205°: N0N
+🤖 Rotor → 205° for N0N
+
+WHEN USER CLICKS CANCEL:
+⏸️ Rotor AUTO action cancelled
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+PART 7: COMPLETE WORKFLOW
+═══════════════════════════════════════════════════════════════════════════════════
+
+TIME    UI STATE              ACTION                    RESULT
+────────────────────────────────────────────────────────────────────────
+0:00    [AUTO] green         User clicks spot N0N      Radio tunes 14.215
+0:00    [AUTO] green         Callsign auto-entered     Form shows N0N
+0:00    [AUTO] green         QRZ lookup starts         Browser connecting...
+1:50    [AUTO] green         QRZ returns gridsquare    Grid: EN90BT
+1:50    [CANCEL] amber ✨     rotorAutoGoto() called    2-second countdown!
+1:50    [CANCEL] amber 💫    Pulsing animation        USER CAN CLICK CANCEL
+2:00    [AUTO] green         2 seconds elapsed         No cancel clicked!
+2:01    [AUTO] green         Backend calculates        Bearing: 205°
+2:05    [AUTO] green         Rotor physically moves    Pointing to N0N now!
+────────────────────────────────────────────────────────────────────────
+
+ALTERNATE: If user clicks CANCEL at 1:55
+────────────────────────────────────────────────────────────────────────
+1:55    [CANCEL] amber       User clicks CANCEL        Action cancelled
+1:55    [AUTO] green         Countdown stops           Rotor does NOT move
+────────────────────────────────────────────────────────────────────────
+
+
+═══════════════════════════════════════════════════════════════════════════════════
+END OF VISUAL MOCKUP
+═══════════════════════════════════════════════════════════════════════════════════
+
+Summary of Visual Changes:
+✅ AUTO button visible next to GO
+✅ AUTO button changes colors (gray → green → amber)
+✅ AUTO button text changes (AUTO ↔ CANCEL)
+✅ Configuration section appears in Settings
+✅ Gridsquare input field appears
+✅ Band checkboxes appear
+✅ Status messages appear in top bar
+✅ Console shows debug messages
+
+Total UI Additions: 1 button + 17 form elements + styling = Complete feature!

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Module Loading Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+        .test-result {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success {
+            background: #10b981;
+            color: white;
+        }
+        .error {
+            background: #ef4444;
+            color: white;
+        }
+        .info {
+            background: #3b82f6;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <h1>FlexRadio Module Loading Test</h1>
+    <div id="test-results"></div>
+
+    <!-- Vue.js 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    
+    <!-- Load modular JavaScript files -->
+    <script src="js/core.js"></script>
+    <script src="js/websocket.js"></script>
+    <script src="js/radio-controls.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/dx-spots.js"></script>
+    
+    <script>
+        function addResult(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `test-result ${type}`;
+            div.textContent = message;
+            document.getElementById('test-results').appendChild(div);
+        }
+
+        // Test module loading
+        addResult('Testing module loading...', 'info');
+        
+        // Check Vue
+        if (typeof Vue !== 'undefined') {
+            addResult('✅ Vue.js loaded successfully', 'success');
+        } else {
+            addResult('❌ Vue.js not loaded', 'error');
+        }
+        
+        // Check modules
+        const modules = [
+            { name: 'FlexRadioCore', obj: window.FlexRadioCore },
+            { name: 'FlexRadioWebSocket', obj: window.FlexRadioWebSocket },
+            { name: 'FlexRadioControls', obj: window.FlexRadioControls },
+            { name: 'FlexRadioUtils', obj: window.FlexRadioUtils },
+            { name: 'FlexRadioSpots', obj: window.FlexRadioSpots }
+        ];
+        
+        modules.forEach(module => {
+            if (module.obj) {
+                addResult(`✅ ${module.name} loaded successfully`, 'success');
+                
+                // Check specific properties
+                if (module.name === 'FlexRadioCore' && module.obj.data) {
+                    addResult(`  - Core data properties: ${Object.keys(module.obj.data).length}`, 'info');
+                }
+                if (module.name === 'FlexRadioSpots' && module.obj.methods) {
+                    addResult(`  - Spots methods: ${Object.keys(module.obj.methods).length}`, 'info');
+                    
+                    // Check for specific methods
+                    if (module.obj.methods.isFilterActive) {
+                        addResult(`  - isFilterActive method: ✅`, 'success');
+                    } else {
+                        addResult(`  - isFilterActive method: ❌`, 'error');
+                    }
+                    
+                    if (module.obj.methods.toggleDropdown) {
+                        addResult(`  - toggleDropdown method: ✅`, 'success');
+                    } else {
+                        addResult(`  - toggleDropdown method: ❌`, 'error');
+                    }
+                }
+                if (module.name === 'FlexRadioControls') {
+                    const methods = Object.keys(module.obj);
+                    addResult(`  - Control methods: ${methods.length}`, 'info');
+                    
+                    // Check for specific methods
+                    if (module.obj.toggleRIT) {
+                        addResult(`  - toggleRIT method: ✅`, 'success');
+                    } else {
+                        addResult(`  - toggleRIT method: ❌`, 'error');
+                    }
+                    
+                    if (module.obj.toggleXIT) {
+                        addResult(`  - toggleXIT method: ✅`, 'success');
+                    } else {
+                        addResult(`  - toggleXIT method: ❌`, 'error');
+                    }
+                }
+            } else {
+                addResult(`❌ ${module.name} not loaded`, 'error');
+            }
+        });
+        
+        // Test Vue app creation (without mounting)
+        try {
+            const { createApp } = Vue;
+            
+            // Check if we can access all required data
+            if (window.FlexRadioCore && window.FlexRadioSpots) {
+                const testData = {
+                    ...window.FlexRadioCore.data,
+                    ...window.FlexRadioSpots.data
+                };
+                addResult(`✅ Data merge successful: ${Object.keys(testData).length} properties`, 'success');
+            } else {
+                addResult('❌ Cannot merge data - missing modules', 'error');
+            }
+            
+            // Check if we can access all required methods
+            const allMethods = {
+                ...window.FlexRadioWebSocket,
+                ...window.FlexRadioControls,
+                ...window.FlexRadioUtils,
+                ...(window.FlexRadioSpots ? window.FlexRadioSpots.methods : {})
+            };
+            addResult(`✅ Methods merge successful: ${Object.keys(allMethods).length} methods`, 'success');
+            
+            // Check for specific missing methods from Vue warnings
+            const requiredMethods = [
+                'toggleRIT', 'toggleXIT', 'autoPopulateForm', 'onCallsignChange', 
+                'submitQSO', 'clearLoggingForm', 'isFilterActive', 'toggleDropdown', 
+                'handleDirectorToggle'
+            ];
+            
+            requiredMethods.forEach(method => {
+                if (allMethods[method]) {
+                    addResult(`  - ${method}: ✅`, 'success');
+                } else {
+                    addResult(`  - ${method}: ❌ MISSING`, 'error');
+                }
+            });
+            
+        } catch (error) {
+            addResult(`❌ Vue app creation test failed: ${error.message}`, 'error');
+        }
+        
+        addResult('Module loading test complete!', 'info');
+    </script>
+</body>
+</html>

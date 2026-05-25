@@ -1,0 +1,358 @@
+/**
+ * Callsign Search Modal Styles - Compact Version
+ */
+
+.callsign-search-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #1a1a2e;
+    border: 2px solid #10b981;
+    border-radius: 6px;
+    padding: 0;
+    z-index: 1000;
+    width: 85%;
+    max-width: 1000px;
+    max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+.callsign-search-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 15px;
+    background: #0f3460;
+    border-bottom: 2px solid #10b981;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.callsign-search-header h3 {
+    margin: 0;
+    color: #10b981;
+    font-size: 16px;
+}
+
+.callsign-search-close {
+    background: none;
+    border: none;
+    color: #fff;
+    font-size: 28px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    transition: color 0.2s;
+}
+
+.callsign-search-close:hover {
+    color: #ff6666;
+}
+
+/* Search Input */
+.callsign-search-input-container {
+    display: flex;
+    gap: 8px;
+    padding: 12px 15px;
+    background: #252540;
+}
+
+.callsign-search-input {
+    flex: 1;
+    padding: 8px 12px;
+    background: #2a2a3e;
+    border: 2px solid #444;
+    border-radius: 4px;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 500;
+    text-transform: uppercase;
+}
+
+.callsign-search-input:focus {
+    outline: none;
+    border-color: #10b981;
+}
+
+.callsign-search-btn {
+    padding: 8px 20px;
+    background: #10b981;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: bold;
+    transition: background 0.2s;
+}
+
+.callsign-search-btn:hover:not(:disabled) {
+    background: #0d9668;
+}
+
+.callsign-search-btn:disabled {
+    background: #444;
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+/* Loading/Error States */
+.callsign-search-loading,
+.callsign-search-error,
+.callsign-search-no-results {
+    padding: 25px;
+    text-align: center;
+}
+
+.callsign-search-loading p {
+    color: #fbbf24;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.callsign-search-error p {
+    color: #ff6666;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.callsign-search-no-results p {
+    color: #888;
+    font-size: 14px;
+}
+
+/* Results */
+.callsign-search-results {
+    padding: 12px 15px;
+}
+
+.callsign-search-summary-header {
+    background: #2a2a3e;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    border-radius: 4px;
+    border-left: 3px solid #10b981;
+}
+
+.callsign-search-summary-header h4 {
+    margin: 0;
+    color: #10b981;
+    font-size: 15px;
+}
+
+/* Previous Contacts Table */
+.callsign-search-table-container {
+    margin-bottom: 15px;
+    border: 1px solid #444;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.callsign-search-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #1a1a2e;
+}
+
+.callsign-search-table thead {
+    background: #0f3460;
+}
+
+.callsign-search-table thead th {
+    padding: 6px 8px;
+    text-align: left;
+    font-size: 12px;
+    font-weight: bold;
+    color: #fff;
+    border-bottom: 2px solid #10b981;
+}
+
+.callsign-search-table tbody td {
+    padding: 5px 8px;
+    border-bottom: 1px solid #2a2a3e;
+    font-size: 12px;
+    color: #ccc;
+}
+
+.callsign-search-table tbody tr:hover {
+    background: #252540;
+}
+
+.qso-action-btn {
+    padding: 3px 6px;
+    background: #4a9eff;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background 0.2s;
+}
+
+.qso-action-btn:hover {
+    background: #3a8eef;
+}
+
+.callsign-search-note {
+    padding: 6px;
+    text-align: center;
+    font-size: 11px;
+    color: #888;
+    background: #252540;
+    font-style: italic;
+}
+
+/* Summary Badges */
+.callsign-search-badges {
+    margin-bottom: 15px;
+    padding: 10px 12px;
+    background: #252540;
+    border-radius: 4px;
+}
+
+.summary-badge-row {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+    overflow-x: auto;
+    margin-bottom: 0;
+}
+
+.summary-badge {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    background: #2a2a3e;
+    border-radius: 4px;
+    border: 1px solid #444;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.badge-label {
+    font-size: 11px;
+    color: #888;
+    font-weight: 500;
+}
+
+.badge-value {
+    font-size: 12px;
+    color: #10b981;
+    font-weight: bold;
+}
+
+.badge-refresh {
+    padding: 2px 5px;
+    background: #4a9eff;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 10px;
+    transition: background 0.2s;
+}
+
+.badge-refresh:hover {
+    background: #3a8eef;
+}
+
+.callsign-search-summary-text {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #444;
+    text-align: center;
+    color: #888;
+    font-size: 11px;
+    font-style: italic;
+}
+
+/* Band/Mode Matrix */
+.band-mode-matrix {
+    margin-top: 12px;
+}
+
+.band-mode-matrix h4 {
+    margin: 0 0 8px 0;
+    color: #10b981;
+    font-size: 14px;
+}
+
+.matrix-table-container {
+    border: 1px solid #444;
+    border-radius: 4px;
+    overflow-x: auto;
+}
+
+.matrix-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #1a1a2e;
+}
+
+.matrix-table thead th {
+    padding: 4px 6px;
+    text-align: center;
+    font-size: 11px;
+    font-weight: bold;
+    color: #fff;
+    background: #0f3460;
+    border: 1px solid #444;
+}
+
+.matrix-table tbody td {
+    padding: 4px;
+    text-align: center;
+    font-size: 11px;
+    font-weight: bold;
+    border: 1px solid #444;
+    min-width: 40px;
+}
+
+.matrix-table tbody td.mode-label {
+    text-align: left;
+    font-weight: bold;
+    color: #fff;
+    background: #2a2a3e;
+    padding-left: 8px;
+}
+
+/* Matrix cell states */
+.matrix-cell-empty {
+    background: #1a1a2e;
+    color: #444;
+}
+
+.matrix-cell-worked {
+    background: #0d9668;
+    color: white;
+}
+
+.matrix-cell-confirmed {
+    background: #10b981;
+    color: white;
+}
+
+.matrix-cell-needed {
+    background: #dc2626;
+    color: white;
+}
+
+/* Scrollbar */
+.callsign-search-modal::-webkit-scrollbar {
+    width: 12px;
+}
+
+.callsign-search-modal::-webkit-scrollbar-track {
+    background: #1a1a2e;
+}
+
+.callsign-search-modal::-webkit-scrollbar-thumb {
+    background: #10b981;
+    border-radius: 6px;
+}
+
+.callsign-search-modal::-webkit-scrollbar-thumb:hover {
+    background: #0d9668;
+}

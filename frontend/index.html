@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlexRadio Web Control v2.0</title>
+    
+    <!-- Vue.js 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    
+    <!-- Power Button Styles -->
+    <link rel="stylesheet" href="power-button.css">
+    <!-- Logging Panel Styles -->
+    <link rel="stylesheet" href="logging-panel.css">
+    <!-- Local Log Modal Styles -->
+    <link rel="stylesheet" href="local-log-modal.css">
+    <!-- Wavelog Log Modal Styles -->
+    <link rel="stylesheet" href="wavelog-log-modal.css">
+    <!-- Wavelog Log Viewer Styles -->
+    <link rel="stylesheet" href="wavelog-log-viewer.css">
+    <!-- Callsign Search Modal Styles -->
+    <link rel="stylesheet" href="callsign-search-modal.css">
+    <!-- Prev QSOs Modal Styles -->
+    <link rel="stylesheet" href="prev-qsos-modal.css">
+    <!-- FT8/FT4 Digital Mode Styles -->
+    <link rel="stylesheet" href="ft8-modal.css">
+    <!-- Main Styles (extracted for performance) -->
+    <link rel="stylesheet" href="main-styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Template placeholders - content will be loaded by templates-loader.js in order -->
+        <div id="controls-section" style="display: contents;"></div>
+        <div id="logging-panel-section"></div>
+        <div id="dx-spots-section"></div>
+        <div id="modals-section" style="display: contents;"></div>
+    </div>
+
+    <!-- Load template fragments (controls, modals, dx-spots) -->
+    <script src="templates-loader.js"></script>
+    
+    <!-- Load logging module first (required by other modules) -->
+    <script src="js/logger.js"></script>
+    
+    <!-- Load modular JavaScript files -->
+    <script src="js/core.js"></script>
+    <script src="js/power-control.js"></script>
+    <script src="js/websocket.js"></script>
+    <script src="js/radio-controls.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/dx-spots.js"></script>
+    <!-- TopoJSON client for proper arc decompression -->
+    <script src="https://unpkg.com/topojson-client@3"></script>
+    <script src="js/country-modal.js"></script>
+    <script src="js/local-log-modal.js"></script>
+    <script src="js/wavelog-log-modal.js"></script>
+    <script src="js/wavelog-log-viewer.js"></script>
+    <script src="js/sdc-ticker.js"></script>
+    <script src="js/wsjtx-handler.js"></script>
+    <!-- FT8/FT4 Digital Mode -->
+    <script src="js/ft8-modal.js"></script>
+    <!-- Solar & HF Conditions Overlay -->
+    <script src="js/solar-overlay.js"></script>
+    <!-- WinKeyer Support Scripts -->
+    <script src="js/winkeyer-client.js"></script>
+    <script src="js/winkeyer-feedback.js"></script>
+    <script src="js/winkeyer-reconnect.js"></script>
+    <script src="js/winkeyer-tester.js"></script>
+    <script src="js/winkeyer-ui.js"></script>
+    <script>
+        // Verify all WinKeyer classes loaded in correct order
+        console.log('🔍 WinKeyer Class Status:', {
+            WinKeyerClient: typeof WinKeyerClient !== 'undefined' ? '✓' : '✗',
+            WinKeyerFeedbackHandler: typeof WinKeyerFeedbackHandler !== 'undefined' ? '✓' : '✗',
+            WinKeyerReconnectManager: typeof WinKeyerReconnectManager !== 'undefined' ? '✓' : '✗',
+            WinKeyerTester: typeof WinKeyerTester !== 'undefined' ? '✓' : '✗',
+            WinKeyerUI: typeof WinKeyerUI !== 'undefined' ? '✓' : '✗'
+        });
+        
+        // Initialize WinKeyer UI
+        console.log('🔑 Initializing WinKeyer UI...');
+        if (typeof WinKeyerUI !== 'undefined') {
+            // Delay initialization until Vue app is mounted
+            document.addEventListener('vue-mounted', () => {        
+                if (window.vueInstance) {
+                    window.winKeyerUI = new WinKeyerUI(window.vueInstance);
+                    console.log('✅ WinKeyerUI created');
+                }
+            });
+        } else {
+            console.warn('⚠️ WinKeyerUI class not found - WinKeyer support disabled');
+        }
+    </script>
+    <script src="js/app-main.js"></script>
+</body>
+</html>

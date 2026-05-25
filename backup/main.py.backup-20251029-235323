@@ -1,0 +1,2543 @@
+"""
+FlexRadio Web Control - FastAPI Backend
+COMPLETE PRODUCTION VERSION with all features
+"""
+
+import asyncio
+import logging
+import time
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body, Request
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
+import sys
+import os
+from pathlib import Path
+import json
+import mysql.connector as mysql
+
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Import existing code
+from dxbridge import FlexCtl, DX_RE
+import config
+from cluster_client import ClusterClient
+from classifier_api import ClassifierAPI, get_classifier_api
+from cty_resolvers import CtyDatResolver
+from spot_processor import band_from_khz, infer_mode, extract_special, clean_comment
+from wavelog_api import WavelogClient
+from qrz_api import QRZClient
+from adif_handler import ADIFHandler
+from wavelog_sync import start_wavelog_sync, stop_wavelog_sync
+from rotor_api import RotorController
+from rotor_math import (
+    grid_to_latlon, latlon_to_grid, initial_bearing,
+    calculate_bearing_for_station, get_band_from_frequency
+)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# FastAPI app
+app = FastAPI(title="FlexRadio Web Control", version="2.0.0")
+
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Custom exception handler for validation errors
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Log detailed validation errors for debugging"""
+    logger.error(f"❌ Validation Error on {request.url.path}")
+    logger.error(f"   Errors: {exc.errors()}")
+    logger.error(f"   Body: {await request.body()}")
+    
+    return {"success": False, "detail": "Request validation failed", "errors": exc.errors()}
+
+# Global state
+flex: Optional[FlexCtl] = None
+websocket_clients: List[WebSocket] = []
+dx_spots_cache: List[Dict] = []  # In-memory DX spots cache
+db_connection = None
+cluster_client: Optional[ClusterClient] = None
+cluster_connected: bool = False  # Track cluster connection status
+classifier: Optional[ClassifierAPI] = None
+cty_resolver: Optional[CtyDatResolver] = None
+wavelog_client: Optional[WavelogClient] = None
+qrz_client: Optional[QRZClient] = None
+adif_handler: Optional[ADIFHandler] = None
+rotor: Optional[RotorController] = None
+
+
+# === Startup/Shutdown Events ===
+
+def _load_rotor_config():
+    """Load rotor configuration from JSON file if it exists"""
+    global config
+    try:
+        rotor_config_file = os.path.join(os.path.dirname(__file__), '..', 'rotor_config.json')
+        rotor_config_file = os.path.abspath(rotor_config_file)
+        
+        if os.path.exists(rotor_config_file):
+            with open(rotor_config_file, 'r', encoding='utf-8') as f:
+                rotor_data = json.load(f)
+            
+            # Update config from JSON
+            config.ROTOR_HOME_GRID = rotor_data.get('ROTOR_HOME_GRID', config.ROTOR_HOME_GRID)
+            config.ROTOR_HOME_LAT = rotor_data.get('ROTOR_HOME_LAT', config.ROTOR_HOME_LAT)
+            config.ROTOR_HOME_LON = rotor_data.get('ROTOR_HOME_LON', config.ROTOR_HOME_LON)
+            config.ROTOR_BANDS = rotor_data.get('ROTOR_BANDS', config.ROTOR_BANDS)
+            config.ROTOR_AUTO_ENABLED = rotor_data.get('ROTOR_AUTO_ENABLED', config.ROTOR_AUTO_ENABLED)
+            
+            logger.info(f"✅ Loaded rotor config from JSON: Grid={config.ROTOR_HOME_GRID}, AUTO={config.ROTOR_AUTO_ENABLED}")
+        else:
+            logger.info("ℹ️  No rotor_config.json found, using defaults from config.py")
+    except Exception as e:
+        logger.warning(f"⚠️  Failed to load rotor config from JSON: {e}, using defaults")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on app startup"""
+    logger.info("🚀 FastAPI backend starting...")
+    
+    # Load rotor configuration from JSON (if saved)
+    _load_rotor_config()
+    
+    try:
+        await start_wavelog_sync()
+        logger.info("✅ Wavelog sync manager initialized")
+    except Exception as e:
+        logger.error(f"❌ Failed to start Wavelog sync: {str(e)}")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on app shutdown"""
+    logger.info("⏹️ FastAPI backend shutting down...")
+    try:
+        await stop_wavelog_sync()
+        logger.info("✅ Wavelog sync manager stopped")
+    except Exception as e:
+        logger.error(f"❌ Error stopping Wavelog sync: {str(e)}")
+    
+    # Close persistent HTTP session
+    try:
+        if wavelog_client:
+            await wavelog_client.close_session()
+            logger.info("✅ Wavelog HTTP session closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing Wavelog session: {str(e)}")
+
+
+# === Pydantic Models ===
+
+class FrequencyRequest(BaseModel):
+    frequency: float
+
+class ModeRequest(BaseModel):
+    mode: str
+
+class BandRequest(BaseModel):
+    band: str
+
+class FilterRequest(BaseModel):
+    filter_lo: int
+    filter_hi: int
+
+class SliderRequest(BaseModel):
+    value: int
+
+class ToggleRequest(BaseModel):
+    enabled: bool
+
+class AGCRequest(BaseModel):
+    mode: str  # off, slow, med, fast
+
+class DSPRequest(BaseModel):
+    control: str  # nb, nr, anf, apf
+    enabled: bool
+
+class DSPLevelRequest(BaseModel):
+    control: str  # nb_level, nr_level, anf_level, apf_level
+    value: int  # 0-100
+
+class RITXITRequest(BaseModel):
+    enabled: bool
+    freq_hz: Optional[int] = 0
+
+class RX2Request(BaseModel):
+    frequency: Optional[float] = None
+    enabled: bool
+
+class SplitRequest(BaseModel):
+    enabled: bool
+    tx_frequency: Optional[float] = None
+
+class SpotTuneRequest(BaseModel):
+    frequency: float
+    mode: Optional[str] = None
+
+class QSORequest(BaseModel):
+    callsign: str
+    frequency: float
+    mode: str
+    # RST values can be integers (SSB/CW) or strings (FT8/FT4 SNR like "-12", "+15")
+    rst_sent: Optional[str] = None
+    rst_received: Optional[str] = None
+    date: Optional[str] = None
+    time_off: Optional[str] = None
+    name: Optional[str] = None
+    qth: Optional[str] = None
+    gridsquare: Optional[str] = None
+    notes: Optional[str] = None
+    pota: Optional[str] = None
+    sota: Optional[str] = None
+    iota: Optional[str] = None
+    wwff: Optional[str] = None
+    date_time: Optional[str] = None
+    continent: Optional[str] = None
+    cq_zone: Optional[int] = None
+    itu_zone: Optional[int] = None
+    region: Optional[str] = None
+    country: Optional[str] = None
+    state: Optional[str] = None
+    us_county: Optional[str] = None
+    tx_pwr: Optional[str] = None
+    ant: Optional[str] = None
+    qsl_rcvd: Optional[str] = None
+    qsl_sent: Optional[str] = None
+    lotw_member: Optional[bool] = None
+    qsl_manager: Optional[str] = None
+    email: Optional[str] = None
+    prop_mode: Optional[str] = None
+    ant_path: Optional[str] = None
+    sat_name: Optional[str] = None
+    sat_mode: Optional[str] = None
+    freq_rx: Optional[str] = None
+    mode_rx: Optional[str] = None
+
+class RecentQSOsRequest(BaseModel):
+    callsign: str
+    limit: int = 5
+
+class RotorGotoRequest(BaseModel):
+    azimuth: int  # 0-359
+
+class RotorDirectionRequest(BaseModel):
+    direction: str  # "N", "S", "E", "W"
+
+class RotorConfigRequest(BaseModel):
+    enabled: bool
+    host: str
+    port: int
+    protocol: str  # "DCU-1" or "Yaesu GS-232A"
+    timeout: float = 2.5
+
+class RotorAutoModeRequest(BaseModel):
+    enabled: bool
+
+class RotorBearingRequest(BaseModel):
+    callsign: str
+    frequency_khz: Optional[float] = None  # Current frequency (to determine band)
+    gridsquare: Optional[str] = None  # Station gridsquare (from QRZ or cty.dat)
+    latitude: Optional[float] = None  # Station latitude
+    longitude: Optional[float] = None  # Station longitude
+
+class RotorAutoConfigRequest(BaseModel):
+    home_grid: str
+    home_lat: float
+    home_lon: float
+    bands: Dict[str, bool]  # Band name -> enabled (e.g., {"20m": true, "10m": false})
+    auto_enabled: bool
+
+
+# WSJT-X Request Models
+class WSJTXQSORequest(BaseModel):
+    """QSO data from WSJT-X to log"""
+    call: str
+    grid: Optional[str] = None
+    mode: str  # "FT8", "FT4", etc.
+    frequency_hz: Optional[int] = None  # Frequency in Hz
+    # RST values can be integers (SSB/CW) or strings (FT8/FT4 SNR like "-12", "+15")
+    rst_sent: Optional[str] = None
+    rst_received: Optional[str] = None
+    operator: Optional[str] = None
+    comments: Optional[str] = None
+    qrz_data: Optional[Dict[str, Any]] = None  # Pre-fetched QRZ data
+
+class WSJTXAutoRotateRequest(BaseModel):
+    """Auto-rotate request based on DX grid"""
+    call: str
+    grid: str
+    frequency_hz: Optional[int] = None
+
+
+# === Database Connection ===
+
+def get_db_connection():
+    """Get MySQL connection for DX spots"""
+    global db_connection
+    try:
+        if db_connection is None or not db_connection.is_connected():
+            db_connection = mysql.connect(
+                host=config.DB_HOST,
+                port=config.DB_PORT,
+                user=config.DB_USER,
+                password=config.DB_PASS,
+                database=config.DB_NAME
+            )
+        return db_connection
+    except Exception as e:
+        logger.error(f"Database connection failed: {e}")
+        return None
+
+
+# === FlexRadio Initialization ===
+
+def init_flex():
+    """Initialize FlexCtl connection"""
+    global flex
+    try:
+        host = getattr(config, 'FLEX_TCP_HOST', '192.168.1.100')
+        port = getattr(config, 'FLEX_TCP_PORT', 4992)
+        slice_id = getattr(config, 'FLEX_SLICE_ID', 0)
+        
+        logger.info(f"Initializing FlexCtl: {host}:{port}, slice {slice_id}")
+        flex = FlexCtl(host, port, slice_id)
+        
+        if flex.connect():
+            logger.info("✅ FlexRadio connected successfully")
+            return True
+        else:
+            logger.error("❌ FlexRadio connection failed")
+            return False
+    except Exception as e:
+        logger.error(f"❌ FlexCtl initialization error: {e}")
+        return False
+
+
+# === WebSocket Broadcasting ===
+
+async def broadcast_status(data: dict):
+    """Broadcast status to all WebSocket clients"""
+    if not websocket_clients:
+        return
+    
+    message = json.dumps({"type": "status", "data": data})
+    disconnected = []
+    
+    for client in websocket_clients:
+        try:
+            await client.send_text(message)
+        except Exception as e:
+            logger.warning(f"Failed to send to WebSocket: {e}")
+            disconnected.append(client)
+    
+    for client in disconnected:
+        websocket_clients.remove(client)
+
+
+async def broadcast_spots(spots: List[Dict]):
+    """Broadcast DX spots to all WebSocket clients"""
+    if not websocket_clients:
+        return
+    
+    message = json.dumps({"type": "spots", "data": spots})
+    disconnected = []
+    
+    for client in websocket_clients:
+        try:
+            await client.send_text(message)
+        except Exception as e:
+            logger.warning(f"Failed to broadcast spots: {e}")
+            disconnected.append(client)
+    
+    for client in disconnected:
+        websocket_clients.remove(client)
+
+
+# === Background Tasks ===
+
+async def poll_radio_status():
+    """Poll radio for status updates - increased frequency for faster 2-way sync"""
+    while True:
+        try:
+            if flex and flex.sock:
+                flex.refresh_radio_state()
+                
+                # Get only actual state changes (no smeter spam)
+                status_update = flex.last_state_changed.copy() if flex.last_state_changed else {}
+                
+                # Map 'frequency' field if present (backend may use 'freq')
+                if 'freq' in status_update:
+                    status_update['frequency'] = status_update.pop('freq')
+                    logger.info(f"🚀 FREQUENCY SYNC: freq={status_update['frequency']}")
+                
+                if status_update:
+                    logger.info(f"Broadcasting changes: {list(status_update.keys())}")
+                    await broadcast_status(status_update)
+                    flex.last_state_changed = {}
+            
+            # Increased polling frequency: 500ms instead of 1s for faster responsiveness
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"Poll error: {e}")
+            await asyncio.sleep(5.0)
+
+
+async def monitor_cluster_status():
+    """Monitor cluster connection status and broadcast to clients"""
+    global cluster_client, cluster_connected
+    
+    last_status = None
+    
+    while True:
+        try:
+            current_connected = cluster_client.connected if cluster_client else False
+            
+            # Only broadcast when status changes
+            if current_connected != last_status:
+                status = {
+                    "cluster_status": "connected" if current_connected else "disconnected",
+                    "cluster_connected": current_connected
+                }
+                logger.info(f"🔗 Cluster status: {'✅ Connected' if current_connected else '❌ Disconnected'}")
+                await broadcast_status(status)
+                last_status = current_connected
+                cluster_connected = current_connected
+            
+            # Check every 3 seconds
+            await asyncio.sleep(3)
+        except Exception as e:
+            logger.error(f"Cluster status monitor error: {e}")
+            await asyncio.sleep(5)
+
+
+async def process_cluster_spot(spot_data: Dict):
+    """Process spot from cluster - classify and store"""
+    global dx_spots_cache, cty_resolver, classifier
+    
+    try:
+        freq_khz = spot_data['freq_khz']
+        freq_khz_str = spot_data.get('freq_khz_str', str(freq_khz))  # Original string from cluster
+        dxcall = spot_data['dxcall']
+        spotter = spot_data['spotter']
+        raw_comment = spot_data['comment']
+        timestamp = spot_data['timestamp']
+        
+        # Clean comment
+        comment = clean_comment(raw_comment)
+        
+        # Determine band and mode
+        band = band_from_khz(freq_khz)
+        emode = infer_mode(comment, band, freq_khz)
+        
+        # Resolve country/DXCC using cty.dat (with DXCC from CSV when available)
+        dxcc, entity, cq = None, None, None
+        latitude, longitude = None, None  # === FIX: Add coordinates ===
+        if cty_resolver:
+            # Use lookup() to get info from cty.dat + DXCC from CSV
+            info = cty_resolver.lookup(dxcall)
+            dxcc = info.get('dxcc')
+            entity = info.get('country')
+            cq = info.get('cq')
+            latitude = info.get('latitude')  # === FIX: Get latitude ===
+            longitude = info.get('longitude')  # === FIX: Get longitude ===
+        
+        # ✅ ALWAYS have a country - never "Unknown"  
+        country = entity.upper() if entity else "UNKNOWN"
+        cq_display = str(cq) if cq is not None else "-"
+        
+        # Classify spot
+        call_status = "New Call"
+        dxcc_status = "—"
+        tag = None
+        
+        if classifier:
+            # Call classification using Wavelog API (more reliable than direct DB)
+            # These are now async calls using the Wavelog API
+            try:
+                call_worked, call_conf = await classifier.call_overall(dxcall)
+                call_new_band, call_new_mode, call_bandmode_conf = await classifier.call_bandmode_flags(dxcall, band, emode)
+                
+                # Call status (band+mode specific) - Check worked FIRST to avoid "New Call" showing as "New Band"
+                if not call_worked:
+                    call_status = "New Call"
+                elif call_bandmode_conf:
+                    call_status = "Confirmed"
+                elif call_new_band and call_new_mode:
+                    call_status = "New Band+Mode"
+                elif call_new_band:
+                    call_status = "New Band"
+                elif call_new_mode:
+                    call_status = "New Mode"
+                else:
+                    call_status = "Worked"
+            except Exception as e:
+                logger.warning(f"Error getting call status for {dxcall}: {e}")
+                call_status = "New Call"  # Default to New Call on API error
+            
+            # DXCC classification (using API lookups via private_lookup with callsign context)
+            if dxcc is not None:
+                try:
+                    dx_worked, dx_conf = await classifier.dxcc_overall(dxcc, callsign=dxcall)
+                    dx_new_band, dx_new_mode, dx_bandmode_conf = await classifier.dxcc_bandmode_flags(dxcc, band, emode, callsign=dxcall)
+                    
+                    # DXCC status with C/W prefix (Confirmed/Worked overall status)
+                    if not dx_worked:
+                        dxcc_status = "ATNO"
+                        tag = "ATNO"
+                    elif dx_bandmode_conf:
+                        # Confirmed on this exact band+mode
+                        dxcc_status = "Confirmed"
+                        tag = None
+                    elif dx_new_band and dx_new_mode:
+                        # Need both new band AND new mode
+                        prefix = "C" if dx_conf else "W"
+                        dxcc_status = f"{prefix}/New Band+Mode"
+                        tag = "New band+mode"
+                    elif dx_new_band:
+                        # Need new band
+                        prefix = "C" if dx_conf else "W"
+                        dxcc_status = f"{prefix}/New Band"
+                        tag = "New band"
+                    elif dx_new_mode:
+                        # Need new mode
+                        prefix = "C" if dx_conf else "W"
+                        dxcc_status = f"{prefix}/New Mode"
+                        tag = "New mode"
+                    else:
+                        # Worked on this band+mode but not confirmed
+                        dxcc_status = "Worked"
+                        tag = "Worked"
+                    
+                    # Override tag for Need LoTW (worked but not confirmed on this band+mode)
+                    if not dx_bandmode_conf and dx_worked and not (dx_new_band or dx_new_mode):
+                        tag = "Need LoTW"
+                
+                except Exception as e:
+                    logger.warning(f"Error getting DXCC status for DXCC {dxcc}: {e}")
+                    dxcc_status = "Unknown"
+            else:
+                # DXCC couldn't be resolved - show "Unknown" instead of blank
+                dxcc_status = "Unknown"
+                logger.warning(f"DXCC resolution failed for {dxcall} (country: {entity})")
+        
+        # Extract special tags
+        special_tag = extract_special(comment)
+        
+        # Resolve spotter's country/continent
+        spotter_continent = None
+        if cty_resolver and spotter:
+            spotter_info = cty_resolver.lookup(spotter)
+            spotter_continent = spotter_info.get('continent')
+        
+        # Create spot object
+        # IMPORTANT: Store BOTH the original string (for display) and float (for calculations)
+        # The string preserves full precision from the cluster
+        gridsquare = None  # === FIX: Convert lat/lon to gridsquare for rotor ===
+        if latitude is not None and longitude is not None:
+            try:
+                gridsquare = latlon_to_grid(latitude, longitude, precision=6)
+            except:
+                gridsquare = None
+        
+        spot = {
+            'callsign': dxcall,
+            'frequency': freq_khz_str,             # Original string from cluster (kHz) - for display
+            'frequency_mhz': freq_khz / 1000.0,    # Float in MHz - for calculations/tuning
+            'spotter': spotter,
+            'spotter_continent': spotter_continent,  # Spotter's continent for filtering
+            'mode': emode,
+            'band': band,
+            'comment': comment,
+            'country': country,
+            'cq': cq_display,
+            'call_status': call_status,
+            'dxcc_status': dxcc_status,
+            'special': special_tag,
+            'tag': tag,
+            'timestamp': timestamp.timestamp(),
+            'time': timestamp.strftime('%H:%M:%S'),
+            'latitude': latitude,  # === FIX: Add latitude from cty.dat ===
+            'longitude': longitude,  # === FIX: Add longitude from cty.dat ===
+            'gridsquare': gridsquare  # === FIX: Add gridsquare converted from lat/lon ===
+        }
+        
+        # Add to cache (keep last 200 spots)
+        dx_spots_cache.insert(0, spot)
+        if len(dx_spots_cache) > 200:
+            dx_spots_cache.pop()
+        
+        # Broadcast to connected clients
+        await broadcast_spots([spot])
+        
+        # Send spot to SmartSDR panadapter
+        if flex and flex.sock:
+            try:
+                # Map tag to color (ATNO=orange, New band=cyan, New mode=yellow, etc)
+                color_map = {
+                    'ATNO': '#FFFF8C00',           # Orange
+                    'New band': '#FF00BFFF',       # Cyan
+                    'New mode': '#FFFFC000',       # Yellow
+                    'New band+mode': '#FFE91E63',  # Pink
+                    'Need LoTW': '#FF32CD32',      # Lime Green
+                    'Worked': '#FFB0B0B0'          # Gray
+                }
+                color = color_map.get(tag, '#FFFFFFFF') if tag else '#FFFFFFFF'
+                
+                # Send spot to radio panadapter (rx_mhz, callsign, mode, source, spotter, comment, lifetime, priority, color)
+                flex.add_spot(
+                    rx_mhz=freq_khz / 1000.0,
+                    callsign=dxcall,
+                    mode=emode,
+                    source="cluster",
+                    spotter=spotter,
+                    comment=f"{country} • {comment}" if country != "-" else comment,
+                    lifetime=3600,  # 1 hour
+                    priority=3,
+                    color=color,
+                    ts_epoch=int(timestamp.timestamp())
+                )
+                logger.debug(f"Spot sent to SmartSDR: {dxcall} {freq_khz:.1f} kHz")
+            except Exception as e:
+                logger.warning(f"Failed to send spot to SmartSDR: {e}")
+        
+        logger.info(f"📡 Spot: {dxcall} {freq_khz:.1f} kHz {emode} [{dxcc_status}] {comment[:50]}")
+        
+    except Exception as e:
+        logger.error(f"Spot processing error: {e}")
+
+
+async def poll_dx_spots():
+    """Monitor spot cache (disabled - using real-time cluster only)"""
+    global dx_spots_cache
+    
+    while True:
+        try:
+            # Just monitor - all spots come from cluster
+            await asyncio.sleep(30.0)
+            
+            # Log stats
+            if dx_spots_cache:
+                logger.debug(f"Spot cache: {len(dx_spots_cache)} spots")
+                if cluster_client:
+                    logger.debug(f"Cluster connected: {cluster_client.connected}")
+            
+        except Exception as e:
+            logger.error(f"Spot monitor error: {e}")
+            await asyncio.sleep(30.0)
+
+
+# === Startup ===
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize on startup"""
+    global classifier, cty_resolver, cluster_client, wavelog_client, qrz_client, adif_handler, rotor
+    
+    logger.info("🚀 Starting FlexRadio Web Control Backend v2.0")
+    
+    # Initialize logging clients
+    wavelog_client = WavelogClient()
+    qrz_client = QRZClient()
+    adif_handler = ADIFHandler()
+    
+    # Initialize FlexRadio
+    init_flex()
+    
+    # Initialize CTY resolver
+    logger.info("Loading CTY data...")
+    try:
+        dat_path = getattr(config, 'CTY_DAT_PATH', None)
+        csv_path = getattr(config, 'CTY_CSV_PATH', None)
+        ignore_suffixes = getattr(config, 'CTY_IGNORE_SUFFIXES', [])
+        cty_resolver = CtyDatResolver(dat_path, csv_path=csv_path, ignore_suffixes=ignore_suffixes)
+        logger.info("✅ CTY resolver loaded")
+    except Exception as e:
+        logger.error(f"❌ CTY resolver failed: {e}")
+        cty_resolver = None
+    
+    # Initialize API-based Classifier (uses Wavelog API for more reliable results)
+    logger.info("Initializing Wavelog API classifier...")
+    try:
+        classifier = await get_classifier_api(wavelog_client)
+        logger.info("✅ API-based classifier initialized (uses Wavelog API for accurate DXCC/call status)")
+    except Exception as e:
+        logger.error(f"❌ Classifier initialization failed: {e}")
+        classifier = None
+    
+    # Initialize cluster client
+    try:
+        cluster_host = getattr(config, 'CLUSTER_HOST', 'localhost')
+        cluster_port = getattr(config, 'CLUSTER_PORT', 7373)
+        cluster_user = getattr(config, 'CLUSTER_USER', 'N0CALL')
+        cluster_pass = getattr(config, 'CLUSTER_PASS', '')
+        
+        cluster_client = ClusterClient(cluster_host, cluster_port, cluster_user, cluster_pass)
+        cluster_client.set_spot_callback(process_cluster_spot)
+        
+        # Start cluster in background
+        asyncio.create_task(cluster_client.run())
+        logger.info("✅ Cluster client started")
+    except Exception as e:
+        logger.error(f"❌ Cluster client failed: {e}")
+    
+    # Initialize rotator controller if enabled
+    try:
+        rotor_enabled = getattr(config, 'ROTOR_ENABLED', False)
+        if rotor_enabled:
+            rotor_host = getattr(config, 'ROTOR_HOST', '192.168.0.198')
+            rotor_port = getattr(config, 'ROTOR_PORT', 4001)
+            rotor_protocol = getattr(config, 'ROTOR_PROTOCOL', 'DCU-1')
+            rotor_timeout = getattr(config, 'ROTOR_TIMEOUT_SEC', 2.5)
+            
+            rotor = RotorController(rotor_host, rotor_port, rotor_protocol, rotor_timeout)
+            logger.info(f"✅ Rotator initialized: {rotor_host}:{rotor_port} ({rotor_protocol})")
+        else:
+            logger.info("ℹ️ Rotator disabled in config")
+    except Exception as e:
+        logger.error(f"❌ Rotator initialization failed: {e}")
+        rotor = None
+    
+    # Start background tasks
+    asyncio.create_task(poll_radio_status())
+    asyncio.create_task(poll_dx_spots())
+    asyncio.create_task(monitor_cluster_status())
+
+
+# === Health Check ===
+
+@app.get("/api/health")
+async def health_check():
+    """Health check"""
+    connected = flex is not None and flex.sock is not None
+    return {
+        "status": "ok" if connected else "disconnected",
+        "connected": connected,
+        "version": "2.0.0"
+    }
+
+
+# === Radio Status ===
+
+@app.get("/api/status")
+async def get_status():
+    """Get complete radio status"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        levels = flex.get_current_levels(timeout=0.5)
+        
+        return {
+            "frequency": flex.current_freq or levels.get("freq", 14.074),
+            "mode": flex.current_mode or levels.get("mode", "USB"),
+            "filter_lo": flex.current_filter_lo or levels.get("filter_lo", 100),
+            "filter_hi": flex.current_filter_hi or levels.get("filter_hi", 2900),
+            "volume": levels.get("audio_level", 50),
+            "drive": flex.current_rfpower or levels.get("rfpower", 31),
+            "tune_power": flex.current_tunepower or levels.get("tunepower", 18),
+            "mic_level": flex.current_miclevel or levels.get("miclevel", 32),
+            "vox_enabled": flex.current_vox_enable or False,
+            "agc_mode": levels.get("agc_mode", "med"),
+            "agc_threshold": levels.get("agc_threshold", 65),
+            "monitor": levels.get("mon", 0),
+            "nb_enabled": levels.get("nb", False),
+            "nr_enabled": levels.get("nr", False),
+            "anf_enabled": levels.get("anf", False),
+            "apf_enabled": levels.get("apf", False),
+            "nb_level": levels.get("nb_level", 50),
+            "nr_level": levels.get("nr_level", 50),
+            "anf_level": levels.get("anf_level", 50),
+            "apf_level": levels.get("apf_level", 50),
+            "rit_enabled": levels.get("rit_on", False),
+            "rit_freq": levels.get("rit_freq", 0),
+            "xit_enabled": levels.get("xit_on", False),
+            "xit_freq": levels.get("xit_freq", 0),
+            "rx2_enabled": levels.get("rx2", False),
+            "split_enabled": levels.get("split", False),
+        }
+    except Exception as e:
+        logger.error(f"Get status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# === Basic Controls ===
+
+@app.post("/api/frequency")
+async def set_frequency(req: FrequencyRequest):
+    """Set frequency"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.tune_mhz(req.frequency)
+        if success:
+            await broadcast_status({"frequency": req.frequency})
+            return {"success": True, "frequency": req.frequency}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        logger.error(f"Set frequency error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/mode")
+async def set_mode(req: ModeRequest):
+    """Set mode"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_mode(req.mode)
+        if success:
+            await broadcast_status({"mode": req.mode})
+            return {"success": True, "mode": req.mode}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        logger.error(f"Set mode error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/band")
+async def set_band(req: BandRequest):
+    """Set band"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_band(req.band)
+        if success:
+            await broadcast_status({"band": req.band, "frequency": flex.current_freq})
+            return {"success": True, "band": req.band}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        logger.error(f"Set band error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/filter")
+async def set_filter(req: FilterRequest):
+    """Set filter"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_filter_edges(req.filter_lo, req.filter_hi)
+        if success:
+            await broadcast_status({"filter_lo": req.filter_lo, "filter_hi": req.filter_hi})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        logger.error(f"Set filter error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/volume")
+async def set_volume(req: SliderRequest):
+    """Set volume"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_volume(req.value)
+        if success:
+            await broadcast_status({"volume": req.value})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/drive")
+async def set_drive(req: SliderRequest):
+    """Set drive (RF power)"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_rf_power(req.value)
+        if success:
+            await broadcast_status({"drive": req.value})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/tune_power")
+async def set_tune_power(req: SliderRequest):
+    """Set tune power"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_tune_power(req.value)
+        if success:
+            await broadcast_status({"tune_power": req.value})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/mic")
+async def set_mic(req: SliderRequest):
+    """Set mic level"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_mic_level(req.value)
+        if success:
+            await broadcast_status({"mic_level": req.value})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/monitor")
+async def set_monitor(req: SliderRequest):
+    """Set monitor level (auto-enables monitor when > 0)"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_monitor(req.value, auto_enable=True)
+        if success:
+            await broadcast_status({"monitor": req.value})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/agc_threshold")
+async def set_agc_threshold(req: SliderRequest):
+    """Set AGC threshold"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_agc_threshold(req.value)
+        if success:
+            await broadcast_status({"agc_threshold": req.value})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# === TX Controls ===
+
+@app.post("/api/mox")
+async def toggle_mox(req: ToggleRequest):
+    """Toggle MOX"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_mox(req.enabled)
+        if success:
+            await broadcast_status({"mox": req.enabled})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/tune")
+async def toggle_tune(req: ToggleRequest):
+    """Toggle TUNE"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_tune(req.enabled)
+        if success:
+            await broadcast_status({"tune": req.enabled})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/vox")
+async def toggle_vox(req: ToggleRequest):
+    """Toggle VOX"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_vox(req.enabled)
+        if success:
+            await broadcast_status({"vox": req.enabled})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/breakin")
+async def toggle_breakin(req: ToggleRequest):
+    """Toggle CW Break-In (QSK)"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_breakin(req.enabled)
+        if success:
+            await broadcast_status({"break_in": req.enabled})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class StepRequest(BaseModel):
+    step_hz: int
+
+@app.post("/api/step")
+async def set_tuning_step(req: StepRequest):
+    """Set tuning step in Hz"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_tuning_step(req.step_hz)
+        if success:
+            await broadcast_status({"step": req.step_hz})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# === AGC Control ===
+
+@app.post("/api/agc")
+async def set_agc(req: AGCRequest):
+    """Set AGC mode (off, slow, med, fast)"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex._send(f"slice set {flex.slice_id} agc_mode={req.mode}")
+        if success:
+            await broadcast_status({"agc_mode": req.mode})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# === DSP Controls ===
+
+@app.post("/api/dsp")
+async def set_dsp(req: DSPRequest):
+    """Set DSP controls (NB, NR, ANF, APF)"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        value = "1" if req.enabled else "0"
+        # Activate slice first (required for all slice parameter changes)
+        flex._send(f"slice set {flex.slice_id} active=1")
+        
+        # Toggle the DSP on/off flag
+        success = flex._send(f"slice set {flex.slice_id} {req.control}_on={value}")
+        
+        # When disabling, also reset the level to 0 (required by SmartSDR)
+        # This mirrors the pattern used in set_monitor()
+        if success and not req.enabled:
+            flex._send(f"slice set {flex.slice_id} {req.control}_level=0")
+        
+        if success:
+            await broadcast_status({f"{req.control}_enabled": req.enabled})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/dsp_level")
+async def set_dsp_level(req: DSPLevelRequest):
+    """Set DSP level (nb_level, nr_level, anf_level, apf_level)"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_dsp_level(req.control, req.value)
+        if success:
+            await broadcast_status({req.control: req.value})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/rit")
+async def set_rit(req: RITXITRequest):
+    """Set RIT enabled and frequency offset"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_rit(req.enabled, req.freq_hz or 0)
+        if success:
+            await broadcast_status({"rit_enabled": req.enabled, "rit_freq": req.freq_hz or 0})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/xit")
+async def set_xit(req: RITXITRequest):
+    """Set XIT enabled and frequency offset"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        success = flex.set_xit(req.enabled, req.freq_hz or 0)
+        if success:
+            await broadcast_status({"xit_enabled": req.enabled, "xit_freq": req.freq_hz or 0})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# === RX2 Control ===
+
+@app.post("/api/rx2")
+async def set_rx2(req: RX2Request):
+    """Enable/disable RX2"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        # RX2 is typically slice 1
+        if req.enabled:
+            success = flex._send(f"slice create freq={req.frequency or 14.074}")
+            if req.frequency:
+                flex._send(f"slice set 1 RF_frequency={req.frequency:.6f}")
+        else:
+            success = flex._send("slice remove 1")
+        
+        if success:
+            await broadcast_status({"rx2_enabled": req.enabled})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# === SPLIT Control ===
+
+@app.post("/api/split")
+async def set_split(req: SplitRequest):
+    """Enable/disable SPLIT operation"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        if req.enabled:
+            # Enable split - set TX frequency different from RX
+            tx_freq = req.tx_frequency or (flex.current_freq + 0.005)  # Default: +5 kHz
+            success = flex._send(f"slice set {flex.slice_id} tx_freq={tx_freq:.6f}")
+            flex._send(f"slice set {flex.slice_id} split=1")
+        else:
+            success = flex._send(f"slice set {flex.slice_id} split=0")
+        
+        if success:
+            await broadcast_status({"split_enabled": req.enabled})
+            return {"success": True}
+        raise HTTPException(status_code=400, detail="Command failed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# === DX Spots ===
+
+@app.get("/api/spots")
+async def get_spots(
+    band: Optional[str] = None,
+    mode: Optional[str] = None,
+    cq: Optional[str] = None,
+    call_status: Optional[str] = None,
+    dxcc_status: Optional[str] = None,
+    special: Optional[str] = None
+):
+    """Get DX spots with optional filtering"""
+    filtered_spots = dx_spots_cache
+    
+    # Apply filters
+    if band:
+        bands = set(band.split(','))
+        filtered_spots = [s for s in filtered_spots if s.get('band') in bands]
+    
+    if mode:
+        modes = set(mode.split(','))
+        filtered_spots = [s for s in filtered_spots if s.get('mode') in modes]
+    
+    if cq:
+        cqs = set(cq.split(','))
+        filtered_spots = [s for s in filtered_spots if s.get('cq') in cqs]
+    
+    if call_status:
+        statuses = set(call_status.split(','))
+        filtered_spots = [s for s in filtered_spots if s.get('call_status') in statuses]
+    
+    if dxcc_status:
+        statuses = set(dxcc_status.split(','))
+        filtered_spots = [s for s in filtered_spots if s.get('dxcc_status') in statuses]
+    
+    if special:
+        specials = set(special.split(','))
+        filtered_spots = [s for s in filtered_spots if s.get('special') in specials or ('(none)' in specials and not s.get('special'))]
+    
+    return {"spots": filtered_spots}
+
+
+@app.post("/api/spots/tune")
+async def tune_to_spot(req: SpotTuneRequest):
+    """Tune to DX spot frequency and optionally change mode"""
+    if not flex:
+        raise HTTPException(status_code=503, detail="Radio not initialized")
+    
+    try:
+        # Tune frequency
+        success = flex.tune_mhz(req.frequency)
+        if not success:
+            raise HTTPException(status_code=400, detail="Tune command failed")
+        
+        # Set mode if provided
+        if req.mode:
+            mode_success = flex.set_mode(req.mode)
+            if not mode_success:
+                logger.warning(f"Mode change to {req.mode} failed, but frequency changed")
+        
+        # Broadcast status update
+        update = {"frequency": req.frequency}
+        if req.mode:
+            update["mode"] = req.mode
+        await broadcast_status(update)
+        
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Spot tune error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SpotAddRequest(BaseModel):
+    """Request to add a spot to SmartSDR panadapter"""
+    callsign: str
+    frequency: float  # MHz
+    mode: str
+    spotter: str = "Web UI"
+    comment: str = ""
+    tag: Optional[str] = None
+
+
+@app.post("/api/spots/add-to-radio")
+async def add_spot_to_radio(req: SpotAddRequest):
+    """Add a spot to SmartSDR panadapter display"""
+    if not flex or not flex.sock:
+        raise HTTPException(status_code=503, detail="Radio not connected")
+    
+    try:
+        # Map tag to color
+        color_map = {
+            'ATNO': '#FFFF8C00',           # Orange
+            'New band': '#FF00BFFF',       # Cyan
+            'New mode': '#FFFFC000',       # Yellow
+            'New band+mode': '#FFE91E63',  # Pink
+            'Need LoTW': '#FF32CD32',      # Lime Green
+            'Worked': '#FFB0B0B0'          # Gray
+        }
+        color = color_map.get(req.tag, '#FFFFFFFF') if req.tag else '#FFFFFFFF'
+        
+        # Add spot to panadapter
+        success = flex.add_spot(
+            rx_mhz=req.frequency,
+            callsign=req.callsign,
+            mode=req.mode,
+            source="web",
+            spotter=req.spotter,
+            comment=req.comment,
+            lifetime=3600,
+            priority=2,
+            color=color
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to add spot to radio")
+        
+        logger.info(f"✨ Spot added to radio: {req.callsign} {req.frequency:.3f} MHz {req.mode}")
+        return {"success": True, "message": f"Spot added: {req.callsign}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Add spot to radio error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# === Configuration API ===
+
+class ConfigUpdate(BaseModel):
+    """Configuration update model"""
+    config: Dict[str, Any]
+
+@app.get("/api/config")
+async def get_config():
+    """Get current configuration"""
+    try:
+        import config as cfg
+        import importlib
+        importlib.reload(cfg)
+        
+        config_data = {
+            "DB_HOST": cfg.DB_HOST,
+            "DB_PORT": cfg.DB_PORT,
+            "DB_NAME": cfg.DB_NAME,
+            "DB_USER": cfg.DB_USER,
+            "DB_PASS": cfg.DB_PASS,
+            "MY_STATION": cfg.MY_STATION,
+            "CLUSTER_HOST": cfg.CLUSTER_HOST,
+            "CLUSTER_PORT": cfg.CLUSTER_PORT,
+            "CLUSTER_USER": cfg.CLUSTER_USER,
+            "CLUSTER_PASS": cfg.CLUSTER_PASS,
+            "SDR_UDP_HOST": cfg.SDR_UDP_HOST,
+            "SDR_UDP_PORT": cfg.SDR_UDP_PORT,
+            "UDP_ENABLED_DEFAULT": cfg.UDP_ENABLED_DEFAULT,
+            "FLEX_TCP_HOST": cfg.FLEX_TCP_HOST,
+            "FLEX_TCP_PORT": cfg.FLEX_TCP_PORT,
+            "FLEX_ENABLED_DEFAULT": cfg.FLEX_ENABLED_DEFAULT,
+            "ROTOR_ENABLED": getattr(cfg, 'ROTOR_ENABLED', False),
+            "ROTOR_TYPE": getattr(cfg, 'ROTOR_TYPE', 'Microham ARCO'),
+            "ROTOR_HOST": getattr(cfg, 'ROTOR_HOST', '192.168.0.198'),
+            "ROTOR_PORT": getattr(cfg, 'ROTOR_PORT', 4001),
+            "ROTOR_PROTOCOL": getattr(cfg, 'ROTOR_PROTOCOL', 'DCU-1'),
+            "ROTOR_TIMEOUT_SEC": getattr(cfg, 'ROTOR_TIMEOUT_SEC', 2.5),
+            "CTY_CSV_PATH": cfg.CTY_CSV_PATH,
+            "CTY_DAT_PATH": getattr(cfg, 'CTY_DAT_PATH', ''),
+            "LOG_LEVEL": cfg.LOG_LEVEL,
+            "COLORS": getattr(cfg, 'COLORS', {}),
+            "WAVELOG_API_URL": getattr(cfg, 'WAVELOG_API_URL', ''),
+            "WAVELOG_API_KEY": getattr(cfg, 'WAVELOG_API_KEY', ''),
+            "WAVELOG_STATION_ID": getattr(cfg, 'WAVELOG_STATION_ID', '1'),
+            "QRZ_USERNAME": getattr(cfg, 'QRZ_USERNAME', ''),
+            "QRZ_PASSWORD": getattr(cfg, 'QRZ_PASSWORD', ''),
+            "ADIF_LOG_PATH": getattr(cfg, 'ADIF_LOG_PATH', ''),
+            # WSJT-X Configuration
+            "WSJTX_ENABLED": getattr(cfg, 'WSJTX_ENABLED', True),
+            "WSJTX_UDP_PORT": getattr(cfg, 'WSJTX_UDP_PORT', 2237),
+            "WSJTX_UDP_MULTICAST": getattr(cfg, 'WSJTX_UDP_MULTICAST', '224.0.0.1'),
+            "WSJTX_WS_PORT": getattr(cfg, 'WSJTX_WS_PORT', 8091),
+            "WSJTX_AUTO_LOG": getattr(cfg, 'WSJTX_AUTO_LOG', True),
+            "WSJTX_AUTO_ROTATE": getattr(cfg, 'WSJTX_AUTO_ROTATE', True),
+        }
+        
+        return {"success": True, "config": config_data}
+    except Exception as e:
+        logger.error(f"Get config error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/config")
+async def update_config(req: ConfigUpdate):
+    """Update configuration"""
+    try:
+        import re as _re
+        import config as cfg
+        import importlib
+        import inspect
+        
+        # Get config file path
+        config_path = os.path.abspath(inspect.getsourcefile(cfg))
+        
+        # Read current config file
+        with open(config_path, 'r', encoding='utf-8') as f:
+            txt = f.read()
+        
+        def _format_py_value(v):
+            if isinstance(v, str):
+                s = v.replace("\\", "\\\\").replace('"', '\\"')
+                return f'"{s}"'
+            if isinstance(v, bool):
+                return "True" if v else "False"
+            if isinstance(v, (int, float)):
+                return str(v)
+            if isinstance(v, dict):
+                items = ", ".join(f'"{k}": "{val}"' if isinstance(val, str) else f'"{k}": {val}' for k, val in v.items())
+                return "{" + items + "}"
+            return repr(v)
+        
+        def _replace_block(text, key, new_value_src):
+            start_re = _re.compile(rf"^[ \t]*{_re.escape(key)}\s*=", _re.M)
+            m = start_re.search(text)
+            rep = f"{key} = {new_value_src}"
+            if not m:
+                if not text.endswith("\n"):
+                    text += "\n"
+                return text + rep + "\n"
+            end_re = _re.compile(r"^([A-Z_][A-Z0-9_]*\s*=)", _re.M)
+            m_end = end_re.search(text, pos=m.end())
+            if m_end:
+                return text[:m.start()] + rep + "\n" + text[m_end.start():]
+            else:
+                return text[:m.start()] + rep + "\n"
+        
+        # Update each config value
+        for key, value in req.config.items():
+            txt = _replace_block(txt, key, _format_py_value(value))
+        
+        # Write updated config
+        with open(config_path, 'w', encoding='utf-8') as f:
+            f.write(txt)
+        
+        # Reload config module (updates in-memory values)
+        importlib.reload(cfg)
+        
+        logger.info(f"✅ Configuration updated: {list(req.config.keys())}")
+        
+        return {"success": True, "message": "Configuration updated successfully!"}
+    
+    except Exception as e:
+        logger.error(f"Update config error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# === QSO Logging (Wavelog Integration) ===
+
+@app.post("/api/qso/log")
+async def log_qso(qso: QSORequest):
+    """Log a QSO to Wavelog and local ADIF file"""
+    global wavelog_client, adif_handler
+    
+    try:
+        logger.info(f"📝 QSO Log Request - Callsign: {qso.callsign}, Freq: {qso.frequency}, Mode: {qso.mode}, RST_sent: {qso.rst_sent}, RST_rcvd: {qso.rst_received}")
+        
+        # Initialize clients if needed (with error handling)
+        try:
+            if not wavelog_client:
+                logger.debug("🔌 Initializing WavelogClient...")
+                wavelog_client = WavelogClient()
+                logger.info("✅ WavelogClient initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize WavelogClient: {str(e)}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to initialize Wavelog client: {str(e)}")
+        
+        try:
+            if not adif_handler:
+                logger.debug("🔌 Initializing ADIFHandler...")
+                adif_handler = ADIFHandler()
+                logger.info("✅ ADIFHandler initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize ADIFHandler: {str(e)}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to initialize ADIF handler: {str(e)}")
+        
+        # Convert request to dict and preserve RST values as-is
+        # They can be strings (FT8 SNR like "-12") or will be converted by wavelog_api
+        qso_dict = qso.dict(exclude_unset=False)  # Include all fields
+        
+        # Don't override RST values here - let wavelog_api handle the conversion
+        # It will use 599 as default for empty values
+        logger.debug(f"QSO dict: {qso_dict}")
+        
+        # Log to Wavelog API with error handling
+        try:
+            logger.debug("📤 Sending QSO to Wavelog API...")
+            wavelog_result = await wavelog_client.log_qso(qso_dict)
+            logger.debug(f"✅ Wavelog result: {wavelog_result}")
+        except Exception as e:
+            logger.error(f"❌ Wavelog API call failed: {str(e)}", exc_info=True)
+            wavelog_result = {'success': False, 'message': f'Wavelog error: {str(e)}'}
+        
+        # Always save to local ADIF file (backup/archive)
+        try:
+            adif_saved = adif_handler.add_qso(qso_dict)
+            if not adif_saved:
+                logger.warning(f"Failed to save QSO to ADIF file after retries: {qso.callsign}")
+        except Exception as e:
+            logger.error(f"ADIF save failed: {str(e)}", exc_info=True)
+            adif_saved = False
+        
+        logger.info(f"✅ QSO processed: {qso.callsign} on {qso.frequency} MHz (Wavelog: {wavelog_result.get('success')}, ADIF: {adif_saved})")
+        
+        return {
+            "success": wavelog_result.get('success', True) or adif_saved,  # Success if either succeeded
+            "message": wavelog_result.get('message', 'QSO logged successfully'),
+            "wavelog": wavelog_result,
+            "adif_saved": adif_saved
+        }
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"❌ Unexpected QSO logging error: {str(e)}", exc_info=True)
+        logger.error(f"   Full traceback available above", exc_info=False)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"QSO logging failed: {type(e).__name__}: {str(e)}"
+        )
+
+
+@app.get("/api/qrz/profile/{callsign:path}")
+async def get_qrz_profile(callsign: str):
+    """Get QRZ profile picture and info for a callsign"""
+    global qrz_client
+    
+    try:
+        if not qrz_client:
+            qrz_client = QRZClient()
+        
+        result = await qrz_client.get_profile_picture(callsign)
+        
+        if result.get('success'):
+            logger.info(f"✅ QRZ profile retrieved for {callsign}")
+        else:
+            logger.warning(f"QRZ profile not found for {callsign}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"QRZ profile error: {str(e)}")
+        return {'success': False, 'message': str(e)}
+
+
+@app.get("/api/qrz/history/{callsign:path}")
+async def get_qrz_history(callsign: str, limit: int = 20):
+    """Get QRZ contact history for a callsign"""
+    global qrz_client
+    
+    try:
+        if not qrz_client:
+            qrz_client = QRZClient()
+        
+        result = await qrz_client.get_contact_history(callsign, limit)
+        return result
+        
+    except Exception as e:
+        logger.error(f"QRZ history error: {str(e)}")
+        return {'success': False, 'data': []}
+
+
+@app.post("/api/wavelog/private_lookup")
+async def wavelog_private_lookup(data: dict):
+    """
+    Perform private lookup in Wavelog logbook for a callsign
+    Returns comprehensive info including worked/confirmed status by band/mode
+    Enhanced with DXCC entity name and geographic data for country modal
+    """
+    global wavelog_client, cty_resolver
+    
+    try:
+        if not wavelog_client:
+            wavelog_client = WavelogClient()
+        
+        callsign = data.get('callsign', '').strip().upper()
+        band = data.get('band', '')
+        mode = data.get('mode', '')
+        
+        if not callsign:
+            return {'success': False, 'message': 'Callsign required'}
+        
+        result = await wavelog_client.private_lookup(callsign, band or None, mode or None)
+        
+        # Enrich response with DXCC entity name and geographic data
+        if result.get('success') and result.get('data'):
+            response_data = result['data']
+            
+            # Try to get DXCC info using cty_resolver
+            if cty_resolver:
+                try:
+                    info = cty_resolver.lookup(callsign)
+                    if info:
+                        # Add DXCC entity name (country name)
+                        if 'country' in info and not response_data.get('dxcc_entity'):
+                            response_data['dxcc_entity'] = info['country']
+                        
+                        # Add continent
+                        if 'continent' in info and not response_data.get('continent'):
+                            response_data['continent'] = info['continent']
+                        
+                        # Add CQ zone
+                        if 'cq' in info and not response_data.get('cq'):
+                            response_data['cq'] = info['cq']
+                        
+                        # Add DXCC ID
+                        if 'dxcc' in info and not response_data.get('dxcc'):
+                            response_data['dxcc'] = info['dxcc']
+                            
+                        # Add ITU zone
+                        if 'itu' in info and not response_data.get('itu'):
+                            response_data['itu'] = info['itu']
+                        
+                        # Add latitude/longitude
+                        if 'latitude' in info and not response_data.get('latitude'):
+                            response_data['latitude'] = info['latitude']
+                        if 'longitude' in info and not response_data.get('longitude'):
+                            response_data['longitude'] = info['longitude']
+                            
+                        # Add grid square
+                        if 'grid' in info and not response_data.get('grid'):
+                            response_data['grid'] = info['grid']
+                        
+                        logger.debug(f"✅ Enhanced DXCC lookup for {callsign}: {info}")
+                except Exception as e:
+                    logger.debug(f"Could not enrich DXCC data for {callsign}: {e}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Wavelog private lookup error: {str(e)}")
+        return {'success': False, 'message': str(e)}
+
+
+@app.get("/api/wavelog/dxcc/{callsign:path}")
+async def get_dxcc_status(callsign: str):
+    """Get DXCC worked/confirmed status for a callsign"""
+    global wavelog_client
+    
+    try:
+        if not wavelog_client:
+            wavelog_client = WavelogClient()
+        
+        result = await wavelog_client.get_dxcc_status(callsign)
+        return result
+        
+    except Exception as e:
+        logger.error(f"DXCC status error: {str(e)}")
+        return {'success': False, 'data': {}}
+
+
+@app.post("/api/wavelog/recent_qsos")
+async def wavelog_recent_qsos(req: RecentQSOsRequest):
+    """
+    Get recent QSOs with a specific callsign from Wavelog API.
+    Uses Wavelog's api/get_contacts_adif endpoint to fetch QSO history.
+    Returns last N QSOs (default 5) with date, band, mode, RST, LoTW status, etc.
+    
+    Response format (per QSO):
+    {
+        "call": "OM0AAO",
+        "qso_date": "20251014",
+        "time_on": "174200",
+        "mode": "SSB",
+        "frequency": 14.074,
+        "rst_sent": "599",
+        "rst_rcvd": "599",
+        "band": "20m",
+        "lotw_qsl": "Y"
+    }
+    """
+    global adif_handler, wavelog_client
+    
+    try:
+        callsign = req.callsign.strip().upper()
+        limit = req.limit
+        
+        logger.info(f"🔍 Recent QSOs request for {callsign} (limit={limit})")
+        
+        if not callsign:
+            return {'success': False, 'message': 'Callsign required'}
+        
+        # Use Wavelog API only - no local fallback
+        if not wavelog_client:
+            wavelog_client = WavelogClient()
+        
+        logger.debug(f"  Attempting Wavelog API for {callsign}")
+        result = await wavelog_client.get_recent_qsos(callsign, limit)
+        
+        if result.get('success') and result.get('data'):
+            data = result['data']
+            logger.info(f"✅ Found {len(data)} recent QSOs for {callsign} from Wavelog API")
+            
+            # Validate that all required fields are present
+            required_fields = ['call', 'qso_date', 'mode', 'rst_sent', 'rst_rcvd', 'band', 'lotw_qsl']
+            for qso in data:
+                missing = [f for f in required_fields if f not in qso]
+                if missing:
+                    logger.debug(f"  QSO missing fields: {missing}")
+            
+            return {'success': True, 'data': data}
+        else:
+            # No QSOs found in Wavelog - return empty result (still successful API call)
+            logger.debug(f"ℹ️ No recent QSOs found for {callsign} in Wavelog API - returning empty result")
+            return {'success': True, 'data': []}
+        
+    except Exception as e:
+        logger.error(f"❌ Recent QSOs error for {req.callsign}: {str(e)}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        return {'success': False, 'message': str(e)}
+
+
+@app.get("/api/adif/count")
+async def get_adif_count():
+    """Get number of QSOs in local ADIF file"""
+    global adif_handler
+    
+    try:
+        if not adif_handler:
+            adif_handler = ADIFHandler()
+        
+        count = adif_handler.read_qso_count()
+        return {'success': True, 'count': count}
+        
+    except Exception as e:
+        logger.error(f"ADIF count error: {str(e)}")
+        return {'success': False, 'count': 0}
+
+
+@app.get("/api/adif/all")
+async def get_all_local_qsos():
+    """Get all QSOs from local ADIF file (most recent first)"""
+    global adif_handler
+    
+    try:
+        if not adif_handler:
+            adif_handler = ADIFHandler()
+        
+        qsos = adif_handler.read_all_qsos()
+        logger.info(f"📋 Returning {len(qsos)} QSOs from local ADIF log")
+        return {'success': True, 'count': len(qsos), 'data': qsos}
+        
+    except Exception as e:
+        logger.error(f"ADIF all QSOs error: {str(e)}")
+        return {'success': False, 'count': 0, 'data': []}
+
+
+# === Rotator Control ===
+
+@app.post("/api/rotor/config")
+async def set_rotor_config(req: RotorConfigRequest):
+    """Update rotator configuration"""
+    global rotor
+    
+    try:
+        # Update config in memory
+        config.ROTOR_ENABLED = req.enabled
+        config.ROTOR_HOST = req.host
+        config.ROTOR_PORT = req.port
+        config.ROTOR_PROTOCOL = req.protocol
+        config.ROTOR_TIMEOUT_SEC = req.timeout
+        
+        # Reinitialize rotator
+        if req.enabled:
+            rotor = RotorController(req.host, req.port, req.protocol, req.timeout)
+            logger.info(f"✅ Rotator config updated: {req.host}:{req.port} ({req.protocol})")
+            return {"ok": True, "message": "Rotator configured"}
+        else:
+            rotor = None
+            logger.info("ℹ️ Rotator disabled")
+            return {"ok": True, "message": "Rotator disabled"}
+    
+    except Exception as e:
+        logger.error(f"Rotor config error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/rotor/status")
+async def get_rotor_status():
+    """Get rotator status (enabled and current azimuth if available)"""
+    global rotor
+    
+    try:
+        if not rotor:
+            return {"ok": False, "enabled": False, "message": "Rotator not enabled"}
+        
+        # Try to get current azimuth
+        try:
+            az_data = await rotor.get_azimuth()
+            return {"ok": True, "enabled": True, "azimuth": az_data.get("az")}
+        except:
+            # Rotator might not be responsive, but still return enabled status
+            return {"ok": True, "enabled": True, "azimuth": None}
+    
+    except Exception as e:
+        logger.error(f"Rotor status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/rotor/goto")
+async def rotor_goto(req: RotorGotoRequest):
+    """Move rotator to specific azimuth"""
+    global rotor
+    
+    if not rotor:
+        raise HTTPException(status_code=503, detail="Rotator not enabled")
+    
+    try:
+        result = await rotor.goto_azimuth(req.azimuth)
+        return result
+    except Exception as e:
+        logger.error(f"Rotor GOTO error: {e}")
+        raise HTTPException(status_code=502, detail=f"Rotor command failed: {e}")
+
+
+@app.post("/api/rotor/direction")
+async def rotor_direction(req: RotorDirectionRequest):
+    """Move rotator to cardinal direction (N/S/E/W)"""
+    global rotor
+    
+    if not rotor:
+        raise HTTPException(status_code=503, detail="Rotator not enabled")
+    
+    try:
+        result = await rotor.goto_direction(req.direction)
+        return result
+    except Exception as e:
+        logger.error(f"Rotor direction error: {e}")
+        raise HTTPException(status_code=502, detail=f"Rotor command failed: {e}")
+
+
+@app.post("/api/rotor/stop")
+async def rotor_stop():
+    """Stop rotator movement"""
+    global rotor
+    
+    if not rotor:
+        raise HTTPException(status_code=503, detail="Rotator not enabled")
+    
+    try:
+        result = await rotor.stop()
+        return result
+    except Exception as e:
+        logger.error(f"Rotor stop error: {e}")
+        raise HTTPException(status_code=502, detail=f"Rotor command failed: {e}")
+
+
+@app.get("/api/rotor/ping")
+async def rotor_ping():
+    """Check if rotator is responsive"""
+    global rotor
+    
+    if not rotor:
+        return {"ok": False, "enabled": False}
+    
+    try:
+        result = await rotor.ping()
+        return result
+    except Exception as e:
+        logger.error(f"Rotor ping error: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+# === Rotor AUTO Control ===
+
+@app.post("/api/rotor/auto/config")
+async def set_rotor_auto_config(req: RotorAutoConfigRequest):
+    """Update rotor AUTO configuration (bands, home location, AUTO mode)"""
+    global config
+    try:
+        import json
+        
+        # Update config in memory first
+        config.ROTOR_HOME_GRID = req.home_grid.upper().strip()
+        config.ROTOR_HOME_LAT = req.home_lat
+        config.ROTOR_HOME_LON = req.home_lon
+        config.ROTOR_BANDS = req.bands
+        config.ROTOR_AUTO_ENABLED = req.auto_enabled
+        
+        # Persist to JSON file (won't trigger file watcher)
+        try:
+            rotor_config_file = os.path.join(os.path.dirname(__file__), '..', 'rotor_config.json')
+            rotor_config_file = os.path.abspath(rotor_config_file)
+            
+            rotor_config_data = {
+                "ROTOR_HOME_GRID": config.ROTOR_HOME_GRID,
+                "ROTOR_HOME_LAT": config.ROTOR_HOME_LAT,
+                "ROTOR_HOME_LON": config.ROTOR_HOME_LON,
+                "ROTOR_BANDS": config.ROTOR_BANDS,
+                "ROTOR_AUTO_ENABLED": config.ROTOR_AUTO_ENABLED,
+            }
+            
+            with open(rotor_config_file, 'w', encoding='utf-8') as f:
+                json.dump(rotor_config_data, f, indent=2)
+            
+            bands_count = sum(1 for v in config.ROTOR_BANDS.values() if v) if config.ROTOR_BANDS else 0
+            logger.info(f"✅ Rotor AUTO config saved to JSON: Grid={config.ROTOR_HOME_GRID}, "
+                       f"AUTO={config.ROTOR_AUTO_ENABLED}, Bands={bands_count}")
+        
+        except Exception as save_err:
+            logger.error(f"Failed to persist rotor AUTO config to JSON: {save_err}")
+            # Don't fail completely, config is still in memory for this session
+        
+        return {
+            "ok": True,
+            "message": "Rotor AUTO configuration updated and saved",
+            "home_grid": config.ROTOR_HOME_GRID,
+            "auto_enabled": config.ROTOR_AUTO_ENABLED
+        }
+    
+    except Exception as e:
+        logger.error(f"Rotor AUTO config error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/rotor/auto/status")
+async def get_rotor_auto_status():
+    """Get rotor AUTO configuration status"""
+    try:
+        # Reload rotor config from JSON to ensure we have latest settings
+        _load_rotor_config()
+        
+        return {
+            "ok": True,
+            "auto_enabled": getattr(config, 'ROTOR_AUTO_ENABLED', False),
+            "home_grid": getattr(config, 'ROTOR_HOME_GRID', 'JN88TQ'),
+            "home_lat": getattr(config, 'ROTOR_HOME_LAT', 48.17),
+            "home_lon": getattr(config, 'ROTOR_HOME_LON', 17.08),
+            "bands": getattr(config, 'ROTOR_BANDS', {}),
+            "delay_sec": getattr(config, 'ROTOR_AUTO_DELAY_SEC', 2.0)
+        }
+    except Exception as e:
+        logger.error(f"Rotor AUTO status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/rotor/auto/bearing")
+async def calculate_rotor_bearing(req: RotorBearingRequest):
+    """
+    Calculate bearing to a station for AUTO rotor control.
+    
+    Uses QRZ gridsquare if available, falls back to cty.dat lat/lon.
+    Checks if band is enabled in rotor config.
+    """
+    try:
+        # Reload rotor config from JSON to ensure we have latest settings
+        _load_rotor_config()
+        
+        # Get home location
+        home_lat = getattr(config, 'ROTOR_HOME_LAT', 48.17)
+        home_lon = getattr(config, 'ROTOR_HOME_LON', 17.08)
+        rotor_bands = getattr(config, 'ROTOR_BANDS', {})
+        
+        # Determine band if frequency provided
+        band = None
+        if req.frequency_khz:
+            band = get_band_from_frequency(req.frequency_khz)
+        
+        # Check if band is enabled for rotor
+        band_enabled = True
+        if band and band not in rotor_bands:
+            band_enabled = False
+            logger.warning(f"Band {band} not configured for rotor")
+        elif band and not rotor_bands.get(band, False):
+            band_enabled = False
+            logger.info(f"Rotor disabled for band {band}")
+        
+        # Calculate bearing (prefers gridsquare over lat/lon)
+        try:
+            bearing = calculate_bearing_for_station(
+                home_lat, home_lon,
+                station_grid=req.gridsquare,
+                station_lat=req.latitude,
+                station_lon=req.longitude
+            )
+            
+            if bearing is None:
+                return {
+                    "ok": False,
+                    "bearing": None,
+                    "short_path_bearing": None,
+                    "long_path_bearing": None,
+                    "band": band,
+                    "band_enabled": band_enabled,
+                    "error": "Insufficient data to calculate bearing (no gridsquare or coordinates)"
+                }
+            
+            short_path = round(bearing, 1)
+            long_path = round((bearing + 180) % 360, 1)
+            
+            return {
+                "ok": True,
+                "bearing": short_path,
+                "short_path_bearing": short_path,
+                "long_path_bearing": long_path,
+                "band": band,
+                "band_enabled": band_enabled,
+                "callsign": req.callsign,
+                "source": "gridsquare" if req.gridsquare else "coordinates"
+            }
+        
+        except Exception as calc_error:
+            logger.error(f"Bearing calculation error: {calc_error}")
+            return {
+                "ok": False,
+                "bearing": None,
+                "short_path_bearing": None,
+                "long_path_bearing": None,
+                "band": band,
+                "band_enabled": band_enabled,
+                "error": str(calc_error)
+            }
+    
+    except Exception as e:
+        logger.error(f"Rotor bearing endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/rotor/auto/goto")
+async def rotor_auto_goto(req: RotorBearingRequest):
+    """
+    AUTO rotor GOTO - Calculate bearing and move rotor if AUTO is enabled and band is valid.
+    This endpoint combines bearing calculation with actual rotor movement.
+    """
+    global rotor, config
+    
+    try:
+        # Reload rotor config from JSON to ensure we have latest settings
+        _load_rotor_config()
+        
+        # Check AUTO mode enabled globally
+        auto_enabled = getattr(config, 'ROTOR_AUTO_ENABLED', False)
+        if not auto_enabled:
+            logger.info(f"⚠️  AUTO rotor not executed: AUTO mode not enabled (config value: {auto_enabled})")
+            return {"ok": False, "message": "AUTO mode not enabled"}
+        
+        # Check rotor is available
+        if not rotor:
+            return {"ok": False, "message": "Rotor not enabled"}
+        
+        # Get band and check if rotor enabled for this band
+        band = None
+        if req.frequency_khz:
+            band = get_band_from_frequency(req.frequency_khz)
+        
+        rotor_bands = getattr(config, 'ROTOR_BANDS', {})
+        if band and not rotor_bands.get(band, False):
+            return {
+                "ok": False,
+                "band": band,
+                "message": f"Rotor not enabled for band {band}"
+            }
+        
+        # Calculate bearing
+        home_lat = getattr(config, 'ROTOR_HOME_LAT', 48.17)
+        home_lon = getattr(config, 'ROTOR_HOME_LON', 17.08)
+        
+        bearing = calculate_bearing_for_station(
+            home_lat, home_lon,
+            station_grid=req.gridsquare,
+            station_lat=req.latitude,
+            station_lon=req.longitude
+        )
+        
+        if bearing is None:
+            return {
+                "ok": False,
+                "message": "Cannot calculate bearing (insufficient data)"
+            }
+        
+        # Move rotor to bearing
+        try:
+            result = await rotor.goto_azimuth(int(round(bearing)))
+            logger.info(f"✅ AUTO rotor: {req.callsign} on {band or 'unknown'} -> {bearing:.1f}°")
+            
+            # Calculate short path and long path bearings for UI display
+            short_path = round(bearing, 1)
+            long_path = round((bearing + 180) % 360, 1)
+            
+            return {
+                "ok": True,
+                "bearing": short_path,
+                "short_path_bearing": short_path,
+                "long_path_bearing": long_path,
+                "band": band,
+                "callsign": req.callsign,
+                "message": f"Rotor moving to {bearing:.1f}°"
+            }
+        except Exception as rotor_error:
+            logger.error(f"Rotor GOTO during AUTO failed: {rotor_error}")
+            short_path = round(bearing, 1)
+            long_path = round((bearing + 180) % 360, 1)
+            return {
+                "ok": False,
+                "bearing": short_path,
+                "short_path_bearing": short_path,
+                "long_path_bearing": long_path,
+                "message": f"Rotor command failed: {rotor_error}"
+            }
+    
+    except Exception as e:
+        logger.error(f"Rotor AUTO GOTO error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# === WebSocket ===
+
+@app.websocket("/ws/radio")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket for real-time updates"""
+    await websocket.accept()
+    websocket_clients.append(websocket)
+    logger.info(f"✅ WebSocket connected (total: {len(websocket_clients)})")
+    
+    try:
+        # Send initial status
+        if flex:
+            levels = flex.get_current_levels(timeout=0.5)
+            initial_status = {
+                "frequency": flex.current_freq or 14.074,
+                "mode": flex.current_mode or "USB",
+                "filter_lo": flex.current_filter_lo or 100,
+                "filter_hi": flex.current_filter_hi or 2900,
+                "volume": levels.get("audio_level", 50),
+                "drive": flex.current_rfpower or 31,
+                "tune_power": flex.current_tunepower or 18,
+                "mic_level": flex.current_miclevel or 32,
+                "monitor": levels.get("mon", 0),
+                "vox_enabled": flex.current_vox_enable or False,
+                "agc_mode": levels.get("agc_mode", "med"),
+                "nb_enabled": levels.get("nb", False),
+                "nr_enabled": levels.get("nr", False),
+                "anf_enabled": levels.get("anf", False),
+                "apf_enabled": levels.get("apf", False),
+                "rx2_enabled": levels.get("rx2", False),
+                "split_enabled": levels.get("split", False),
+            }
+            await websocket.send_text(json.dumps({"type": "status", "data": initial_status}))
+        
+        # Send initial spots
+        if dx_spots_cache:
+            await websocket.send_text(json.dumps({"type": "spots", "data": dx_spots_cache}))
+        
+        # Keep alive
+        while True:
+            data = await websocket.receive_text()
+            # Handle ping/pong if needed
+            
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        if websocket in websocket_clients:
+            websocket_clients.remove(websocket)
+
+
+# === Country Data / GeoJSON Endpoints ===
+
+_country_data_cache = None
+
+def load_country_data():
+    """Load country GeoJSON data from TopoJSON file and convert to GeoJSON"""
+    global _country_data_cache
+    if _country_data_cache is not None:
+        return _country_data_cache
+    
+    data_path = Path(__file__).parent.parent / "data" / "countries-110m.json"
+    if not data_path.exists():
+        logger.warning(f"Country data file not found: {data_path}")
+        return None
+    
+    try:
+        with open(data_path, 'r', encoding='utf-8') as f:
+            topo_data = json.load(f)
+        
+        # Store full TopoJSON data including arcs for proper rendering
+        # The frontend will handle TopoJSON decompression via topojson-client
+        _country_data_cache = topo_data
+        logger.info(f"✅ Country TopoJSON data loaded successfully")
+        return _country_data_cache
+    except Exception as e:
+        logger.error(f"Error loading country data: {e}")
+        return None
+
+def normalize_name(name: str) -> str:
+    """Normalize country name for matching"""
+    if not name:
+        return ""
+    return name.lower().strip()
+
+def map_cty_to_geojson_name(cty_name: str) -> str:
+    """Map CTY database country names to GeoJSON equivalents.
+    
+    CTY database uses various formats that may not match GeoJSON names.
+    This function handles known variations and name mappings.
+    """
+    if not cty_name:
+        return cty_name
+    
+    # Mapping of CTY names to GeoJSON names
+    cty_geojson_map = {
+        # European countries with variations
+        "fed. rep. of germany": "Germany",
+        "germany": "Germany",
+        "united kingdom": "United Kingdom",
+        "republic of ireland": "Ireland",
+        "northern ireland": "United Kingdom",
+        
+        # Commonwealth nations
+        "australia": "Australia",
+        "canada": "Canada",
+        "new zealand": "New Zealand",
+        
+        # Asian countries
+        "china": "China",
+        "japan": "Japan",
+        "south korea": "South Korea",
+        "korea, republic of": "South Korea",
+        "korea, dem. people's rep. of": "North Korea",
+        "india": "India",
+        
+        # Americas
+        "united states of america": "United States of America",
+        "united states": "United States of America",
+        "usa": "United States of America",
+        "mexico": "Mexico",
+        "brazil": "Brazil",
+        
+        # African countries
+        "south africa": "South Africa",
+        "egypt": "Egypt",
+        "nigeria": "Nigeria",
+        
+        # Special cases and abbreviations
+        "dem. rep. congo": "Dem. Rep. Congo",
+        "congo": "Congo",
+        "cote d'ivoire": "Côte d'Ivoire",
+        "ivory coast": "Côte d'Ivoire",
+        "falkland is.": "Falkland Is.",
+        "fr. s. antarctic lands": "Fr. S. Antarctic Lands",
+    }
+    
+    normalized = normalize_name(cty_name)
+    
+    # Check if we have a mapping for this country
+    for cty_key, geojson_name in cty_geojson_map.items():
+        if normalized == cty_key:
+            return geojson_name
+    
+    # If no mapping found, return original name
+    # (it might still work with the partial match fallback)
+    return cty_name
+
+def find_country_by_name(name: str) -> Optional[Dict]:
+    """Find a country feature by name
+    
+    Handles CTY database name variations by mapping to GeoJSON equivalents.
+    Returns feature in GeoJSON format for rendering.
+    """
+    data = load_country_data()
+    if not data:
+        return None
+    
+    # First, try to map CTY names to GeoJSON names
+    mapped_name = map_cty_to_geojson_name(name)
+    norm_search = normalize_name(mapped_name)
+    
+    # Handle both TopoJSON and GeoJSON formats
+    geometries = []
+    if 'objects' in data and 'countries' in data['objects']:
+        # TopoJSON format
+        geometries = data['objects']['countries'].get('geometries', [])
+    elif 'features' in data:
+        # GeoJSON format
+        geometries = [f.get('geometry') for f in data.get('features', [])]
+    
+    # Try exact match first
+    if 'objects' in data and 'countries' in data['objects']:
+        for geom in geometries:
+            props = geom.get('properties', {})
+            country_name = props.get('name')
+            if country_name and normalize_name(country_name) == norm_search:
+                logger.debug(f"🌍 Country match found: '{name}' -> '{mapped_name}' -> '{country_name}'")
+                # Return as GeoJSON feature for rendering
+                return {
+                    'type': 'Feature',
+                    'properties': props,
+                    'geometry': geom,
+                    'arcs': data.get('arcs'),  # Include arcs for TopoJSON decompression
+                    'objects': data.get('objects'),  # Include full object data
+                    'transform': data.get('transform'),  # CRITICAL: Include transform for coordinate conversion!
+                    'bbox': data.get('bbox')  # Include bbox
+                }
+    
+    # Fallback: partial match
+    if 'objects' in data and 'countries' in data['objects']:
+        for geom in geometries:
+            props = geom.get('properties', {})
+            country_name = props.get('name')
+            if country_name and norm_search in normalize_name(country_name):
+                logger.debug(f"🌍 Country partial match found: '{name}' -> '{mapped_name}' (partial match in '{country_name}')")
+                return {
+                    'type': 'Feature',
+                    'properties': props,
+                    'geometry': geom,
+                    'arcs': data.get('arcs'),
+                    'objects': data.get('objects'),
+                    'transform': data.get('transform'),  # CRITICAL: Include transform for coordinate conversion!
+                    'bbox': data.get('bbox')  # Include bbox
+                }
+    
+    logger.warning(f"⚠️ Country not found: '{name}' (mapped to '{mapped_name}')")
+    return None
+
+@app.get("/api/country/data")
+async def get_country_data():
+    """Get full country GeoJSON data"""
+    data = load_country_data()
+    if not data:
+        raise HTTPException(status_code=404, detail="Country data not available")
+    return data
+
+@app.get("/api/country/by-name/{name}")
+async def get_country_by_name(name: str):
+    """Get a specific country by name"""
+    feature = find_country_by_name(name)
+    if not feature:
+        raise HTTPException(status_code=404, detail=f"Country '{name}' not found")
+    return feature
+
+
+# === WSJT-X Integration Endpoints ===
+
+@app.post("/api/wsjtx/log-qso")
+async def wsjtx_log_qso(req: WSJTXQSORequest):
+    """
+    Auto-log a QSO from WSJT-X to Wavelog
+    Enriches with QRZ data if available
+    """
+    if not wavelog_client:
+        raise HTTPException(status_code=503, detail="Wavelog client not initialized")
+    
+    try:
+        call = req.call.strip().upper()
+        
+        # Fetch QRZ data if not already provided
+        qrz_data = req.qrz_data or {}
+        if not qrz_data and qrz_client:
+            try:
+                logger.info(f"📡 Fetching QRZ data for {call}...")
+                qrz_data = await qrz_client.lookup(call) or {}
+            except Exception as e:
+                logger.warning(f"⚠️  QRZ lookup failed for {call}: {e}")
+        
+        # Build QSO data from WSJT-X and QRZ
+        qso_data = {
+            "call": call,
+            "band": band_from_khz(req.frequency_hz / 1000) if req.frequency_hz else None,
+            "mode": req.mode.upper(),
+            "gridsquare": req.grid or qrz_data.get("grid", ""),
+            # RST values: keep as-is or use defaults (wavelog_api.py handles conversion)
+            "rst_sent": req.rst_sent,
+            "rst_received": req.rst_received,
+            "operator": req.operator or config.MY_STATION,
+            "comments": req.comments or f"Auto-logged from WSJT-X ({req.mode})",
+            
+            # QRZ-enriched data
+            "name": qrz_data.get("fname", ""),
+            "qth": qrz_data.get("state", qrz_data.get("country", "")),
+            "country": qrz_data.get("country", ""),
+            "state": qrz_data.get("state", ""),
+            "cq_zone": qrz_data.get("cqzone"),
+            "itu_zone": qrz_data.get("ituzone"),
+            "continent": qrz_data.get("continent", ""),
+            "latitude": qrz_data.get("lat"),
+            "longitude": qrz_data.get("lon"),
+            "email": qrz_data.get("email", ""),
+            "lotw_member": qrz_data.get("lotw", False),
+        }
+        
+        logger.info(f"📝 Auto-logging QSO: {call} on {qso_data['band']} {req.mode}")
+        
+        # Log to Wavelog
+        result = await wavelog_client.create_qso(qso_data)
+        
+        if result and result.get("success"):
+            logger.info(f"✅ QSO logged successfully: {call}")
+            return {"success": True, "qso_id": result.get("qso_id")}
+        else:
+            logger.error(f"❌ Failed to log QSO: {result}")
+            raise HTTPException(status_code=500, detail=f"Failed to log QSO: {result}")
+    
+    except Exception as e:
+        logger.error(f"❌ WSJT-X log error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/wsjtx/auto-rotate")
+async def wsjtx_auto_rotate(req: WSJTXAutoRotateRequest):
+    """
+    Auto-rotate to DX station based on grid square
+    Only rotates if ROTOR_AUTO_ENABLED is True
+    """
+    if not config.ROTOR_AUTO_ENABLED or not rotor:
+        return {"success": False, "reason": "Rotator auto mode not enabled"}
+    
+    try:
+        call = req.call.strip().upper()
+        grid = req.grid.strip().upper()
+        
+        if not grid or len(grid) < 4:
+            logger.warning(f"⚠️  Invalid grid square for {call}: {grid}")
+            return {"success": False, "reason": "Invalid grid square"}
+        
+        logger.info(f"🎯 Auto-rotating to {call} ({grid})...")
+        
+        # Get home station coordinates
+        home_lat = config.ROTOR_HOME_LAT
+        home_lon = config.ROTOR_HOME_LON
+        
+        # Get DX station coordinates from grid
+        try:
+            dx_lat, dx_lon = grid_to_latlon(grid)
+        except Exception as e:
+            logger.error(f"❌ Failed to convert grid {grid}: {e}")
+            return {"success": False, "reason": f"Invalid grid: {grid}"}
+        
+        # Calculate bearing
+        bearing = initial_bearing(home_lat, home_lon, dx_lat, dx_lon)
+        
+        # Get band from frequency (to check if band-specific override exists)
+        band = None
+        if req.frequency_hz:
+            band = get_band_from_frequency(req.frequency_hz / 1e6)
+        
+        # Check if this band has a specific bearing offset
+        band_offset = 0
+        if band and hasattr(config, 'ROTOR_BANDS') and band in config.ROTOR_BANDS:
+            band_offset = config.ROTOR_BANDS[band].get("offset", 0)
+        
+        adjusted_bearing = (bearing + band_offset) % 360
+        
+        # Send command to rotator
+        cmd_result = await rotor.goto_azimuth(int(adjusted_bearing))
+        
+        if cmd_result:
+            logger.info(f"✅ Rotator command sent: {call} on {bearing}° (adjusted: {adjusted_bearing}°)")
+            return {
+                "success": True,
+                "call": call,
+                "grid": grid,
+                "bearing": bearing,
+                "adjusted_bearing": adjusted_bearing,
+                "band": band
+            }
+        else:
+            logger.error(f"❌ Rotator command failed: {call}")
+            return {"success": False, "reason": "Rotator command failed"}
+    
+    except Exception as e:
+        logger.error(f"❌ Auto-rotate error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/wsjtx/config")
+async def get_wsjtx_config():
+    """Get WSJT-X configuration"""
+    return {
+        "enabled": config.WSJTX_ENABLED,
+        "udp_port": config.WSJTX_UDP_PORT,
+        "multicast": config.WSJTX_UDP_MULTICAST,
+        "ws_port": config.WSJTX_WS_PORT,
+        "auto_log": config.WSJTX_AUTO_LOG,
+        "auto_rotate": config.WSJTX_AUTO_ROTATE and config.ROTOR_AUTO_ENABLED,
+        "modal_fields": config.WSJTX_MODAL_FIELDS,
+    }
+
+
+# === Static Files ===
+
+frontend_path = Path(__file__).parent.parent / "frontend"
+
+# Mount static files from frontend directory
+app.mount("/static", StaticFiles(directory=str(frontend_path)), name="static")
+
+@app.get("/app.js")
+async def serve_app_js():
+    """Serve app.js directly"""
+    js_file = frontend_path / "app.js"
+    if js_file.exists():
+        return FileResponse(js_file, media_type="application/javascript")
+    raise HTTPException(status_code=404, detail="app.js not found")
+
+@app.get("/logging-panel.css")
+async def serve_logging_panel_css():
+    """Serve logging-panel.css directly"""
+    css_file = frontend_path / "logging-panel.css"
+    if css_file.exists():
+        return FileResponse(css_file, media_type="text/css")
+    raise HTTPException(status_code=404, detail="logging-panel.css not found")
+
+@app.get("/{file_path:path}")
+async def serve_frontend_files(file_path: str):
+    """Serve all other frontend files (HTML, JS, CSS, etc.)"""
+    file = frontend_path / file_path
+    
+    # Security check: prevent directory traversal
+    try:
+        file = file.resolve()
+        if not str(file).startswith(str(frontend_path.resolve())):
+            raise HTTPException(status_code=403, detail="Access denied")
+    except:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if file.exists() and file.is_file():
+        # Determine media type
+        suffix = file.suffix.lower()
+        media_types = {
+            '.html': 'text/html',
+            '.js': 'application/javascript',
+            '.css': 'text/css',
+            '.json': 'application/json',
+            '.svg': 'image/svg+xml',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.ico': 'image/x-icon',
+        }
+        media_type = media_types.get(suffix, 'application/octet-stream')
+        response = FileResponse(file, media_type=media_type)
+        # Add cache-busting headers for development
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+    
+    # If file not found and it's a request for a page, try index.html (for SPA support)
+    # Handle root path request (empty file_path) or pages without extension
+    if not file_path or '.' not in file_path:
+        index_file = frontend_path / "index.html"
+        if index_file.exists():
+            return FileResponse(index_file)
+    
+    raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+@app.get("/")
+async def serve_index():
+    """Serve index.html"""
+    index_file = frontend_path / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    return HTMLResponse("<h1>FlexRadio Web Control</h1><p>Frontend not found</p>")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)

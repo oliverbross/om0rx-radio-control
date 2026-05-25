@@ -1,0 +1,333 @@
+<!-- FT8/FT4 Digital Mode Modal -->
+<div v-if="showFT8Modal" class="ft8-modal-backdrop" @click.self="closeFT8Modal">
+    <div class="ft8-modal" @click.stop>
+        <div class="ft8-modal-header">
+            <h2>🔊 {{ ft8.mode }} Digital Mode</h2>
+            <div class="ft8-header-controls">
+                <span class="ft8-status-badge" :class="ft8.connected ? 'connected' : 'disconnected'">
+                    {{ ft8.connected ? '🟢 Active' : '🔴 Inactive' }}
+                </span>
+                <button class="ft8-close-btn" @click="closeFT8Modal">✕</button>
+            </div>
+        </div>
+
+        <div class="ft8-modal-body">
+            <!-- Tab Navigation -->
+            <div class="ft8-tabs">
+                <button @click="ft8.activeTab = 'operate'" 
+                        :class="['ft8-tab', { active: ft8.activeTab === 'operate' }]">
+                    📻 Operate
+                </button>
+                <button @click="ft8.activeTab = 'settings'" 
+                        :class="['ft8-tab', { active: ft8.activeTab === 'settings' }]">
+                    ⚙️ Settings
+                </button>
+            </div>
+
+            <!-- Settings Tab -->
+            <div v-if="ft8.activeTab === 'settings'" class="ft8-settings-panel">
+                <h3 style="margin-top: 0;">FT8/FT4 Configuration</h3>
+                
+                <!-- Station Settings -->
+                <div class="ft8-settings-section">
+                    <h4>Station</h4>
+                    <div class="ft8-settings-grid">
+                        <div class="ft8-setting-item">
+                            <label>Mode:</label>
+                            <select v-model="ft8.config.mode">
+                                <option value="FT8">FT8 (15 sec)</option>
+                                <option value="FT4">FT4 (7.5 sec)</option>
+                            </select>
+                        </div>
+                        <div class="ft8-setting-item">
+                            <label>My Callsign:</label>
+                            <input type="text" v-model="ft8.config.mycall" 
+                                   placeholder="OM0RX" style="text-transform: uppercase;">
+                        </div>
+                        <div class="ft8-setting-item">
+                            <label>My Grid:</label>
+                            <input type="text" v-model="ft8.config.mygrid" 
+                                   placeholder="JN88" maxlength="6" style="text-transform: uppercase;">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Network Settings -->
+                <div class="ft8-settings-section">
+                    <h4>Network Server (CAT Control)</h4>
+                    <div class="ft8-settings-grid">
+                        <div class="ft8-setting-item">
+                            <label>Server Address:</label>
+                            <input type="text" v-model="ft8.config.networkServer" 
+                                   placeholder="192.168.0.199:4992">
+                            <small>FlexRadio CAT control (host:port)</small>
+                        </div>
+                        <div class="ft8-setting-item">
+                            <label>PTT Method:</label>
+                            <select v-model="ft8.config.pttMethod">
+                                <option value="CAT">CAT (Software)</option>
+                                <option value="VOX">VOX</option>
+                                <option value="DTR">DTR (Serial)</option>
+                                <option value="RTS">RTS (Serial)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Audio Settings -->
+                <div class="ft8-settings-section">
+                    <h4>Audio</h4>
+                    <div class="ft8-settings-grid">
+                        <div class="ft8-setting-item">
+                            <label>Audio Input:</label>
+                            <select v-model="ft8.config.audioInput">
+                                <option value="default">System Default</option>
+                                <option value="flexradio">FlexRadio DAX RX</option>
+                                <option v-for="dev in ft8.audioDevices.input" :key="dev" :value="dev">
+                                    {{ dev }}
+                                </option>
+                            </select>
+                        </div>
+                        <div class="ft8-setting-item">
+                            <label>Audio Output:</label>
+                            <select v-model="ft8.config.audioOutput">
+                                <option value="default">System Default</option>
+                                <option value="flexradio">FlexRadio DAX TX</option>
+                                <option v-for="dev in ft8.audioDevices.output" :key="dev" :value="dev">
+                                    {{ dev }}
+                                </option>
+                            </select>
+                        </div>
+                        <div class="ft8-setting-item">
+                            <label>Sample Rate:</label>
+                            <select v-model="ft8.config.sampleRate">
+                                <option :value="12000">12000 Hz</option>
+                                <option :value="48000">48000 Hz</option>
+                            </select>
+                        </div>
+                        <div class="ft8-setting-item">
+                            <label>
+                                <input type="checkbox" v-model="ft8.config.useFlexRadioAudio">
+                                Use FlexRadio DAX Audio
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Operation Settings -->
+                <div class="ft8-settings-section">
+                    <h4>Operation</h4>
+                    <div class="ft8-settings-grid">
+                        <div class="ft8-setting-item">
+                            <label>
+                                <input type="checkbox" v-model="ft8.config.autoSequence">
+                                Auto Sequence QSOs
+                            </label>
+                        </div>
+                        <div class="ft8-setting-item">
+                            <label>
+                                <input type="checkbox" v-model="ft8.config.txEnabled">
+                                Enable TX by Default
+                            </label>
+                        </div>
+                        <div class="ft8-setting-item">
+                            <label>Waterfall Height:</label>
+                            <input type="number" v-model.number="ft8.config.waterfallHeight" 
+                                   min="50" max="200">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Save Button -->
+                <div class="ft8-settings-actions">
+                    <button @click="ft8SaveSettings" class="ft8-save-btn">💾 Save Configuration</button>
+                    <button @click="ft8LoadSettings" class="ft8-load-btn">🔄 Reload from Server</button>
+                    <span v-if="ft8.configSaved" class="ft8-save-status">✅ Saved!</span>
+                </div>
+            </div>
+
+            <!-- Operate Tab -->
+            <div v-if="ft8.activeTab === 'operate'" class="ft8-operate-panel">
+                <!-- Top Control Panel -->
+                <div class="ft8-control-panel">
+                    <div class="ft8-control-group">
+                        <label>Mode:</label>
+                        <select v-model="ft8.mode" @change="ft8ModeChanged" :disabled="ft8.connected">
+                            <option value="FT8">FT8</option>
+                            <option value="FT4">FT4</option>
+                        </select>
+                    </div>
+
+                    <div class="ft8-control-group">
+                        <label>My Call:</label>
+                        <input type="text" v-model="ft8.mycall" :disabled="ft8.connected" 
+                               placeholder="OM0RX" style="width: 100px;">
+                    </div>
+
+                    <div class="ft8-control-group">
+                        <label>My Grid:</label>
+                        <input type="text" v-model="ft8.mygrid" :disabled="ft8.connected" 
+                               placeholder="JN88" style="width: 80px;">
+                    </div>
+
+                    <div class="ft8-control-group">
+                        <label>
+                            <input type="checkbox" v-model="ft8.txEnabled" :disabled="!ft8.connected">
+                            Enable TX
+                        </label>
+                    </div>
+
+                    <div class="ft8-control-group">
+                        <label>
+                            <input type="checkbox" v-model="ft8.autoSequence" :disabled="!ft8.connected">
+                            Auto Sequence
+                        </label>
+                    </div>
+
+                    <div class="ft8-control-group">
+                        <button @click="ft8ToggleConnection" 
+                                :class="['ft8-connect-btn', { active: ft8.connected }]">
+                            {{ ft8.connected ? '🛑 Stop' : '▶️ Start' }}
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Status Bar -->
+                <div class="ft8-status-bar" v-if="ft8.connected" style="display: flex; gap: 20px; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 5px; margin-bottom: 10px;">
+                    <div style="display: flex; align-items: center; gap: 5px;">
+                        <span>📊 Decoded:</span>
+                        <strong>{{ ft8.stats.decoded_count || 0 }}</strong>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 5px;">
+                        <span>📤 Transmitted:</span>
+                        <strong>{{ ft8.stats.transmitted_count || 0 }}</strong>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 5px;">
+                        <span>✅ QSOs:</span>
+                        <strong>{{ ft8.stats.qso_completed || 0 }}</strong>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 5px;">
+                        <span>⏱️ Uptime:</span>
+                        <strong>{{ Math.floor((ft8.stats.uptime || 0) / 60) }}m {{ (ft8.stats.uptime || 0) % 60 }}s</strong>
+                    </div>
+                </div>
+
+            <!-- Main Content Area -->
+            <div class="ft8-content">
+                <!-- Left: Waterfall Display -->
+                <div class="ft8-waterfall-container">
+                    <div class="ft8-waterfall-header">
+                        <span>Waterfall ({{ ft8.bandwidth }} Hz)</span>
+                        <span class="ft8-cycle-indicator" :class="{ tx: ft8.isTxCycle }">
+                            {{ ft8.isTxCycle ? '📡 TX' : '📻 RX' }}
+                        </span>
+                    </div>
+                    <canvas ref="ft8Waterfall" class="ft8-waterfall" width="600" height="300"></canvas>
+                    <div class="ft8-frequency-scale">
+                        <span>200</span>
+                        <span>1000</span>
+                        <span>1500</span>
+                        <span>2000</span>
+                        <span>2800 Hz</span>
+                    </div>
+                </div>
+
+                <!-- Right: Decoded Messages -->
+                <div class="ft8-decoded-panel">
+                    <div class="ft8-decoded-header">
+                        <span>Decoded Messages ({{ ft8.decodedMessages.length }})</span>
+                        <button @click="ft8ClearDecoded" class="ft8-clear-btn">Clear</button>
+                    </div>
+                    <div class="ft8-decoded-list">
+                        <div v-for="(msg, idx) in ft8.decodedMessages" 
+                             :key="idx" 
+                             class="ft8-decoded-message"
+                             @click="ft8SelectMessage(msg)">
+                            <span class="ft8-msg-time">{{ formatFT8Time(msg.timestamp) }}</span>
+                            <span class="ft8-msg-snr" :class="getFT8SNRClass(msg.snr)">
+                                {{ msg.snr > 0 ? '+' : '' }}{{ msg.snr.toFixed(0) }}
+                            </span>
+                            <span class="ft8-msg-dt">{{ msg.dt.toFixed(1) }}</span>
+                            <span class="ft8-msg-freq">{{ msg.freq.toFixed(0) }}</span>
+                            <span class="ft8-msg-text" :class="{ cq: msg.message.includes('CQ') }">
+                                {{ msg.message }}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Active QSOs Panel -->
+            <div class="ft8-qso-panel" v-if="ft8.activeQSOs.length > 0">
+                <div class="ft8-qso-header">
+                    Active QSOs ({{ ft8.activeQSOs.length }})
+                </div>
+                <div class="ft8-qso-list">
+                    <div v-for="qso in ft8.activeQSOs" :key="qso.their_call" class="ft8-qso-item">
+                        <span class="ft8-qso-call">{{ qso.their_call }}</span>
+                        <span class="ft8-qso-grid">{{ qso.their_grid || '---' }}</span>
+                        <span class="ft8-qso-state">{{ qso.state }}</span>
+                        <span class="ft8-qso-reports">
+                            My: {{ qso.my_report || '---' }} / Their: {{ qso.their_report || '---' }}
+                        </span>
+                        <button @click="ft8Send73(qso.their_call)" class="ft8-qso-btn">Send 73</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TX Controls -->
+            <div class="ft8-tx-panel">
+                <div class="ft8-tx-header">
+                    TX Controls
+                    <span class="ft8-tx-queue" v-if="ft8.txQueue.length > 0">
+                        ({{ ft8.txQueue.length }} queued)
+                    </span>
+                </div>
+                <div class="ft8-tx-controls">
+                    <div class="ft8-tx-quick-buttons">
+                        <button @click="ft8CallCQ" :disabled="!ft8.connected || !ft8.txEnabled" 
+                                class="ft8-tx-btn">
+                            📢 CQ
+                        </button>
+                        <button @click="ft8ReplySelected" 
+                                :disabled="!ft8.connected || !ft8.txEnabled || !ft8.selectedMessage" 
+                                class="ft8-tx-btn">
+                            💬 Reply
+                        </button>
+                        <button @click="ft8SendReport" 
+                                :disabled="!ft8.connected || !ft8.txEnabled || !ft8.selectedMessage" 
+                                class="ft8-tx-btn">
+                            📊 Report
+                        </button>
+                        <button @click="ft8SendRRR" 
+                                :disabled="!ft8.connected || !ft8.txEnabled || !ft8.selectedMessage" 
+                                class="ft8-tx-btn">
+                            ✅ RRR
+                        </button>
+                    </div>
+                    <div class="ft8-tx-custom">
+                        <input type="text" 
+                               v-model="ft8.customMessage" 
+                               @keydown.enter="ft8SendCustom"
+                               placeholder="Custom message (e.g., CQ OM0RX JN88)"
+                               class="ft8-tx-input">
+                        <button @click="ft8SendCustom" 
+                                :disabled="!ft8.connected || !ft8.txEnabled || !ft8.customMessage" 
+                                class="ft8-tx-btn">
+                            Send
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Statistics -->
+            <div class="ft8-stats">
+                <span>Decoded: <strong>{{ ft8.stats.decoded_count }}</strong></span>
+                <span>TX: <strong>{{ ft8.stats.transmitted_count }}</strong></span>
+                <span>QSOs: <strong>{{ ft8.stats.qso_completed }}</strong></span>
+                <span>TX Queue: <strong>{{ ft8.txQueue.length }}</strong></span>
+            </div>
+            </div><!-- /ft8-operate-panel -->
+        </div><!-- /ft8-modal-body -->
+    </div><!-- /ft8-modal -->
+</div><!-- /ft8-modal-backdrop -->

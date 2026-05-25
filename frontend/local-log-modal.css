@@ -1,0 +1,460 @@
+/* Local Log Modal Styles */
+
+/* Modal Backdrop */
+.local-log-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(3px);
+    z-index: 9000;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    animation: fadeIn 0.2s ease-out;
+    overflow-y: auto;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+/* Modal Content Container */
+.local-log-content {
+    width: min(1400px, 95vw);
+    height: min(800px, 90vh);
+    background: #1e1f25;
+    border-radius: 12px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateY(-30px);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+/* Header */
+.local-log-header {
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(0, 0, 0, 0.3);
+}
+
+.local-log-header h2 {
+    margin: 0;
+    color: #9cc2ff;
+    font-size: 20px;
+    font-weight: 700;
+}
+
+/* Close Button */
+.local-log-close-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.5);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    cursor: pointer;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+}
+
+.local-log-close-btn:hover {
+    background: rgba(0, 0, 0, 0.7);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Filters Section */
+.local-log-filters {
+    display: flex;
+    gap: 12px;
+    padding: 12px 16px;
+    background: rgba(0, 0, 0, 0.2);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    flex-wrap: wrap;
+}
+
+.filter-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.filter-group label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #888;
+    white-space: nowrap;
+}
+
+.filter-input {
+    padding: 4px 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    color: #ddd;
+    font-size: 12px;
+    min-width: 120px;
+    transition: all 0.15s;
+}
+
+.filter-input:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+.filter-input:focus {
+    outline: none;
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 127, 0, 0.5);
+    box-shadow: 0 0 8px rgba(255, 127, 0, 0.2);
+}
+
+/* Table Container */
+.local-log-table-container {
+    flex: 1;
+    overflow: auto;
+    background: rgba(0, 0, 0, 0.1);
+}
+
+/* Table Styling */
+.local-log-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    background: rgba(0, 0, 0, 0.1);
+}
+
+.local-log-table thead {
+    position: sticky;
+    top: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 10;
+}
+
+.local-log-table th {
+    padding: 10px 8px;
+    text-align: left;
+    color: #9cc2ff;
+    font-weight: 600;
+    border-bottom: 2px solid rgba(255, 127, 0, 0.3);
+    white-space: nowrap;
+    user-select: none;
+}
+
+.local-log-table tbody tr {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    transition: background 0.15s;
+}
+
+.local-log-table tbody tr:hover {
+    background: rgba(255, 127, 0, 0.1);
+}
+
+.local-log-table td {
+    padding: 8px;
+    color: #ddd;
+    white-space: nowrap;
+}
+
+.local-log-table strong {
+    color: #fff;
+    font-weight: 600;
+}
+
+/* Column specific styling */
+.th-date, .cell-date { width: 100px; white-space: nowrap; }
+.th-time, .cell-time { width: 90px; white-space: nowrap; }
+.th-call, .cell-call { width: 110px; font-weight: 600; white-space: nowrap; }
+.th-freq, .cell-freq { width: 95px; text-align: right; font-family: monospace; white-space: nowrap; }
+.th-band, .cell-band { width: 60px; white-space: nowrap; }
+.th-mode, .cell-mode { width: 65px; white-space: nowrap; }
+.th-rst, .cell-rst { width: 80px; text-align: center; white-space: nowrap; }
+.th-dxcc, .cell-dxcc { width: 110px; white-space: nowrap; }
+.th-awards, .cell-awards { width: 140px; white-space: nowrap; }
+.th-name, .cell-name { 
+    min-width: 200px; 
+    max-width: 400px;
+    white-space: nowrap;
+}
+
+/* Name/QTH text with ellipsis overflow */
+.name-qth-text {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Pagination Section */
+.local-log-pagination {
+    padding: 12px 16px;
+    background: rgba(0, 0, 0, 0.2);
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.pagination-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.pagination-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.local-log-pagination-info {
+    font-size: 12px;
+    color: #888;
+    font-weight: 500;
+    min-width: 250px;
+}
+
+.btn-nav {
+    padding: 6px 12px;
+    background: rgba(255, 127, 0, 0.15);
+    border: 1px solid rgba(255, 127, 0, 0.3);
+    color: #ff7f00;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.btn-nav:hover:not(:disabled) {
+    background: rgba(255, 127, 0, 0.25);
+    border-color: rgba(255, 127, 0, 0.5);
+}
+
+.btn-nav:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.pagination-settings {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.pagination-settings label {
+    font-size: 12px;
+    color: #888;
+    font-weight: 600;
+}
+
+.items-per-page-select {
+    padding: 4px 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    color: #ddd;
+    font-size: 12px;
+    transition: all 0.15s;
+}
+
+.items-per-page-select:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+.items-per-page-select:focus {
+    outline: none;
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 127, 0, 0.5);
+}
+
+/* Select Options - Fix visibility for all select dropdowns */
+/* Main select styling */
+.filter-input,
+.items-per-page-select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ddd' stroke-width='2'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 18px;
+    padding-right: 32px;
+}
+
+/* Option styling - applies on most browsers */
+.filter-input option,
+.items-per-page-select option {
+    background: #2a2b31;
+    color: #ddd;
+    padding: 8px 12px;
+    margin: 2px 0;
+    border-radius: 0;
+}
+
+.filter-input option:checked,
+.items-per-page-select option:checked {
+    background: linear-gradient(rgba(255, 127, 0, 0.5), rgba(255, 127, 0, 0.5));
+    background-color: rgba(255, 127, 0, 0.4);
+    color: #fff;
+}
+
+/* Firefox specific styling */
+.filter-input option:focus,
+.items-per-page-select option:focus {
+    background: #3a3b41;
+    color: #fff;
+}
+
+/* Windows high contrast mode support */
+@media (prefers-contrast: more) {
+    .filter-input option,
+    .items-per-page-select option {
+        background: #1a1a1a;
+        color: #ffffff;
+    }
+    
+    .filter-input option:checked,
+    .items-per-page-select option:checked {
+        background: #ff7f00;
+        color: #000;
+    }
+}
+
+/* Export Button */
+.btn-export {
+    padding: 6px 12px;
+    background: rgba(76, 175, 80, 0.15);
+    border: 1px solid rgba(76, 175, 80, 0.3);
+    color: #4caf50;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.btn-export:hover {
+    background: rgba(76, 175, 80, 0.25);
+    border-color: rgba(76, 175, 80, 0.5);
+}
+
+/* Local Log Link Styling */
+.local-log-link {
+    color: #ff7f00;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 14px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: all 0.15s;
+    cursor: pointer;
+}
+
+.local-log-link:hover {
+    color: #fff;
+    background: rgba(255, 127, 0, 0.1);
+}
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+    .local-log-content {
+        width: 98vw;
+        height: 95vh;
+    }
+    
+    .th-dxcc, .cell-dxcc { width: 90px; }
+    .th-awards, .cell-awards { width: 110px; }
+    .th-name, .cell-name { 
+        min-width: 150px;
+        max-width: 300px;
+    }
+}
+
+@media (max-width: 768px) {
+    .local-log-modal {
+        padding: 10px;
+    }
+    
+    .local-log-content {
+        width: 100vw;
+        height: 100vh;
+        border-radius: 0;
+    }
+    
+    .local-log-filters {
+        flex-direction: column;
+        gap: 8px;
+    }
+    
+    .filter-group {
+        width: 100%;
+    }
+    
+    .filter-input {
+        flex: 1;
+        min-width: unset;
+    }
+    
+    .local-log-pagination {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .pagination-controls,
+    .pagination-settings {
+        width: 100%;
+    }
+    
+    /* Adjust column widths for smaller screens */
+    .th-date, .cell-date { width: 70px; }
+    .th-time, .cell-time { width: 70px; }
+    .th-call, .cell-call { width: 80px; }
+    .th-freq, .cell-freq { width: 80px; }
+    .th-band, .cell-band { width: 60px; }
+    .th-mode, .cell-mode { width: 60px; }
+    .th-rst, .cell-rst { width: 70px; }
+    .th-dxcc, .cell-dxcc { width: 60px; }
+    .th-awards, .cell-awards { width: 80px; }
+    
+    .local-log-table {
+        font-size: 11px;
+    }
+    
+    .local-log-table th,
+    .local-log-table td {
+        padding: 6px 4px;
+    }
+}

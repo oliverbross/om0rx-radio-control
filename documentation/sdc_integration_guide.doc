@@ -1,0 +1,92 @@
+{\rtf1\ansi\deff0{\fonttbl{\f0 Courier New;}{\f1 Arial;}{\f2 Calibri;}}\paperw11906\paperh16838\margl1134\margr1134\margt1134\margb1134\fs28\f2\b SDC Skimmer TCP Broadcast → Web App Integration Guide\b0\par\fs22\f2 Version: 1.0 \tab Date: 28 Oct 2025\par Author: ChatGPT (for Oliver Bross / MorseTrainerPro)\par\par\fs24\f2\b Overview\b0\par\fs20\f2 
+Purpose
+Integrate live decoded CW data broadcasted from SDC Skimmer (https://www.lw-sdc.com) into your existing JS/HTML/PHP web application.
+
+This guide describes how to display a real-time scrolling ticker with decoded CW text received via SDC’s TCP Broadcast Data Port (e.g., 12166).
+
+Architecture
+1) SDC broadcasts decoded data on TCP port 12166.
+2) A Node.js bridge connects to this port and re-broadcasts the text as WebSocket messages.
+3) The web application subscribes to ws://localhost:8091 and shows scrolling decoded text.
+\par\par\fs24\f2\b Node.js TCP → WebSocket Bridge\b0\par{\pard\li360\qc\cb1\fs18\f0 // server.js
+import net from 'net';
+import \{ WebSocketServer \} from 'ws';
+
+const TCP_HOST = process.env.TCP_HOST || '127.0.0.1';
+const TCP_PORT = process.env.TCP_PORT || 12166;
+const WS_PORT  = process.env.WS_PORT  || 8091;
+
+const wss = new WebSocketServer(\{ port: WS_PORT \});
+console.log(`🔌 WebSocket server ready on ws://localhost:$\{WS_PORT\}`);
+
+function broadcast(line) \{
+  const msg = JSON.stringify(\{ ts: Date.now(), text: line.trim() \});
+  for (const c of wss.clients)
+    if (c.readyState === 1) c.send(msg);
+\}
+
+function connectSDC() \{
+  console.log(`Connecting to SDC on $\{TCP_HOST\}:$\{TCP_PORT\}…`);
+  const client = net.createConnection(\{ host: TCP_HOST, port: TCP_PORT \});
+
+  client.on('connect', () => console.log('✅ Connected to SDC TCP stream'));
+  client.on('data', data => \{
+    const lines = data.toString().split(/\\r?\\n/);
+    lines.forEach(line => \{ if (line.trim()) broadcast(line); \});
+  \});
+  client.on('error', err => console.error('SDC error:', err.message));
+  client.on('close', () => \{
+    console.log('⚠️ SDC connection closed, retrying in 5s…');
+    setTimeout(connectSDC, 5000);
+  \});
+\}
+connectSDC();}\par\par\fs24\f2\b Browser Widget (Scrolling Ticker)\b0\par{\pard\li360\qc\cb1\fs18\f0 <div id="sdcTicker"
+     style="font:14px monospace;white-space:nowrap;overflow:hidden;width:100%;border-top:1px solid #666;padding:5px;">
+  Connecting to SDC…
+</div>
+
+<script>
+const el = document.getElementById('sdcTicker');
+const ws = new WebSocket('ws://localhost:8091');
+let buffer = [];
+
+ws.onopen = () => el.textContent = 'Listening to SDC…';
+ws.onmessage = e => \{
+  const \{ text \} = JSON.parse(e.data);
+  buffer.push(text);
+  if (buffer.length > 40) buffer.shift();
+  el.textContent = buffer.slice(-10).join('   •   ');
+  el.scrollLeft = el.scrollWidth;
+\};
+ws.onclose = () => el.textContent = 'Disconnected from SDC';
+</script>}\par\par\fs24\f2\b Optional: systemd Service\b0\par{\pard\li720\qc\cb1\fs18\f0 [Unit]
+Description=SDC Skimmer TCP Bridge
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/sdc-bridge/server.js
+WorkingDirectory=/opt/sdc-bridge
+Restart=always
+User=www-data
+Environment=TCP_HOST=127.0.0.1
+Environment=TCP_PORT=12166
+Environment=WS_PORT=8091
+
+[Install]
+WantedBy=multi-user.target}\par\par\fs24\f2\b Setup & Integration\b0\par\fs20\f2 
+Setup Instructions
+1) In SDC → Global Setup → Misc tab:
+   - Enable “TCP Broadcast Data Port” (e.g., 12166).
+2) Install Node.js (v18+).
+3) Create folder sdc-bridge, save server.js, and run:
+   npm init -y
+   npm i ws
+   node server.js
+4) Add the HTML/JS widget to your web app page (footer.php or dashboard.html).
+5) Verify decoded CW lines appear in the scrolling ticker.
+
+Optional Enhancements
+• Store decoded text into database table (timestamp, call, freq, text).
+• Filter valid callsigns using regex /[A-Z0-9\\/]\{3,\}/.
+• Merge with WSJT-X spot feed for unified “live activity” board.
+\par\par\fs18\f2 --- End of Document ---\par}

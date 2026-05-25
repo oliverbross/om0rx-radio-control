@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlexRadio - Radio Control</title>
+    
+    <!-- Vue.js 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    
+    <!-- Logging Panel Styles (shared) -->
+    <link rel="stylesheet" href="logging-panel.css">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            font-size: 11px;
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+        }
+        
+        html {
+            width: 100%;
+            height: 100%;
+        }
+        
+        #app {
+            padding: 8px;
+            min-width: 1000px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        /* Compact rows */
+        .control-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+            background: #2a2a2a;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        /* ALL BUTTONS - Same size (12.5px font) */
+        button {
+            background: #3a3a3a;
+            border: 1px solid #4a4a4a;
+            color: #d0d0d0;
+            padding: 5px 12.5px;
+            border-radius: 3px;
+            font-size: 12.5px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        
+        button:hover {
+            background: #4a4a4a;
+            border-color: #5a5a5a;
+        }
+        
+        button.active {
+            background: #4a9eff;
+            border-color: #5aaeff;
+            color: white;
+            box-shadow: 0 0 8px rgba(74, 158, 255, 0.5);
+        }
+        
+        button.tx-active {
+            background: #ef4444;
+            border-color: #ff5555;
+            animation: pulse 1s infinite;
+        }
+        
+        button.tune-active {
+            background: #f59e0b;
+            border-color: #ffa520;
+        }
+        
+        button.vox-active {
+            background: #10b981;
+            border-color: #20c991;
+        }
+        
+        /* Frequency display */
+        .freq-display {
+            font-family: 'Courier New', monospace;
+            font-size: 32px;
+            font-weight: bold;
+            letter-spacing: 2px;
+            color: #4a9eff;
+            text-shadow: 0 0 10px rgba(74, 158, 255, 0.5);
+            background: #222;
+            padding: 8px 16px;
+            border-radius: 4px;
+            border: 1px solid #3a3a3a;
+            min-width: 280px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.15s;
+            outline: none;
+        }
+        
+        .freq-display:hover {
+            border-color: #4a9eff;
+            box-shadow: 0 0 12px rgba(74, 158, 255, 0.6);
+            background: #252525;
+        }
+        
+        .freq-display:focus {
+            border-color: #5aaeff;
+            box-shadow: 0 0 15px rgba(74, 158, 255, 0.8);
+            background: #282828;
+        }
+        
+        .sub-freq {
+            font-family: 'Courier New', monospace;
+            font-size: 16px;
+            font-weight: bold;
+            letter-spacing: 1px;
+            color: #fbbf24;
+            background: #222;
+            padding: 4px 12px;
+            border-radius: 3px;
+            border: 1px solid #3a3a3a;
+            min-width: 180px;
+            text-align: center;
+        }
+        
+        /* S-Meter */
+        .smeter-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex: 0 0 auto;
+            max-width: 350px;
+        }
+        
+        .smeter {
+            height: 20px;
+            width: 250px;
+            background: linear-gradient(90deg, 
+                #4ade80 0%, #4ade80 55%, 
+                #fbbf24 55%, #fbbf24 75%, 
+                #ef4444 75%, #ef4444 100%);
+            border-radius: 3px;
+            position: relative;
+            border: 1px solid #3a3a3a;
+        }
+        
+        .smeter-fill {
+            position: absolute;
+            left: 0;
+            top: 0;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.6);
+            transition: width 0.2s ease-out;
+        }
+        
+        .smeter-needle {
+            position: absolute;
+            height: 100%;
+            width: 2px;
+            background: white;
+            box-shadow: 0 0 6px rgba(255, 255, 255, 0.9);
+            transition: left 0.2s ease-out;
+        }
+        
+        .smeter-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 8px;
+            color: #888;
+            margin-top: 2px;
+        }
+        
+        .smeter-value {
+            font-size: 11px;
+            font-weight: bold;
+            min-width: 50px;
+            text-align: center;
+            color: #4ade80;
+        }
+        
+        /* Sliders - 25% shorter */
+        .slider-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .slider-label {
+            font-size: 10px;
+            min-width: 50px;
+            font-weight: 600;
+        }
+        
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            background: linear-gradient(to right, #ffffff 0%, #ffffff 100%) !important;
+            cursor: pointer;
+            width: 105px;
+            height: 8px !important;
+            outline: none;
+            border-radius: 4px !important;
+            opacity: 1 !important;
+        }
+        
+        input[type="range"]::-webkit-slider-track {
+            background: #ffffff !important;
+            height: 8px !important;
+            border-radius: 4px !important;
+            border: 2px solid #ffffff !important;
+            box-shadow: 0 0 10px rgba(255,255,255,1) !important;
+            opacity: 1 !important;
+        }
+        
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            background: #4a9eff;
+            height: 20px;
+            width: 20px;
+            border-radius: 50%;
+            margin-top: -6px;
+            border: 3px solid #5aaeff;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+            cursor: pointer;
+        }
+        
+        input[type="range"]::-moz-range-track {
+            background: #ffffff !important;
+            height: 8px !important;
+            border-radius: 4px !important;
+            border: 2px solid #ffffff !important;
+            box-shadow: 0 0 10px rgba(255,255,255,1) !important;
+            opacity: 1 !important;
+        }
+        
+        input[type="range"]::-moz-range-thumb {
+            background: #4a9eff;
+            height: 20px;
+            width: 20px;
+            border-radius: 50%;
+            border: 3px solid #5aaeff;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+            cursor: pointer;
+        }
+        
+        .slider-value {
+            font-size: 10px;
+            min-width: 35px;
+            text-align: right;
+            font-weight: bold;
+            color: #4a9eff;
+        }
+        
+        /* RIT/XIT Controls */
+        .rit-xit-control {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            background: #333;
+            padding: 4px 8px;
+            border-radius: 3px;
+        }
+        
+        .rit-xit-control button {
+            padding: 2px 8px;
+            font-size: 10px;
+            min-width: 30px;
+        }
+        
+        .rit-xit-value {
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            font-weight: bold;
+            min-width: 60px;
+            text-align: center;
+            color: #4a9eff;
+        }
+        
+        /* Rotator Controls */
+        .rotor-control {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            background: #333;
+            padding: 6px 8px;
+            border-radius: 3px;
+            min-width: 150px;
+        }
+        
+        .rotor-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            color: #888;
+        }
+        
+        .rotor-goto-group {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+        }
+        
+        .rotor-az-input {
+            width: 50px;
+            padding: 4px;
+            background: #222;
+            border: 1px solid #444;
+            color: #4a9eff;
+            font-size: 13px;
+            font-family: 'Courier New', monospace;
+            border-radius: 2px;
+            text-align: center;
+        }
+        
+        .rotor-az-input:focus {
+            outline: none;
+            border-color: #4a9eff;
+            box-shadow: 0 0 6px rgba(74, 158, 255, 0.3);
+        }
+        
+        .rotor-goto-btn {
+            padding: 4px 10px;
+            font-size: 13px;
+            background: #4a9eff;
+            border: 1px solid #5aaeff;
+            color: white;
+            border-radius: 2px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        
+        .rotor-goto-btn:hover {
+            background: #3a8eef;
+            box-shadow: 0 0 8px rgba(74, 158, 255, 0.5);
+        }
+        
+        .rotor-directions {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+        }
+        
+        .rotor-dir-btn {
+            padding: 3px 6px;
+            font-size: 13px;
+            background: #3a3a3a;
+            border: 1px solid #4a4a4a;
+            color: #d0d0d0;
+            border-radius: 2px;
+            cursor: pointer;
+            transition: all 0.15s;
+            min-width: 28px;
+        }
+        
+        .rotor-dir-btn:hover {
+            background: #4a4a4a;
+            border-color: #5a5a5a;
+        }
+        
+        .rotor-preset-dropdown {
+            padding: 4px 8px;
+            background: #3a3a3a;
+            border: 1px solid #4a4a4a;
+            color: #e0e0e0;
+            font-size: 13px;
+            border-radius: 2px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        
+        .rotor-preset-dropdown:hover {
+            background: #4a4a4a;
+            border-color: #5a5a5a;
+        }
+        
+        /* Beaming Display Panel */
+        .beaming-display {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            background: #2a2a2a;
+            padding: 6px 8px;
+            border-radius: 3px;
+            min-width: 200px;
+            border-left: 3px solid #4a9eff;
+        }
+        
+        .beaming-title {
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+        
+        .beaming-callsign {
+            font-size: 14px;
+            font-weight: bold;
+            color: #4a9eff;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .beaming-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            font-size: 12px;
+        }
+        
+        .beaming-label {
+            color: #888;
+            font-weight: 600;
+            min-width: 30px;
+        }
+        
+        .beaming-degrees {
+            font-family: 'Courier New', monospace;
+            color: #4a9eff;
+            font-weight: bold;
+            min-width: 45px;
+            text-align: right;
+        }
+        
+        .beaming-go-btn {
+            padding: 3px 8px;
+            font-size: 11px;
+            background: #4a9eff;
+            border: 1px solid #5aaeff;
+            color: white;
+            border-radius: 2px;
+            cursor: pointer;
+            transition: all 0.15s;
+            font-weight: 700;
+        }
+        
+        .beaming-go-btn:hover {
+            background: #3a8eef;
+            box-shadow: 0 0 6px rgba(74, 158, 255, 0.5);
+        }
+        
+        .beaming-go-btn:active {
+            background: #2a7edf;
+        }
+        
+        .divider {
+            width: 1px;
+            height: 24px;
+            background: #444;
+        }
+        
+        .spacer {
+            flex: 1;
+        }
+        
+        /* DSP Buttons */
+        .dsp-button {
+            background: #3a3a3a;
+            border: 1px solid #4a4a4a;
+            color: #d0d0d0;
+            padding: 5px 12px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.15s;
+            min-width: 45px;
+        }
+        
+        .dsp-button:hover {
+            background: #4a4a4a;
+            border-color: #5a5a5a;
+        }
+        
+        .dsp-button.active {
+            background: #4a9eff;
+            border-color: #5aaeff;
+            color: white;
+            box-shadow: 0 0 8px rgba(74, 158, 255, 0.5);
+        }
+        
+        /* Connection status */
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        
+        .status-connected { background: #10b981; }
+        .status-disconnected { background: #ef4444; animation: pulse 2s infinite; }
+        
+        /* UTC Clock */
+        .utc-clock {
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            font-weight: bold;
+            color: #4a9eff;
+        }
+        
+        /* Label text */
+        .label {
+            font-size: 9px;
+            color: #888;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+        
+        /* Mode and Band badges */
+        .mode-badge, .band-badge {
+            background: #10b981;
+            color: white;
+            padding: 6px 14px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            min-width: 70px;
+            text-align: center;
+        }
+        
+        .band-badge {
+            background: #4a9eff;
+        }
+        
+        /* Info display (Step, AGC) */
+        .info-display {
+            font-size: 12px;
+            font-weight: bold;
+            padding: 4px 12px;
+            background: #333;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        
+        .info-display:hover {
+            background: #444;
+        }
+        
+        .step-select, .agc-select {
+            padding: 4px 8px;
+            background: #3a3a3a;
+            border: 1px solid #4a4a4a;
+            color: #e0e0e0;
+            font-size: 13px;
+            border-radius: 2px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        
+        .step-select:hover, .agc-select:hover {
+            background: #4a4a4a;
+            border-color: #5a5a5a;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- Row 1: Buttons centered, sliders below, UTC on right -->
+        <div class="control-row" style="flex-wrap: wrap; justify-content: center; position: relative;">
+            <!-- Title in top left corner -->
+            <div class="utc-clock" style="position: absolute; left: 8px; top: 8px;">
+                OM0RX Flex / Radio Control
+            </div>
+            
+            <!-- Centered Button Group -->
+            <div style="display: flex; gap: 4px; align-items: center; justify-content: center; width: 100%;">
+                <button>⚡</button>
+                <button :class="radioStatus.rx2_enabled ? 'active' : ''" @click="toggleRX2">RX2</button>
+                
+                <div class="divider"></div>
+                
+                <button @click="toggleMox" :class="txState.mox ? 'tx-active' : ''">MOX</button>
+                <button @click="toggleTune" :class="txState.tune ? 'tune-active' : ''">TUNE</button>
+                <button @click="toggleVox" :class="txState.vox ? 'vox-active' : ''">VOX</button>
+                <button @click="toggleBreakin" :class="txState.breakin ? 'vox-active' : ''">Break.In</button>
+                
+                <div class="divider"></div>
+            </div>
+            
+            <!-- UTC Clock - Absolute positioned to right -->
+            <div style="position: absolute; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;">
+                <span class="status-indicator" :class="connected ? 'status-connected' : 'status-disconnected'"></span>
+                <span class="utc-clock">{{ currentTime }} UTC</span>
+            </div>
+            
+            <!-- Sliders Row - Below buttons, centered and compact -->
+            <div style="display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 8px; flex-wrap: wrap;">
+                <div class="slider-group">
+                    <span class="slider-label">Volume</span>
+                    <input type="range" v-model.number="controls.volume" @input="setVolume" min="0" max="100">
+                    <span class="slider-value">{{ controls.volume }}</span>
+                </div>
+                
+                <div class="slider-group">
+                    <span class="slider-label">Monitor</span>
+                    <input type="range" v-model.number="controls.monitor" @input="setMonitor" min="0" max="100">
+                    <span class="slider-value">{{ controls.monitor }}</span>
+                </div>
+                
+                <div class="slider-group">
+                    <span class="slider-label">AGC-T</span>
+                    <input type="range" v-model.number="controls.agcThreshold" @input="setAGCThreshold" min="0" max="100">
+                    <span class="slider-value">{{ controls.agcThreshold }}</span>
+                </div>
+                
+                <div class="slider-group">
+                    <span class="slider-label">Drive</span>
+                    <input type="range" v-model.number="controls.drive" @input="setDrive" min="0" max="100">
+                    <span class="slider-value">{{ controls.drive }}</span>
+                </div>
+                
+                <div class="slider-group">
+                    <span class="slider-label">Tune</span>
+                    <input type="range" v-model.number="controls.tunePower" @input="setTunePower" min="0" max="100">
+                    <span class="slider-value">{{ controls.tunePower }}</span>
+                </div>
+                
+                <div class="slider-group">
+                    <span class="slider-label">Mic</span>
+                    <input type="range" v-model.number="controls.mic" @input="setMic" min="0" max="100">
+                    <span class="slider-value">{{ controls.mic }}</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Row 2: Bands on left, Modes/Filters on right in 2-line layout -->
+        <div class="control-row" style="flex-wrap: wrap; align-items: flex-start;">
+            <!-- Band buttons on LEFT -->
+            <div class="control-group" style="flex: 0 0 auto;">
+                <button v-for="band in bands" 
+                        :key="band"
+                        @click="setBand(band)"
+                        :class="isActiveBand(band) ? 'active' : ''">
+                    {{ band }}
+                </button>
+            </div>
+            
+            <div class="spacer" style="flex: 1;"></div>
+            
+            <!-- Modes and Filters - 2-line layout on RIGHT -->
+            <div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-end; flex: 0 0 auto;">
+                <!-- Modes Row (Line 1) -->
+                <div class="control-group">
+                    <button v-for="mode in modes" 
+                            :key="mode"
+                            @click="setMode(mode)"
+                            :class="radioStatus.mode === mode ? 'active' : ''">
+                        {{ mode }}
+                    </button>
+                </div>
+                
+                <!-- Filters Row (Line 2) -->
+                <div class="control-group" v-if="currentFilters.length > 0">
+                    <button v-for="filter in currentFilters" 
+                            :key="filter.label"
+                            @click="setFilter(filter.lo, filter.hi)"
+                            :class="isActiveFilter(filter) ? 'active' : ''">
+                        {{ filter.label }}
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Row 3: Rotator, Frequency/Band/Mode in center, RIT/XIT on right -->
+        <div class="control-row" style="justify-content: center; position: relative;">
+            <!-- Rotator Controls - left aligned (absolute when present) -->
+            <div class="rotor-control" v-if="rotorEnabled" style="position: absolute; left: 8px;">
+                <!-- Azimuth control -->
+                <div class="rotor-goto-group">
+                    <label style="font-size: 13px; color: #888;">Az:</label>
+                    <input type="text" v-model.number="rotorAzimuth" @input="validateAzimuth" @keydown.enter="rotorGoto" @focus="rotorInputFocused = true" @blur="rotorInputFocused = false" class="rotor-az-input" placeholder="0" style="font-size: 13px;">
+                    <span style="font-size: 13px; color: #888;">°</span>
+                    <button @click="rotorGoto" class="rotor-goto-btn">GO</button>
+                    <button @click="rotorAutoPending ? cancelRotorAuto() : toggleRotorAuto()" :class="['rotor-auto-btn', { active: rotorAutoEnabled, pending: rotorAutoPending }]" :title="rotorAutoPending ? 'Click to cancel AUTO action' : (rotorAutoEnabled ? 'AUTO enabled' : 'Click to enable AUTO mode')">
+                        {{ rotorAutoPending ? 'CANCEL' : 'AUTO' }}
+                    </button>
+                </div>
+                
+                <!-- Direction preset -->
+                <div class="rotor-directions" style="gap: 2px;">
+                    <select v-model="rotorPreset" @change="handleDirectorToggle" class="rotor-preset-dropdown" style="flex: 1;">
+                        <option value="">Director</option>
+                        <option value="shortpath">QSO SP</option>
+                        <option value="longpath">QSO LP</option>
+                    </select>
+                    <button @click="rotorDirection('N')" class="rotor-dir-btn" title="North">N</button>
+                    <button @click="rotorDirection('S')" class="rotor-dir-btn" title="South">S</button>
+                    <button @click="rotorDirection('E')" class="rotor-dir-btn" title="East">E</button>
+                    <button @click="rotorDirection('W')" class="rotor-dir-btn" title="West">W</button>
+                </div>
+            </div>
+            
+            <!-- Beaming Display Panel (SP/LP Bearing Info) -->
+            <div class="beaming-display" v-if="currentBeamingCallsign && rotorEnabled" style="position: absolute; left: 8px; top: 120px; z-index: 10;">
+                <div class="beaming-title">Beaming for:</div>
+                <div class="beaming-callsign">{{ currentBeamingCallsign }}</div>
+                
+                <!-- Short Path Row -->
+                <div class="beaming-row" v-if="shortPathBearing !== null">
+                    <span class="beaming-label">SP:</span>
+                    <span class="beaming-degrees">{{ shortPathBearing.toFixed(1) }}°</span>
+                    <button @click="rotorGotoShortPath" class="beaming-go-btn" title="Go to short path bearing">GO</button>
+                </div>
+                
+                <!-- Long Path Row -->
+                <div class="beaming-row" v-if="longPathBearing !== null">
+                    <span class="beaming-label">LP:</span>
+                    <span class="beaming-degrees">{{ longPathBearing.toFixed(1) }}°</span>
+                    <button @click="rotorGotoLongPath" class="beaming-go-btn" title="Go to long path bearing">GO</button>
+                </div>
+                
+                <!-- Loading indicator when no bearings yet -->
+                <div v-if="shortPathBearing === null" style="font-size: 11px; color: #888; padding-top: 4px; border-top: 1px solid #444;">
+                    <span style="color: #666;">⏳ Click a spot to calculate bearings</span>
+                </div>
+            </div>
+            
+            <!-- Center group: Frequency, Band/Mode, and DSP buttons -->
+            <div style="display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center;">
+                <!-- Top row: Frequency only (for centering) -->
+                <div style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
+                    <!-- Frequency display - Interactive with keyboard and mouse wheel -->
+                    <div class="freq-display" 
+                         tabindex="0" 
+                         @keydown="handleFrequencyKeydown" 
+                         @wheel="handleFrequencyWheel"
+                         title="Use arrow keys or mouse wheel to tune (Step: {{ currentStep }})">
+                        {{ formattedFrequency }}
+                    </div>
+                    
+                    <!-- DSP Buttons directly under frequency -->
+                    <div style="display: flex; gap: 8px; justify-content: center; width: 100%;">
+                        <button @click="toggleDSP('nb')" :class="['dsp-button', { active: radioStatus.nb_enabled }]">NB</button>
+                        <button @click="toggleDSP('nr')" :class="['dsp-button', { active: radioStatus.nr_enabled }]">NR</button>
+                        <button @click="toggleDSP('anf')" :class="['dsp-button', { active: radioStatus.anf_enabled }]">ANF</button>
+                        <button @click="toggleDSP('apf')" :class="['dsp-button', { active: radioStatus.apf_enabled }]">APF</button>
+                    </div>
+                </div>
+                
+                <!-- Bottom row: DSP level sliders (if active) -->
+                <div style="display: flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center;">
+                    
+                    <!-- DSP Level Sliders (shown when DSP is active and slider toggled) -->
+                    <div v-if="showDSPSlider.nb || showDSPSlider.nr || showDSPSlider.anf || showDSPSlider.apf" 
+                         style="display: flex; gap: 12px; padding: 4px; background: rgba(0,0,0,0.3); border-radius: 4px;">
+                        <div v-if="showDSPSlider.nb" class="slider-group" style="min-width: 100px;">
+                            <span class="slider-label" style="font-size: 9px;">NB</span>
+                            <input type="range" v-model.number="dspLevels.nb" @input="setDSPLevel('nb')" min="0" max="100" style="width: 80px;">
+                            <span class="slider-value" style="font-size: 9px;">{{ dspLevels.nb }}</span>
+                        </div>
+                        <div v-if="showDSPSlider.nr" class="slider-group" style="min-width: 100px;">
+                            <span class="slider-label" style="font-size: 9px;">NR</span>
+                            <input type="range" v-model.number="dspLevels.nr" @input="setDSPLevel('nr')" min="0" max="100" style="width: 80px;">
+                            <span class="slider-value" style="font-size: 9px;">{{ dspLevels.nr }}</span>
+                        </div>
+                        <div v-if="showDSPSlider.anf" class="slider-group" style="min-width: 100px;">
+                            <span class="slider-label" style="font-size: 9px;">ANF</span>
+                            <input type="range" v-model.number="dspLevels.anf" @input="setDSPLevel('anf')" min="0" max="100" style="width: 80px;">
+                            <span class="slider-value" style="font-size: 9px;">{{ dspLevels.anf }}</span>
+                        </div>
+                        <div v-if="showDSPSlider.apf" class="slider-group" style="min-width: 100px;">
+                            <span class="slider-label" style="font-size: 9px;">APF</span>
+                            <input type="range" v-model.number="dspLevels.apf" @input="setDSPLevel('apf')" min="0" max="100" style="width: 80px;">
+                            <span class="slider-value" style="font-size: 9px;">{{ dspLevels.apf }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- RIT/XIT and Step/AGC dropdowns - right aligned -->
+            <div class="control-group" style="gap: 12px; position: absolute; right: 8px;">
+                <!-- RIT/XIT Controls (2 lines) -->
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <div class="rit-xit-control">
+                        <button @click="toggleRIT" :class="ritEnabled ? 'active' : ''">RIT</button>
+                        <button @click="adjustRIT(-1)">◀</button>
+                        <div class="rit-xit-value">{{ ritValue }} Hz</div>
+                        <button @click="adjustRIT(1)">▶</button>
+                    </div>
+                    
+                    <div class="rit-xit-control">
+                        <button @click="toggleXIT" :class="xitEnabled ? 'active' : ''">XIT</button>
+                        <button @click="adjustXIT(-1)">◀</button>
+                        <div class="rit-xit-value">{{ xitValue }} Hz</div>
+                        <button @click="adjustXIT(1)">▶</button>
+                    </div>
+                </div>
+                
+                <!-- Step and AGC dropdowns -->
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span class="label">Step:</span>
+                        <select v-model="currentStepIndex" @change="setTuningStep" class="step-select">
+                            <option v-for="(step, index) in (stepsByMode[radioStatus.mode] || stepsByMode['USB'])" :key="index" :value="index">{{ step }}</option>
+                        </select>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span class="label">AGC:</span>
+                        <select :value="radioStatus.agc_mode || 'med'" @change="setAGC($event.target.value)" class="agc-select">
+                            <option value="off">OFF</option>
+                            <option value="slow">SLOW</option>
+                            <option value="med">MED</option>
+                            <option value="fast">FAST</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Row 4: TX Frequency if split/RX2 enabled -->
+        <div class="control-row" v-if="radioStatus.split_enabled || radioStatus.rx2_enabled">
+            <span class="label">{{ radioStatus.split_enabled ? 'TX' : 'SUB' }}</span>
+            <div class="sub-freq">{{ formattedSubFreq }}</div>
+        </div>
+    </div>
+
+    <script>
+        // Set page mode BEFORE loading app.js
+        window.PAGE_MODE = 'radio';
+    </script>
+    <!-- Load modular JavaScript files -->
+    <script src="js/core.js"></script>
+    <script src="js/websocket.js"></script>
+    <script src="js/radio-controls.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/dx-spots.js"></script>
+    <script src="js/app-main.js"></script>
+</body>
+</html>

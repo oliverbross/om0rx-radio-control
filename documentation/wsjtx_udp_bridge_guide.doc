@@ -1,0 +1,316 @@
+{\rtf1\ansi\deff0{\fonttbl{\f0 Courier New;}{\f1 Arial;}{\f2 Calibri;}}{\colortbl;\red240\green240\blue240;\red0\green0\blue0;}\paperw11906\paperh16838\margl1134\margr1134\margt1134\margb1134\fs28\f2\b WSJT-X UDP → Web App Integration Guide (JS/HTML/PHP)\b0\par\fs22\f2 Version: 1.0  \tab Date: 28 Oct 2025  \parAuthor: ChatGPT (for Oliver Bross / MorseTrainerPro)\par\par\fs24\f2\b Overview\b0\par\fs20\f2 Purpose
+This document packages a complete, ready-to-hand-over solution to receive WSJT-X UDP telemetry (Status, Decode, Logged ADIF), show “who WSJT-X is working now” in a browser widget, and automatically log the ADIF to your PHP backend.
+
+Why a bridge?
+Browsers cannot listen on UDP. WSJT-X emits local UDP datagrams on port 2237. A tiny companion “bridge” on the WSJT-X machine listens on UDP and forwards parsed JSON via WebSocket (or posts to PHP).
+
+Deliverables
+• Node.js UDP→WebSocket bridge (primary, JS-friendly)
+• PHP endpoint to store Logged ADIF
+• Minimal MariaDB schema
+• Drop-in browser widget example (vanilla JS; works in Vue as well)
+• Optional: PHP-only UDP listener (Logged ADIF only)
+• Optional: Python bridge (py-wsjtx)
+• PM2 + systemd unit files
+• Test checklist & troubleshooting
+\par\par\fs24\f2\b Architecture\b0\par{\pard\li360\fs20\f0 Architecture (high-level)
++------------------+         UDP:2237 (unicast or multicast)         +------------------+
+|   WSJT-X (PC)    |  --------------------------------------------->  |  Local Bridge    |
+|  Settings->Reporting                                            |    |  (Node.js/Py)   |
+|  Address: 127.0.0.1 or 224.0.0.1                                |    +--------+------+
+|  Port:    2237                                                  |             |
++------------------+                                              |      WebSocket JSON (ws://localhost:8073)
+                                                                  v
+                                                         +--------+--------+
+                                                         |  Web App (JS)   |----> Optional: POST /api/log-wsjt.php (ADIF)
+                                                         |  “Now Working”  |
+                                                         +-----------------+
+Notes
+• Use multicast (224.0.0.1) if you want GridTracker and your bridge to listen simultaneously.
+• If the PHP API runs on a server, keep the bridge on the WSJT-X PC and let it POST to your server.
+}\par\par\fs24\f2\b WSJT-X Configuration\b0\par\fs20\f2 WSJT-X Settings -> Reporting
+1) Enable “Accept UDP requests” (WSJT-X UDP server).
+2) UDP Server: Address = 127.0.0.1 (single) or 224.0.0.1 (multicast), Port = 2237 (default).
+3) Keep GridTracker or other tools enabled—multicast allows multiple listeners.
+\par\par\fs24\f2\b A) Node.js Bridge (recommended)\b0\par\fs20\f2 Primary implementation: Node.js UDP -> WebSocket bridge
+This companion service runs on the same PC as WSJT-X (or same LAN). It listens on UDP:2237, parses WSJT-X messages, and broadcasts compact JSON over WebSocket to the browser. It also forwards Logged ADIF to your PHP endpoint.\par{\pard\li360\fs20\f0 Setup (Windows or Linux)
+> mkdir wsjtx-udp-bridge && cd wsjtx-udp-bridge
+> npm init -y
+> npm i ws dgram @pgogas/wsjtx-js node-fetch
+
+Create server.js
+}\par{\pard\li360\qc\cb1\fs18\f0 // server.js
+import dgram from 'dgram';
+import \{ WebSocketServer \} from 'ws';
+import fetch from 'node-fetch';
+import \{ WsjtX \} from '@pgogas/wsjtx-js';
+
+const UDP_PORT = process.env.UDP_PORT || 2237;
+const MULTICAST = process.env.UDP_MULTICAST || '224.0.0.1'; // leave empty to skip multicast
+const WS_PORT = process.env.WS_PORT || 8073;
+const POST_ADIF_URL = process.env.POST_ADIF_URL || 'http://localhost/api/log-wsjt.php'; // change to your server URL
+const POST_TOKEN = process.env.POST_TOKEN || ''; // optional bearer token
+
+const wss = new WebSocketServer(\{ port: WS_PORT \});
+const udp = dgram.createSocket(\{ type: 'udp4', reuseAddr: true \});
+const parser = new WsjtX();
+
+function broadcast(obj)\{
+  const json = JSON.stringify(obj);
+  for (const c of wss.clients) \{
+    if (c.readyState === 1) c.send(json);
+  \}
+\}
+
+udp.on('message', async (buf, rinfo) => \{
+  try \{
+    const msg = parser.parse(buf);
+    const payload = \{ ts: Date.now(), rinfo, ...msg \};
+
+    // Fan-out to browser clients
+    broadcast(payload);
+
+    // Persist when a QSO is logged in WSJT-X
+    if (msg.type === 'LoggedAdif' && msg.adif) \{
+      const headers = \{ 'Content-Type': 'application/json' \};
+      if (POST_TOKEN) headers['Authorization'] = `Bearer $\{POST_TOKEN\}`;
+      try \{
+        await fetch(POST_ADIF_URL, \{ method: 'POST', headers, body: JSON.stringify(\{ adif: msg.adif, at: payload.ts \}) \});
+      \} catch (e) \{
+        console.error('POST to PHP failed:', e.message);
+      \}
+    \}
+  \} catch (e) \{
+    // Unknown datagram—ignore silently
+  \}
+\});
+
+udp.on('listening', () => \{
+  const a = udp.address();
+  console.log(`UDP listening $\{a.address\}:$\{a.port\}`);
+  if (MULTICAST) \{
+    try \{
+      udp.addMembership(MULTICAST);
+      console.log(`Joined multicast group $\{MULTICAST\}`);
+    \} catch (e) \{
+      console.warn(`Multicast join failed: $\{e.message\}`);
+    \}
+  \}
+  console.log(`WebSocket on ws://localhost:$\{WS_PORT\}`);
+\});
+
+udp.bind(UDP_PORT);}\par{\pard\li360\fs20\f0 Run
+> node server.js
+
+Optional: PM2 (auto-start)
+> npm i -g pm2
+> pm2 start server.js --name wsjtx-bridge
+> pm2 save
+
+Optional: systemd unit (Linux)
+File: /etc/systemd/system/wsjtx-bridge.service
+}\par{\pard\li720\qc\cb1\fs18\f0 [Unit]
+Description=WSJT-X UDP Bridge
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/wsjtx-udp-bridge/server.js
+WorkingDirectory=/opt/wsjtx-udp-bridge
+Restart=always
+User=wsjtx
+Environment=UDP_PORT=2237
+Environment=UDP_MULTICAST=224.0.0.1
+Environment=WS_PORT=8073
+Environment=POST_ADIF_URL=http://yourserver/api/log-wsjt.php
+Environment=POST_TOKEN=
+
+[Install]
+WantedBy=multi-user.target}\par\par\fs24\f2\b Frontend: Browser Widget\b0\par\fs20\f2 Browser widget (drop-in)
+This shows “who we’re working now” from Status frames and forwards Logged ADIF to the PHP endpoint (if you prefer client-side POST as well). Replace localhost if your bridge runs elsewhere.\par{\pard\li360\qc\cb1\fs18\f0 <div id="wsjtxNow" style="font:14px system-ui;padding:8px;border:1px solid #ccc;border-radius:8px;">
+  Connecting…
+</div>
+<script>
+(function()\{
+  const el = document.getElementById('wsjtxNow');
+  const wsUrl = 'ws://localhost:8073';
+  let ws;
+
+  function connect()\{
+    ws = new WebSocket(wsUrl);
+    ws.onopen = () => el.textContent = 'Listening to WSJT‑X…';
+    ws.onclose = () => \{ el.textContent = 'Disconnected. Reconnecting…'; setTimeout(connect, 2000); \};
+    ws.onmessage = (ev) => \{
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'Status') \{
+        const dial = (msg.dialFrequency/1e6).toFixed(3);
+        const now = msg.txEnabled && msg.dxCall ? `TX → $\{msg.dxCall\} ($\{msg.dxGrid || '—'\}) @ $\{dial\} MHz $\{msg.mode\}` : 'Idle';
+        el.textContent = now;
+      \}
+      if (msg.type === 'LoggedAdif') \{
+        // Optionally post from the browser as well:
+        // fetch('/api/log-wsjt.php', \{ method:'POST', headers:\{'Content-Type':'application/json'\}, body: JSON.stringify(\{ adif: msg.adif, at: msg.ts \}) \});
+      \}
+    \};
+  \}
+  connect();
+\})();
+</script>}\par\par\fs24\f2\b Backend: PHP Endpoint\b0\par\fs20\f2 PHP logging endpoint
+Receives raw ADIF from the bridge and stores both the raw ADIF and parsed key fields. For production, validate Authorization headers and sanitize inputs.\par{\pard\li360\qc\cb1\fs18\f0 <?php
+// File: public/api/log-wsjt.php
+header('Content-Type: application/json');
+
+// Optional: simple token check
+$auth = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+$token = ''; // set same as POST_TOKEN
+if ($token && $auth !== "Bearer $token") \{
+  http_response_code(401);
+  echo json_encode(['ok'=>false,'error'=>'unauthorized']);
+  exit;
+\}
+
+$input = json_decode(file_get_contents('php://input'), true);
+$adif = $input['adif'] ?? '';
+$ts   = intval($input['at'] ?? time()*1000);
+
+if (!$adif) \{
+  http_response_code(400);
+  echo json_encode(['ok'=>false,'error'=>'missing adif']);
+  exit;
+\}
+
+// Minimal ADIF parse (CALL, BAND, MODE). Keep full ADIF as reference.
+function adif_get($adif, $tag) \{
+  if (preg_match('/<' . preg_quote($tag, '/') . ':(\\d+)[^>]*>([^<]+)/i', $adif, $m)) \{
+    return substr($m[2], 0, intval($m[1]));
+  \}
+  return null;
+\}
+
+$call = adif_get($adif, 'CALL');
+$band = adif_get($adif, 'BAND');
+$mode = adif_get($adif, 'MODE');
+
+// Store to DB (PDO / MariaDB)
+try \{
+  $pdo = new PDO('mysql:host=localhost;dbname=radio;charset=utf8mb4','radio','password', [
+    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
+  ]);
+
+  // Store raw ADIF
+  $stmt = $pdo->prepare('INSERT INTO wsjtx_adif(ts_ms, adif) VALUES(?, ?)');
+  $stmt->execute([$ts, $adif]);
+
+  // History entry
+  $stmt = $pdo->prepare('INSERT INTO wsjtx_qsos(call_sign, band, mode, ts_ms) VALUES(?, ?, ?, ?)');
+  $stmt->execute([$call, $band, $mode, $ts]);
+
+  echo json_encode(['ok'=>true,'call'=>$call,'band'=>$band,'mode'=>$mode]);
+\} catch (Throwable $e) \{
+  http_response_code(500);
+  echo json_encode(['ok'=>false,'error'=>$e->getMessage()]);
+\}}\par\par\fs24\f2\b Database Schema (MariaDB)\b0\par{\pard\li360\qc\cb1\fs18\f0 -- MariaDB schema
+CREATE TABLE IF NOT EXISTS wsjtx_now (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  dx_call VARCHAR(32),
+  dx_grid VARCHAR(8),
+  mode VARCHAR(16),
+  dial_hz BIGINT,
+  tx TINYINT(1),
+  de_call VARCHAR(32)
+);
+
+CREATE TABLE IF NOT EXISTS wsjtx_adif (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  ts_ms BIGINT,
+  adif MEDIUMTEXT
+);
+
+CREATE TABLE IF NOT EXISTS wsjtx_qsos (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  call_sign VARCHAR(32),
+  band VARCHAR(16),
+  mode VARCHAR(16),
+  ts_ms BIGINT,
+  INDEX(call_sign), INDEX(band), INDEX(mode)
+);}\par\par\fs24\f2\b Optional: PHP-only UDP Listener (Logged ADIF)\b0\par{\pard\li360\qc\cb1\fs18\f0 <?php
+// File: cli/wsjtx_udp_logger.php
+// Purpose: listen UDP 2237 and only capture LoggedAdif frames, then POST to your API
+// Run: php cli/wsjtx_udp_logger.php
+
+$socket = stream_socket_server('udp://0.0.0.0:2237', $errno, $errstr, STREAM_SERVER_BIND);
+if (!$socket) \{ fwrite(STDERR, "Bind failed: $errstr\\n"); exit(1); \}
+
+while (true) \{
+  $pkt = stream_socket_recvfrom($socket, 65535, 0, $peer);
+  if ($pkt === false) continue;
+  // A minimal heuristic: Logged ADIF packets contain "<EOH>" and "<EOR>"
+  if (strpos($pkt, '<EOH>') !== false && strpos($pkt, '<EOR>') !== false) \{
+    $adif = $pkt;
+    $ch = curl_init('http://localhost/api/log-wsjt.php');
+    curl_setopt_array($ch, [
+      CURLOPT_POST=>true,
+      CURLOPT_HTTPHEADER=>['Content-Type: application/json'],
+      CURLOPT_POSTFIELDS=>json_encode(['adif'=>$adif, 'at'=>round(microtime(true)*1000)]),
+      CURLOPT_RETURNTRANSFER=>true,
+      CURLOPT_TIMEOUT=>3
+    ]);
+    curl_exec($ch);
+    curl_close($ch);
+  \}
+\}}\par\par\fs24\f2\b B) Python Bridge (alternative)\b0\par\fs20\f2 Alternative: Python bridge using py-wsjtx (if your backend is Python).\par{\pard\li360\qc\cb1\fs18\f0 # pip install py-wsjtx websockets requests
+import asyncio, json, requests, websockets
+from pywsjtx.wsjtx import WSJTXListener
+
+POST_ADIF_URL = 'http://localhost/api/log-wsjt.php'
+
+async def main():
+    async with websockets.serve(handler, '0.0.0.0', 8073):
+        listener = WSJTXListener(udp_port=2237)
+        for msg in listener:
+            payload = \{"ts": getattr(msg, 'utc_timestamp', None)\}
+            await broadcast(payload, msg)
+            if msg.__class__.__name__ == 'WsjtxLoggedAdifMessage' and hasattr(msg, 'adif_text'):
+                try:
+                    requests.post(POST_ADIF_URL, json=\{"adif": msg.adif_text, "at": payload["ts"]\})
+                except Exception:
+                    pass
+
+clients = set()
+async def handler(ws, path):
+    clients.add(ws)
+    try:
+        await ws.wait_closed()
+    finally:
+        clients.remove(ws)
+
+async def broadcast(payload, msg):
+    data = \{"type": msg.__class__.__name__, **payload\}
+    for ws in list(clients):
+        try:
+            await ws.send(json.dumps(data))
+        except Exception:
+            pass
+
+asyncio.run(main())}\par\par\fs24\f2\b Security & Firewall\b0\par\fs20\f2 Security & Firewall
+• Bind the WebSocket to localhost unless you need LAN access; otherwise, add a simple token.
+• Allow UDP 2237 inbound on the WSJT-X PC (Windows Defender Firewall or ufw).
+• If using multicast, ensure IGMP/multicast is permitted on your NIC/Wi-Fi.
+\par\par\fs24\f2\b Testing\b0\par\fs20\f2 Testing Checklist
+1) In WSJT-X, enable UDP server; set Address=127.0.0.1, Port=2237.
+2) Start the Node bridge: node server.js (watch console for “UDP listening” & “WebSocket on 8073”).
+3) Open your web page with the widget; it should say “Listening to WSJT-X…”, then “Idle”.
+4) Start a CQ or reply; Status frames should show TX -> CALL (GRID) @ FREQ MODE.
+5) Log a QSO in WSJT-X; verify POST arrives in PHP logs and DB wsjtx_adif/wsjtx_qsos updated.
+\par\par\fs24\f2\b Troubleshooting\b0\par\fs20\f2 Troubleshooting
+• No updates in browser: check that the bridge console shows incoming packets; verify WS URL (8073).
+• Nothing received: confirm WSJT-X Address/Port and that firewall allows UDP 2237.
+• Multicast join failed: fall back to 127.0.0.1 or enable multicast on the adapter.
+• PHP 401: token mismatch—set POST_TOKEN env in systemd/PM2 and in PHP check.
+• ADIF not parsed: store raw ADIF only, or expand the regex set for the fields you need.
+\par\par\fs24\f2\b Integration Notes\b0\par\fs20\f2 Integration Notes
+• Vue/React: wrap the widget in a component; keep a singleton WS connection (avoid multiple sockets).
+• Wavelog: either store raw ADIF and import in batches, or map to your existing QSO table schema.
+• Extending: you can also react to “Decode” messages (spots) to feed your TX Trainer analytics.
+\par\par\fs18\f2 --- End of Document ---\par}

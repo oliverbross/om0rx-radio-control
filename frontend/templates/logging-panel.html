@@ -1,0 +1,1083 @@
+        <!-- QSO Logging Panel with Wavelog/QRZ Integration - ABOVE FILTERS -->
+        <div :class="['logging-panel', { collapsed: loggingPanelSectionCollapsed, 'layout-compact': interfaceLayout === 'compact' }]">
+            <!-- Collapse button for entire section -->
+            <button class="panel-collapse-btn" @click="loggingPanelSectionCollapsed = !loggingPanelSectionCollapsed" :title="loggingPanelSectionCollapsed ? 'Expand panels' : 'Collapse panels'">
+                {{ loggingPanelSectionCollapsed ? '▶' : '▼' }}
+            </button>
+            
+            <!-- LOGGING FORM COLUMN WITH TABS -->
+            <div class="logging-form-column">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <h3 style="margin: 0;">
+                        <span>📝 Log QSO</span>
+                    </h3>
+                    <div style="display: flex; gap: 10px; align-items: center; flex: 1; justify-content: center;">
+                        <div style="display: flex; gap: 5px; align-items: center; font-size: 12px;">
+                            <button 
+                                :class="['layout-mode-btn', { active: interfaceLayout === 'full' }]" 
+                                @click="setInterfaceLayout('full')"
+                                title="Switch to full interface">
+                                Full
+                            </button>
+                            <button 
+                                :class="['layout-mode-btn', { active: interfaceLayout === 'compact' }]" 
+                                @click="setInterfaceLayout('compact')"
+                                title="Switch to compact interface">
+                                Compact
+                            </button>
+                        </div>
+                        <div v-if="interfaceLayout === 'compact'" style="width: 1px; height: 20px; background: #444; margin: 0 5px;"></div>
+                        <button v-if="interfaceLayout === 'compact'" @click="showQRZModal" class="header-info-btn" title="View QRZ profile">👤 QRZ Profile</button>
+                        <button v-if="interfaceLayout === 'compact'" @click="showDXCCModal" class="header-info-btn" title="View DXCC and Wavelog info">🌍 DXCC / Wavelog Info</button>
+                    </div>
+                    <div style="display: flex; align-items: center;">
+                        <a href="#" @click.prevent="showLocalLog" class="local-log-link" title="View all logged contacts">📋 Local Log</a>
+                    </div>
+                </div>
+                
+                <!-- Tab Navigation -->
+                <div class="log-tabs-nav">
+                    <button :class="['log-tab-btn', { active: activeLogTab === 'station' }]" @click="activeLogTab = 'station'">Station</button>
+                    <button :class="['log-tab-btn', { active: activeLogTab === 'awards' }]" @click="activeLogTab = 'awards'">Awards</button>
+                    <button :class="['log-tab-btn', { active: activeLogTab === 'general' }]" @click="activeLogTab = 'general'">General</button>
+                    <button :class="['log-tab-btn', { active: activeLogTab === 'qsl' }]" @click="activeLogTab = 'qsl'">QSL</button>
+                    <button :class="['log-tab-btn', { active: activeLogTab === 'sat' }]" @click="activeLogTab = 'sat'" v-show="loggingForm.prop_mode === 'SAT' || activeLogTab === 'sat'">SAT</button>
+                </div>
+                
+                <!-- STATION TAB - FULL LAYOUT -->
+                <div v-if="activeLogTab === 'station' && interfaceLayout === 'full'" class="log-tab-content">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Callsign</label>
+                            <input type="text" v-model="loggingForm.callsign" placeholder="Enter callsign" @blur="autoPopulateForm" @input="onCallsignChange" @keydown.enter="autoPopulateForm">
+                        </div>
+                        <div class="form-group">
+                            <label>Frequency (MHz)</label>
+                            <input type="text" :value="formatFrequencyForDisplay(loggingForm.frequency)" placeholder="14.074.000" readonly class="frequency-display">
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Date</label>
+                            <input type="date" v-model="loggingForm.date">
+                        </div>
+                        <div class="form-group">
+                            <label>Time Off (UTC)</label>
+                            <input type="time" v-model="loggingForm.time_off">
+                        </div>
+                    </div>
+                    
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label>Mode</label>
+                            <select v-model="loggingForm.mode">
+                                <option value="">--Auto--</option>
+                                <option>CW</option>
+                                <option>SSB</option>
+                                <option>USB</option>
+                                <option>LSB</option>
+                                <option>AM</option>
+                                <option>FM</option>
+                                <option>RTTY</option>
+                                <option>PSK</option>
+                                <option>FT8</option>
+                                <option>FT4</option>
+                                <option>DIGI</option>
+                                <option>JT65</option>
+                                <option>SSTV</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>RST Sent</label>
+                            <input type="number" v-model.number="loggingForm.rst_sent" min="1" max="999" placeholder="599">
+                        </div>
+                        <div class="form-group">
+                            <label>RST RCVD</label>
+                            <input type="number" v-model.number="loggingForm.rst_received" min="1" max="999" placeholder="599">
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Operator Name</label>
+                            <input type="text" v-model="loggingForm.name" placeholder="Optional">
+                        </div>
+                        <div class="form-group">
+                            <label>Location/QTH</label>
+                            <input type="text" v-model="loggingForm.qth" placeholder="Optional">
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Comments/Notes</label>
+                        <textarea v-model="loggingForm.notes" placeholder="QSO details..."></textarea>
+                    </div>
+                </div>
+                
+                <!-- STATION TAB - COMPACT LAYOUT -->
+                <div v-if="activeLogTab === 'station' && interfaceLayout === 'compact'" class="log-tab-content compact-station-form">
+                    <!-- Row 1: Essential fields in one line -->
+                    <div class="compact-form-row">
+                        <div class="form-group">
+                            <label>Callsign</label>
+                            <input type="text" v-model="loggingForm.callsign" placeholder="Enter callsign" @blur="autoPopulateForm" @input="onCallsignChange" @keydown.enter="autoPopulateForm">
+                        </div>
+                        <div class="form-group">
+                            <label>Frequency</label>
+                            <input type="text" :value="formatFrequencyForDisplay(loggingForm.frequency)" placeholder="14.074.000" readonly class="frequency-display">
+                        </div>
+                        <div class="form-group">
+                            <label>Date</label>
+                            <input type="date" v-model="loggingForm.date">
+                        </div>
+                        <div class="form-group">
+                            <label>Time Off</label>
+                            <input type="time" v-model="loggingForm.time_off">
+                        </div>
+                        <div class="form-group">
+                            <label>Mode</label>
+                            <select v-model="loggingForm.mode">
+                                <option value="">--Auto--</option>
+                                <option>CW</option>
+                                <option>SSB</option>
+                                <option>USB</option>
+                                <option>LSB</option>
+                                <option>AM</option>
+                                <option>FM</option>
+                                <option>RTTY</option>
+                                <option>PSK</option>
+                                <option>FT8</option>
+                                <option>FT4</option>
+                                <option>DIGI</option>
+                                <option>JT65</option>
+                                <option>SSTV</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>RST Sent</label>
+                            <input type="number" v-model.number="loggingForm.rst_sent" min="1" max="999" placeholder="599">
+                        </div>
+                        <div class="form-group">
+                            <label>RST Rcvd</label>
+                            <input type="number" v-model.number="loggingForm.rst_received" min="1" max="999" placeholder="599">
+                        </div>
+                    </div>
+                    
+                    <!-- Row 2: Operator, Location, and Comments -->
+                    <div class="compact-form-row compact-row-3cols">
+                        <div class="form-group">
+                            <label>Operator Name</label>
+                            <input type="text" v-model="loggingForm.name" placeholder="Optional">
+                        </div>
+                        <div class="form-group">
+                            <label>Location/QTH</label>
+                            <input type="text" v-model="loggingForm.qth" placeholder="Optional">
+                        </div>
+                        <div class="form-group">
+                            <label>Comments/Notes</label>
+                            <input type="text" v-model="loggingForm.notes" placeholder="QSO details...">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- AWARDS TAB (Full Layout) -->
+                <div v-if="activeLogTab === 'awards' && interfaceLayout === 'full'" class="log-tab-content">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>POTA</label>
+                            <input type="text" v-model="loggingForm.pota" placeholder="K-0001">
+                        </div>
+                        <div class="form-group">
+                            <label>SOTA</label>
+                            <input type="text" v-model="loggingForm.sota" placeholder="W4/NC-123">
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>WWFF</label>
+                            <input type="text" v-model="loggingForm.wwff" placeholder="XXFF-1234">
+                        </div>
+                        <div class="form-group">
+                            <label>IOTA</label>
+                            <input type="text" v-model="loggingForm.iota" placeholder="EU-001">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AWARDS TAB (Compact Layout) -->
+                <div v-if="activeLogTab === 'awards' && interfaceLayout === 'compact'" class="log-tab-content compact-station-form">
+                    <!-- Row 1: All awards on one line -->
+                    <div class="compact-form-row compact-row-4cols">
+                        <div class="form-group">
+                            <label>POTA</label>
+                            <input type="text" v-model="loggingForm.pota" placeholder="K-0001">
+                        </div>
+                        <div class="form-group">
+                            <label>SOTA</label>
+                            <input type="text" v-model="loggingForm.sota" placeholder="W4/NC-123">
+                        </div>
+                        <div class="form-group">
+                            <label>WWFF</label>
+                            <input type="text" v-model="loggingForm.wwff" placeholder="XXFF-1234">
+                        </div>
+                        <div class="form-group">
+                            <label>IOTA</label>
+                            <input type="text" v-model="loggingForm.iota" placeholder="EU-001">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- GENERAL TAB (Full Layout) -->
+                <div v-if="activeLogTab === 'general' && interfaceLayout === 'full'" class="log-tab-content">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Continent</label>
+                            <input type="text" v-model="loggingForm.continent" placeholder="EU">
+                        </div>
+                        <div class="form-group">
+                            <label>CQ Zone</label>
+                            <input type="number" v-model.number="loggingForm.cq_zone" min="1" max="40" placeholder="14">
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>ITU Zone</label>
+                            <input type="number" v-model.number="loggingForm.itu_zone" min="1" max="90" placeholder="28">
+                        </div>
+                        <div class="form-group">
+                            <label>Region</label>
+                            <input type="text" v-model="loggingForm.region" placeholder="Optional">
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Country</label>
+                            <input type="text" v-model="loggingForm.country" placeholder="Optional">
+                        </div>
+                        <div class="form-group">
+                            <label>Gridsquare</label>
+                            <input type="text" v-model="loggingForm.gridsquare" placeholder="EN42">
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>State</label>
+                            <input type="text" v-model="loggingForm.state" placeholder="CA">
+                        </div>
+                        <div class="form-group">
+                            <label>US County</label>
+                            <input type="text" v-model="loggingForm.us_county" placeholder="Optional">
+                        </div>
+                    </div>
+                    
+                    <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                    <h4 style="font-size: 11px; color: #4a9eff; font-weight: 600; margin-bottom: 8px;">⚡ Power & Equipment</h4>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>TX Power (Watts)</label>
+                            <input type="number" v-model.number="loggingForm.tx_pwr" min="0" placeholder="100">
+                        </div>
+                        <div class="form-group">
+                            <label>Antenna</label>
+                            <input type="text" v-model="loggingForm.ant" placeholder="Dipole">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- GENERAL TAB (Compact Layout) -->
+                <div v-if="activeLogTab === 'general' && interfaceLayout === 'compact'" class="log-tab-content compact-station-form">
+                    <!-- Row 1: Continent (wide), CQ Zone (narrow), ITU Zone (narrow), Region (wide), Country (wide), Gridsquare (wide) -->
+                    <div class="compact-form-row compact-row-6cols">
+                        <div class="form-group">
+                            <label>Continent</label>
+                            <input type="text" v-model="loggingForm.continent" placeholder="EU">
+                        </div>
+                        <div class="form-group">
+                            <label>CQ Zone</label>
+                            <input type="number" v-model.number="loggingForm.cq_zone" min="1" max="40" placeholder="14">
+                        </div>
+                        <div class="form-group">
+                            <label>ITU Zone</label>
+                            <input type="number" v-model.number="loggingForm.itu_zone" min="1" max="90" placeholder="28">
+                        </div>
+                        <div class="form-group">
+                            <label>Region</label>
+                            <input type="text" v-model="loggingForm.region" placeholder="Optional">
+                        </div>
+                        <div class="form-group">
+                            <label>Country</label>
+                            <input type="text" v-model="loggingForm.country" placeholder="Optional">
+                        </div>
+                        <div class="form-group">
+                            <label>Gridsquare</label>
+                            <input type="text" v-model="loggingForm.gridsquare" placeholder="EN42">
+                        </div>
+                    </div>
+                    
+                    <!-- Row 2: State, US County, TX Power, Antenna -->
+                    <div class="compact-form-row compact-row-4cols">
+                        <div class="form-group">
+                            <label>State</label>
+                            <input type="text" v-model="loggingForm.state" placeholder="CA">
+                        </div>
+                        <div class="form-group">
+                            <label>US County</label>
+                            <input type="text" v-model="loggingForm.us_county" placeholder="Optional">
+                        </div>
+                        <div class="form-group">
+                            <label>TX Power</label>
+                            <input type="number" v-model.number="loggingForm.tx_pwr" min="0" placeholder="100">
+                        </div>
+                        <div class="form-group">
+                            <label>Antenna</label>
+                            <input type="text" v-model="loggingForm.ant" placeholder="Dipole">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- QSL TAB (Full Layout) -->
+                <div v-if="activeLogTab === 'qsl' && interfaceLayout === 'full'" class="log-tab-content">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>QSL Received</label>
+                            <select v-model="loggingForm.qsl_rcvd">
+                                <option value="N">No</option>
+                                <option value="Y">Yes</option>
+                                <option value="V">Via LoTW</option>
+                                <option value="D">Direct</option>
+                                <option value="B">Bureau</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>QSL Sent</label>
+                            <select v-model="loggingForm.qsl_sent">
+                                <option value="N">No</option>
+                                <option value="Y">Yes</option>
+                                <option value="R">Requested</option>
+                                <option value="D">Direct</option>
+                                <option value="B">Bureau</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group-checkbox">
+                        <input type="checkbox" v-model="loggingForm.lotw_member" id="lotw-member">
+                        <label for="lotw-member">LoTW Member</label>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>QSL Manager</label>
+                        <input type="text" v-model="loggingForm.qsl_manager" placeholder="Call of QSL manager">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Email Address</label>
+                        <input type="email" v-model="loggingForm.email" placeholder="email@example.com">
+                    </div>
+                </div>
+
+                <!-- QSL TAB (Compact Layout) -->
+                <div v-if="activeLogTab === 'qsl' && interfaceLayout === 'compact'" class="log-tab-content compact-station-form">
+                    <!-- Row 1: All QSL fields + LoTW Member on one line -->
+                    <div class="compact-form-row compact-row-qsl">
+                        <div class="form-group">
+                            <label>QSL Received</label>
+                            <select v-model="loggingForm.qsl_rcvd">
+                                <option value="N">No</option>
+                                <option value="Y">Yes</option>
+                                <option value="V">Via LoTW</option>
+                                <option value="D">Direct</option>
+                                <option value="B">Bureau</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>QSL Sent</label>
+                            <select v-model="loggingForm.qsl_sent">
+                                <option value="N">No</option>
+                                <option value="Y">Yes</option>
+                                <option value="R">Requested</option>
+                                <option value="D">Direct</option>
+                                <option value="B">Bureau</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>QSL Manager</label>
+                            <input type="text" v-model="loggingForm.qsl_manager" placeholder="Call of QSL manager">
+                        </div>
+                        <div class="form-group">
+                            <label>Email Address</label>
+                            <input type="email" v-model="loggingForm.email" placeholder="email@example.com">
+                        </div>
+                        <div class="form-group-checkbox" style="display: flex; align-items: flex-end; padding-bottom: 3px;">
+                            <input type="checkbox" v-model="loggingForm.lotw_member" id="lotw-member-compact">
+                            <label for="lotw-member-compact" style="margin-bottom: 0;">LoTW Member</label>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- SATELLITE TAB (hidden unless SAT mode) -->
+                <div v-if="activeLogTab === 'sat'" class="log-tab-content">
+                    <div class="form-group">
+                        <label>Propagation Mode</label>
+                        <select v-model="loggingForm.prop_mode">
+                            <option value="">None</option>
+                            <option value="SAT">Satellite</option>
+                            <option value="TROPOSPHERE">Troposphere</option>
+                            <option value="SPORADIC_E">Sporadic E</option>
+                            <option value="AURORA">Aurora</option>
+                            <option value="METEOR">Meteor Scatter</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Antenna Path</label>
+                        <select v-model="loggingForm.ant_path">
+                            <option value="">Not specified</option>
+                            <option value="SHORT PATH">Short Path</option>
+                            <option value="LONG PATH">Long Path</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Satellite Name</label>
+                        <input type="text" v-model="loggingForm.sat_name" placeholder="QO-100">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Satellite Mode</label>
+                        <input type="text" v-model="loggingForm.sat_mode" placeholder="U/V">
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>RX Frequency (Hz)</label>
+                            <input type="number" v-model.number="loggingForm.freq_rx" placeholder="10489710000">
+                        </div>
+                        <div class="form-group">
+                            <label>RX Mode</label>
+                            <input type="text" v-model="loggingForm.mode_rx" placeholder="SSB">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- ACTION BUTTONS & STATUS -->
+                <div class="log-button-row">
+                    <button @click="submitQSO" class="submit-btn">📤 Log QSO</button>
+                    <button class="clear-btn" @click="clearLoggingForm">Clear</button>
+                    <div class="prev-qsos-button-wrapper">
+                        <button class="prev-qsos-btn" @click="openPrevQsosModal">📋 Prev QSO's</button>
+                    </div>
+                    <!-- Centered Modal Backdrop -->
+                    <div v-if="showPrevQSOsDropdown" class="prev-qsos-modal-backdrop" @click="closePrevQSOsDropdown">
+                        <div class="prev-qsos-modal" @click.stop>
+                            <!-- Tab Header -->
+                            <div class="prev-qsos-tab-header">
+                                <button class="prev-qsos-tab-btn" 
+                                        :class="{ active: prevQSOsActiveTab === 'wavelog' }"
+                                        @click="prevQSOsActiveTab = 'wavelog'">
+                                    🌐 Wavelog
+                                </button>
+                                <button class="prev-qsos-tab-btn" 
+                                        :class="{ active: prevQSOsActiveTab === 'local' }"
+                                        @click="switchToLocalLogTab">
+                                    📁 Local Log
+                                </button>
+                                <button class="prev-qsos-close-btn" @click="closePrevQSOsDropdown">✕</button>
+                            </div>
+                            
+                            <!-- Wavelog Tab Content -->
+                            <div v-if="prevQSOsActiveTab === 'wavelog'" class="prev-qsos-tab-content">
+                                <div class="prev-qsos-dropdown-header">
+                                    <span>Wavelog QSOs ({{ currentPrevQSOsPage }} of {{ prevQSOsPageCount }})</span>
+                                </div>
+                                <table class="prev-qsos-dropdown-table">
+                                    <thead>
+                                        <tr>
+                                            <th>DATE</th>
+                                            <th>CALL</th>
+                                            <th>MODE</th>
+                                            <th>RST S</th>
+                                            <th>RST R</th>
+                                            <th>BAND</th>
+                                            <th>LOTW</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="qso in paginatedPreviousQSOs" :key="`${qso.call}-${qso.qso_date}-${qso.time_on || ''}`">
+                                            <td class="qso-date">{{ formatQSODate(qso.qso_date) }}</td>
+                                            <td class="qso-call">{{ qso.call }}</td>
+                                            <td class="qso-mode">{{ qso.mode }}</td>
+                                            <td>{{ qso.rst_sent }}</td>
+                                            <td>{{ qso.rst_rcvd }}</td>
+                                            <td>{{ qso.band }}</td>
+                                            <td :class="['qso-lotw', qso.lotw_qsl === 'Y' ? 'lotw-yes' : 'lotw-no']">
+                                                {{ qso.lotw_qsl === 'Y' ? '✓ YES' : '✗ NO' }}
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                                <!-- Pagination Controls -->
+                                <div class="prev-qsos-pagination" v-if="prevQSOsPageCount > 1">
+                                    <button class="prev-qsos-page-btn" @click="prevPrevQSOsPage" :disabled="isPrevQSOsFirstPage">← Prev</button>
+                                    <span class="prev-qsos-page-info">Page {{ currentPrevQSOsPage }} of {{ prevQSOsPageCount }}</span>
+                                    <button class="prev-qsos-page-btn" @click="nextPrevQSOsPage" :disabled="isPrevQSOsLastPage">Next →</button>
+                                </div>
+                            </div>
+                            
+                            <!-- Local Log Tab Content -->
+                            <div v-if="prevQSOsActiveTab === 'local'" class="prev-qsos-tab-content">
+                                <div class="prev-qsos-dropdown-header">
+                                    <span>Local Log QSOs ({{ currentLocalLogPage }} of {{ localLogPageCount }})</span>
+                                </div>
+                                <table class="prev-qsos-dropdown-table">
+                                    <thead>
+                                        <tr>
+                                            <th>DATE</th>
+                                            <th>CALL</th>
+                                            <th>MODE</th>
+                                            <th>RST S</th>
+                                            <th>RST R</th>
+                                            <th>BAND</th>
+                                            <th>LOTW</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="qso in paginatedLocalLogQSOs" :key="`local-${qso.call}-${qso.qso_date}-${qso.time_on || ''}`">
+                                            <td class="qso-date">{{ formatQSODate(qso.qso_date) }}</td>
+                                            <td class="qso-call">{{ qso.call }}</td>
+                                            <td class="qso-mode">{{ qso.mode }}</td>
+                                            <td>{{ qso.rst_sent }}</td>
+                                            <td>{{ qso.rst_rcvd }}</td>
+                                            <td>{{ qso.band }}</td>
+                                            <td :class="['qso-lotw', qso.lotw_qsl === 'Y' ? 'lotw-yes' : 'lotw-no']">
+                                                {{ qso.lotw_qsl === 'Y' ? '✓ YES' : '✗ NO' }}
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                                <!-- Pagination Controls -->
+                                <div class="prev-qsos-pagination" v-if="localLogPageCount > 1">
+                                    <button class="prev-qsos-page-btn" @click="prevLocalLogPage" :disabled="isLocalLogFirstPage">← Prev</button>
+                                    <span class="prev-qsos-page-info">Page {{ currentLocalLogPage }} of {{ localLogPageCount }}</span>
+                                    <button class="prev-qsos-page-btn" @click="nextLocalLogPage" :disabled="isLocalLogLastPage">Next →</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div v-if="loggingStatus" :class="['logging-status', loggingStatus.type]">
+                    {{ loggingStatus.message }}
+                </div>
+            </div>
+            
+            <!-- QRZ PANEL COLUMN (Hidden in Compact Mode) -->
+            <div v-if="interfaceLayout === 'full'" class="qrz-panel-column">
+                <h3>
+                    <span>👤 QRZ Profile</span>
+                </h3>
+                
+                <div v-if="qrzLoading" class="panel-loading">
+                    <span class="loading-spinner"></span>
+                    <span>Loading profile...</span>
+                </div>
+                
+                <div v-else-if="qrzProfile.success" class="qrz-profile-content">
+                    <div class="qrz-profile-image">
+                        <img v-if="qrzProfile.image_url" :src="qrzProfile.image_url" :alt="qrzProfile.name" onerror="this.style.display='none'">
+                        <div v-if="!qrzProfile.image_url" style="color: #666; text-align: center; padding: 20px;">📷 No photo</div>
+                    </div>
+                    
+                    <!-- QRZ Data Fields (Commented Out)
+                    <div class="qrz-info">
+                        <div class="qrz-info-row">
+                            <span class="qrz-info-label">Name</span>
+                            <span class="qrz-info-value">{{ qrzProfile.name || '-' }}</span>
+                        </div>
+                        <div class="qrz-info-row">
+                            <span class="qrz-info-label">Country</span>
+                            <span class="qrz-info-value">{{ qrzProfile.country || '-' }}</span>
+                        </div>
+                        <div v-if="qrzProfile.state" class="qrz-info-row">
+                            <span class="qrz-info-label">State</span>
+                            <span class="qrz-info-value">{{ qrzProfile.state }}</span>
+                        </div>
+                        <div class="qrz-info-row">
+                            <span class="qrz-info-label">Grid</span>
+                            <span class="qrz-info-value">{{ qrzProfile.grid || '-' }}</span>
+                        </div>
+                        <div v-if="qrzProfile.email" class="qrz-info-row">
+                            <span class="qrz-info-label">Email</span>
+                            <span class="qrz-info-value" style="font-size: 9px;">{{ qrzProfile.email }}</span>
+                        </div>
+                        <div v-if="qrzProfile.cqzone || qrzProfile.ituzone" class="qrz-info-row">
+                            <span class="qrz-info-label">CQ/ITU</span>
+                            <span class="qrz-info-value">{{ qrzProfile.cqzone || '?' }}/{{ qrzProfile.ituzone || '?' }}</span>
+                        </div>
+                        <div v-if="qrzProfile.class" class="qrz-info-row">
+                            <span class="qrz-info-label">Class</span>
+                            <span class="qrz-info-value">{{ qrzProfile.class }}</span>
+                        </div>
+                        <div v-if="qrzProfile.born" class="qrz-info-row">
+                            <span class="qrz-info-label">Born</span>
+                            <span class="qrz-info-value">{{ qrzProfile.born }}</span>
+                        </div>
+                        <div v-if="qrzProfile.iota" class="qrz-info-row">
+                            <span class="qrz-info-label">IOTA</span>
+                            <span class="qrz-info-value">{{ qrzProfile.iota }}</span>
+                        </div>
+                        <div v-if="qrzProfile.county" class="qrz-info-row">
+                            <span class="qrz-info-label">County</span>
+                            <span class="qrz-info-value">{{ qrzProfile.county }}</span>
+                        </div>
+                        <div v-if="qrzQslOptions" class="qrz-info-row">
+                            <span class="qrz-info-label">QSL</span>
+                            <span class="qrz-info-value">{{ qrzQslOptions }}</span>
+                        </div>
+                    </div>
+                    -->
+                    
+                    <!-- Previous QSOs Table (Under QRZ Picture) - REMOVED - Now using hover dropdown in Log QSO section
+                    <div v-if="previousQSOs && previousQSOs.length > 0" class="previous-qsos-section" style="font-size: 13px;">
+                        <h4 style="font-size: 13px; margin-top: 12px;">📋 Previous QSOs (Last 5)</h4>
+                        <div class="previous-qsos-table-container">
+                            <table class="previous-qsos-table" style="font-size: 13px;">
+                                <thead>
+                                    <tr>
+                                        <th style="font-size: 12px;">Date</th>
+                                        <th style="font-size: 13px;">CALL</th>
+                                        <th style="font-size: 13px; text-align: center;">Mode</th>
+                                        <th style="font-size: 13px;">RST S</th>
+                                        <th style="font-size: 13px;">RST R</th>
+                                        <th style="font-size: 13px;">Band</th>
+                                        <th style="font-size: 13px;">LoTW</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="(qso, index) in previousQSOs" :key="index" class="qso-row">
+                                        <td class="qso-date" style="font-size: 12px;">{{ formatQSODate(qso.qso_date) }}</td>
+                                        <td class="qso-call" style="font-size: 13px;">{{ qso.call }}</td>
+                                        <td class="qso-mode" style="font-size: 13px; text-align: center;">{{ qso.mode }}</td>
+                                        <td class="qso-rst" style="font-size: 13px;">{{ qso.rst_sent }}</td>
+                                        <td class="qso-rst" style="font-size: 13px;">{{ qso.rst_rcvd }}</td>
+                                        <td class="qso-band" style="font-size: 13px;">{{ qso.band }}</td>
+                                        <td class="qso-lotw" :class="{ 'lotw-yes': qso.lotw_qsl === 'Y', 'lotw-no': qso.lotw_qsl === 'N' }" style="font-size: 13px;">
+                                            {{ qso.lotw_qsl === 'Y' ? '✅ YES' : (qso.lotw_qsl === 'N' ? '❌ NO' : '-') }}
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    -->
+                </div>
+                
+                <div v-else-if="!qrzLoading" class="qrz-profile-content">
+                    <div style="color: #666; text-align: center; padding: 20px;">
+                        👆 Enter a callsign to view profile
+                    </div>
+                </div>
+                
+                <!-- Solar Conditions Panel - Only show when no QRZ profile image is loaded -->
+                <div class="solar-conditions-panel" v-if="solarData && (!qrzProfile.success || !qrzProfile.image_url)">
+                    <h4 style="color: #ffffff; margin: 15px 0 10px 0; font-size: 14px; display: flex; align-items: center; justify-content: center;">
+                        <span style="margin-right: 8px;">🌞</span>
+                        Solar & HF Conditions
+                    </h4>
+                    
+                    <div class="solar-indices-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px;">
+                        <div class="solar-index-card" :class="'solar-' + (solarData.quality_levels?.sfi || 'unknown')">
+                            <div class="solar-index-label">SFI</div>
+                            <div class="solar-index-value">{{ solarData.indices?.sfi || '—' }}</div>
+                        </div>
+                        <div class="solar-index-card" :class="'solar-' + (solarData.quality_levels?.a_index || 'unknown')">
+                            <div class="solar-index-label">A-index</div>
+                            <div class="solar-index-value">{{ solarData.indices?.a_index || '—' }}</div>
+                        </div>
+                        <div class="solar-index-card" :class="'solar-' + (solarData.quality_levels?.k_index || 'unknown')">
+                            <div class="solar-index-label">K-index</div>
+                            <div class="solar-index-value">{{ solarData.indices?.k_index || '—' }}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="hf-conditions" v-if="solarData.hf_conditions">
+                        <div class="hf-conditions-header" style="font-size: 12px; color: #ccc; margin-bottom: 6px; text-align: center;">
+                            HF Band Conditions {{ isDaytime ? '☀️ Day' : '🌙 Night' }}
+                        </div>
+                        <div class="hf-bands-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;">
+                            <div v-for="(conditions, band) in solarData.hf_conditions" :key="band" 
+                                 class="hf-band-card" 
+                                 :class="'hf-' + getHFConditionClass(conditions, isDaytime)">
+                                <div class="hf-band-name">{{ formatBandName(band) }}</div>
+                                <div class="hf-band-condition">{{ getHFCondition(conditions, isDaytime) }}</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div v-if="solarData.updated" class="solar-updated" style="text-align: center; font-size: 10px; color: #888; margin-top: 8px;">
+                        Updated: {{ solarData.updated }}
+                    </div>
+                </div>
+            </div>
+            
+            <!-- DXCC PANEL COLUMN (Hidden in Compact Mode) -->
+            <div v-if="interfaceLayout === 'full'" class="dxcc-panel-column">
+                <h3>
+                    <span>🌍 DXCC / Wavelog Info</span>
+                </h3>
+                
+                <div v-if="dxccLoading" class="panel-loading">
+                    <span class="loading-spinner"></span>
+                    <span>Looking up {{ loggingForm.callsign }}...</span>
+                </div>
+                
+                <div v-else-if="dxccStatus.success && dxccStatus.data">
+                    <!-- Callsign Info Header -->
+                    <div class="dxcc-info-header">
+                        <div class="dxcc-callsign">
+                            <strong>{{ dxccStatus.data.callsign }}</strong>
+                            <span class="dxcc-flag">{{ dxccStatus.data.dxcc_flag }}</span>
+                        </div>
+                        <div class="dxcc-country">{{ dxccStatus.data.dxcc }}</div>
+                        <div v-if="dxccStatus.data.name" class="dxcc-name">👤 {{ dxccStatus.data.name }}</div>
+                    </div>
+                    
+                    <!-- Location Info -->
+                    <div class="dxcc-details">
+                        <div v-if="dxccStatus.data.gridsquare" class="dxcc-detail-item">
+                            📍 Grid: <strong>{{ dxccStatus.data.gridsquare }}</strong>
+                        </div>
+                        <div v-if="dxccStatus.data.location" class="dxcc-detail-item">
+                            📌 Location: <strong>{{ dxccStatus.data.location }}</strong>
+                        </div>
+                        <div v-if="dxccStatus.data.state" class="dxcc-detail-item">
+                            🏛️ State: <strong>{{ dxccStatus.data.state }}</strong>
+                        </div>
+                        <div v-if="dxccStatus.data.iota_ref" class="dxcc-detail-item">
+                            🏝️ IOTA: <strong>{{ dxccStatus.data.iota_ref }}</strong>
+                        </div>
+                    </div>
+                    
+                    <!-- Confirmation Status Grid (2-column compact layout) -->
+                    <div class="dxcc-confirmation-grid">
+                        <div class="confirmation-item">
+                            <span class="confirmation-label">Call CFM:</span>
+                            <span :class="['confirmation-badge', { 'badge-yes': dxccStatus.data.call_confirmed, 'badge-no': !dxccStatus.data.call_confirmed }]">
+                                {{ dxccStatus.data.call_confirmed ? '✅ YES' : '❌ NO' }}
+                            </span>
+                        </div>
+                        <div class="confirmation-item">
+                            <span class="confirmation-label">DXCC CFM:</span>
+                            <span :class="['confirmation-badge', { 'badge-yes': dxccStatus.data.dxcc_confirmed, 'badge-no': !dxccStatus.data.dxcc_confirmed }]">
+                                {{ dxccStatus.data.dxcc_confirmed ? '✅ YES' : '❌ NO' }}
+                            </span>
+                        </div>
+                        <div class="confirmation-item">
+                            <span class="confirmation-label">CFM this Band:</span>
+                            <span :class="['confirmation-badge', { 'badge-yes': dxccStatus.data.call_confirmed_band, 'badge-no': !dxccStatus.data.call_confirmed_band }]">
+                                {{ dxccStatus.data.call_confirmed_band ? '✅ YES' : '❌ NO' }}
+                            </span>
+                        </div>
+                        <div class="confirmation-item">
+                            <span class="confirmation-label">On Band:</span>
+                            <span :class="['confirmation-badge', { 'badge-yes': dxccStatus.data.dxcc_confirmed_on_band, 'badge-no': !dxccStatus.data.dxcc_confirmed_on_band }]">
+                                {{ dxccStatus.data.dxcc_confirmed_on_band ? '✅ YES' : '❌ NO' }}
+                            </span>
+                        </div>
+                        <div class="confirmation-item">
+                            <span class="confirmation-label">CFM Band/Mode:</span>
+                            <span :class="['confirmation-badge', { 'badge-yes': dxccStatus.data.call_confirmed_band_mode, 'badge-no': !dxccStatus.data.call_confirmed_band_mode }]">
+                                {{ dxccStatus.data.call_confirmed_band_mode ? '✅ YES' : '❌ NO' }}
+                            </span>
+                        </div>
+                        <div class="confirmation-item">
+                            <span class="confirmation-label">Band/Mode:</span>
+                            <span :class="['confirmation-badge', { 'badge-yes': dxccStatus.data.dxcc_confirmed_on_band_mode, 'badge-no': !dxccStatus.data.dxcc_confirmed_on_band_mode }]">
+                                {{ dxccStatus.data.dxcc_confirmed_on_band_mode ? '✅ YES' : '❌ NO' }}
+                            </span>
+                        </div>
+                    </div>
+                    
+                    <!-- Additional Info -->
+                    <div v-if="dxccStatus.data.lotw_member" class="confirmation-item" style="margin-top: 10px;">
+                        <span class="confirmation-label">📡 LoTW Member:</span>
+                        <span class="confirmation-badge badge-yes">✅ YES</span>
+                    </div>
+                    <div v-if="dxccStatus.data.qsl_manager" class="dxcc-detail-item" style="margin-top: 5px; font-size: 0.9em;">
+                        🆚 QSL Mgr: <strong>{{ dxccStatus.data.qsl_manager }}</strong>
+                    </div>
+                    
+                    <!-- Additional DXCC Data (2-column layout) -->
+                    <div class="dxcc-additional-info">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                            <h4 style="margin: 0;">📊 Additional Information</h4>
+                            <button @click="showAdditionalInfoModal = true" class="filter-btn">📖 View</button>
+                        </div>
+
+                    </div>
+
+                </div>
+                
+                <div v-else style="color: #666; text-align: center; padding: 20px;">
+                    Enter a callsign to see Wavelog info
+                </div>
+                
+                <!-- Wavelog Statistics Panel - Only show when no DXCC info is loaded -->
+                <div class="wavelog-statistics-panel" v-if="(wavelogStats || wavelogWpStats) && !dxccStatus.success">
+                    <h4 style="color: #ffffff; margin: 15px 0 10px 0; font-size: 14px; display: flex; align-items: center; justify-content: center;">
+                        <span style="margin-right: 8px;">📊</span>
+                        Wavelog Statistics
+                    </h4>
+                    
+                    <!-- General Statistics (Today, Month, Year, Total) -->
+                    <div v-if="wavelogStats" class="wavelog-stats-grid">
+                        <div class="wavelog-stat-card">
+                            <div class="wavelog-stat-label">Today</div>
+                            <div class="wavelog-stat-value">{{ wavelogStats.Today || '0' }}</div>
+                        </div>
+                        <div class="wavelog-stat-card">
+                            <div class="wavelog-stat-label">This Month</div>
+                            <div class="wavelog-stat-value">{{ wavelogStats.month_qsos || '0' }}</div>
+                        </div>
+                        <div class="wavelog-stat-card">
+                            <div class="wavelog-stat-label">This Year</div>
+                            <div class="wavelog-stat-value">{{ wavelogStats.year_qsos || '0' }}</div>
+                        </div>
+                        <div class="wavelog-stat-card wavelog-stat-highlight">
+                            <div class="wavelog-stat-label">Total QSOs</div>
+                            <div class="wavelog-stat-value">{{ wavelogStats.total_qsos || '0' }}</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Mode Statistics -->
+                    <div v-if="consolidatedWavelogModes && consolidatedWavelogModes.length > 0" class="wavelog-modes-section">
+                        <div class="wavelog-modes-header">
+                            QSOs BY MODE
+                        </div>
+                        <div class="wavelog-modes-grid-consolidated">
+                            <div v-for="modeData in consolidatedWavelogModes" :key="modeData.mode" 
+                                 class="wavelog-mode-card-large">
+                                <span class="wavelog-mode-name-large">{{ modeData.mode }}</span>
+                                <span class="wavelog-mode-count-large">{{ modeData.total }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Modal: Additional Information -->
+        <div v-if="showAdditionalInfoModal" class="modal-overlay" @click.self="showAdditionalInfoModal = false">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>📊 Additional Information</h3>
+                    <button @click="showAdditionalInfoModal = false" style="background: none; border: none; color: #e0e0e0; font-size: 24px; cursor: pointer;">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div v-if="dxccStatus.success && dxccStatus.data" class="additional-info-modal-grid">
+                        <div v-if="dxccStatus.data.cont" class="modal-info-item">
+                            <strong>🌍 Continent:</strong> {{ dxccStatus.data.cont }}
+                        </div>
+                        <div v-if="dxccStatus.data.dxcc_cqz" class="modal-info-item">
+                            <strong>🌐 CQ Zone:</strong> {{ dxccStatus.data.dxcc_cqz }}
+                        </div>
+                        <div v-if="dxccStatus.data.bearing" class="modal-info-item">
+                            <strong>🧭 Bearing:</strong> {{ dxccStatus.data.bearing }}°
+                        </div>
+                        <div v-if="dxccStatus.data.dxcc_id" class="modal-info-item">
+                            <strong>🆔 DXCC ID:</strong> {{ dxccStatus.data.dxcc_id }}
+                        </div>
+                        <div v-if="dxccStatus.data.dxcc_lat" class="modal-info-item">
+                            <strong>📍 Latitude:</strong> {{ dxccStatus.data.dxcc_lat }}°
+                        </div>
+                        <div v-if="dxccStatus.data.dxcc_long" class="modal-info-item">
+                            <strong>📍 Longitude:</strong> {{ dxccStatus.data.dxcc_long }}°
+                        </div>
+                        <div v-if="dxccStatus.data.us_county" class="modal-info-item" style="grid-column: 1 / -1;">
+                            <strong>🏛️ US County:</strong> {{ dxccStatus.data.us_county }}
+                        </div>
+                        <div v-if="dxccStatus.data.suffix_slash" class="modal-info-item" style="grid-column: 1 / -1;">
+                            <strong>📞 Suffix:</strong> {{ dxccStatus.data.suffix_slash }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Modal: QRZ Profile (Compact Mode) -->
+        <div v-if="showQRZProfileModal" class="modal-overlay" @click.self="closeQRZModal">
+            <div class="modal-content modal-lg">
+                <div class="modal-header">
+                    <h3>👤 QRZ Profile</h3>
+                    <button @click="closeQRZModal" style="background: none; border: none; color: #e0e0e0; font-size: 24px; cursor: pointer;">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div v-if="qrzLoading" class="panel-loading">
+                        <span class="loading-spinner"></span>
+                        <span>Loading profile...</span>
+                    </div>
+                    
+                    <div v-else-if="qrzProfile.success">
+                        <div class="qrz-profile-image-modal">
+                            <img v-if="qrzProfile.image_url" :src="qrzProfile.image_url" :alt="qrzProfile.name" onerror="this.style.display='none'">
+                            <div v-if="!qrzProfile.image_url" style="color: #666; text-align: center; padding: 40px;">📷 No photo available</div>
+                        </div>
+                        
+                        <div class="qrz-info-modal">
+                            <div class="qrz-info-row">
+                                <span class="qrz-info-label">Name</span>
+                                <span class="qrz-info-value">{{ qrzProfile.name || '-' }}</span>
+                            </div>
+                            <div class="qrz-info-row">
+                                <span class="qrz-info-label">Country</span>
+                                <span class="qrz-info-value">{{ qrzProfile.country || '-' }}</span>
+                            </div>
+                            <div v-if="qrzProfile.state" class="qrz-info-row">
+                                <span class="qrz-info-label">State</span>
+                                <span class="qrz-info-value">{{ qrzProfile.state }}</span>
+                            </div>
+                            <div class="qrz-info-row">
+                                <span class="qrz-info-label">Grid</span>
+                                <span class="qrz-info-value">{{ qrzProfile.grid || '-' }}</span>
+                            </div>
+                            <div v-if="qrzProfile.email" class="qrz-info-row">
+                                <span class="qrz-info-label">Email</span>
+                                <span class="qrz-info-value" style="font-size: 9px;">{{ qrzProfile.email }}</span>
+                            </div>
+                            <div v-if="qrzProfile.cqzone || qrzProfile.ituzone" class="qrz-info-row">
+                                <span class="qrz-info-label">CQ/ITU</span>
+                                <span class="qrz-info-value">{{ qrzProfile.cqzone || '?' }}/{{ qrzProfile.ituzone || '?' }}</span>
+                            </div>
+                            <div v-if="qrzProfile.class" class="qrz-info-row">
+                                <span class="qrz-info-label">Class</span>
+                                <span class="qrz-info-value">{{ qrzProfile.class }}</span>
+                            </div>
+                            <div v-if="qrzProfile.born" class="qrz-info-row">
+                                <span class="qrz-info-label">Born</span>
+                                <span class="qrz-info-value">{{ qrzProfile.born }}</span>
+                            </div>
+                            <div v-if="qrzProfile.iota" class="qrz-info-row">
+                                <span class="qrz-info-label">IOTA</span>
+                                <span class="qrz-info-value">{{ qrzProfile.iota }}</span>
+                            </div>
+                            <div v-if="qrzProfile.county" class="qrz-info-row">
+                                <span class="qrz-info-label">County</span>
+                                <span class="qrz-info-value">{{ qrzProfile.county }}</span>
+                            </div>
+                            <div v-if="qrzQslOptions" class="qrz-info-row">
+                                <span class="qrz-info-label">QSL</span>
+                                <span class="qrz-info-value">{{ qrzQslOptions }}</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div v-else style="color: #666; text-align: center; padding: 40px;">
+                        Enter a callsign in the form above to view the QRZ profile
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Modal: DXCC / Wavelog Info (Compact Mode) -->
+        <div v-if="showDXCCWavelogModal" class="modal-overlay" @click.self="closeDXCCModal">
+            <div class="modal-content modal-lg">
+                <div class="modal-header">
+                    <h3>🌍 DXCC / Wavelog Info</h3>
+                    <button @click="closeDXCCModal" style="background: none; border: none; color: #e0e0e0; font-size: 24px; cursor: pointer;">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div v-if="dxccLoading" class="panel-loading">
+                        <span class="loading-spinner"></span>
+                        <span>Looking up {{ loggingForm.callsign }}...</span>
+                    </div>
+                    
+                    <div v-else-if="dxccStatus.success && dxccStatus.data">
+                        <!-- Callsign Info Header -->
+                        <div class="dxcc-info-header">
+                            <div class="dxcc-callsign">
+                                <strong>{{ dxccStatus.data.callsign }}</strong>
+                                <span class="dxcc-flag">{{ dxccStatus.data.dxcc_flag }}</span>
+                            </div>
+                            <div class="dxcc-country">{{ dxccStatus.data.dxcc }}</div>
+                            <div v-if="dxccStatus.data.name" class="dxcc-name">👤 {{ dxccStatus.data.name }}</div>
+                        </div>
+                        
+                        <!-- Location Info -->
+                        <div class="dxcc-details">
+                            <div v-if="dxccStatus.data.gridsquare" class="dxcc-detail-item">
+                                📍 Grid: <strong>{{ dxccStatus.data.gridsquare }}</strong>
+                            </div>
+                            <div v-if="dxccStatus.data.location" class="dxcc-detail-item">
+                                📌 Location: <strong>{{ dxccStatus.data.location }}</strong>
+                            </div>
+                            <div v-if="dxccStatus.data.state" class="dxcc-detail-item">
+                                🏛️ State: <strong>{{ dxccStatus.data.state }}</strong>
+                            </div>
+                            <div v-if="dxccStatus.data.iota_ref" class="dxcc-detail-item">
+                                🏝️ IOTA: <strong>{{ dxccStatus.data.iota_ref }}</strong>
+                            </div>
+                        </div>
+                        
+                        <!-- Confirmation Status Grid (2-column compact layout) -->
+                        <div class="dxcc-confirmation-grid">
+                            <div class="confirmation-item">
+                                <span class="confirmation-label">Call CFM:</span>
+                                <span :class="['confirmation-badge', { 'badge-yes': dxccStatus.data.call_confirmed, 'badge-no': !dxccStatus.data.call_confirmed }]">
+                                    {{ dxccStatus.data.call_confirmed ? '✅ YES' : '❌ NO' }}
+                                </span>
+                            </div>
+                            <div class="confirmation-item">
+                                <span class="confirmation-label">DXCC CFM:</span>
+                                <span :class="['confirmation-badge', { 'badge-yes': dxccStatus.data.dxcc_confirmed, 'badge-no': !dxccStatus.data.dxcc_confirmed }]">
+                                    {{ dxccStatus.data.dxcc_confirmed ? '✅ YES' : '❌ NO' }}
+                                </span>
+                            </div>
+                            <div class="confirmation-item">
+                                <span class="confirmation-label">CFM this Band:</span>
+                                <span :class="['confirmation-badge', { 'badge-yes': dxccStatus.data.call_confirmed_band, 'badge-no': !dxccStatus.data.call_confirmed_band }]">
+                                    {{ dxccStatus.data.call_confirmed_band ? '✅ YES' : '❌ NO' }}
+                                </span>
+                            </div>
+                            <div class="confirmation-item">
+                                <span class="confirmation-label">On Band:</span>
+                                <span :class="['confirmation-badge', { 'badge-yes': dxccStatus.data.dxcc_confirmed_on_band, 'badge-no': !dxccStatus.data.dxcc_confirmed_on_band }]">
+                                    {{ dxccStatus.data.dxcc_confirmed_on_band ? '✅ YES' : '❌ NO' }}
+                                </span>
+                            </div>
+                            <div class="confirmation-item">
+                                <span class="confirmation-label">CFM Band/Mode:</span>
+                                <span :class="['confirmation-badge', { 'badge-yes': dxccStatus.data.call_confirmed_band_mode, 'badge-no': !dxccStatus.data.call_confirmed_band_mode }]">
+                                    {{ dxccStatus.data.call_confirmed_band_mode ? '✅ YES' : '❌ NO' }}
+                                </span>
+                            </div>
+                            <div class="confirmation-item">
+                                <span class="confirmation-label">Band/Mode:</span>
+                                <span :class="['confirmation-badge', { 'badge-yes': dxccStatus.data.dxcc_confirmed_on_band_mode, 'badge-no': !dxccStatus.data.dxcc_confirmed_on_band_mode }]">
+                                    {{ dxccStatus.data.dxcc_confirmed_on_band_mode ? '✅ YES' : '❌ NO' }}
+                                </span>
+                            </div>
+                        </div>
+                        
+                        <!-- Additional Info -->
+                        <div v-if="dxccStatus.data.lotw_member" class="confirmation-item" style="margin-top: 10px;">
+                            <span class="confirmation-label">📡 LoTW Member:</span>
+                            <span class="confirmation-badge badge-yes">✅ YES</span>
+                        </div>
+                        <div v-if="dxccStatus.data.qsl_manager" class="dxcc-detail-item" style="margin-top: 5px; font-size: 0.9em;">
+                            🆚 QSL Mgr: <strong>{{ dxccStatus.data.qsl_manager }}</strong>
+                        </div>
+                    </div>
+                    
+                    <div v-else style="color: #666; text-align: center; padding: 40px;">
+                        Enter a callsign in the form above to see Wavelog info
+                    </div>
+                </div>
+            </div>
+        </div>
+

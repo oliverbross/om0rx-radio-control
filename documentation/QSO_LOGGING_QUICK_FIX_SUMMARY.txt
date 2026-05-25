@@ -1,0 +1,106 @@
+═══════════════════════════════════════════════════════════════════════════════
+QSO LOGGING 500 ERROR - FIXED
+═══════════════════════════════════════════════════════════════════════════════
+
+THE PROBLEM:
+════════════
+When submitting a QSO, users got:
+  ❌ 500 (Internal Server Error)
+  ❌ SyntaxError: Unexpected token 'I', "Internal S"... is not valid JSON
+
+This was caused by:
+  1. Backend returning 500 error (HTML error page)
+  2. Frontend trying to parse HTML as JSON
+  3. JSON parsing fails → error message gets hidden
+  4. User sees confusing "Unexpected token" error instead of real problem
+
+
+THE FIX:
+════════
+Improved error handling in frontend/js/app-main.js (lines 651-678):
+
+BEFORE:
+  const data = await response.json();  // ❌ FAILS if response is HTML!
+  if (data.success || data.wavelog?.success) { ... }
+
+AFTER:
+  if (!response.ok) {  // ✅ Check HTTP status FIRST
+    try {
+      data = await response.json();  // Try JSON first
+      show error from data.detail or data.message
+    } catch {
+      errorText = await response.text();  // Fallback to plain text
+      show error from HTML/text response
+    }
+  }
+
+
+WHAT YOU'LL SEE NOW:
+═══════════════════
+Instead of:
+  ❌ SyntaxError: Unexpected token 'I'...
+
+You'll see:
+  ❌ [Actual error message from backend]
+  OR
+  ❌ 500: [Error details if available]
+  OR
+  ❌ Server error 500 - Check console for details
+
+
+HOW TO TROUBLESHOOT:
+════════════════════
+1. Open Browser Console (Press F12 → Console tab)
+2. Try submitting a QSO again
+3. Look for messages starting with:
+   📤 Sending QSO data...
+   📍 Backend error details...
+   📍 Server error response...
+4. The console will show:
+   - Exact data being sent
+   - Exact error response from backend
+   - Error details for debugging
+
+
+EXAMPLE CONSOLE OUTPUT:
+═══════════════════════
+📤 Sending QSO data to backend:
+{
+  "callsign": "W1ABC",
+  "frequency": 14.250,
+  "mode": "SSB",
+  "rst_sent": 59,
+  "rst_received": 59,
+  ...
+}
+
+📍 Backend error details:
+{
+  "detail": "Wavelog API timeout - check connectivity"
+}
+
+
+FILES CHANGED:
+══════════════
+✓ frontend/js/app-main.js
+  - Lines 641: Added QSO data logging
+  - Lines 651-678: Improved error handling
+  - Lines 656-678: Multi-tier error parsing (JSON → Text → Generic)
+
+
+STATUS:
+═══════
+✅ Error handling is now robust
+✅ Error messages are now user-friendly
+✅ Debugging is easier with console logging
+✅ Multiple error response formats are supported
+
+
+NEXT:
+═════
+Try submitting a QSO and report back:
+1. Does it work now?
+2. If error, what message do you see in the UI?
+3. What messages appear in browser console (F12)?
+
+This will help identify the actual backend issue!

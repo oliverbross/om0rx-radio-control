@@ -1,0 +1,36 @@
+        <div v-if="showAdditionalInfoModal" class="modal-overlay" @click.self="showAdditionalInfoModal = false">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>📊 Additional Information</h3>
+                    <button @click="showAdditionalInfoModal = false" style="background: none; border: none; color: #e0e0e0; font-size: 24px; cursor: pointer;">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div v-if="dxccStatus.success && dxccStatus.data" class="additional-info-modal-grid">
+                        <div v-if="dxccStatus.data.cont" class="modal-info-item">
+                            <strong>🌍 Continent:</strong> {{ dxccStatus.data.cont }}
+                        </div>
+                        <div v-if="dxccStatus.data.dxcc_cqz" class="modal-info-item">
+                            <strong>🌐 CQ Zone:</strong> {{ dxccStatus.data.dxcc_cqz }}
+                        </div>
+                        <div v-if="dxccStatus.data.bearing" class="modal-info-item">
+                            <strong>🧭 Bearing:</strong> {{ dxccStatus.data.bearing }}°
+                        </div>
+                        <div v-if="dxccStatus.data.dxcc_id" class="modal-info-item">
+                            <strong>🆔 DXCC ID:</strong> {{ dxccStatus.data.dxcc_id }}
+                        </div>
+                        <div v-if="dxccStatus.data.dxcc_lat" class="modal-info-item">
+                            <strong>📍 Latitude:</strong> {{ dxccStatus.data.dxcc_lat }}°
+                        </div>
+                        <div v-if="dxccStatus.data.dxcc_long" class="modal-info-item">
+                            <strong>📍 Longitude:</strong> {{ dxccStatus.data.dxcc_long }}°
+                        </div>
+                        <div v-if="dxccStatus.data.us_county" class="modal-info-item" style="grid-column: 1 / -1;">
+                            <strong>🏛️ US County:</strong> {{ dxccStatus.data.us_county }}
+                        </div>
+                        <div v-if="dxccStatus.data.suffix_slash" class="modal-info-item" style="grid-column: 1 / -1;">
+                            <strong>📞 Suffix:</strong> {{ dxccStatus.data.suffix_slash }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>

@@ -1,0 +1,15 @@
+# FlexRadio Web Control - Python Dependencies
+
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+websockets>=13.0
+
+# Data validation (pydantic comes with fastapi)
+# pydantic>=2.10.0 (included with fastapi)
+
+# HTTP client (for testing)
+httpx>=0.28.0
+
+# Existing dependencies (if any)
+# Add any other dependencies from your original project here

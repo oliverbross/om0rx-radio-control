@@ -1,0 +1,100 @@
+        </div>
+
+        <!-- Sync Status Modal -->
+        <div id="sync-modal" v-if="showSyncModal" class="modal-overlay" @click.self="showSyncModal = false">
+        <div class="modal-content" style="max-width: 650px;">
+            <div class="modal-header">
+                <h2>📊 Wavelog→DuckDB Sync Status</h2>
+                <button @click="showSyncModal = false" class="modal-close">✕</button>
+            </div>
+            <div class="modal-body" style="padding: 20px; font-size: 14px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <!-- Left Column -->
+                    <div>
+                        <div style="margin-bottom: 18px;">
+                            <strong style="font-size: 14px;">Status:</strong>
+                            <div style="margin-top: 5px; font-size: 14px; font-weight: bold; color: ${syncStatus.syncing ? '#ff9800' : '#4caf50'}">
+                                <span :style="`color: ${syncStatus.syncing ? '#ff9800' : '#4caf50'}`">
+                                    {{ syncStatus.syncing ? '⟳ Syncing in progress...' : '✓ Ready' }}
+                                </span>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 18px;">
+                            <strong style="font-size: 14px;">Total Records:</strong>
+                            <div style="margin-top: 5px; font-size: 18px; color: #2196f3; font-weight: bold;">{{ syncStatus.total_records || 0 }}</div>
+                        </div>
+                        <div style="margin-bottom: 18px;">
+                            <strong style="font-size: 14px;">Added This Sync:</strong>
+                            <div style="margin-top: 5px; font-size: 14px; color: #4caf50;">{{ syncStatus.new_records_this_sync || 0 }}</div>
+                        </div>
+                        <div style="margin-bottom: 18px;">
+                            <strong style="font-size: 14px;">Updated This Sync:</strong>
+                            <div style="margin-top: 5px; font-size: 14px; color: #ff9800;">{{ syncStatus.records_updated || 0 }}</div>
+                        </div>
+                    </div>
+                    <!-- Right Column -->
+                    <div>
+                        <div style="margin-bottom: 18px;">
+                            <strong style="font-size: 14px;">Last Sync:</strong>
+                            <div style="margin-top: 5px; font-size: 13px; color: #999;">
+                                {{ syncStatus.last_sync ? new Date(syncStatus.last_sync).toLocaleString() : 'Never' }}
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 18px;">
+                            <strong style="font-size: 14px;">Next Sync In:</strong>
+                            <div style="margin-top: 5px; font-size: 14px; font-weight: bold; color: #ff6f00;">{{ syncStatus.next_sync_in || 0 }}s</div>
+                        </div>
+                        <div style="margin-bottom: 18px;">
+                            <strong style="font-size: 14px;">Sync Interval:</strong>
+                            <div style="margin-top: 5px; font-size: 13px; color: #999;">
+                                60 seconds
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 18px;">
+                            <strong style="font-size: 14px;">Sync Source:</strong>
+                            <div style="margin-top: 5px; font-size: 13px; color: #2196f3;">
+                                Wavelog MySQL DB
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Wavelog vs DuckDB Comparison -->
+                <div style="margin-top: 20px; padding: 15px; background-color: #2a2a2a; border-radius: 5px; border-left: 4px solid #2196f3;">
+                    <strong style="font-size: 14px; display: block; margin-bottom: 10px; color: #fff;">🔄 Wavelog → DuckDB Sync:</strong>
+                    <div style="display: flex; justify-content: space-around; align-items: center;">
+                        <div style="text-align: center;">
+                            <div style="font-size: 13px; color: #bbb; margin-bottom: 5px;">Wavelog (Source)</div>
+                            <div style="font-size: 20px; font-weight: bold; color: #4caf50;">MySQL</div>
+                        </div>
+                        <div style="font-size: 20px; color: #666;">→</div>
+                        <div style="text-align: center;">
+                            <div style="font-size: 13px; color: #bbb; margin-bottom: 5px;">DuckDB (Cache)</div>
+                            <div style="font-size: 20px; font-weight: bold; color: #2196f3;">{{ syncStatus.total_records || 0 }} QSOs</div>
+                        </div>
+                        <div style="font-size: 12px; color: #bbb; margin-left: 10px;">
+                            <span v-if="syncStatus.syncing" style="color: #ff9800;">
+                                ⟳ Syncing...
+                            </span>
+                            <span v-else-if="syncStatus.last_sync" style="color: #4caf50;">
+                                ✓ In sync
+                            </span>
+                            <span v-else style="color: #666;">
+                                ⏳ Waiting...
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #333;">
+                    <strong style="font-size: 14px;">Database Location:</strong>
+                    <div style="margin-top: 5px; font-size: 12px; color: #999; font-family: monospace;">
+                        /data/qso_log.duckdb
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 10px 20px; display: flex; justify-content: flex-end; gap: 8px;">
+                <button @click="showSyncModal = false" class="btn btn-secondary">Close</button>
+            </div>
+        </div>
+

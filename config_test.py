@@ -1,0 +1,117 @@
+from pathlib import Path
+# config.py (ver5.8)
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_DIR = PROJECT_ROOT / "data"
+LOGS_DIR = PROJECT_ROOT / "logs"
+DB_HOST = "wavelog.online"
+DB_PORT = 3306
+DB_NAME = "om0rx"
+DB_USER = "<db_user>"
+DB_PASS = "<db_password>"
+MY_STATION = "OM0RX"
+CLUSTER_HOST = "localhost"
+CLUSTER_PORT = 7373
+CLUSTER_USER = "OM0RX-11"
+CLUSTER_PASS = ""
+LOGIN_SCRIPT  = []
+
+SDR_UDP_HOST = "127.0.0.1"
+SDR_UDP_PORT = 12061
+UDP_ENABLED_DEFAULT = False
+FLEX_TCP_HOST = "192.168.0.199"
+FLEX_TCP_PORT = 4992
+FLEX_ENABLED_DEFAULT = True
+CTY_CSV_PATH = str(DATA_DIR / "cty.csv")
+CTY_IGNORE_SUFFIXES = ["P","M","MM","AM","QRP","QRPP","A","B","QTH"]
+CTY_OVERRIDES = {
+    "PJ6Y": 305,  # Saba & St. Eustatius (ADIF 305)
+    "PJ": 305,    # PJ prefix -> Saba & St. Eustatius
+}
+
+COLOR_ATNO           = "#FFFF8C00"
+COLOR_NEW_BAND       = "#FF00BFFF"
+COLOR_NEW_MODE       = "#FFFFC000"
+COLOR_NEW_BAND_MODE  = "#FFE91E63"
+COLOR_NEED_LOTW      = "#FF32CD32"
+COLOR_WORKED         = "#FFB0B0B0"
+COLOR_DEFAULT        = "#FFFFFFFF"
+
+# New Call/DXCC Status Colors (added for classification fix)
+COLOR_NEW_CALL       = "#FFFF6B35"  # Orange-Red
+COLOR_CONFIRMED      = "#FF10B981"  # Green
+COLOR_C_NEW_BAND     = "#FF4A9EFF"  # Bright Blue
+COLOR_C_NEW_MODE     = "#FFFFD93D"  # Yellow
+COLOR_C_NEW_BAND_MODE= "#FF9C27B0"  # Purple
+COLOR_W_NEW_BAND     = "#FF00BCD4"  # Cyan
+COLOR_W_NEW_MODE     = "#FFFFA726"  # Orange
+COLOR_W_NEW_BAND_MODE= "#FFFF5722"  # Deep Orange
+COLOR_UNKNOWN        = "#FF666666"  # Dark Gray
+
+COLORS = {"ATNO": "#FFFF8C00", "New band": "#FF00BFFF", "New mode": "#FFFFC000", "New band+mode": "#FFE91E63", "Need LoTW": "#FF32CD32", "Worked": "#FFB0B0B0", "Default": "#FFFFFFFF", "New Call": "#FFFF6B35", "Confirmed": "#FF10B981", "C/New Band": "#FF4A9EFF", "C/New Mode": "#FFFFD93D", "C/New Band+Mode": "#FF9C27B0", "W/New Band": "#FF00BCD4", "W/New Mode": "#FFFFA726", "W/New Band+Mode": "#FFFF5722", "Unknown": "#FF666666"}
+LOG_LEVEL = "DEBUG"
+HEARTBEAT_SEC = 30
+RECONNECT_BACKOFF = [2,5,10,20,30,60]
+BANNER_LOG_LINES = 6
+RESOLVE_DEBUG_MISSES = 25
+
+# Path to Big CTY (cty.dat). If set, takes precedence over CSV.
+CTY_DAT_PATH = str(DATA_DIR / "cty.dat")
+WAVELOG_API_URL = "https://om0rx.wavelog.online/index.php"
+WAVELOG_API_KEY = "<wavelog_api_key>"
+WAVELOG_STATION_ID = "1"
+QRZ_USERNAME = "<qrz_username>"
+QRZ_PASSWORD = "<qrz_password>"
+ADIF_LOG_PATH = str(LOGS_DIR / "qso_log.adif")
+SPECIAL_PATTERNS = {
+    "POTA":      r"\bPOTA\b|\bPOTA\s*[-:]?\s*[A-Z]{1,3}-?\d+",
+    "SOTA":      r"\bSOTA\b|\bSOTA\s*[A-Z]{2}/[A-Z]-\d+",
+    "IOTA":      r"\bIOTA\b|\b[Ii]OTA\s*[A-Z]{1,2}-\d{3}",
+    "WWFF":      r"\bWWFF\b|\bWFF\b|\b[A-Z]{2}FF-\d{4}",
+    "CASTLE":    r"\bWCA\b|\bCASTLE\b",
+    "LIGHTHOUSE":r"\bLH\b|\bLGT\b|\bLIGHTHOUSE\b",
+    "CONTEST":   r"\bTEST\b|\bCONTEST\b|\bCWT\b",
+    "IARU":      r"\bIARU\b"
+}
+
+
+# Preset values that pre-seed the Special dropdown in the UI.
+# Do not include '(none)' — it is auto-added so you can filter untagged rows.
+SPECIAL_PRESET = ["POTA", "SOTA", "IOTA", "WWFF", "CONTEST", "LIGHTHOUSE", "CASTLE", "IARU"]
+
+# === Rotator (ARCO) Configuration ===
+ROTOR_ENABLED = True
+ROTOR_TYPE = "Microham ARCO"
+ROTOR_HOST = "192.168.0.198"
+ROTOR_PORT = 4001
+ROTOR_PROTOCOL = "DCU-1"
+ROTOR_TIMEOUT_SEC = 2.5
+ROTOR_HOME_GRID = "JN88TQ"
+ROTOR_HOME_LAT = 48.17
+ROTOR_HOME_LON = 17.08
+ROTOR_BANDS = {}
+ROTOR_AUTO_ENABLED = False
+ROTOR_AUTO_DELAY_SEC = 2
+
+# === WSJT-X Integration Configuration ===
+WSJTX_ENABLED = True
+WSJTX_UDP_PORT = 2237
+WSJTX_UDP_MULTICAST = "224.0.0.1"
+WSJTX_WS_PORT = 8091
+WSJTX_AUTO_LOG = True
+WSJTX_AUTO_ROTATE = True
+WSJTX_MODAL_FIELDS = {
+    "call": {"label": "Call", "type": "text", "readonly": False},
+    "grid": {"label": "Grid", "type": "text", "readonly": False},
+    "frequency": {"label": "Frequency", "type": "number", "readonly": False},
+    "mode": {"label": "Mode", "type": "select", "readonly": False},
+    "rst_r": {"label": "RST Received", "type": "text", "readonly": False},
+    "rst_s": {"label": "RST Sent", "type": "text", "readonly": False},
+}
+WAVELOG_ENABLED = True
+QRZ_ENABLED = True
+CLUSTER_ENABLED = False
+WINKEYER_ENABLED = False
+WINKEYER_PORT = "COM11"
+WINKEYER_BAUDRATE = 1200
+WINKEYER_DEFAULT_WPM = 20
+WINKEYER_MEMORIES = {"M1": "CQ DE OM0RX", "M2": "UR RST 599", "M3": "QSL TU DE OM0RX", "M4": "MNI TU"}

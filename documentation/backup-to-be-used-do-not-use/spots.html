@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlexRadio - DX Spots</title>
+    
+    <!-- Vue.js 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    
+    <!-- Logging Panel Styles (shared) -->
+    <link rel="stylesheet" href="logging-panel.css">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            font-size: 11px;
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+        }
+        
+        html {
+            width: 100%;
+            height: 100%;
+        }
+        
+        #app {
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        /* DX Spots */
+        .spots-container {
+            background: #2a2a2a;
+            border-radius: 4px;
+            padding: 8px;
+            transition: all 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-height: 0;
+        }
+        
+        .spots-header {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        
+        .spots-filter {
+            padding: 4px 8px;
+            background: #3a3a3a;
+            border: 1px solid #4a4a4a;
+            border-radius: 3px;
+            color: #e0e0e0;
+            font-size: 10px;
+        }
+        
+        .spots-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        
+        .spots-table th {
+            background: #3a3a3a;
+            padding: 4px 8px;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 1px solid #4a4a4a;
+            font-size: 13px;
+        }
+        
+        .spots-table td {
+            padding: 2px 8px;
+            border-bottom: 1px solid #333;
+            font-size: 13px;
+            line-height: 1.2;
+            transition: all 0.15s ease;
+        }
+        
+        .spot-row {
+            cursor: pointer;
+            transition: background-color 0.15s ease, box-shadow 0.15s ease;
+        }
+        
+        /* Spot color coding based on DXCC status */
+        .spot-atno {
+            background-color: rgba(255, 140, 0, 0.15) !important;
+        }
+        
+        .spot-new-band {
+            background-color: rgba(0, 191, 255, 0.15) !important;
+        }
+        
+        .spot-new-mode {
+            background-color: rgba(255, 192, 0, 0.15) !important;
+        }
+        
+        .spot-new-bandmode {
+            background-color: rgba(233, 30, 99, 0.15) !important;
+        }
+        
+        .spot-need-lotw {
+            background-color: rgba(50, 205, 50, 0.15) !important;
+        }
+        
+        .spot-worked {
+            background-color: rgba(176, 176, 176, 0.1) !important;
+        }
+        
+        .spot-confirmed {
+            background-color: rgba(100, 100, 100, 0.1) !important;
+        }
+        
+        /* Hover effect - using CSS :hover since Vue re-renders */
+        .spot-row:hover {
+            background-color: rgba(100, 200, 255, 0.4) !important;
+        }
+        
+        .spot-row:hover td {
+            background-color: rgba(100, 200, 255, 0.4) !important;
+            box-shadow: inset 0 0 6px rgba(74, 158, 255, 0.5) !important;
+        }
+        
+        .spot-row.hovered {
+            background-color: rgba(100, 200, 255, 0.6) !important;
+        }
+        
+        .spot-row.hovered td {
+            background-color: rgba(100, 200, 255, 0.6) !important;
+            box-shadow: inset 0 0 8px rgba(74, 158, 255, 0.4) !important;
+        }
+        
+        /* Filter controls */
+        .filter-section {
+            background: #2a2a2a;
+            padding: 8px;
+            border-radius: 4px;
+            margin-bottom: 8px;
+        }
+        
+        .filter-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 6px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .filter-dropdown {
+            position: relative;
+            display: inline-block;
+        }
+        
+        .filter-bar {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        
+        .filter-btn {
+            padding: 6px 12px;
+            background: #3a3a3a;
+            border: 1px solid #4a4a4a;
+            border-radius: 3px;
+            color: #d0d0d0;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.15s;
+        }
+        
+        .filter-btn:hover {
+            background: #4a4a4a;
+            border-color: #5a5a5a;
+        }
+        
+        .filter-btn.active {
+            background: #4a9eff;
+            color: white;
+            border-color: #5aaeff;
+        }
+        
+        .dropdown-menu {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            background: #333;
+            border: 1px solid #4a4a4a;
+            border-radius: 3px;
+            z-index: 1000;
+            max-height: 300px;
+            overflow-y: auto;
+            min-width: 200px;
+        }
+        
+        .dropdown-list {
+            padding: 8px;
+        }
+        
+        .dropdown-list label {
+            display: block;
+            padding: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            margin-bottom: 2px;
+        }
+        
+        .dropdown-list label:hover {
+            background: rgba(74, 158, 255, 0.1);
+            border-radius: 2px;
+        }
+        
+        .dropdown-list input[type="checkbox"],
+        .dropdown-list input[type="radio"] {
+            margin-right: 6px;
+            cursor: pointer;
+        }
+        
+        .dropdown-grid {
+            display: grid;
+            padding: 8px;
+            gap: 4px;
+        }
+        
+        .dropdown-grid.two-cols {
+            grid-template-columns: 1fr 1fr;
+        }
+        
+        .dropdown-grid.three-cols {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+        
+        .dropdown-grid label {
+            font-size: 11px;
+            cursor: pointer;
+        }
+        
+        .dropdown-footer {
+            display: flex;
+            gap: 4px;
+            padding: 8px;
+            border-top: 1px solid #4a4a4a;
+        }
+        
+        .dropdown-footer button {
+            flex: 1;
+            padding: 4px 8px;
+            background: #3a3a3a;
+            border: 1px solid #4a4a4a;
+            color: #d0d0d0;
+            border-radius: 2px;
+            font-size: 10px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        
+        .dropdown-footer button:hover {
+            background: #4a4a4a;
+            border-color: #5a5a5a;
+        }
+        
+        .call-search-input {
+            padding: 6px 12px;
+            background: #3a3a3a;
+            border: 1px solid #4a4a4a;
+            border-radius: 3px;
+            color: #e0e0e0;
+            font-size: 11px;
+            width: 120px;
+            transition: all 0.15s;
+        }
+        
+        .call-search-input:focus {
+            outline: none;
+            border-color: #4a9eff;
+            box-shadow: 0 0 6px rgba(74, 158, 255, 0.3);
+        }
+        
+        .clear-all-btn {
+            padding: 6px 12px;
+            background: #ef4444;
+            border: 1px solid #ff5555;
+            border-radius: 3px;
+            color: white;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        
+        .clear-all-btn:hover {
+            background: #ff5555;
+        }
+        
+        .spots-scroll {
+            flex: 1;
+            overflow-y: auto;
+            min-height: 0;
+        }
+        
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        
+        .status-connected { background: #10b981; }
+        .status-disconnected { background: #ef4444; animation: pulse 2s infinite; }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- Connection Status and Title -->
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+            <span class="status-indicator" :class="connected ? 'status-connected' : 'status-disconnected'"></span>
+            <span style="font-family: 'Courier New', monospace; font-size: 14px; font-weight: bold; color: #4a9eff;">
+                🎯 DX Spots Cluster
+            </span>
+        </div>
+        
+        <!-- DX Spots Section -->
+        <div class="spots-container">
+            <div class="spots-header">
+                <span style="font-weight: bold; font-size: 14px;">🎯 Filters:</span>
+                
+                <!-- Filter Buttons Row -->
+                <div class="filter-bar">
+                    <!-- Spot Count (FIRST FILTER) -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('spotCount')" class="filter-btn">
+                            📊 Show: {{ maxSpots }} ▼
+                        </button>
+                        <div v-if="openDropdown === 'spotCount'" class="dropdown-menu">
+                            <div class="dropdown-list">
+                                <label v-for="count in availableSpotCounts" :key="count" style="cursor: pointer;">
+                                    <input type="radio" :checked="maxSpots === count" @change="setMaxSpots(count)" name="spotCount">
+                                    📊 {{ count }} spots
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Bands -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('bands')" :class="['filter-btn', { active: isFilterActive('bands') }]">
+                            📻 Bands ▼
+                        </button>
+                        <div v-if="openDropdown === 'bands'" class="dropdown-menu">
+                            <div class="dropdown-grid two-cols">
+                                <label v-for="band in availableBands" :key="band">
+                                    <input type="checkbox" :checked="spotsFilter.bands.includes(band)" @change="toggleFilterItem(spotsFilter.bands, band)">
+                                    {{ band }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.bands, availableBands)">All</button>
+                                <button @click="clearFilter(spotsFilter.bands)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Modes -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('modes')" :class="['filter-btn', { active: isFilterActive('modes') }]">
+                            📡 Modes ▼
+                        </button>
+                        <div v-if="openDropdown === 'modes'" class="dropdown-menu">
+                            <div class="dropdown-list">
+                                <label v-for="mode in availableModes" :key="mode">
+                                    <input type="checkbox" :checked="spotsFilter.modes.includes(mode)" @change="toggleFilterItem(spotsFilter.modes, mode)">
+                                    ⚡ {{ mode }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.modes, availableModes)">All</button>
+                                <button @click="clearFilter(spotsFilter.modes)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Spotter From (Continents) -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('continents')" :class="['filter-btn', { active: isFilterActive('continents') }]">
+                            🌍 Spotter from ▼
+                        </button>
+                        <div v-if="openDropdown === 'continents'" class="dropdown-menu">
+                            <div class="dropdown-list">
+                                <label v-for="cont in availableContinents" :key="cont.id">
+                                    <input type="checkbox" :checked="spotsFilter.continents.includes(cont.id)" @change="toggleFilterItem(spotsFilter.continents, cont.id)">
+                                    🌐 {{ cont.name }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.continents, availableContinents.map(c => c.id))">All</button>
+                                <button @click="clearFilter(spotsFilter.continents)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Zones (CQ) -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('zones')" :class="['filter-btn', { active: isFilterActive('zones') }]">
+                            🌐 Zones ▼
+                        </button>
+                        <div v-if="openDropdown === 'zones'" class="dropdown-menu zones-menu">
+                            <div class="dropdown-grid three-cols">
+                                <label v-for="zone in availableCQs" :key="zone">
+                                    <input type="checkbox" :checked="spotsFilter.cqs.includes(zone)" @change="toggleFilterItem(spotsFilter.cqs, zone)">
+                                    Zone {{ zone }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.cqs, availableCQs)">All</button>
+                                <button @click="clearFilter(spotsFilter.cqs)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Call Status -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('callStatus')" :class="['filter-btn', { active: isFilterActive('callStatus') }]">
+                            📞 Call Status ▼
+                        </button>
+                        <div v-if="openDropdown === 'callStatus'" class="dropdown-menu">
+                            <div class="dropdown-list">
+                                <label v-for="status in availableCallStatuses" :key="status">
+                                    <input type="checkbox" :checked="spotsFilter.callStatuses.includes(status)" @change="toggleFilterItem(spotsFilter.callStatuses, status)">
+                                    ✓ {{ status }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.callStatuses, availableCallStatuses)">All</button>
+                                <button @click="clearFilter(spotsFilter.callStatuses)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- DXCC Status -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('dxccStatus')" :class="['filter-btn', { active: isFilterActive('dxccStatus') }]">
+                            🏆 DXCC Status ▼
+                        </button>
+                        <div v-if="openDropdown === 'dxccStatus'" class="dropdown-menu">
+                            <div class="dropdown-list">
+                                <label v-for="status in availableDxccStatuses" :key="status">
+                                    <input type="checkbox" :checked="spotsFilter.dxccStatuses.includes(status)" @change="toggleFilterItem(spotsFilter.dxccStatuses, status)">
+                                    ✓ {{ status }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.dxccStatuses, availableDxccStatuses)">All</button>
+                                <button @click="clearFilter(spotsFilter.dxccStatuses)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Call (Search) -->
+                    <div class="filter-dropdown">
+                        <input type="text" v-model="spotsFilter.callsign" placeholder="🔍 Call" class="call-search-input">
+                    </div>
+                    
+                    <!-- Special -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('special')" :class="['filter-btn', { active: isFilterActive('special') }]">
+                            ⭐ Special ▼
+                        </button>
+                        <div v-if="openDropdown === 'special'" class="dropdown-menu">
+                            <div class="dropdown-list">
+                                <label v-for="spec in availableSpecials" :key="spec">
+                                    <input type="checkbox" :checked="spotsFilter.specials.includes(spec)" @change="toggleFilterItem(spotsFilter.specials, spec)">
+                                    △ {{ spec }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.specials, availableSpecials)">All</button>
+                                <button @click="clearFilter(spotsFilter.specials)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <span style="font-size: 10px; color: #888; margin-left: auto;">{{ filteredSpots.length }} spots</span>
+                <button @click="clearAllFilters" class="clear-all-btn">🗑️ Clear All</button>
+            </div>
+            
+            <!-- Enhanced Spots Table -->
+            <div class="spots-scroll">
+                <table class="spots-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Band</th>
+                            <th>Frequency</th>
+                            <th>Callsign</th>
+                            <th>Mode</th>
+                            <th>Country</th>
+                            <th>CQ</th>
+                            <th>DX de</th>
+                            <th>Call Status</th>
+                            <th>DXCC Status</th>
+                            <th>Special</th>
+                            <th>Comment</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="spot in filteredSpots" :key="spot.id" 
+                            :class="['spot-row', getSpotRowClass(spot), { hovered: hoveredSpotId === spot.id }]" 
+                            @click="tuneToSpot(spot)"
+                            @mouseenter="hoveredSpotId = spot.id"
+                            @mouseleave="hoveredSpotId = null">
+                            <td style="font-size: 13px;">{{ formatSpotTime(spot.timestamp) }}</td>
+                            <td style="font-size: 13px; font-weight: bold;">{{ spot.band }}</td>
+                            <td style="font-size: 13px; font-family: monospace; color: #4a9eff;">{{ formatSpotFreq(spot.frequency_mhz || parseFloat(spot.frequency) / 1000) }}</td>
+                            <td style="font-size: 13px; font-weight: bold; color: #10b981;">{{ spot.callsign }}</td>
+                            <td style="font-size: 13px;">{{ spot.mode }}</td>
+                            <td style="font-size: 13px; color: #ccc;">{{ spot.country || '-' }}</td>
+                            <td style="font-size: 13px; text-align: center;">{{ spot.cq || '-' }}</td>
+                            <td style="font-size: 13px; font-weight: bold; color: #ff9800;">{{ spot.spotter || '-' }}</td>
+                            <td :style="getCallStatusStyle(spot.call_status)">{{ spot.call_status || '-' }}</td>
+                            <td :style="getDxccStatusStyle(spot.dxcc_status)">{{ spot.dxcc_status || '-' }}</td>
+                            <td style="font-size: 13px; color: #ffa500;">{{ spot.special || '' }}</td>
+                            <td style="font-size: 13px; color: #aaa;">{{ spot.comment }}</td>
+                        </tr>
+                        <tr v-if="filteredSpots.length === 0">
+                            <td colspan="12" style="text-align: center; padding: 20px; color: #666;">
+                                <div v-if="!clusterConnected" style="color: #ff6666; font-weight: bold; margin-bottom: 10px;">
+                                    ❌ DX Cluster is DISCONNECTED - No spots will be received
+                                </div>
+                                <div v-else>No spots match current filters</div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Set page mode BEFORE loading app.js
+        window.PAGE_MODE = 'spots';
+    </script>
+    <!-- Load modular JavaScript files -->
+    <script src="js/core.js"></script>
+    <script src="js/websocket.js"></script>
+    <script src="js/radio-controls.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/dx-spots.js"></script>
+    <script src="js/app-main.js"></script>
+    
+    <script>
+        // Hover effect is now handled by Vue's @mouseenter and @mouseleave event handlers
+        // This is more reliable than manual DOM manipulation since Vue manages the DOM
+        console.log('✅ Spots page loaded - hover effects controlled by Vue');
+    </script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlexRadio Web Control v2.0</title>
+    
+    <!-- Vue.js 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    
+    <!-- Logging Panel Styles -->
+    <link rel="stylesheet" href="logging-panel.css">
+    <!-- Local Log Modal Styles -->
+    <link rel="stylesheet" href="local-log-modal.css">
+    <!-- Wavelog Log Modal Styles -->
+    <link rel="stylesheet" href="wavelog-log-modal.css">
+    <!-- Main Styles (extracted for performance) -->
+    <link rel="stylesheet" href="main-styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Templates will be loaded here by templates-loader.js -->
+    </div>
+
+    <!-- Load modular template fragments before Vue initialization -->
+    <script src="templates-loader.js"></script>
+
+    <!-- Load modular JavaScript files -->
+    <script src="js/core.js"></script>
+    <script src="js/websocket.js"></script>
+    <script src="js/radio-controls.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/dx-spots.js"></script>
+    <!-- TopoJSON client for proper arc decompression -->
+    <script src="https://unpkg.com/topojson-client@3"></script>
+    <script src="js/country-modal.js"></script>
+    <script src="js/local-log-modal.js"></script>
+    <script src="js/wavelog-log-modal.js"></script>
+    <script src="js/sdc-ticker.js"></script>
+    <script src="js/wsjtx-handler.js"></script>
+    <script src="js/wsjtx-widget.js"></script>
+    <!-- WinKeyer Support Scripts -->
+    <script src="js/winkeyer-client.js"></script>
+    <script src="js/winkeyer-ui.js"></script>
+    <script src="js/winkeyer-reconnect.js"></script>
+    <script src="js/winkeyer-feedback.js"></script>
+    <script src="js/winkeyer-tester.js"></script>
+    <script>
+        // Initialize WinKeyer UI
+        console.log('🔑 Initializing WinKeyer UI...');
+        if (typeof WinKeyerUI !== 'undefined') {
+            // Delay initialization until Vue app is mounted
+            document.addEventListener('vue-mounted', () => {
+                if (window.vueInstance) {
+                    window.winKeyerUI = new WinKeyerUI(window.vueInstance);
+                    console.log('✅ WinKeyerUI created');
+                }
+            });
+        } else {
+            console.warn('⚠️ WinKeyerUI class not found - WinKeyer support disabled');
+        }
+    </script>
+    <script src="js/app-main.js"></script>
+</body>
+</html>

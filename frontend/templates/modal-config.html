@@ -1,0 +1,615 @@
+        <!-- Configuration Modal -->
+        <div v-if="configDialogVisible" class="modal-overlay" @click.self="closeConfigDialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>⚙️ Configuration</h2>
+                    <button class="modal-close" @click="closeConfigDialog">&times;</button>
+                </div>
+                
+                <div class="modal-tabs">
+                    <div v-for="tab in configTabs" :key="tab.id" 
+                         :class="['modal-tab', { active: activeConfigTab === tab.id }]"
+                         @click="activeConfigTab = tab.id">
+                        {{ tab.name }}
+                    </div>
+                </div>
+                
+                <div class="modal-body">
+                    <!-- Success/Error Message -->
+                    <div v-if="configMessage" :class="['config-message', configMessage.type]">
+                        {{ configMessage.text }}
+                    </div>
+                    
+                    <!-- Database Tab -->
+                    <div v-if="activeConfigTab === 'database'" class="config-form">
+                        <div class="config-field">
+                            <label>Database Host</label>
+                            <input type="text" v-model="configData.DB_HOST" placeholder="localhost">
+                        </div>
+                        <div class="config-field">
+                            <label>Database Port</label>
+                            <input type="number" v-model.number="configData.DB_PORT" placeholder="3306">
+                        </div>
+                        <div class="config-field">
+                            <label>Database Name</label>
+                            <input type="text" v-model="configData.DB_NAME" placeholder="wavelog">
+                        </div>
+                        <div class="config-field">
+                            <label>Database User</label>
+                            <input type="text" v-model="configData.DB_USER" placeholder="root">
+                        </div>
+                        <div class="config-field">
+                            <label>Database Password</label>
+                            <input type="password" v-model="configData.DB_PASS" placeholder="password">
+                        </div>
+                    </div>
+                    
+                    <!-- Station & Cluster Tab -->
+                    <div v-if="activeConfigTab === 'station'" class="config-form">
+                        <div class="config-field">
+                            <label>My Station Callsign</label>
+                            <input type="text" v-model="configData.MY_STATION" placeholder="N0CALL">
+                        </div>
+                        
+                        <hr style="margin: 16px 0; border: none; border-top: 1px solid #444;">
+                        
+                        <h4 style="margin: 12px 0 8px 0; font-size: 12px; color: #4a9eff; font-weight: 600;">📡 Multi-Cluster Configuration with Failover</h4>
+                        <p style="font-size: 10px; color: #888; margin-bottom: 12px;">Define up to 5 clusters. The system will automatically failover to the next enabled cluster if the current one becomes unavailable.</p>
+                        
+                        <!-- Multi-Cluster Entries (up to 5) -->
+                        <div v-if="configData.CLUSTERS" class="clusters-container">
+                            <div v-for="(cluster, idx) in configData.CLUSTERS" :key="idx" class="cluster-card" style="margin-bottom: 12px; padding: 12px; background: #222; border: 1px solid #444; border-radius: 4px;">
+                                <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+                                    <input type="checkbox" :id="`cluster-enabled-${idx}`" v-model="cluster.enabled" style="cursor: pointer;">
+                                    <label :for="`cluster-enabled-${idx}`" style="cursor: pointer; flex-grow: 1; font-weight: 600; color: #4a9eff;">
+                                        {{ cluster.name || `Cluster ${idx + 1}` }}
+                                    </label>
+                                    <span v-if="cluster.enabled" style="font-size: 10px; color: #4a9;">✓ Enabled</span>
+                                    <span v-else style="font-size: 10px; color: #888;">Disabled</span>
+                                </div>
+                                
+                                <div v-if="cluster.enabled" style="display: grid; gap: 8px;">
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                                        <div class="config-field" style="margin: 0;">
+                                            <label style="font-size: 10px;">Host</label>
+                                            <input type="text" v-model="cluster.host" placeholder="localhost" style="font-size: 10px;">
+                                        </div>
+                                        <div class="config-field" style="margin: 0;">
+                                            <label style="font-size: 10px;">Port</label>
+                                            <input type="number" v-model.number="cluster.port" placeholder="7373" style="font-size: 10px;">
+                                        </div>
+                                    </div>
+                                    
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                                        <div class="config-field" style="margin: 0;">
+                                            <label style="font-size: 10px;">User</label>
+                                            <input type="text" v-model="cluster.user" placeholder="N0CALL" style="font-size: 10px;">
+                                        </div>
+                                        <div class="config-field" style="margin: 0;">
+                                            <label style="font-size: 10px;">Password</label>
+                                            <input type="password" v-model="cluster.password" placeholder="password" style="font-size: 10px;">
+                                        </div>
+                                    </div>
+                                    
+                                    <div style="display: flex; gap: 8px; align-items: center;">
+                                        <input type="checkbox" :id="`cluster-primary-${idx}`" :checked="!cluster.use_as_failover" @change="toggleClusterPrimary(idx)" style="cursor: pointer;">
+                                        <label :for="`cluster-primary-${idx}`" style="cursor: pointer; font-size: 10px; flex-grow: 1;">Primary Cluster (first to try)</label>
+                                    </div>
+                                    
+                                    <div v-if="cluster.use_as_failover" style="display: flex; gap: 8px; align-items: center;">
+                                        <input type="checkbox" :id="`cluster-failover-${idx}`" v-model="cluster.use_as_failover" style="cursor: pointer;">
+                                        <label :for="`cluster-failover-${idx}`" style="cursor: pointer; font-size: 10px; color: #fa8; flex-grow: 1;">Use as Failover (try if primary fails)</label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <p style="font-size: 9px; color: #666; margin-top: 12px; background: #1a1a1a; padding: 8px; border-left: 2px solid #4a9eff; border-radius: 2px;">
+                            💡 <strong>Tip:</strong> Enable the "Primary Cluster" checkbox for the cluster you want to connect to first. Other enabled clusters with "Use as Failover" checked will automatically be tried if the primary becomes unavailable.
+                        </p>
+                    </div>
+                    
+                    <!-- Flex & UDP Tab -->
+                    <div v-if="activeConfigTab === 'flex'" class="config-form">
+                        <div class="config-field">
+                            <label>Flex TCP Host</label>
+                            <input type="text" v-model="configData.FLEX_TCP_HOST" placeholder="192.168.1.100">
+                        </div>
+                        <div class="config-field">
+                            <label>Flex TCP Port</label>
+                            <input type="number" v-model.number="configData.FLEX_TCP_PORT" placeholder="4992">
+                        </div>
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.FLEX_ENABLED_DEFAULT" id="flex-enabled">
+                            <label for="flex-enabled">Flex enabled by default</label>
+                        </div>
+                        <div class="config-field">
+                            <label>UDP Host</label>
+                            <input type="text" v-model="configData.SDR_UDP_HOST" placeholder="127.0.0.1">
+                        </div>
+                        <div class="config-field">
+                            <label>UDP Port</label>
+                            <input type="number" v-model.number="configData.SDR_UDP_PORT" placeholder="12061">
+                        </div>
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.UDP_ENABLED_DEFAULT" id="udp-enabled">
+                            <label for="udp-enabled">UDP enabled by default</label>
+                        </div>
+                    </div>
+                    
+                    <!-- Rotor Tab -->
+                    <div v-if="activeConfigTab === 'rotor'" class="config-form">
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.ROTOR_ENABLED" id="rotor-enabled">
+                            <label for="rotor-enabled">Rotator Enabled</label>
+                        </div>
+                        <div class="config-field">
+                            <label>Rotator Type</label>
+                            <input type="text" v-model="configData.ROTOR_TYPE" placeholder="Microham ARCO">
+                        </div>
+                        <div class="config-field">
+                            <label>Rotator IP Address</label>
+                            <input type="text" v-model="configData.ROTOR_HOST" placeholder="192.168.0.198">
+                        </div>
+                        <div class="config-field">
+                            <label>Rotator TCP Port</label>
+                            <input type="number" v-model.number="configData.ROTOR_PORT" placeholder="4001">
+                        </div>
+                        <div class="config-field">
+                            <label>Rotator Protocol</label>
+                            <select v-model="configData.ROTOR_PROTOCOL">
+                                <option value="DCU-1">DCU-1 / Rotor-EZ</option>
+                                <option value="Yaesu GS-232A">Yaesu GS-232A</option>
+                            </select>
+                        </div>
+                        <div class="config-field">
+                            <label>Read Timeout (seconds)</label>
+                            <input type="number" v-model.number="configData.ROTOR_TIMEOUT_SEC" placeholder="2.5" step="0.1" min="0.5" max="10">
+                        </div>
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        
+                        <!-- Rotor AUTO Configuration -->
+                        <div class="rotor-auto-config" v-if="configData.ROTOR_ENABLED">
+                            <div class="rotor-auto-header">
+                                🤖 AUTO MODE CONFIGURATION
+                            </div>
+                            
+                            <!-- AUTO Mode Toggle -->
+                            <div class="config-field-checkbox">
+                                <input type="checkbox" v-model="rotorAutoEnabled" @change="saveRotorAutoConfig" id="rotor-auto-enabled">
+                                <label for="rotor-auto-enabled">Enable Rotor AUTO (auto-turn to spots/stations)</label>
+                            </div>
+                            
+                            <!-- Gridsquare Configuration -->
+                            <div>
+                                <label style="font-size: 11px; color: #4a9eff; font-weight: 600; display: block; margin-bottom: 6px;">📍 Your Home Location (Maidenhead Gridsquare)</label>
+                                <div class="grid-conversion">
+                                    <div class="grid-conversion-row">
+                                        <label style="font-size: 10px; min-width: 40px;">Grid:</label>
+                                        <input type="text" v-model="rotorHomeGrid" @change="saveRotorAutoConfig" placeholder="JN88TQ" maxlength="8" style="text-transform: uppercase;">
+                                        <span style="font-size: 10px; color: #888; min-width: 80px;">Format: 2/4/6/8 chars</span>
+                                    </div>
+                                    <div class="grid-conversion-row">
+                                        <label style="font-size: 10px; min-width: 40px;">Lat:</label>
+                                        <input type="number" v-model.number="rotorHomeLat" @change="saveRotorAutoConfig" placeholder="48.6875" step="0.0001" style="flex: 1;">
+                                        <label style="font-size: 10px; min-width: 40px; margin-left: 8px;">Lon:</label>
+                                        <input type="number" v-model.number="rotorHomeLon" @change="saveRotorAutoConfig" placeholder="17.6250" step="0.0001" style="flex: 1;">
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Band Configuration -->
+                            <div>
+                                <label style="font-size: 11px; color: #4a9eff; font-weight: 600; display: block; margin-bottom: 6px;">📡 Select Bands for Rotor Control</label>
+                                <div class="band-checkboxes">
+                                    <div class="band-checkbox-item" v-for="band in ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m', '2m']" :key="band">
+                                        <input type="checkbox" :id="'band-' + band" v-model="rotorBands[band]" @change="saveRotorAutoConfig">
+                                        <label :for="'band-' + band">{{ band }}</label>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <p style="font-size: 10px; color: #888; margin: 8px 0; background: #333; padding: 6px; border-radius: 3px;">
+                                ℹ️ When AUTO is enabled, the rotor will automatically calculate and move toward DX spots based on your gridsquare and the spot's gridsquare (from QRZ) or coordinates (from CTY.DAT). The 2-second delay before moving allows you to click CANCEL to prevent the movement.
+                            </p>
+                        </div>
+                        
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        <p style="font-size: 11px; color: #888; margin: 8px 0;">
+                            Configure your Microham ARCO rotator connection here. Leave disabled if not using a rotator.
+                        </p>
+                    </div>
+                    
+                    <!-- WinKeyer Tab -->
+                    <div v-if="activeConfigTab === 'winkeyer'" class="config-form">
+                        <h4 style="margin-bottom: 12px; font-size: 12px; color: #4a9eff; font-weight: 600;">📟 WinKeyer Configuration</h4>
+                        
+                        <!-- Master Enable -->
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.WINKEYER_ENABLED" id="winkeyer-enabled">
+                            <label for="winkeyer-enabled">Enable WinKeyer Support</label>
+                        </div>
+                        
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        
+                        <!-- WinKeyer Settings -->
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 11px; color: #4a9eff; font-weight: 600; display: block; margin-bottom: 8px;">🔌 Connection Settings</label>
+                            
+                            <div class="config-field">
+                                <label>Serial Port</label>
+                                <input type="text" v-model="configData.WINKEYER_PORT" placeholder="COM3" :disabled="!configData.WINKEYER_ENABLED">
+                                <span style="font-size: 9px; color: #888; display: block; margin-top: 2px;">e.g., COM3, COM4, /dev/ttyUSB0</span>
+                            </div>
+                            
+                            <div class="config-field">
+                                <label>Baud Rate</label>
+                                <input type="number" v-model.number="configData.WINKEYER_BAUDRATE" placeholder="1200" min="1200" max="115200" :disabled="!configData.WINKEYER_ENABLED">
+                                <span style="font-size: 9px; color: #888; display: block; margin-top: 2px;">WinKeyer typically uses 1200 baud</span>
+                            </div>
+                            
+                            <div class="config-field">
+                                <label>Default Speed (WPM)</label>
+                                <input type="number" v-model.number="configData.WINKEYER_DEFAULT_WPM" placeholder="20" min="5" max="50" :disabled="!configData.WINKEYER_ENABLED">
+                                <span style="font-size: 9px; color: #888; display: block; margin-top: 2px;">Default Morse code speed in words per minute</span>
+                            </div>
+                        </div>
+                        
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        
+                        <!-- Memory Buttons -->
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 11px; color: #4a9eff; font-weight: 600; display: block; margin-bottom: 8px;">📝 Memory Messages (M1-M4)</label>
+                            
+                            <div class="config-field">
+                                <label>M1 (Memory 1)</label>
+                                <input type="text" v-model="configData.WINKEYER_MEMORIES.M1" placeholder="CQ DE OM0RX" :disabled="!configData.WINKEYER_ENABLED">
+                            </div>
+                            
+                            <div class="config-field">
+                                <label>M2 (Memory 2)</label>
+                                <input type="text" v-model="configData.WINKEYER_MEMORIES.M2" placeholder="UR RST 599" :disabled="!configData.WINKEYER_ENABLED">
+                            </div>
+                            
+                            <div class="config-field">
+                                <label>M3 (Memory 3)</label>
+                                <input type="text" v-model="configData.WINKEYER_MEMORIES.M3" placeholder="QSL TU DE OM0RX" :disabled="!configData.WINKEYER_ENABLED">
+                            </div>
+                            
+                            <div class="config-field">
+                                <label>M4 (Memory 4)</label>
+                                <input type="text" v-model="configData.WINKEYER_MEMORIES.M4" placeholder="MNI TU" :disabled="!configData.WINKEYER_ENABLED">
+                            </div>
+                        </div>
+                        
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        
+                        <div style="padding: 8px; background: rgba(74, 158, 255, 0.1); border-left: 3px solid #4a9eff; border-radius: 2px;">
+                            <p style="font-size: 10px; color: #ccc; margin: 0;">
+                                <strong>📖 Setup Instructions:</strong>
+                            </p>
+                            <ol style="font-size: 9px; color: #aaa; margin: 4px 0 0 16px; padding: 0;">
+                                <li>Connect your WinKeyer device to the serial port</li>
+                                <li>Set the correct serial port and baud rate above</li>
+                                <li>Configure your preferred CQ and response messages</li>
+                                <li>Save configuration and reload the application</li>
+                                <li>The WinKeyer widget will appear below the rotator controls</li>
+                            </ol>
+                        </div>
+                    </div>
+                    
+                    <!-- WSJT-X Tab -->
+                    <div v-if="activeConfigTab === 'wsjtx'" class="config-form">
+                        <h4 style="margin-bottom: 12px; font-size: 12px; color: #4a9eff; font-weight: 600;">📡 WSJT-X Integration Settings</h4>
+                        
+                        <!-- Master Enable -->
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.WSJTX_ENABLED" id="wsjtx-enabled">
+                            <label for="wsjtx-enabled">Enable WSJT-X Integration</label>
+                        </div>
+                        
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        
+                        <!-- UDP Configuration -->
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 11px; color: #4a9eff; font-weight: 600; display: block; margin-bottom: 8px;">🔌 UDP Listener Configuration</label>
+                            
+                            <div class="config-field">
+                                <label>UDP Listen Port</label>
+                                <input type="number" v-model.number="configData.WSJTX_UDP_PORT" placeholder="2237" min="1024" max="65535">
+                                <span style="font-size: 9px; color: #888; display: block; margin-top: 2px;">Configure this port in WSJT-X Settings → Reporting</span>
+                            </div>
+                            
+                            <div class="config-field">
+                                <label>Multicast Address</label>
+                                <input type="text" v-model="configData.WSJTX_UDP_MULTICAST" placeholder="224.0.0.1">
+                                <span style="font-size: 9px; color: #888; display: block; margin-top: 2px;">Use 224.0.0.1 for multicast (multiple listeners) or 127.0.0.1 for unicast</span>
+                            </div>
+                            
+                            <div class="config-field">
+                                <label>WebSocket Port (Bridge)</label>
+                                <input type="number" v-model.number="configData.WSJTX_WS_PORT" placeholder="8091" min="1024" max="65535">
+                                <span style="font-size: 9px; color: #888; display: block; margin-top: 2px;">Internal WebSocket port for bridge server communication</span>
+                            </div>
+                        </div>
+                        
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        
+                        <!-- Features -->
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 11px; color: #4a9eff; font-weight: 600; display: block; margin-bottom: 8px;">⚙️ Feature Configuration</label>
+                            
+                            <div class="config-field-checkbox">
+                                <input type="checkbox" v-model="configData.WSJTX_AUTO_LOG" id="wsjtx-auto-log" :disabled="!configData.WSJTX_ENABLED">
+                                <label for="wsjtx-auto-log" :style="{ opacity: configData.WSJTX_ENABLED ? 1 : 0.5 }">
+                                    📝 Auto-Log to Wavelog
+                                </label>
+                            </div>
+                            <span style="font-size: 9px; color: #888; display: block; margin: 4px 0 12px 24px;">
+                                Automatically logs QSOs to Wavelog when logged in WSJT-X. Includes QRZ.com lookup for enrichment.
+                            </span>
+                            
+                            <div class="config-field-checkbox">
+                                <input type="checkbox" v-model="configData.WSJTX_AUTO_ROTATE" id="wsjtx-auto-rotate" :disabled="!configData.WSJTX_ENABLED">
+                                <label for="wsjtx-auto-rotate" :style="{ opacity: configData.WSJTX_ENABLED ? 1 : 0.5 }">
+                                    🎪 Auto-Rotate Antenna
+                                </label>
+                            </div>
+                            <span style="font-size: 9px; color: #888; display: block; margin: 4px 0 12px 24px;">
+                                Automatically rotates antenna to DX station's grid square (requires Rotor enabled and configured).
+                            </span>
+                        </div>
+                        
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        
+                        <div style="padding: 8px; background: rgba(74, 158, 255, 0.1); border-left: 3px solid #4a9eff; border-radius: 2px;">
+                            <p style="font-size: 10px; color: #ccc; margin: 0;">
+                                <strong>📖 Setup Instructions:</strong>
+                            </p>
+                            <ol style="font-size: 9px; color: #aaa; margin: 4px 0 0 16px; padding: 0;">
+                                <li>In WSJT-X, go Settings → Reporting</li>
+                                <li>✅ Enable "Accept UDP requests"</li>
+                                <li>Set Address: 127.0.0.1</li>
+                                <li>Set Port: {{ configData.WSJTX_UDP_PORT }}</li>
+                                <li>Restart Wave-Flex-Spots app</li>
+                                <li>Modal will appear when working a station!</li>
+                            </ol>
+                        </div>
+                    </div>
+                    
+                    <!-- CTY/Paths Tab -->
+                    <div v-if="activeConfigTab === 'cty'" class="config-form">
+                        <div class="config-field">
+                            <label>CTY CSV Path</label>
+                            <input type="text" v-model="configData.CTY_CSV_PATH" placeholder="C:\path\to\cty.csv">
+                        </div>
+                        <div class="config-field">
+                            <label>CTY DAT Path</label>
+                            <input type="text" v-model="configData.CTY_DAT_PATH" placeholder="C:\path\to\cty.dat">
+                        </div>
+                    </div>
+                    
+                    <!-- Logging Tab -->
+                    <div v-if="activeConfigTab === 'logging'" class="config-form">
+                        <div class="config-field">
+                            <label>Log Level</label>
+                            <select v-model="configData.LOG_LEVEL">
+                                <option value="DEBUG">DEBUG</option>
+                                <option value="INFO">INFO</option>
+                                <option value="WARNING">WARNING</option>
+                                <option value="ERROR">ERROR</option>
+                            </select>
+                        </div>
+                        
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        <h4 style="margin-top: 12px; font-size: 11px; color: #4a9eff; font-weight: 600;">🌐 Wavelog Integration</h4>
+                        
+                        <div class="config-field">
+                            <label>Wavelog API URL</label>
+                            <input type="text" v-model="configData.WAVELOG_API_URL" placeholder="https://example.wavelog.online/index.php">
+                        </div>
+                        <div class="config-field">
+                            <label>Wavelog API Key</label>
+                            <input type="password" v-model="configData.WAVELOG_API_KEY" placeholder="wl...">
+                        </div>
+                        <div class="config-field">
+                            <label>Wavelog Station ID</label>
+                            <input type="number" v-model.number="configData.WAVELOG_STATION_ID" placeholder="1">
+                        </div>
+                        
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        <h4 style="margin-top: 12px; font-size: 11px; color: #4a9eff; font-weight: 600;">👤 QRZ Integration</h4>
+                        
+                        <div class="config-field">
+                            <label>QRZ Username</label>
+                            <input type="text" v-model="configData.QRZ_USERNAME" placeholder="username">
+                        </div>
+                        <div class="config-field">
+                            <label>QRZ Password</label>
+                            <input type="password" v-model="configData.QRZ_PASSWORD" placeholder="password">
+                        </div>
+                        
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        <h4 style="margin-top: 12px; font-size: 11px; color: #4a9eff; font-weight: 600;">💾 Local Logging</h4>
+                        
+                        <div class="config-field">
+                            <label>Local ADIF File Path</label>
+                            <input type="text" v-model="configData.ADIF_LOG_PATH" placeholder="C:\\path\\to\\qso_log.adif">
+                        </div>
+                    </div>
+                    
+                    <!-- Colours Tab -->
+                    <div v-if="activeConfigTab === 'colours'" class="config-form">
+                        <div class="color-picker-field">
+                            <label>ATNO (All Time New One)</label>
+                            <input type="color" :value="configData.COLORS['ATNO'].substring(0,7)" 
+                                   @input="configData.COLORS['ATNO'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['ATNO']" placeholder="#FFFF8C00">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>New Band</label>
+                            <input type="color" :value="configData.COLORS['New band'].substring(0,7)" 
+                                   @input="configData.COLORS['New band'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['New band']" placeholder="#FF00BFFF">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>New Mode</label>
+                            <input type="color" :value="configData.COLORS['New mode'].substring(0,7)" 
+                                   @input="configData.COLORS['New mode'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['New mode']" placeholder="#FFFFC000">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>New Band+Mode</label>
+                            <input type="color" :value="configData.COLORS['New band+mode'].substring(0,7)" 
+                                   @input="configData.COLORS['New band+mode'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['New band+mode']" placeholder="#FFE91E63">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>Need LoTW</label>
+                            <input type="color" :value="configData.COLORS['Need LoTW'].substring(0,7)" 
+                                   @input="configData.COLORS['Need LoTW'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['Need LoTW']" placeholder="#FF32CD32">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>Worked</label>
+                            <input type="color" :value="configData.COLORS['Worked'].substring(0,7)" 
+                                   @input="configData.COLORS['Worked'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['Worked']" placeholder="#FFB0B0B0">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>Default</label>
+                            <input type="color" :value="configData.COLORS['Default'].substring(0,7)" 
+                                   @input="configData.COLORS['Default'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['Default']" placeholder="#FFFFFFFF">
+                        </div>
+                        
+                        <!-- New Status Colors (Call & DXCC Classification) -->
+                        <hr style="margin: 20px 0; border-color: #555;">
+                        <h4 style="color: #4A9EFF; margin-bottom: 15px;">📊 Call & DXCC Status Colors</h4>
+                        
+                        <div class="color-picker-field">
+                            <label>New Call</label>
+                            <input type="color" :value="configData.COLORS['New Call'].substring(0,7)" 
+                                   @input="configData.COLORS['New Call'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['New Call']" placeholder="#FFFF6B35">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>Confirmed</label>
+                            <input type="color" :value="configData.COLORS['Confirmed'].substring(0,7)" 
+                                   @input="configData.COLORS['Confirmed'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['Confirmed']" placeholder="#FF10B981">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>C/New Band (Confirmed + Need Band)</label>
+                            <input type="color" :value="configData.COLORS['C/New Band'].substring(0,7)" 
+                                   @input="configData.COLORS['C/New Band'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['C/New Band']" placeholder="#FF4A9EFF">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>C/New Mode (Confirmed + Need Mode)</label>
+                            <input type="color" :value="configData.COLORS['C/New Mode'].substring(0,7)" 
+                                   @input="configData.COLORS['C/New Mode'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['C/New Mode']" placeholder="#FFFFD93D">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>C/New Band+Mode (Confirmed + Need Both)</label>
+                            <input type="color" :value="configData.COLORS['C/New Band+Mode'].substring(0,7)" 
+                                   @input="configData.COLORS['C/New Band+Mode'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['C/New Band+Mode']" placeholder="#FF9C27B0">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>W/New Band (Worked + Need Band)</label>
+                            <input type="color" :value="configData.COLORS['W/New Band'].substring(0,7)" 
+                                   @input="configData.COLORS['W/New Band'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['W/New Band']" placeholder="#FF00BCD4">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>W/New Mode (Worked + Need Mode)</label>
+                            <input type="color" :value="configData.COLORS['W/New Mode'].substring(0,7)" 
+                                   @input="configData.COLORS['W/New Mode'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['W/New Mode']" placeholder="#FFFFA726">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>W/New Band+Mode (Worked + Need Both)</label>
+                            <input type="color" :value="configData.COLORS['W/New Band+Mode'].substring(0,7)" 
+                                   @input="configData.COLORS['W/New Band+Mode'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['W/New Band+Mode']" placeholder="#FFFF5722">
+                        </div>
+                        <div class="color-picker-field">
+                            <label>Unknown (Unresolved DXCC)</label>
+                            <input type="color" :value="configData.COLORS['Unknown'].substring(0,7)" 
+                                   @input="configData.COLORS['Unknown'] = '#FF' + $event.target.value.substring(1).toUpperCase()">
+                            <input type="text" v-model="configData.COLORS['Unknown']" placeholder="#FF666666">
+                        </div>
+                    </div>
+                    
+                    <!-- Special Stations Tab -->
+                    <div v-if="activeConfigTab === 'specials'" class="config-form">
+                        <h4 style="margin-bottom: 12px; font-size: 12px; color: #4a9eff; font-weight: 600;">🎯 Special Stations Configuration</h4>
+                        <p style="font-size: 11px; color: #888; margin-bottom: 12px;">
+                            Manage which special activities (POTA, WWFF, etc.) you want to see in the spots table and filtering options.
+                        </p>
+                        
+                        <div style="margin-bottom: 16px; padding: 10px; background: #2a2a2a; border-radius: 4px;">
+                            <h5 style="font-size: 11px; color: #b0d4ff; margin-bottom: 8px; font-weight: 600;">📍 Active Special Stations:</h5>
+                            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                                <span v-for="special in enabledSpecials" :key="special" 
+                                      :class="`special-badge special-${special.toLowerCase()}`"
+                                      style="padding: 4px 10px; display: flex; align-items: center; gap: 6px; font-size: 11px; border-radius: 4px;">
+                                    {{ special }}
+                                    <button @click.stop="removeSpecial(special)" 
+                                            style="background: none; border: none; color: inherit; cursor: pointer; padding: 0; font-size: 14px; line-height: 1;">×</button>
+                                </span>
+                            </div>
+                        </div>
+                        
+                        <div style="margin-bottom: 12px; padding: 10px; background: #2a2a2a; border-radius: 4px;">
+                            <h5 style="font-size: 11px; color: #b0d4ff; margin-bottom: 8px; font-weight: 600;">➕ Available Special Stations:</h5>
+                            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                                <span v-for="special in availableSpecialsList.filter(s => !enabledSpecials.includes(s))" 
+                                      :key="special"
+                                      style="padding: 4px 10px; background: #3a3a3a; color: #999; display: flex; align-items: center; gap: 6px; font-size: 11px; border-radius: 4px; border: 1px dashed #555; cursor: pointer;"
+                                      @click="addSpecial(special)">
+                                    + {{ special }}
+                                </span>
+                            </div>
+                        </div>
+                        
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        
+                        <div style="margin-top: 12px; padding: 10px; background: #1a2a2a; border-left: 3px solid #4a9eff; border-radius: 4px;">
+                            <h5 style="font-size: 11px; color: #4a9eff; margin-bottom: 6px; font-weight: 600;">ℹ️ How it works:</h5>
+                            <ul style="font-size: 10px; color: #999; margin-left: 16px; line-height: 1.4;">
+                                <li>Special stations are detected from comments in DX spots (e.g., "K-1234" for POTA, "XXFF-1234" for WWFF)</li>
+                                <li>Multiple specials can be detected in a single spot (e.g., POTA + WWFF)</li>
+                                <li>Use filters to show only spots with specific special activities</li>
+                                <li>Add or remove activities to customize your display</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="modal-footer">
+                    <button class="btn-secondary" @click="closeConfigDialog">Cancel</button>
+                    <button class="btn-primary" @click="saveConfiguration">Save Configuration</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Country Information Modal -->
+        <div class="country-info-modal" @click.self="window.CountryModal?.hideModal?.()">
+            <div class="country-modal-content">
+                <div class="country-modal-header">
+                    <h3>🌍 Additional Information</h3>
+                    <button class="country-modal-close-btn" @click="window.CountryModal?.hideModal?.()">✕</button>
+                </div>
+                <div class="country-modal-body">
+                    <div class="country-map-container">
+                        <canvas id="countryMapCanvas"></canvas>
+                        <div class="country-info-overlay"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+

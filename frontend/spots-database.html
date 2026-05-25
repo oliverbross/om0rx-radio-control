@@ -1,0 +1,2073 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spots Database Viewer</title>
+    
+    <!-- Chart.js for visualizations -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- DataTables for table -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            font-size: 12px;
+            padding: 16px;
+        }
+        
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+        
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #2a2a2a;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+        }
+        
+        h1 {
+            font-size: 24px;
+            color: #667eea;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .header-controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        
+        .refresh-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #3a3a3a;
+            padding: 8px 12px;
+            border-radius: 4px;
+        }
+        
+        .toggle-switch {
+            width: 40px;
+            height: 20px;
+            background: #555;
+            border-radius: 10px;
+            cursor: pointer;
+            position: relative;
+            transition: background 0.3s;
+        }
+        
+        .toggle-switch.active {
+            background: #667eea;
+        }
+        
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            background: white;
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            transition: left 0.3s;
+        }
+        
+        .toggle-switch.active::after {
+            left: 22px;
+        }
+        
+        .stats-header {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, #2a2a2a 0%, #3a3a3a 100%);
+            padding: 16px;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        
+        .stat-card.band { border-left-color: #667eea; }
+        .stat-card.mode { border-left-color: #f59e0b; }
+        .stat-card.country { border-left-color: #10b981; }
+        .stat-card.spotter { border-left-color: #ef4444; }
+        
+        .stat-label {
+            font-size: 11px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .stat-value {
+            font-size: 28px;
+            font-weight: bold;
+            color: #fff;
+        }
+        
+        .filters-section {
+            background: #2a2a2a;
+            padding: 16px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .filters-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #e0e0e0;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .filters-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px;
+            align-items: flex-end;
+        }
+        
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .filter-label {
+            font-size: 9px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 500;
+        }
+        
+        .filter-input,
+        .filter-select {
+            background: #3a3a3a;
+            border: 1px solid #4a4a4a;
+            color: #e0e0e0;
+            padding: 6px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            height: 32px;
+        }
+        
+        .filter-input:focus,
+        .filter-select:focus {
+            outline: none;
+            border-color: #667eea;
+            background: #4a4a4a;
+        }
+        
+        /* Multi-select checkbox filters */
+        .filter-checkboxes {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: #2a2a2a;
+            border: 1px solid #4a4a4a;
+            border-top: none;
+            border-radius: 0 0 4px 4px;
+            max-height: 250px;
+            overflow-y: auto;
+            z-index: 1000;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.5);
+        }
+        
+        .filter-checkboxes.open {
+            display: block;
+        }
+        
+        .checkbox-item {
+            padding: 6px 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            border-bottom: 1px solid #3a3a3a;
+            transition: background 0.2s;
+            font-size: 11px;
+        }
+        
+        .checkbox-item:hover {
+            background: #3a3a3a;
+        }
+        
+        .checkbox-item input[type="checkbox"] {
+            cursor: pointer;
+            width: 14px;
+            height: 14px;
+            accent-color: #667eea;
+            margin: 0;
+        }
+        
+        .checkbox-item label {
+            cursor: pointer;
+            flex: 1;
+            margin: 0;
+            padding: 0;
+            font-size: 11px;
+        }
+        
+        .filter-button {
+            position: relative;
+            background: #3a3a3a;
+            border: 1px solid #4a4a4a;
+            color: #e0e0e0;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+            width: 100%;
+            white-space: nowrap;
+            height: 32px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .filter-button:hover {
+            background: #4a4a4a;
+            border-color: #5a5a5a;
+        }
+        
+        .filter-button.has-selection {
+            border-color: #667eea;
+            background: rgba(102, 126, 234, 0.1);
+            color: #a5b4fc;
+        }
+        
+        .filter-button::after {
+            content: '▼';
+            font-size: 8px;
+            transition: transform 0.2s;
+            flex-shrink: 0;
+        }
+        
+        .filter-button.open::after {
+            transform: rotate(180deg);
+        }
+        
+        .filter-count {
+            background: #667eea;
+            color: white;
+            border-radius: 10px;
+            padding: 1px 6px;
+            font-size: 9px;
+            font-weight: bold;
+            flex-shrink: 0;
+        }
+        
+        .filter-button-text {
+            flex: 1;
+            min-width: 0;
+            text-overflow: ellipsis;
+            overflow: hidden;
+        }
+        
+        .filters-button-group {
+            display: flex;
+            gap: 6px;
+            grid-column: 1 / -1;
+            justify-self: flex-end;
+        }
+        
+        .filters-button-group button {
+            padding: 6px 14px;
+            font-size: 11px;
+        }
+        
+        .freq-range-group {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+        
+        .freq-range-group .filter-input {
+            width: 100%;
+        }
+        
+        button {
+            background: #3a3a3a;
+            border: 1px solid #4a4a4a;
+            color: #e0e0e0;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        
+        button:hover {
+            background: #4a4a4a;
+            border-color: #5a5a5a;
+        }
+        
+        button.primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-color: #7a5aae;
+            color: white;
+        }
+        
+        button.primary:hover {
+            background: linear-gradient(135deg, #7a8ff5 0%, #8a5ab2 100%);
+            border-color: #8a6abe;
+        }
+        
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        
+        .chart-card {
+            background: #2a2a2a;
+            padding: 16px;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .chart-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #e0e0e0;
+            margin-bottom: 12px;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 250px;
+        }
+        
+        .table-section {
+            background: #2a2a2a;
+            padding: 16px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+        
+        .table-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #e0e0e0;
+            margin-bottom: 12px;
+        }
+        
+        .dataTables_wrapper {
+            color: #e0e0e0;
+        }
+        
+        .dataTables_wrapper .dataTables_paginate .paginate_button {
+            background: #3a3a3a;
+            border: 1px solid #4a4a4a;
+            color: #e0e0e0;
+        }
+        
+        .dataTables_wrapper .dataTables_paginate .paginate_button:hover {
+            background: #4a4a4a;
+            border-color: #5a5a5a;
+        }
+        
+        .dataTables_wrapper .dataTables_paginate .paginate_button.current {
+            background: #667eea;
+            border-color: #667eea;
+            color: white;
+        }
+        
+        table {
+            width: 100% !important;
+            border-collapse: collapse;
+        }
+        
+        table thead {
+            background: #3a3a3a;
+        }
+        
+        table th {
+            padding: 10px 8px;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 2px solid #4a4a4a;
+            font-size: 11px;
+            color: #aaa;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        table td {
+            padding: 10px 8px;
+            border-bottom: 1px solid #3a3a3a;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        table tbody tr:hover {
+            background: #3a3a3a !important;
+        }
+        
+        .date-cell { color: #f59e0b; font-family: monospace; font-weight: 500; }
+        .time-cell { color: #667eea; font-family: monospace; font-weight: 500; }
+        .band-cell { color: #f59e0b; font-weight: 700; font-size: 13px; }
+        .mode-cell { color: #10b981; font-weight: 600; font-size: 13px; }
+        .country-cell { color: #a78bfa; font-weight: 500; font-size: 13px; }
+        .callsign-cell { color: #10b981; font-weight: 700; font-size: 13px; }
+        .freq-cell { color: #4a9eff; font-family: monospace; font-size: 13px; font-weight: 600; }
+        .zone-cell { color: #cbd5e1; font-size: 13px; text-align: center; }
+        .spotter-cell { color: #ff9800; font-weight: 600; font-size: 13px; }
+        .comment-cell { color: #aaa; font-size: 12px; }
+        .special-cell { font-size: 11px; }
+        
+        /* Spot row colors based on status */
+        .spot-row-atno {
+            background-color: rgba(255, 140, 0, 0.15) !important;
+        }
+        
+        .spot-row-new-band {
+            background-color: rgba(0, 191, 255, 0.15) !important;
+        }
+        
+        .spot-row-new-mode {
+            background-color: rgba(255, 192, 0, 0.15) !important;
+        }
+        
+        .spot-row-new-bandmode {
+            background-color: rgba(233, 30, 99, 0.15) !important;
+        }
+        
+        .spot-row-need-lotw {
+            background-color: rgba(50, 205, 50, 0.15) !important;
+        }
+        
+        .spot-row-worked {
+            background-color: rgba(34, 197, 94, 0.15) !important;
+        }
+        
+        .spot-row-confirmed {
+            background-color: rgba(100, 100, 100, 0.1) !important;
+        }
+        
+        .spot-row-normal {
+            background-color: rgba(0, 0, 0, 0.1) !important;
+        }
+        
+        table tbody tr:hover {
+            background: rgba(74, 158, 255, 0.25) !important;
+        }
+        
+        /* Worked badge styling */
+        .worked-badge {
+            display: inline-block;
+            background: rgba(34, 197, 94, 0.25);
+            color: #86efac;
+            border: 1px solid rgba(34, 197, 94, 0.6);
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 9px;
+            font-weight: 700;
+            margin-left: 6px;
+            white-space: nowrap;
+        }
+        
+        /* Special badges */
+        .special-badge {
+            display: inline-block;
+            margin-right: 4px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 700;
+        }
+        
+        .special-pota {
+            background: rgba(16, 185, 129, 0.3);
+            color: #6ee7b7;
+            border: 1px solid rgba(16, 185, 129, 0.5);
+        }
+        
+        .special-sota {
+            background: rgba(59, 130, 246, 0.3);
+            color: #93c5fd;
+            border: 1px solid rgba(59, 130, 246, 0.5);
+        }
+        
+        .special-iota {
+            background: rgba(168, 85, 247, 0.3);
+            color: #d8b4fe;
+            border: 1px solid rgba(168, 85, 247, 0.5);
+        }
+        
+        .special-wwff {
+            background: rgba(245, 158, 11, 0.3);
+            color: #fcd34d;
+            border: 1px solid rgba(245, 158, 11, 0.5);
+        }
+        
+        .dataTables_filter input {
+            background: #3a3a3a !important;
+            border: 1px solid #4a4a4a !important;
+            color: #e0e0e0 !important;
+            padding: 6px 8px !important;
+            border-radius: 3px !important;
+        }
+        
+        .api-docs {
+            background: #2a2a2a;
+            padding: 16px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            border-left: 4px solid #10b981;
+        }
+        
+        .api-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #10b981;
+            margin-bottom: 12px;
+        }
+        
+        .api-endpoint {
+            background: #3a3a3a;
+            padding: 12px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .method {
+            background: #667eea;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-weight: 600;
+            margin-right: 8px;
+            min-width: 50px;
+            text-align: center;
+        }
+        
+        .endpoint-desc {
+            font-size: 11px;
+            color: #aaa;
+            margin-top: 4px;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #888;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #3a3a3a;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .error {
+            background: #7f1d1d;
+            color: #fecaca;
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 16px;
+            border-left: 4px solid #ef4444;
+        }
+        
+        .collapsible-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        .collapse-arrow {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            background: #3a3a3a;
+            border-radius: 4px;
+            transition: transform 0.3s;
+            color: #667eea;
+            font-weight: bold;
+        }
+        
+        .collapse-arrow.collapsed {
+            transform: rotate(-90deg);
+        }
+        
+        .collapsible-content {
+            max-height: 5000px;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+        }
+        
+        .collapsible-content.collapsed {
+            max-height: 0;
+            overflow: hidden;
+        }
+        
+        .worked-spot {
+            background: rgba(16, 185, 129, 0.15) !important;
+        }
+        
+        .worked-spot td {
+            color: #6ee7b7;
+            font-weight: 600;
+        }
+        
+        table tbody tr.worked-spot:hover {
+            background: rgba(16, 185, 129, 0.25) !important;
+        }
+        
+        @media (max-width: 1200px) {
+            .stats-header {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .charts-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .filters-container {
+                grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .stats-header {
+                grid-template-columns: 1fr;
+            }
+            
+            .filters-container {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .filters-button-group {
+                grid-column: 1 / -1;
+            }
+            
+            .freq-range-group {
+                grid-column: 1 / -1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <h1>📊 Spots Database Viewer</h1>
+            <div class="header-controls">
+                <div class="refresh-toggle">
+                    <span>Auto-Refresh</span>
+                    <div class="toggle-switch" id="autoRefreshToggle" onclick="toggleAutoRefresh()"></div>
+                </div>
+                <button class="primary" onclick="refreshData()">🔄 Refresh Now</button>
+            </div>
+        </header>
+        
+        <!-- Error message placeholder -->
+        <div id="errorMsg"></div>
+        
+        <!-- Statistics Cards -->
+        <div class="stats-header" id="statsHeader"></div>
+        
+        <!-- Charts Grid -->
+        <div id="chartsSection" style="background: #2a2a2a; padding: 16px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid #667eea;">
+            <div class="collapsible-header" onclick="toggleSection('chartsContent')">
+                <h2 style="font-size: 16px; color: #e0e0e0; margin: 0;">📈 Visualizations</h2>
+                <div class="collapse-arrow" id="chartsArrow">▼</div>
+            </div>
+            <div id="chartsContent" class="collapsible-content" style="margin-top: 12px;">
+                <div class="charts-grid">
+                    <div class="chart-card">
+                        <div class="chart-title">Spots by Band</div>
+                <div class="chart-container">
+                    <canvas id="bandChart"></canvas>
+                </div>
+            </div>
+            
+            <div class="chart-card">
+                <div class="chart-title">Spots by Mode</div>
+                <div class="chart-container">
+                    <canvas id="modeChart"></canvas>
+                </div>
+            </div>
+            
+            <div class="chart-card">
+                <div class="chart-title">Top 10 Countries</div>
+                <div class="chart-container">
+                    <canvas id="countryChart"></canvas>
+                </div>
+            </div>
+            
+            <div class="chart-card">
+                <div class="chart-title">Activity Timeline (Last 24h)</div>
+                <div class="chart-container">
+                    <canvas id="timelineChart"></canvas>
+                </div>
+            </div>
+            
+            <div class="chart-card">
+                <div class="chart-title">Top 10 Spotters</div>
+                <div class="chart-container">
+                    <canvas id="spotterChart"></canvas>
+                </div>
+            </div>
+            
+            <div class="chart-card">
+                <div class="chart-title">Frequency Distribution</div>
+                <div class="chart-container">
+                    <canvas id="frequencyChart"></canvas>
+                </div>
+            </div>
+        </div>
+            </div>
+        </div>
+        
+        <!-- API Documentation -->
+        <div class="api-docs">
+            <div class="collapsible-header" onclick="toggleSection('apiContent')">
+                <div class="api-title" style="margin-bottom: 0;">📡 Available API Endpoints</div>
+                <div class="collapse-arrow collapsed" id="apiArrow">▼</div>
+            </div>
+            <div id="apiContent" class="collapsible-content collapsed" style="margin-top: 12px;">
+            
+            <div class="api-endpoint">
+                <div>
+                    <span class="method">GET</span>
+                    <span>/api/spots/count</span>
+                </div>
+            </div>
+            <div class="endpoint-desc">Get total number of logged spots</div>
+            
+            <div class="api-endpoint">
+                <div>
+                    <span class="method">GET</span>
+                    <span>/api/spots/recent?limit=100</span>
+                </div>
+            </div>
+            <div class="endpoint-desc">Get most recent spots (default limit: 100)</div>
+            
+            <div class="api-endpoint">
+                <div>
+                    <span class="method">GET</span>
+                    <span>/api/spots/stats/band</span>
+                </div>
+            </div>
+            <div class="endpoint-desc">Get spot statistics grouped by band</div>
+            
+            <div class="api-endpoint">
+                <div>
+                    <span class="method">GET</span>
+                    <span>/api/spots/stats/mode</span>
+                </div>
+            </div>
+            <div class="endpoint-desc">Get spot statistics grouped by mode</div>
+            
+            <div class="api-endpoint">
+                <div>
+                    <span class="method">GET</span>
+                    <span>/api/spots/stats/country?limit=20</span>
+                </div>
+            </div>
+            <div class="endpoint-desc">Get top countries by spot count</div>
+            
+            <div class="api-endpoint">
+                <div>
+                    <span class="method">GET</span>
+                    <span>/api/spots/callsign/{callsign}</span>
+                </div>
+            </div>
+            <div class="endpoint-desc">Get all spots for a specific callsign</div>
+            
+            <div class="api-endpoint">
+                <div>
+                    <span class="method">GET</span>
+                    <span>/api/spots/special</span>
+                </div>
+            </div>
+            <div class="endpoint-desc">Get POTA/SOTA/IOTA special event spots</div>
+            </div>
+        </div>
+        
+        <!-- Filters Section -->
+        <div class="filters-section">
+            <div class="filters-title">🔍 Filter Spots</div>
+            <div class="filters-container">
+                <!-- Band Filter -->
+                <div class="filter-group">
+                    <label class="filter-label">Band</label>
+                    <div style="position: relative;">
+                        <button id="bandFilterBtn" class="filter-button" onclick="toggleFilterDropdown('band')">
+                            <span id="bandFilterLabel" class="filter-button-text">All Bands</span>
+                        </button>
+                        <div id="bandFilterCheckboxes" class="filter-checkboxes"></div>
+                    </div>
+                </div>
+                
+                <!-- Mode Filter -->
+                <div class="filter-group">
+                    <label class="filter-label">Mode</label>
+                    <div style="position: relative;">
+                        <button id="modeFilterBtn" class="filter-button" onclick="toggleFilterDropdown('mode')">
+                            <span id="modeFilterLabel" class="filter-button-text">All Modes</span>
+                        </button>
+                        <div id="modeFilterCheckboxes" class="filter-checkboxes"></div>
+                    </div>
+                </div>
+                
+                <!-- CQ Zones Filter -->
+                <div class="filter-group">
+                    <label class="filter-label">CQ Zones</label>
+                    <div style="position: relative;">
+                        <button id="zonesFilterBtn" class="filter-button" onclick="toggleFilterDropdown('zones')">
+                            <span id="zonesFilterLabel" class="filter-button-text">All Zones</span>
+                        </button>
+                        <div id="zonesFilterCheckboxes" class="filter-checkboxes"></div>
+                    </div>
+                </div>
+                
+                <!-- Country Filter -->
+                <div class="filter-group">
+                    <label class="filter-label">Country</label>
+                    <div style="position: relative;">
+                        <button id="countryFilterBtn" class="filter-button" onclick="toggleFilterDropdown('country')">
+                            <span id="countryFilterLabel" class="filter-button-text">All Countries</span>
+                        </button>
+                        <div id="countryFilterCheckboxes" class="filter-checkboxes"></div>
+                    </div>
+                </div>
+                
+                <!-- Callsign Filter -->
+                <div class="filter-group">
+                    <label class="filter-label">Callsign</label>
+                    <input type="text" id="filterCallsign" class="filter-input" placeholder="Search...">
+                </div>
+                
+                <!-- Spotter Filter -->
+                <div class="filter-group">
+                    <label class="filter-label">Spotter</label>
+                    <input type="text" id="filterSpotter" class="filter-input" placeholder="Search...">
+                </div>
+                
+                <!-- Frequency Range Filter -->
+                <div class="filter-group">
+                    <label class="filter-label">Frequency (kHz)</label>
+                    <div class="freq-range-group">
+                        <input type="number" id="filterFreqMin" class="filter-input" placeholder="Min">
+                        <input type="number" id="filterFreqMax" class="filter-input" placeholder="Max">
+                    </div>
+                </div>
+                
+                <!-- Worked Spots Filter -->
+                <div class="filter-group">
+                    <label class="filter-label">Status</label>
+                    <div style="display: flex; align-items: center; gap: 8px; height: 32px;">
+                        <input type="checkbox" id="filterWorkedOnly" style="cursor: pointer; width: 14px; height: 14px; accent-color: #22c55e; margin: 0;">
+                        <label for="filterWorkedOnly" style="cursor: pointer; margin: 0; font-size: 11px; flex: 0.5;">Worked</label>
+                        <input type="checkbox" id="filterExcludeWorked" style="cursor: pointer; width: 14px; height: 14px; accent-color: #ef4444; margin: 0;">
+                        <label for="filterExcludeWorked" style="cursor: pointer; margin: 0; font-size: 11px; flex: 0.5;">Exclude</label>
+                    </div>
+                </div>
+                
+                <!-- Action Buttons -->
+                <div class="filters-button-group">
+                    <button class="primary" onclick="applyFilters()">✓ Apply Filters</button>
+                    <button onclick="clearFilters()">Clear All</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Table Section -->
+        <div class="table-section">
+            <div class="collapsible-header" onclick="toggleSection('tableContent')">
+                <div class="table-title" style="margin-bottom: 0;">📋 All Spots</div>
+                <div class="collapse-arrow" id="tableArrow">▼</div>
+            </div>
+            <div id="tableContent" class="collapsible-content" style="margin-top: 12px;">
+            <table id="spotsTable" class="display">
+                <thead>
+                    <tr>
+                        <th style="display:none;">Timestamp</th>
+                        <th>Date</th>
+                        <th>Time</th>
+                        <th>Band</th>
+                        <th>Frequency (kHz)</th>
+                        <th>Callsign</th>
+                        <th>Mode</th>
+                        <th>Country</th>
+                        <th>CQ Zone</th>
+                        <th>Spotter</th>
+                        <th>Comment</th>
+                        <th>Special Tags</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Global state
+        let allSpots = [];
+        let filteredSpots = [];
+        let charts = {};
+        let autoRefreshInterval = null;
+        let autoRefreshEnabled = false;
+        let workedCallsigns = new Set();
+        let workedCallsignsWithDates = new Map();  // callsign -> {date: 'DD/MM/YYYY', dateYYYYMMDD: 'YYYYMMDD'}
+        let isRefreshing = false;
+        
+        // Multi-select filter state
+        window.multiSelectFilters = {
+            band: new Set(),
+            mode: new Set(),
+            country: new Set(),
+            zones: new Set()
+        };
+        
+        // Store filter state for auto-refresh
+        let currentFilters = {
+            band: '',
+            mode: '',
+            country: '',
+            callsign: '',
+            spotter: '',
+            freqMin: '',
+            freqMax: ''
+        };
+        
+        // Initialize - make async to ensure proper load order
+        document.addEventListener('DOMContentLoaded', async function() {
+            console.log('⏳ Starting initialization...');
+            // First: Load worked callsigns from ADIF (must complete before rendering table)
+            await loadWorkedCallsigns();
+            console.log('✅ Worked callsigns loaded, now loading spots...');
+            // Second: Load spots and render table (now workedCallsigns is populated)
+            await loadData();
+            console.log('✅ All data loaded');
+            // Third: Setup event listeners
+            setupEventListeners();
+        });
+        
+        // Toggle collapsible sections
+        function toggleSection(contentId) {
+            const content = document.getElementById(contentId);
+            const arrow = document.getElementById(contentId.replace('Content', 'Arrow'));
+            
+            if (content && arrow) {
+                content.classList.toggle('collapsed');
+                arrow.classList.toggle('collapsed');
+            }
+        }
+        
+        // Load worked callsigns from ADIF log (matches by CALL + BAND + MODE)
+        async function loadWorkedCallsigns() {
+            try {
+                const response = await fetch('/logs/qso_log.adif');
+                if (!response.ok) return;
+                
+                const text = await response.text();
+                const lines = text.split('\n');
+                
+                let currentCallsign = null;
+                let currentDate = null;
+                let currentBand = null;
+                let currentMode = null;
+                
+                // Parse ADIF format - look for CALL:, QSO_DATE:, BAND:, and MODE: fields
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i].trim();
+                    
+                    // Extract callsign from format like <CALL:9>SM/LA8ZIA
+                    if (line.startsWith('<CALL:')) {
+                        const match = line.match(/<CALL:\d+>(.+)/);
+                        if (match) {
+                            currentCallsign = match[1].trim().toUpperCase();
+                        }
+                    }
+                    
+                    // Extract date from format like <QSO_DATE:8>20251017
+                    if (line.startsWith('<QSO_DATE:')) {
+                        const match = line.match(/<QSO_DATE:\d+>(\d{8})/);
+                        if (match) {
+                            currentDate = match[1];  // Format: YYYYMMDD
+                        }
+                    }
+                    
+                    // Extract band from format like <BAND:3>20m
+                    if (line.startsWith('<BAND:')) {
+                        const match = line.match(/<BAND:\d+>(.+)/);
+                        if (match) {
+                            currentBand = match[1].trim().toUpperCase();
+                        }
+                    }
+                    
+                    // Extract mode from format like <MODE:3>SSB
+                    if (line.startsWith('<MODE:')) {
+                        const match = line.match(/<MODE:\d+>(.+)/);
+                        if (match) {
+                            currentMode = match[1].trim().toUpperCase();
+                        }
+                    }
+                    
+                    // When we hit EOR (End of Record), store the worked combination with date
+                    if (line === '<EOR>') {
+                        if (currentCallsign && currentDate && currentBand && currentMode) {
+                            // Create composite key: CALL-BAND-MODE
+                            const compositeKey = `${currentCallsign}-${currentBand}-${currentMode}`;
+                            
+                            // Convert YYYYMMDD to DD/MM/YYYY for display
+                            const year = currentDate.substring(0, 4);
+                            const month = currentDate.substring(4, 6);
+                            const day = currentDate.substring(6, 8);
+                            const formattedDate = `${day}/${month}/${year}`;
+                            
+                            // Store for backwards compatibility (some code might still use callsign-only lookup)
+                            workedCallsigns.add(currentCallsign);
+                            
+                            // Store with composite key for proper band+mode matching
+                            workedCallsignsWithDates.set(compositeKey, {
+                                date: formattedDate,
+                                dateYYYYMMDD: currentDate
+                            });
+                        }
+                        currentCallsign = null;
+                        currentDate = null;
+                        currentBand = null;
+                        currentMode = null;
+                    }
+                }
+                
+                console.log(`✅ Loaded ${workedCallsignsWithDates.size} worked band/mode combinations from ADIF`);
+                // Debug: Show first 10 combinations
+                const first10 = Array.from(workedCallsignsWithDates.keys()).slice(0, 10);
+                console.log('📋 First 10 worked combinations:', first10);
+            } catch (error) {
+                console.warn('Could not load worked callsigns:', error);
+            }
+        }
+        
+        function setupEventListeners() {
+            // Text input listeners with debounce
+            document.getElementById('filterCallsign').addEventListener('keyup', () => { 
+                clearTimeout(window.searchTimeout); 
+                window.searchTimeout = setTimeout(applyFilters, 500); 
+            });
+            document.getElementById('filterSpotter').addEventListener('keyup', () => { 
+                clearTimeout(window.searchTimeout); 
+                window.searchTimeout = setTimeout(applyFilters, 500); 
+            });
+            
+            // Frequency range listeners with debounce
+            document.getElementById('filterFreqMin').addEventListener('change', applyFilters);
+            document.getElementById('filterFreqMax').addEventListener('change', applyFilters);
+            
+            // Worked status checkbox listeners
+            document.getElementById('filterWorkedOnly').addEventListener('change', applyFilters);
+            document.getElementById('filterExcludeWorked').addEventListener('change', applyFilters);
+            
+            // Close dropdowns when clicking outside
+            document.addEventListener('click', function(event) {
+                if (!event.target.closest('.filter-group')) {
+                    document.querySelectorAll('.filter-checkboxes.open').forEach(el => {
+                        el.classList.remove('open');
+                        el.previousElementSibling.classList.remove('open');
+                    });
+                }
+            });
+        }
+        
+        function toggleFilterDropdown(filterType) {
+            const btn = document.getElementById(filterType + 'FilterBtn');
+            const checkboxes = document.getElementById(filterType + 'FilterCheckboxes');
+            
+            // Close other dropdowns
+            document.querySelectorAll('.filter-checkboxes.open').forEach(el => {
+                if (el !== checkboxes) {
+                    el.classList.remove('open');
+                    el.previousElementSibling.classList.remove('open');
+                }
+            });
+            
+            // Toggle this dropdown
+            btn.classList.toggle('open');
+            checkboxes.classList.toggle('open');
+        }
+        
+        function updateFilterCheckbox(filterType, value, isChecked) {
+            const filters = window.multiSelectFilters || {};
+            if (!filters[filterType]) {
+                filters[filterType] = new Set();
+            }
+            
+            if (isChecked) {
+                filters[filterType].add(value);
+            } else {
+                filters[filterType].delete(value);
+            }
+            
+            window.multiSelectFilters = filters;
+            updateFilterButtonLabel(filterType);
+            // Apply filters immediately when checkbox changes
+            applyFilters();
+        }
+        
+        function updateFilterButtonLabel(filterType) {
+            const filters = window.multiSelectFilters || {};
+            const btn = document.getElementById(filterType + 'FilterBtn');
+            const label = document.getElementById(filterType + 'FilterLabel');
+            const count = filters[filterType] ? filters[filterType].size : 0;
+            
+            if (count === 0) {
+                btn.classList.remove('has-selection');
+                const defaultLabels = {
+                    band: 'All Bands',
+                    mode: 'All Modes',
+                    country: 'All Countries',
+                    zones: 'All Zones'
+                };
+                label.textContent = defaultLabels[filterType] || 'Select...';
+            } else {
+                btn.classList.add('has-selection');
+                const items = Array.from(filters[filterType]).join(', ');
+                label.textContent = count === 1 ? items : `${count} selected`;
+            }
+        }
+        
+        async function loadData() {
+            try {
+                // Add cache-busting parameter to force fresh data from server
+                const timestamp = new Date().getTime();
+                const response = await fetch(`/api/spots/recent?t=${timestamp}`, {
+                    cache: 'no-store',  // Don't use cached response
+                    headers: {
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0'
+                    }
+                });
+                if (!response.ok) throw new Error('Failed to fetch spots');
+                
+                const data = await response.json();
+                allSpots = data.spots || [];
+                filteredSpots = [...allSpots];
+                
+                // Debug: Check first few callsigns from API
+                if (filteredSpots.length > 0) {
+                    console.log('📊 First few callsigns from API:', filteredSpots.slice(0, 5).map(s => s.callsign));
+                    console.log('📊 Total spots from API:', filteredSpots.length);
+                    
+                    // Find matches between worked and spots
+                    let matchCount = 0;
+                    const worked = Array.from(workedCallsigns);
+                    for (const spot of filteredSpots.slice(0, 100)) {
+                        if (workedCallsigns.has(spot.callsign.toUpperCase())) {
+                            matchCount++;
+                            if (matchCount <= 3) {
+                                console.log(`✅ MATCH FOUND: ${spot.callsign} in worked list`);
+                            }
+                        }
+                    }
+                    console.log(`🎯 Matches found in first 100 spots: ${matchCount}`);
+                    
+                    // Sample: show some spot callsigns vs some worked callsigns
+                    const spotCalls = filteredSpots.slice(0, 5).map(s => s.callsign.toUpperCase());
+                    console.log('🔍 Comparing samples:');
+                    console.log('  Spot callsigns:', spotCalls);
+                    console.log('  Is first spot worked?', workedCallsigns.has(spotCalls[0]));
+                }
+                
+                // Populate filters
+                populateFilterOptions();
+                
+                // Update stats
+                updateStats();
+                
+                // Create tables and charts
+                updateTable();
+                createCharts();
+                
+            } catch (error) {
+                showError('Failed to load data: ' + error.message);
+            }
+        }
+        
+        function populateFilterOptions() {
+            const bands = new Set(allSpots.map(s => s.band));
+            const modes = new Set(allSpots.map(s => s.mode));
+            const countries = new Set(allSpots.map(s => s.country).filter(Boolean));
+            
+            // Populate band checkboxes
+            const bandCheckboxes = document.getElementById('bandFilterCheckboxes');
+            bandCheckboxes.innerHTML = '';
+            Array.from(bands).sort().forEach(band => {
+                const item = document.createElement('div');
+                item.className = 'checkbox-item';
+                item.innerHTML = `
+                    <input type="checkbox" id="band_${band}" value="${band}" 
+                           onchange="updateFilterCheckbox('band', '${band}', this.checked)">
+                    <label for="band_${band}">${band}</label>
+                `;
+                bandCheckboxes.appendChild(item);
+            });
+            
+            // Populate mode checkboxes
+            const modeCheckboxes = document.getElementById('modeFilterCheckboxes');
+            modeCheckboxes.innerHTML = '';
+            Array.from(modes).sort().forEach(mode => {
+                const item = document.createElement('div');
+                item.className = 'checkbox-item';
+                item.innerHTML = `
+                    <input type="checkbox" id="mode_${mode}" value="${mode}" 
+                           onchange="updateFilterCheckbox('mode', '${mode}', this.checked)">
+                    <label for="mode_${mode}">${mode}</label>
+                `;
+                modeCheckboxes.appendChild(item);
+            });
+            
+            // Populate country checkboxes
+            const countryCheckboxes = document.getElementById('countryFilterCheckboxes');
+            countryCheckboxes.innerHTML = '';
+            Array.from(countries).sort().forEach(country => {
+                const item = document.createElement('div');
+                item.className = 'checkbox-item';
+                const safeId = 'country_' + country.replace(/[^a-zA-Z0-9]/g, '_');
+                item.innerHTML = `
+                    <input type="checkbox" id="${safeId}" value="${country}" 
+                           onchange="updateFilterCheckbox('country', '${country.replace(/"/g, '&quot;')}', this.checked)">
+                    <label for="${safeId}">${country}</label>
+                `;
+                countryCheckboxes.appendChild(item);
+            });
+            
+            // Populate CQ zones checkboxes (all zones 1-75)
+            const zonesCheckboxes = document.getElementById('zonesFilterCheckboxes');
+            zonesCheckboxes.innerHTML = '';
+            for (let zone = 1; zone <= 75; zone++) {
+                const item = document.createElement('div');
+                item.className = 'checkbox-item';
+                item.innerHTML = `
+                    <input type="checkbox" id="zone_${zone}" value="${zone}" 
+                           onchange="updateFilterCheckbox('zones', '${zone}', this.checked)">
+                    <label for="zone_${zone}">Zone ${zone}</label>
+                `;
+                zonesCheckboxes.appendChild(item);
+            }
+        }
+        
+        function updateStats() {
+            const stats = {
+                total: filteredSpots.length,
+                bands: new Set(filteredSpots.map(s => s.band)).size,
+                modes: new Set(filteredSpots.map(s => s.mode)).size,
+                countries: new Set(filteredSpots.map(s => s.country).filter(Boolean)).size
+            };
+            
+            const statsHTML = `
+                <div class="stat-card band">
+                    <div class="stat-label">Total Spots</div>
+                    <div class="stat-value">${stats.total}</div>
+                </div>
+                <div class="stat-card mode">
+                    <div class="stat-label">Bands</div>
+                    <div class="stat-value">${stats.bands}</div>
+                </div>
+                <div class="stat-card country">
+                    <div class="stat-label">Modes</div>
+                    <div class="stat-value">${stats.modes}</div>
+                </div>
+                <div class="stat-card spotter">
+                    <div class="stat-label">Countries</div>
+                    <div class="stat-value">${stats.countries}</div>
+                </div>
+            `;
+            
+            document.getElementById('statsHeader').innerHTML = statsHTML;
+        }
+        
+        function applyFilters() {
+            try {
+                // Get multi-select filter values
+                const filters = window.multiSelectFilters || {};
+                const bandFilters = filters.band || new Set();
+                const modeFilters = filters.mode || new Set();
+                const countryFilters = filters.country || new Set();
+                const zonesFilters = filters.zones || new Set();
+                
+                // Get text input values
+                const callsign = document.getElementById('filterCallsign')?.value.toUpperCase() || '';
+                const spotter = document.getElementById('filterSpotter')?.value.toUpperCase() || '';
+                const workedOnly = document.getElementById('filterWorkedOnly')?.checked || false;
+                const excludeWorked = document.getElementById('filterExcludeWorked')?.checked || false;
+                
+                // Get frequency range
+                const freqMin = parseFloat(document.getElementById('filterFreqMin')?.value) || 0;
+                const freqMax = parseFloat(document.getElementById('filterFreqMax')?.value) || Infinity;
+                
+                // Filter spots
+                filteredSpots = allSpots.filter(spot => {
+                    // Multi-select filters (if any selected, must match)
+                    if (bandFilters.size > 0 && !bandFilters.has(spot.band)) return false;
+                    if (modeFilters.size > 0 && !modeFilters.has(spot.mode)) return false;
+                    if (countryFilters.size > 0 && !countryFilters.has(spot.country)) return false;
+                    // For zones: handle null/undefined values and normalize to string
+                    if (zonesFilters.size > 0) {
+                        const spotZone = spot.cq ? String(spot.cq) : null;
+                        if (!spotZone || !zonesFilters.has(spotZone)) return false;
+                    }
+                    
+                    // Text filters (substring match)
+                    if (callsign && !spot.callsign.toUpperCase().includes(callsign)) return false;
+                    if (spotter && !spot.spotter.toUpperCase().includes(spotter)) return false;
+                    
+                    // Frequency range filter
+                    if (spot.frequency_khz < freqMin || spot.frequency_khz > freqMax) return false;
+                    
+                    // Worked status filters (matches by CALL+BAND+MODE)
+                    const isWorked = isSpotWorked(spot);
+                    if (workedOnly && !isWorked) return false;
+                    if (excludeWorked && isWorked) return false;
+                    
+                    return true;
+                });
+                
+                console.log(`Filters applied: ${allSpots.length} total spots → ${filteredSpots.length} filtered`);
+                updateStats();
+                updateTable();
+                createCharts();
+            } catch (error) {
+                console.error('Error applying filters:', error);
+            }
+        }
+        
+        function clearFilters() {
+            try {
+                // Clear multi-select filters
+                window.multiSelectFilters = { band: new Set(), mode: new Set(), country: new Set(), zones: new Set() };
+                
+                // Uncheck all checkboxes
+                document.querySelectorAll('.filter-checkboxes input[type="checkbox"]').forEach(cb => {
+                    cb.checked = false;
+                });
+                
+                // Clear text inputs
+                document.getElementById('filterCallsign').value = '';
+                document.getElementById('filterSpotter').value = '';
+                document.getElementById('filterFreqMin').value = '';
+                document.getElementById('filterFreqMax').value = '';
+                document.getElementById('filterWorkedOnly').checked = false;
+                document.getElementById('filterExcludeWorked').checked = false;
+                
+                // Update button labels
+                updateFilterButtonLabel('band');
+                updateFilterButtonLabel('mode');
+                updateFilterButtonLabel('country');
+                updateFilterButtonLabel('zones');
+                
+                // Close any open dropdowns
+                document.querySelectorAll('.filter-checkboxes.open').forEach(el => {
+                    el.classList.remove('open');
+                });
+                document.querySelectorAll('.filter-button.open').forEach(el => {
+                    el.classList.remove('open');
+                });
+                
+                filteredSpots = [...allSpots];
+                updateStats();
+                updateTable();
+                createCharts();
+            } catch (error) {
+                console.error('Error clearing filters:', error);
+            }
+        }
+        
+        // Helper function to format date as DD/MM/YYYY
+        function formatDate(dateString) {
+            if (!dateString) return '';
+            let date;
+            
+            // If it's a datetime string like "2024-01-15 09:37:42.834877"
+            if (dateString.includes(' ')) {
+                date = new Date(dateString.split(' ')[0]);
+            } else if (dateString.includes('T')) {
+                date = new Date(dateString);
+            } else {
+                date = new Date(dateString);
+            }
+            
+            if (isNaN(date.getTime())) return '';
+            
+            const day = String(date.getUTCDate()).padStart(2, '0');
+            const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+            const year = date.getUTCFullYear();
+            return `${day}/${month}/${year}`;
+        }
+        
+        // Helper function to format time as HH:MM:SS (remove microseconds)
+        function formatTime(timeString) {
+            if (!timeString) return '';
+            // Extract HH:MM:SS from formats like "09:37:42.834877" or "09:37:42"
+            const match = timeString.match(/(\d{2}:\d{2}:\d{2})/);
+            return match ? match[1] : '';
+        }
+        
+        // Check if a spot was worked (matches by CALL + BAND + MODE)
+        function isSpotWorked(spot) {
+            if (!spot || !spot.callsign || !spot.band || !spot.mode) return false;
+            const compositeKey = `${spot.callsign.toUpperCase()}-${spot.band.toUpperCase()}-${spot.mode.toUpperCase()}`;
+            return workedCallsignsWithDates.has(compositeKey);
+        }
+        
+        // Get worked date for a spot (returns date string or empty)
+        function getSpotWorkedDate(spot) {
+            if (!spot || !spot.callsign || !spot.band || !spot.mode) return '';
+            const compositeKey = `${spot.callsign.toUpperCase()}-${spot.band.toUpperCase()}-${spot.mode.toUpperCase()}`;
+            const workedInfo = workedCallsignsWithDates.get(compositeKey);
+            return workedInfo ? workedInfo.date : '';
+        }
+        
+        // Get row class based on spot status
+        function getSpotRowClass(spot) {
+            // Check for special status in order of priority
+            const status = spot.status || spot.call_status || '';
+            
+            if (status.includes('ATNO') || status.includes('All Time New')) {
+                return 'spot-row-atno';
+            } else if (status.includes('New Band')) {
+                return 'spot-row-new-band';
+            } else if (status.includes('New Mode')) {
+                return 'spot-row-new-mode';
+            } else if (status.includes('New Band/Mode')) {
+                return 'spot-row-new-bandmode';
+            } else if (status.includes('Need LOTW')) {
+                return 'spot-row-need-lotw';
+            } else if (isSpotWorked(spot)) {
+                return 'spot-row-worked';
+            }
+            return 'spot-row-normal';
+        }
+        
+        function updateTable() {
+            try {
+                const table = $('#spotsTable');
+                const isInitialized = $.fn.dataTable.isDataTable('#spotsTable');
+                
+                if (isInitialized) {
+                    // Use the DataTables API to clear and reload data
+                    const dt = table.DataTable();
+                    
+                    dt.clear();
+                    
+                    // Build row data
+                    const rows = filteredSpots.map(spot => {
+                        const dateTimeStr = spot.received_at || spot.time_utc || '';
+                        const datePart = dateTimeStr.split(' ')[0] || '';
+                        const timePart = dateTimeStr.includes(' ') ? dateTimeStr.split(' ')[1] : spot.time_utc || '';
+                        
+                        const formattedDate = formatDate(datePart);
+                        const formattedTime = formatTime(timePart);
+                        
+                        // Create sortable timestamp for proper sorting
+                        const sortableTimestamp = dateTimeStr || '0000-00-00 00:00:00';
+                        
+                        return [
+                            sortableTimestamp,  // Hidden column for sorting
+                            formattedDate,
+                            formattedTime,
+                            spot.band,
+                            spot.frequency_khz,
+                            spot.callsign,
+                            spot.mode,
+                            spot.country || 'Unknown',
+                            spot.cq || '-',
+                            spot.spotter,
+                            spot.comment || '',
+                            spot.special_tags || ''
+                        ];
+                    });
+                    
+                    dt.rows.add(rows).draw(); // Re-apply sort order after adding rows
+                    applyRowStyling();
+                } else {
+                    // Initialize DataTable for the first time
+                    const rows = filteredSpots.map(spot => {
+                        const dateTimeStr = spot.received_at || spot.time_utc || '';
+                        const datePart = dateTimeStr.split(' ')[0] || '';
+                        const timePart = dateTimeStr.includes(' ') ? dateTimeStr.split(' ')[1] : spot.time_utc || '';
+                        
+                        const formattedDate = formatDate(datePart);
+                        const formattedTime = formatTime(timePart);
+                        
+                        // Create sortable timestamp for proper sorting
+                        const sortableTimestamp = dateTimeStr || '0000-00-00 00:00:00';
+                        
+                        return [
+                            sortableTimestamp,  // Hidden column for sorting
+                            formattedDate,
+                            formattedTime,
+                            spot.band,
+                            spot.frequency_khz,
+                            spot.callsign,
+                            spot.mode,
+                            spot.country || 'Unknown',
+                            spot.cq || '-',
+                            spot.spotter,
+                            spot.comment || '',
+                            spot.special_tags || ''
+                        ];
+                    });
+                    
+                    table.DataTable({
+                        data: rows,
+                        paging: true,
+                        pageLength: 50,
+                        ordering: true,
+                        order: [[0, 'desc']], // Sort by hidden timestamp column (desc) - newest first
+                        columnDefs: [
+                            { targets: 0, visible: false },  // Hide timestamp column, but use for sorting
+                            { type: 'string', targets: 1 },  // Date column (visible, DD/MM/YYYY format)
+                            { type: 'string', targets: 2 }   // Time column (visible)
+                        ],
+                        searching: true,
+                        info: true,
+                        language: {
+                            search: "Filter table:"
+                        },
+                        createdRow: function(row, data, dataIndex) {
+                            // Apply cell classes and styling (note: column indices shifted by 1 due to hidden column)
+                            $('td', row).eq(0).addClass('date-cell');       // Date (now column 1)
+                            $('td', row).eq(1).addClass('time-cell');       // Time (now column 2)
+                            $('td', row).eq(2).addClass('band-cell');       // Band (now column 3)
+                            $('td', row).eq(3).addClass('freq-cell');       // Frequency
+                            $('td', row).eq(4).addClass('callsign-cell');   // Callsign
+                            $('td', row).eq(5).addClass('mode-cell');       // Mode
+                            $('td', row).eq(6).addClass('country-cell');    // Country
+                            $('td', row).eq(7).addClass('zone-cell');       // CQ Zone
+                            $('td', row).eq(8).addClass('spotter-cell');    // Spotter
+                            $('td', row).eq(9).addClass('comment-cell');    // Comment
+                            $('td', row).eq(10).addClass('special-cell');   // Special Tags
+                            
+                            // Apply row class based on spot status
+                            const spot = filteredSpots[dataIndex];
+                            // Store spot data on row element for later retrieval (pagination-safe)
+                            $(row).data('spot', spot);
+                            $(row).addClass(getSpotRowClass(spot));
+                            
+                            // Add worked badge to callsign cell if applicable (matches by CALL+BAND+MODE)
+                            const callsignCell = $('td', row).eq(4);
+                            const workedDate = getSpotWorkedDate(spot);
+                            if (workedDate) {
+                                const badge = `<span class="worked-badge">✓ ${workedDate}</span>`;
+                                callsignCell.append(badge);
+                            }
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error('Error updating table:', error);
+            }
+        }
+        
+        // Apply row styling to existing rows
+        function applyRowStyling() {
+            try {
+                $('#spotsTable tbody tr').each(function(index) {
+                    const row = this;
+                    const $row = $(row);
+                    
+                    // Get spot data - either from stored data (pagination-safe) or from filteredSpots
+                    let spot = $row.data('spot');
+                    if (!spot && index < filteredSpots.length) {
+                        spot = filteredSpots[index];
+                    }
+                    
+                    if (spot) {
+                        // Apply cell classes if not already applied
+                        if (!$row.find('td').first().hasClass('date-cell')) {
+                            $row.find('td').eq(0).addClass('date-cell');
+                            $row.find('td').eq(1).addClass('time-cell');
+                            $row.find('td').eq(2).addClass('band-cell');
+                            $row.find('td').eq(3).addClass('freq-cell');
+                            $row.find('td').eq(4).addClass('callsign-cell');
+                            $row.find('td').eq(5).addClass('mode-cell');
+                            $row.find('td').eq(6).addClass('country-cell');
+                            $row.find('td').eq(7).addClass('zone-cell');
+                            $row.find('td').eq(8).addClass('spotter-cell');
+                            $row.find('td').eq(9).addClass('comment-cell');
+                            $row.find('td').eq(10).addClass('special-cell');
+                        }
+                        
+                        // Apply row class based on spot status
+                        const rowClass = getSpotRowClass(spot);
+                        $row.removeClass('spot-row-atno spot-row-new-band spot-row-new-mode spot-row-new-bandmode spot-row-need-lotw spot-row-worked spot-row-confirmed spot-row-normal');
+                        $row.addClass(rowClass);
+                        
+                        // Add worked badge to callsign cell if applicable (matches by CALL+BAND+MODE)
+                        const callsignCell = $row.find('td').eq(4);
+                        const workedDate = getSpotWorkedDate(spot);
+                        if (workedDate) {
+                            // Remove existing badge if any
+                            callsignCell.find('.worked-badge').remove();
+                            // Add new badge
+                            const badge = `<span class="worked-badge">✓ ${workedDate}</span>`;
+                            callsignCell.append(badge);
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Error applying row styling:', error);
+            }
+        }
+        
+        function createCharts() {
+            try {
+                // Band chart
+                createBandChart();
+                
+                // Mode chart
+                createModeChart();
+                
+                // Country chart
+                createCountryChart();
+                
+                // Timeline chart
+                createTimelineChart();
+                
+                // Spotter chart
+                createSpotterChart();
+                
+                // Frequency chart
+                createFrequencyChart();
+            } catch (error) {
+                console.error('Error creating charts:', error);
+            }
+        }
+        
+        function createBandChart() {
+            const bandStats = {};
+            filteredSpots.forEach(spot => {
+                bandStats[spot.band] = (bandStats[spot.band] || 0) + 1;
+            });
+            
+            const ctx = document.getElementById('bandChart').getContext('2d');
+            if (charts.band) charts.band.destroy();
+            
+            charts.band = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: Object.keys(bandStats),
+                    datasets: [{
+                        data: Object.values(bandStats),
+                        backgroundColor: [
+                            '#667eea', '#764ba2', '#f59e0b', '#10b981', '#ef4444',
+                            '#3b82f6', '#8b5cf6', '#ec4899', '#06b6d4', '#14b8a6'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { color: '#e0e0e0' } }
+                    }
+                }
+            });
+        }
+        
+        function createModeChart() {
+            const modeStats = {};
+            filteredSpots.forEach(spot => {
+                modeStats[spot.mode] = (modeStats[spot.mode] || 0) + 1;
+            });
+            
+            const ctx = document.getElementById('modeChart').getContext('2d');
+            if (charts.mode) charts.mode.destroy();
+            
+            charts.mode = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: Object.keys(modeStats),
+                    datasets: [{
+                        label: 'Spots',
+                        data: Object.values(modeStats),
+                        backgroundColor: '#667eea'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: {
+                        legend: { display: false },
+                    },
+                    scales: {
+                        x: { ticks: { color: '#888' }, grid: { color: '#3a3a3a' } },
+                        y: { ticks: { color: '#e0e0e0' }, grid: { display: false } }
+                    }
+                }
+            });
+        }
+        
+        function createCountryChart() {
+            const countryStats = {};
+            filteredSpots.forEach(spot => {
+                if (spot.country) {
+                    countryStats[spot.country] = (countryStats[spot.country] || 0) + 1;
+                }
+            });
+            
+            const sorted = Object.entries(countryStats)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 10);
+            
+            const ctx = document.getElementById('countryChart').getContext('2d');
+            if (charts.country) charts.country.destroy();
+            
+            charts.country = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: sorted.map(x => x[0]),
+                    datasets: [{
+                        label: 'Spots',
+                        data: sorted.map(x => x[1]),
+                        backgroundColor: '#10b981'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: {
+                        legend: { display: false },
+                    },
+                    scales: {
+                        x: { ticks: { color: '#888' }, grid: { color: '#3a3a3a' } },
+                        y: { ticks: { color: '#e0e0e0' }, grid: { display: false } }
+                    }
+                }
+            });
+        }
+        
+        function createTimelineChart() {
+            // Group by hour
+            const hourlyStats = {};
+            filteredSpots.forEach(spot => {
+                const time = spot.received_at || spot.time_utc;
+                if (time) {
+                    const hour = time.substring(0, 13) + ':00';
+                    hourlyStats[hour] = (hourlyStats[hour] || 0) + 1;
+                }
+            });
+            
+            const sorted = Object.entries(hourlyStats).sort();
+            
+            const ctx = document.getElementById('timelineChart').getContext('2d');
+            if (charts.timeline) charts.timeline.destroy();
+            
+            charts.timeline = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: sorted.map(x => x[0]),
+                    datasets: [{
+                        label: 'Spots',
+                        data: sorted.map(x => x[1]),
+                        borderColor: '#f59e0b',
+                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: true, labels: { color: '#e0e0e0' } },
+                    },
+                    scales: {
+                        x: { ticks: { color: '#888' }, grid: { color: '#3a3a3a' } },
+                        y: { ticks: { color: '#888' }, grid: { color: '#3a3a3a' } }
+                    }
+                }
+            });
+        }
+        
+        function createSpotterChart() {
+            const spotterStats = {};
+            filteredSpots.forEach(spot => {
+                spotterStats[spot.spotter] = (spotterStats[spot.spotter] || 0) + 1;
+            });
+            
+            const sorted = Object.entries(spotterStats)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 10);
+            
+            const ctx = document.getElementById('spotterChart').getContext('2d');
+            if (charts.spotter) charts.spotter.destroy();
+            
+            charts.spotter = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: sorted.map(x => x[0]),
+                    datasets: [{
+                        label: 'Spots',
+                        data: sorted.map(x => x[1]),
+                        backgroundColor: '#ef4444'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: {
+                        legend: { display: false },
+                    },
+                    scales: {
+                        x: { ticks: { color: '#888' }, grid: { color: '#3a3a3a' } },
+                        y: { ticks: { color: '#e0e0e0' }, grid: { display: false } }
+                    }
+                }
+            });
+        }
+        
+        function createFrequencyChart() {
+            // Filter for HF frequencies only (1.8 MHz = 1800 kHz to 30 MHz = 30000 kHz)
+            const HF_MIN = 1800;
+            const HF_MAX = 30000;
+            
+            // Group frequencies by band
+            const bandFreqs = {};
+            filteredSpots.forEach(spot => {
+                const freqKHz = parseFloat(spot.frequency_khz);
+                // Only include HF frequencies
+                if (freqKHz >= HF_MIN && freqKHz <= HF_MAX) {
+                    if (!bandFreqs[spot.band]) bandFreqs[spot.band] = [];
+                    bandFreqs[spot.band].push(freqKHz);
+                }
+            });
+            
+            // Calculate frequency ranges for each band
+            const bandRanges = Object.entries(bandFreqs).map(([band, freqs]) => {
+                const avg = freqs.reduce((a, b) => a + b, 0) / freqs.length;
+                return { band, avg, count: freqs.length };
+            }).sort((a, b) => a.avg - b.avg);
+            
+            const ctx = document.getElementById('frequencyChart').getContext('2d');
+            if (charts.frequency) charts.frequency.destroy();
+            
+            charts.frequency = new Chart(ctx, {
+                type: 'scatter',
+                data: {
+                    datasets: [{
+                        label: 'HF Frequency Distribution (1.8-30 MHz)',
+                        data: bandRanges.map(x => ({ x: x.avg, y: x.count })),
+                        backgroundColor: '#a78bfa',
+                        borderColor: '#a78bfa'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: true, labels: { color: '#e0e0e0' } },
+                    },
+                    scales: {
+                        x: { 
+                            ticks: { color: '#888' }, 
+                            grid: { color: '#3a3a3a' },
+                            title: { display: true, text: 'Frequency (kHz)', color: '#e0e0e0' }
+                        },
+                        y: { 
+                            ticks: { color: '#888' }, 
+                            grid: { color: '#3a3a3a' },
+                            title: { display: true, text: 'Spot Count', color: '#e0e0e0' }
+                        }
+                    }
+                }
+            });
+        }
+        
+        function toggleAutoRefresh() {
+            autoRefreshEnabled = !autoRefreshEnabled;
+            document.getElementById('autoRefreshToggle').classList.toggle('active');
+            
+            if (autoRefreshEnabled) {
+                console.log('✅ Auto-refresh enabled (30 second interval)');
+                autoRefreshInterval = setInterval(autoRefreshSpots, 30000); // Refresh every 30 seconds
+            } else {
+                console.log('❌ Auto-refresh disabled');
+                clearInterval(autoRefreshInterval);
+            }
+        }
+        
+        function refreshData() {
+            console.log('🔄 Manual refresh triggered');
+            loadData();
+        }
+        
+        async function autoRefreshSpots() {
+            // Prevent concurrent refresh operations
+            if (isRefreshing) {
+                console.log('⏳ Refresh already in progress, skipping...');
+                return;
+            }
+            
+            try {
+                isRefreshing = true;
+                console.log('🔄 Auto-refresh: Loading fresh spot data...');
+                
+                // Add cache-busting parameter to force fresh data from server
+                const timestamp = new Date().getTime();
+                const response = await fetch(`/api/spots/recent?t=${timestamp}`, {
+                    cache: 'no-store',  // Don't use cached response
+                    headers: {
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0'
+                    }
+                });
+                if (!response.ok) throw new Error('Failed to fetch spots');
+                
+                const data = await response.json();
+                const newSpots = data.spots || [];
+                console.log(`📊 Auto-refresh: Loaded ${newSpots.length} total spots`);
+                
+                // Update all spots
+                allSpots = newSpots;
+                
+                // Reapply current filters (this updates charts only, not table)
+                const filters = window.multiSelectFilters || {};
+                const bandFilters = filters.band || new Set();
+                const modeFilters = filters.mode || new Set();
+                const countryFilters = filters.country || new Set();
+                const zonesFilters = filters.zones || new Set();
+                
+                const callsign = document.getElementById('filterCallsign')?.value.toUpperCase() || '';
+                const spotter = document.getElementById('filterSpotter')?.value.toUpperCase() || '';
+                const workedOnly = document.getElementById('filterWorkedOnly')?.checked || false;
+                const excludeWorked = document.getElementById('filterExcludeWorked')?.checked || false;
+                const freqMin = parseFloat(document.getElementById('filterFreqMin')?.value) || 0;
+                const freqMax = parseFloat(document.getElementById('filterFreqMax')?.value) || Infinity;
+                
+                filteredSpots = allSpots.filter(spot => {
+                    if (bandFilters.size > 0 && !bandFilters.has(spot.band)) return false;
+                    if (modeFilters.size > 0 && !modeFilters.has(spot.mode)) return false;
+                    if (countryFilters.size > 0 && !countryFilters.has(spot.country)) return false;
+                    if (zonesFilters.size > 0) {
+                        const spotZone = spot.cq ? String(spot.cq) : null;
+                        if (!spotZone || !zonesFilters.has(spotZone)) return false;
+                    }
+                    if (callsign && !spot.callsign.toUpperCase().includes(callsign)) return false;
+                    if (spotter && !spot.spotter.toUpperCase().includes(spotter)) return false;
+                    if (spot.frequency_khz < freqMin || spot.frequency_khz > freqMax) return false;
+                    const isWorked = isSpotWorked(spot);
+                    if (workedOnly && !isWorked) return false;
+                    if (excludeWorked && isWorked) return false;
+                    return true;
+                });
+                
+                // Update stats and charts only (skip expensive table update)
+                updateStats();
+                createCharts();
+                console.log(`✅ Auto-refresh: Updated stats and charts (${filteredSpots.length} filtered spots)`);
+                
+            } catch (error) {
+                console.error('❌ Auto-refresh error:', error);
+            } finally {
+                isRefreshing = false;
+            }
+        }
+        
+        async function refreshDataWithFilters() {
+            // Prevent concurrent refresh operations
+            if (isRefreshing) return;
+            
+            try {
+                isRefreshing = true;
+                // Add cache-busting parameter to force fresh data from server
+                const timestamp = new Date().getTime();
+                const response = await fetch(`/api/spots/recent?t=${timestamp}`, {
+                    cache: 'no-store',  // Don't use cached response
+                    headers: {
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache',
+                        'Expires': '0'
+                    }
+                });
+                if (!response.ok) throw new Error('Failed to fetch spots');
+                
+                const data = await response.json();
+                allSpots = data.spots || [];
+                
+                // Reapply current filters
+                applyFilters();
+                
+            } catch (error) {
+                console.error('Refresh error:', error);
+            } finally {
+                isRefreshing = false;
+            }
+        }
+        
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMsg');
+            errorDiv.innerHTML = `<div class="error">${message}</div>`;
+            setTimeout(() => { errorDiv.innerHTML = ''; }, 5000);
+        }
+    </script>
+</body>
+</html>

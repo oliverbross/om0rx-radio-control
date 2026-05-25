@@ -1,0 +1,96 @@
+        <!-- Row 1: Buttons centered, sliders below, UTC on right -->
+        <div class="control-row" style="flex-wrap: wrap; justify-content: center; position: relative;">
+            <!-- Power Button & Title in top left corner -->
+            <div class="power-button-container">
+                <button class="power-button" @click="togglePowerMenu" title="Server control: Shutdown or Restart">
+                    ⊙
+                </button>
+                <div v-if="showPowerMenu" class="power-menu">
+                    <button class="power-menu-item" @click="shutdownServer">🔴 Shutdown</button>
+                    <button class="power-menu-item" @click="restartServer">🔄 Restart</button>
+                </div>
+                <div class="utc-clock" style="min-width: 300px;">
+                    OM0RX Flex / Wavelog Control with Spots
+                </div>
+            </div>
+            
+            <!-- Server Offline Banner -->
+            <div v-if="serverOffline" class="server-offline-banner">
+                ⚠️ Server is offline - Attempting to reconnect...
+            </div>
+            
+            <!-- Centered Button Group -->
+            <div style="display: flex; gap: 4px; align-items: center; justify-content: center; width: 100%;">
+                <button>⚡</button>
+                <button :class="radioStatus.rx2_enabled ? 'active' : ''" @click="toggleRX2">RX2</button>
+                
+                <div class="divider"></div>
+                
+                <button @click="toggleMox" :class="txState.mox ? 'tx-active' : ''">MOX</button>
+                <button @click="toggleTune" :class="txState.tune ? 'tune-active' : ''">TUNE</button>
+                <button @click="toggleVox" :class="txState.vox ? 'vox-active' : ''">VOX</button>
+                <button @click="toggleBreakin" :class="txState.breakin ? 'vox-active' : ''">Break.In</button>
+                
+                <div class="divider"></div>
+                
+                <button @click="showConfigDialog">⚙️ Config</button>
+            </div>
+            
+            <!-- UTC Clock & Sync Status - Absolute positioned to right -->
+            <div style="position: absolute; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;">
+                <span class="status-indicator" :class="connected ? 'status-connected' : 'status-disconnected'"></span>
+                <button 
+                    @click="openFT8Modal"
+                    title="FT8/FT4 Digital Mode Interface"
+                    style="padding: 4px 8px; font-size: 12px; background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">
+                    🔊 FT8/DIGI
+                </button>
+                <button 
+                    @click="showSyncModal = true"
+                    :class="syncStatus.syncing ? 'sync-button sync-syncing' : 'sync-button'"
+                    :title="syncStatus.syncing ? 'Wavelog→DuckDB sync in progress...' : `Wavelog→DuckDB: ${syncStatus.total_records} records synced`"
+                    style="padding: 4px 8px; font-size: 12px;">
+                    {{ syncStatus.syncing ? '⟳ Syncing...' : `📊 ${syncStatus.total_records} QSOs` }}
+                </button>
+                <span class="utc-clock">{{ currentTime }} UTC</span>
+            </div>
+            
+            <!-- Sliders Row - Below buttons, centered and compact -->
+            <div style="display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 8px;">
+                <div class="slider-group">
+                    <span class="slider-label">Volume</span>
+                    <input type="range" v-model.number="controls.volume" @input="setVolume" min="0" max="100">
+                    <span class="slider-value">{{ controls.volume }}</span>
+                </div>
+                
+                <div class="slider-group">
+                    <span class="slider-label">Monitor</span>
+                    <input type="range" v-model.number="controls.monitor" @input="setMonitor" min="0" max="100">
+                    <span class="slider-value">{{ controls.monitor }}</span>
+                </div>
+                
+                <div class="slider-group">
+                    <span class="slider-label">AGC-T</span>
+                    <input type="range" v-model.number="controls.agcThreshold" @input="setAGCThreshold" min="0" max="100">
+                    <span class="slider-value">{{ controls.agcThreshold }}</span>
+                </div>
+                
+                <div class="slider-group">
+                    <span class="slider-label">Drive</span>
+                    <input type="range" v-model.number="controls.drive" @input="setDrive" min="0" max="100">
+                    <span class="slider-value">{{ controls.drive }}</span>
+                </div>
+                
+                <div class="slider-group">
+                    <span class="slider-label">Tune</span>
+                    <input type="range" v-model.number="controls.tunePower" @input="setTunePower" min="0" max="100">
+                    <span class="slider-value">{{ controls.tunePower }}</span>
+                </div>
+                
+                <div class="slider-group">
+                    <span class="slider-label">Mic</span>
+                    <input type="range" v-model.number="controls.mic" @input="setMic" min="0" max="100">
+                    <span class="slider-value">{{ controls.mic }}</span>
+                </div>
+            </div>
+        </div>

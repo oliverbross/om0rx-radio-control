@@ -1,0 +1,316 @@
+        <!-- Row 1: Buttons centered, sliders below, UTC on right -->
+        <div class="control-row" style="flex-wrap: wrap; justify-content: center; position: relative;">
+            <!-- Title in top left corner -->
+            <div class="utc-clock" style="position: absolute; left: 8px; top: 8px;">
+                OM0RX Flex / Wavelog Control with Spots
+            </div>
+
+            <!-- Centered Button Group -->
+            <div style="display: flex; gap: 4px; align-items: center; justify-content: center; width: 100%;">
+                <button>⚡</button>
+                <button :class="radioStatus.rx2_enabled ? 'active' : ''" @click="toggleRX2">RX2</button>
+
+                <div class="divider"></div>
+
+                <button @click="toggleMox" :class="txState.mox ? 'tx-active' : ''">MOX</button>
+                <button @click="toggleTune" :class="txState.tune ? 'tune-active' : ''">TUNE</button>
+                <button @click="toggleVox" :class="txState.vox ? 'vox-active' : ''">VOX</button>
+                <button @click="toggleBreakin" :class="txState.breakin ? 'vox-active' : ''">Break.In</button>
+
+                <div class="divider"></div>
+
+                <button @click="showConfigDialog">⚙️ Config</button>
+            </div>
+
+            <!-- UTC Clock & Sync Status - Absolute positioned to right -->
+            <div style="position: absolute; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;">
+                <span class="status-indicator" :class="connected ? 'status-connected' : 'status-disconnected'"></span>
+                <button
+                    @click="openFT8Modal"
+                    class="ft8-digi-button"
+                    title="Open FT8/FT4 Digital Mode Interface"
+                    style="padding: 4px 12px; font-size: 12px; background: #2a5a8f; color: white; border: 1px solid #4a7aaf; border-radius: 4px; cursor: pointer; font-weight: 600;">
+                    🔊 FT8/DIGI
+                </button>
+                <button
+                    @click="showSyncModal = true"
+                    :class="syncStatus.syncing ? 'sync-button sync-syncing' : 'sync-button'"
+                    :title="syncStatus.syncing ? 'Wavelog→DuckDB sync in progress...' : `Wavelog→DuckDB: ${syncStatus.total_records} records synced`"
+                    style="padding: 4px 8px; font-size: 12px;">
+                    {{ syncStatus.syncing ? '⟳ Syncing...' : `📊 ${syncStatus.total_records} QSOs` }}
+                </button>
+                <span class="utc-clock">{{ currentTime }} UTC</span>
+            </div>
+
+            <!-- Sliders Row - Below buttons, centered and compact -->
+            <div style="display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 8px;">
+                <div class="slider-group">
+                    <span class="slider-label">Volume</span>
+                    <input type="range" v-model.number="controls.volume" @input="setVolume" min="0" max="100">
+                    <span class="slider-value">{{ controls.volume }}</span>
+                </div>
+
+                <div class="slider-group">
+                    <span class="slider-label">Monitor</span>
+                    <input type="range" v-model.number="controls.monitor" @input="setMonitor" min="0" max="100">
+                    <span class="slider-value">{{ controls.monitor }}</span>
+                </div>
+
+                <div class="slider-group">
+                    <span class="slider-label">AGC-T</span>
+                    <input type="range" v-model.number="controls.agcThreshold" @input="setAGCThreshold" min="0" max="100">
+                    <span class="slider-value">{{ controls.agcThreshold }}</span>
+                </div>
+
+                <div class="slider-group">
+                    <span class="slider-label">Drive</span>
+                    <input type="range" v-model.number="controls.drive" @input="setDrive" min="0" max="100">
+                    <span class="slider-value">{{ controls.drive }}</span>
+                </div>
+
+                <div class="slider-group">
+                    <span class="slider-label">Tune</span>
+                    <input type="range" v-model.number="controls.tunePower" @input="setTunePower" min="0" max="100">
+                    <span class="slider-value">{{ controls.tunePower }}</span>
+                </div>
+
+                <div class="slider-group">
+                    <span class="slider-label">Mic</span>
+                    <input type="range" v-model.number="controls.mic" @input="setMic" min="0" max="100">
+                    <span class="slider-value">{{ controls.mic }}</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 2: Bands on left, Modes/Filters on right in 2-line layout -->
+        <div class="control-row" style="flex-wrap: wrap; align-items: flex-start;">
+            <!-- Band buttons on LEFT -->
+            <div class="control-group" style="flex: 0 0 auto;">
+                <button v-for="band in bands"
+                        :key="band"
+                        @click="setBand(band)"
+                        :class="isActiveBand(band) ? 'active' : ''">
+                    {{ band }}
+                </button>
+            </div>
+
+            <div class="spacer" style="flex: 1;"></div>
+
+            <!-- Modes and Filters - 2-line layout on RIGHT -->
+            <div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-end; flex: 0 0 auto;">
+                <!-- Modes Row (Line 1) -->
+                <div class="control-group">
+                    <button v-for="mode in modes"
+                            :key="mode"
+                            @click="setMode(mode)"
+                            :class="radioStatus.mode === mode ? 'active' : ''">
+                        {{ mode }}
+                    </button>
+                </div>
+
+                <!-- Filters Row (Line 2) -->
+                <div class="control-group" v-if="currentFilters.length > 0">
+                    <button v-for="filter in currentFilters"
+                            :key="filter.label"
+                            @click="setFilter(filter.lo, filter.hi)"
+                            :class="isActiveFilter(filter) ? 'active' : ''">
+                        {{ filter.label }}
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 3: Rotator, Frequency/Band/Mode in center, RIT/XIT on right -->
+        <div class="control-row" style="justify-content: center; position: relative;">
+            <!-- Rotator & Beaming Controls - left aligned (flex container) -->
+            <div style="display: flex; gap: 12px; align-items: flex-start; position: absolute; left: 8px;" v-if="rotorEnabled">
+                <!-- Rotator Controls -->
+                <div class="rotor-control">
+                    <!-- Azimuth control -->
+                    <div class="rotor-goto-group">
+                        <label style="font-size: 13px; color: #888;">Az:</label>
+                        <input type="text" v-model.number="rotorAzimuth" @input="validateAzimuth" @keydown.enter="rotorGoto" @focus="rotorInputFocused = true" @blur="rotorInputFocused = false" class="rotor-az-input" placeholder="0" style="font-size: 13px;">
+                        <span style="font-size: 13px; color: #888;">°</span>
+                        <button @click="rotorGoto" class="rotor-goto-btn">GO</button>
+                        <button @click="rotorAutoPending ? cancelRotorAuto() : toggleRotorAuto()" :class="['rotor-auto-btn', { active: rotorAutoEnabled, pending: rotorAutoPending }]" :title="rotorAutoPending ? 'Click to cancel AUTO action' : (rotorAutoEnabled ? 'AUTO enabled' : 'Click to enable AUTO mode')">
+                            {{ rotorAutoPending ? 'CANCEL' : 'AUTO' }}
+                        </button>
+                    </div>
+
+                    <!-- Direction preset -->
+                    <div class="rotor-directions" style="gap: 2px;">
+                        <select v-model="rotorPreset" @change="handleDirectorToggle" class="rotor-preset-dropdown" style="flex: 1;">
+                            <option value="">Director</option>
+                            <option value="shortpath">QSO SP</option>
+                            <option value="longpath">QSO LP</option>
+                        </select>
+                        <button @click="rotorDirection('N')" class="rotor-dir-btn" title="North">N</button>
+                        <button @click="rotorDirection('S')" class="rotor-dir-btn" title="South">S</button>
+                        <button @click="rotorDirection('E')" class="rotor-dir-btn" title="East">E</button>
+                        <button @click="rotorDirection('W')" class="rotor-dir-btn" title="West">W</button>
+                    </div>
+                </div>
+
+                <!-- Beaming Display Panel (SP/LP Bearing Info) -->
+                <div class="beaming-display" v-if="currentBeamingCallsign" style="margin-top: 0;">
+                    <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 4px;">
+                        <span class="beaming-title">Beaming for:</span>
+                        <span class="beaming-callsign" style="margin: 0;">{{ currentBeamingCallsign }}</span>
+                    </div>
+
+                    <!-- Short Path Row -->
+                    <div class="beaming-row" v-if="shortPathBearing !== null">
+                        <span class="beaming-label">SP:</span>
+                        <span class="beaming-degrees">{{ shortPathBearing.toFixed(1) }}°</span>
+                        <button @click="rotorGotoShortPath" class="beaming-go-btn" title="Go to short path bearing">GO</button>
+                    </div>
+
+                    <!-- Long Path Row -->
+                    <div class="beaming-row" v-if="longPathBearing !== null">
+                        <span class="beaming-label">LP:</span>
+                        <span class="beaming-degrees">{{ longPathBearing.toFixed(1) }}°</span>
+                        <button @click="rotorGotoLongPath" class="beaming-go-btn" title="Go to long path bearing">GO</button>
+                    </div>
+
+                    <!-- Loading indicator when no bearings yet -->
+                    <div v-if="shortPathBearing === null" style="font-size: 11px; color: #888; padding-top: 4px; border-top: 1px solid #444;">
+                        <span style="color: #666;">⏳ Click a spot to calculate bearings</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- WinKeyer Widget (Independent of Rotor) -->
+            <div class="winkeyer-widget" v-if="winkeyer.enabled" style="position: absolute; left: 200px; top: 8px; display: flex; flex-direction: column; gap: 8px; padding: 8px; background: rgba(40,40,40,0.9); border: 1px solid #555; border-radius: 4px;">
+                <div style="display: flex; gap: 4px; align-items: center;">
+                    <button @click="winkeyer.isConnected ? winKeyerDisconnect() : winKeyerConnect()" :disabled="false" class="winkeyer-btn" style="padding: 4px 8px; font-size: 12px;">
+                        🔌 {{ winkeyer.isConnected ? '❌ Disconnect' : 'Connect' }}
+                    </button>
+                    <span :style="{ color: winkeyer.isConnected ? '#0f0' : '#f00' }" style="font-size: 12px;">
+                        {{ winkeyer.isConnected ? '🟢 Connected' : '🔴 Disconnected' }}
+                    </span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 4px;">
+                    <label style="font-size: 11px; color: #aaa;">Speed:</label>
+                    <span style="font-size: 12px; color: #0f0;">{{ winkeyer.currentWpm }} WPM</span>
+                    <input type="range" v-model.number="winkeyer.currentWpm" @change="winKeyerSetWpm()" min="5" max="50" style="width: 80px; height: 16px;">
+                </div>
+                <div style="display: flex; gap: 4px;">
+                    <button @click="winKeyerSendMacro('M1')" class="memory-btn" style="padding: 4px 8px; font-size: 11px;">M1</button>
+                    <button @click="winKeyerSendMacro('M2')" class="memory-btn" style="padding: 4px 8px; font-size: 11px;">M2</button>
+                    <button @click="winKeyerSendMacro('M3')" class="memory-btn" style="padding: 4px 8px; font-size: 11px;">M3</button>
+                    <button @click="winKeyerSendMacro('M4')" class="memory-btn" style="padding: 4px 8px; font-size: 11px;">M4</button>
+                </div>
+            </div>
+
+            <!-- Center group: Frequency, Band/Mode, and DSP buttons -->
+            <div style="display: flex; flex-direction: column; gap: 8px; align-items: center; justify-content: center;">
+                <!-- Top row: Frequency only (for centering) -->
+                <div style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
+                    <!-- Frequency display - Interactive with keyboard and mouse wheel -->
+                    <div class="freq-display"
+                          tabindex="0"
+                          @keydown="handleFrequencyKeydown"
+                          @wheel.passive="handleFrequencyWheel"
+                          title="Use arrow keys or mouse wheel to tune (Step: {{ currentStep }})">
+                        {{ formattedFrequency }}
+                    </div>
+
+                    <!-- DSP Buttons directly under frequency -->
+                    <div style="display: flex; gap: 8px; justify-content: center; width: 100%;">
+                        <button @click="toggleDSP('nb')" :class="['dsp-button', { active: radioStatus.nb_enabled }]">NB</button>
+                        <button @click="toggleDSP('nr')" :class="['dsp-button', { active: radioStatus.nr_enabled }]">NR</button>
+                        <button @click="toggleDSP('anf')" :class="['dsp-button', { active: radioStatus.anf_enabled }]">ANF</button>
+                        <button @click="toggleDSP('apf')" :class="['dsp-button', { active: radioStatus.apf_enabled }]">APF</button>
+                    </div>
+                </div>
+
+                <!-- Bottom row: DSP level sliders (if active) -->
+                <div style="display: flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center;">
+
+                    <!-- DSP Level Sliders (shown when DSP is active and slider toggled) -->
+                    <div v-if="showDSPSlider.nb || showDSPSlider.nr || showDSPSlider.anf || showDSPSlider.apf"
+                          style="display: flex; gap: 12px; padding: 4px; background: rgba(0,0,0,0.3); border-radius: 4px;">
+                        <div v-if="showDSPSlider.nb" class="slider-group" style="min-width: 100px;">
+                            <span class="slider-label" style="font-size: 9px;">NB</span>
+                            <input type="range" v-model.number="dspLevels.nb" @input="setDSPLevel('nb')" min="0" max="100" style="width: 80px;">
+                            <span class="slider-value" style="font-size: 9px;">{{ dspLevels.nb }}</span>
+                        </div>
+                        <div v-if="showDSPSlider.nr" class="slider-group" style="min-width: 100px;">
+                            <span class="slider-label" style="font-size: 9px;">NR</span>
+                            <input type="range" v-model.number="dspLevels.nr" @input="setDSPLevel('nr')" min="0" max="100" style="width: 80px;">
+                            <span class="slider-value" style="font-size: 9px;">{{ dspLevels.nr }}</span>
+                        </div>
+                        <div v-if="showDSPSlider.anf" class="slider-group" style="min-width: 100px;">
+                            <span class="slider-label" style="font-size: 9px;">ANF</span>
+                            <input type="range" v-model.number="dspLevels.anf" @input="setDSPLevel('anf')" min="0" max="100" style="width: 80px;">
+                            <span class="slider-value" style="font-size: 9px;">{{ dspLevels.anf }}</span>
+                        </div>
+                        <div v-if="showDSPSlider.apf" class="slider-group" style="min-width: 100px;">
+                            <span class="slider-label" style="font-size: 9px;">APF</span>
+                            <input type="range" v-model.number="dspLevels.apf" @input="setDSPLevel('apf')" min="0" max="100" style="width: 80px;">
+                            <span class="slider-value" style="font-size: 9px;">{{ dspLevels.apf }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIT/XIT and Step/AGC dropdowns - right aligned -->
+            <div class="control-group" style="gap: 12px; position: absolute; right: 8px;">
+                <!-- RIT/XIT Controls (2 lines) -->
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <div class="rit-xit-control">
+                        <button @click="toggleRIT" :class="ritEnabled ? 'active' : ''">RIT</button>
+                        <button @click="adjustRIT(-1)">◀</button>
+                        <div class="rit-xit-value">{{ ritValue }} Hz</div>
+                        <button @click="adjustRIT(1)">▶</button>
+                    </div>
+
+                    <div class="rit-xit-control">
+                        <button @click="toggleXIT" :class="xitEnabled ? 'active' : ''">XIT</button>
+                        <button @click="adjustXIT(-1)">◀</button>
+                        <div class="rit-xit-value">{{ xitValue }} Hz</div>
+                        <button @click="adjustXIT(1)">▶</button>
+                    </div>
+                </div>
+
+                <!-- Step and AGC dropdowns -->
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span class="label">Step:</span>
+                        <select v-model="currentStepIndex" @change="setTuningStep" class="step-select">
+                            <option v-for="(step, index) in (stepsByMode[radioStatus.mode] || stepsByMode['USB'])" :key="index" :value="index">{{ step }}</option>
+                        </select>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span class="label">AGC:</span>
+                        <select :value="radioStatus.agc_mode || 'med'" @change="setAGC($event.target.value)" class="agc-select">
+                            <option value="off">OFF</option>
+                            <option value="slow">SLOW</option>
+                            <option value="med">MED</option>
+                            <option value="fast">FAST</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 4: TX Frequency if split/RX2 enabled -->
+        <div class="control-row" v-if="radioStatus.split_enabled || radioStatus.rx2_enabled">
+            <span class="label">{{ radioStatus.split_enabled ? 'TX' : 'SUB' }}</span>
+            <div class="sub-freq">{{ formattedSubFreq }}</div>
+        </div>
+
+        <!-- Row 5: SDC Decoded CW Text Ticker (CW mode only) -->
+        <div class="sdc-ticker-row" v-if="radioStatus.mode === 'CW'">
+            <div class="sdc-ticker-header">
+                <span class="sdc-ticker-title">📡 SDC Decoded</span>
+                <span class="sdc-connection-status" :class="sdcConnected ? 'connected' : 'disconnected'">
+                    {{ sdcConnected ? '● Connected' : '● Disconnected' }}
+                </span>
+            </div>
+            <div class="sdc-ticker-display" ref="sdcTickerDisplay">
+                <span v-if="!sdcConnected" class="sdc-ticker-message">Connecting to SDC broadcast…</span>
+                <span v-else-if="sdcBuffer.length === 0" class="sdc-ticker-message">Listening for decoded CW…</span>
+                <span v-else class="sdc-ticker-text">{{ sdcTickerContent }}</span>
+            </div>
+        </div>

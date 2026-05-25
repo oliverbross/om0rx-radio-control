@@ -1,0 +1,123 @@
+        <!-- Prev QSOs Modal (Auto-loaded from Log QSO callsign field) -->
+        <div v-if="showPrevQsosModal" @click="closePrevQsosModal" class="log-modal-overlay">
+            <div @click.stop class="prev-qsos-modal">
+                <div class="prev-qsos-header">
+                    <h3>📋 Previous QSO's - {{ prevQsosCallsign }}</h3>
+                    <button @click="closePrevQsosModal" class="prev-qsos-close">&times;</button>
+                </div>
+                
+                <!-- Loading State -->
+                <div v-if="prevQsosLoading" class="prev-qsos-loading">
+                    <p>🔄 Loading previous QSOs for {{ prevQsosCallsign }}...</p>
+                </div>
+                
+                <!-- Error State -->
+                <div v-if="prevQsosError" class="prev-qsos-error">
+                    <p>❌ {{ prevQsosError }}</p>
+                </div>
+                
+                <!-- Results -->
+                <div v-if="prevQsosResults && !prevQsosLoading" class="prev-qsos-results">
+                    <!-- No Results -->
+                    <div v-if="prevQsosResults.qsos.length === 0" class="prev-qsos-no-results">
+                        <p>📭 No QSOs found with callsign: <strong>{{ prevQsosCallsign }}</strong></p>
+                    </div>
+                    
+                    <!-- Has Results -->
+                    <div v-else>
+                        <!-- Summary Header -->
+                        <div class="prev-qsos-summary-header">
+                            <h4>{{ prevQsosResults.qsos.length }} times worked before</h4>
+                        </div>
+                        
+                        <!-- Previous Contacts Table -->
+                        <div class="prev-qsos-table-container">
+                            <table class="prev-qsos-table">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Callsign</th>
+                                        <th @click="sortPrevQsos('mode')" style="cursor: pointer; user-select: none;">
+                                            Mode 
+                                            <span v-if="prevQsosSortColumn === 'mode'">{{ prevQsosSortDirection === 'asc' ? '▲' : '▼' }}</span>
+                                        </th>
+                                        <th>RST (S)</th>
+                                        <th>RST (R)</th>
+                                        <th @click="sortPrevQsos('band')" style="cursor: pointer; user-select: none;">
+                                            Band 
+                                            <span v-if="prevQsosSortColumn === 'band'">{{ prevQsosSortDirection === 'asc' ? '▲' : '▼' }}</span>
+                                        </th>
+                                        <th>LoTW</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="qso in sortedPrevQsos" :key="qso.id">
+                                        <td>{{ formatSearchDate(qso.time_on) }}</td>
+                                        <td style="color: #10b981; font-weight: bold;">{{ qso.callsign }}</td>
+                                        <td>{{ qso.mode }}</td>
+                                        <td>{{ qso.rst_sent || '-' }}</td>
+                                        <td>{{ qso.rst_rcvd || '-' }}</td>
+                                        <td>{{ qso.band }}</td>
+                                        <td v-html="formatLoTWStatus(qso.lotw_sent, qso.lotw_rcvd)"></td>
+                                        <td>
+                                            <button @click="viewQSODetails(qso)" class="qso-action-btn" title="View details">
+                                                👁️
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            <div class="prev-qsos-note">
+                                Max. 20 previous contacts are shown
+                            </div>
+                        </div>
+                        
+                        <!-- Summary Badges -->
+                        <div class="prev-qsos-badges">
+                            <div class="summary-badge-row">
+                                <div class="summary-badge" v-if="prevQsosResults.summary.dxcc"><span class="badge-label">DXCC</span> <span class="badge-value">{{ prevQsosResults.summary.dxcc }}</span> <button class="badge-refresh" @click="refreshPrevQsosSummaryField('dxcc')" title="Refresh">🔄</button></div>
+                                <div class="summary-badge" v-if="prevQsosResults.summary.cq"><span class="badge-label">CQ</span> <span class="badge-value">{{ prevQsosResults.summary.cq }}</span> <button class="badge-refresh" @click="refreshPrevQsosSummaryField('cq')" title="Refresh">🔄</button></div>
+                                <div class="summary-badge" v-if="prevQsosResults.summary.continent"><span class="badge-label">Continent</span> <span class="badge-value">{{ prevQsosResults.summary.continent }}</span> <button class="badge-refresh" @click="refreshPrevQsosSummaryField('continent')" title="Refresh">🔄</button></div>
+                                <div class="summary-badge" v-if="prevQsosResults.summary.gridsquare"><span class="badge-label">Gridsquare</span> <span class="badge-value">{{ prevQsosResults.summary.gridsquare }}</span> <button class="badge-refresh" @click="refreshPrevQsosSummaryField('gridsquare')" title="Refresh">🔄</button></div>
+                                <div class="summary-badge" v-if="prevQsosResults.summary.iota"><span class="badge-label">IOTA</span> <span class="badge-value">{{ prevQsosResults.summary.iota }}</span> <button class="badge-refresh" @click="refreshPrevQsosSummaryField('iota')" title="Refresh">🔄</button></div>
+                                <div class="summary-badge" v-if="prevQsosResults.summary.state"><span class="badge-label">US State</span> <span class="badge-value">{{ prevQsosResults.summary.state }}</span> <button class="badge-refresh" @click="refreshPrevQsosSummaryField('state')" title="Refresh">🔄</button></div>
+                                <div class="summary-badge" v-if="prevQsosResults.summary.pota"><span class="badge-label">POTA</span> <span class="badge-value">{{ prevQsosResults.summary.pota }}</span> <button class="badge-refresh" @click="refreshPrevQsosSummaryField('pota')" title="Refresh">🔄</button></div>
+                                <div class="summary-badge" v-if="prevQsosResults.summary.sota"><span class="badge-label">SOTA</span> <span class="badge-value">{{ prevQsosResults.summary.sota }}</span> <button class="badge-refresh" @click="refreshPrevQsosSummaryField('sota')" title="Refresh">🔄</button></div>
+                                <div class="summary-badge" v-if="prevQsosResults.summary.wwff"><span class="badge-label">WWFF</span> <span class="badge-value">{{ prevQsosResults.summary.wwff }}</span> <button class="badge-refresh" @click="refreshPrevQsosSummaryField('wwff')" title="Refresh">🔄</button></div>
+                                <div class="summary-badge" v-if="prevQsosResults.summary.satellite"><span class="badge-label">Satellite</span> <span class="badge-value">{{ prevQsosResults.summary.satellite }}</span> <button class="badge-refresh" @click="refreshPrevQsosSummaryField('satellite')" title="Refresh">🔄</button></div>
+                                <div class="summary-badge" v-if="prevQsosResults.summary.dok"><span class="badge-label">DOK</span> <span class="badge-value">{{ prevQsosResults.summary.dok }}</span> <button class="badge-refresh" @click="refreshPrevQsosSummaryField('dok')" title="Refresh">🔄</button></div>
+                            </div>
+                            <div class="prev-qsos-summary-text">
+                                Showing summary for {{ prevQsosCallsign }}.
+                            </div>
+                        </div>
+                        
+                        <!-- Band/Mode Matrix -->
+                        <div class="band-mode-matrix">
+                            <h4>Band/Mode Matrix</h4>
+                            <div class="matrix-table-container">
+                                <table class="matrix-table">
+                                    <thead>
+                                        <tr>
+                                            <th></th>
+                                            <th v-for="band in matrixBands" :key="band">{{ band }}</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="mode in matrixModes" :key="mode">
+                                            <td class="mode-label">{{ mode }}</td>
+                                            <td v-for="band in matrixBands" :key="band + mode" 
+                                                :class="getMatrixCellClass(mode, band)"
+                                                :title="getMatrixCellTitle(mode, band)">
+                                                {{ getMatrixCellValue(mode, band) }}
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>

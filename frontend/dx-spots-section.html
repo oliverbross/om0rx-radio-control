@@ -1,0 +1,242 @@
+        <!-- DX Spots Section -->
+        <div v-if="!spotsDetached" class="spots-container">
+            <div class="spots-header">
+                <span style="font-weight: bold; font-size: 14px;">🎯 Filters:</span>
+
+                <!-- Filter Buttons Row -->
+                <div class="filter-bar">
+                    <!-- Spot Count (FIRST FILTER) -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('spotCount')" class="filter-btn">
+                            📊 Show: {{ maxSpots }} ▼
+                        </button>
+                        <div v-if="openDropdown === 'spotCount'" class="dropdown-menu">
+                            <div class="dropdown-list">
+                                <label v-for="count in availableSpotCounts" :key="count" style="cursor: pointer;">
+                                    <input type="radio" :checked="maxSpots === count" @change="setMaxSpots(count)" name="spotCount">
+                                    📊 {{ count }} spots
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bands -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('bands')" :class="['filter-btn', { active: isFilterActive('bands') }]">
+                            📻 Bands ▼
+                        </button>
+                        <div v-if="openDropdown === 'bands'" class="dropdown-menu">
+                            <div class="dropdown-grid two-cols">
+                                <label v-for="band in availableBands" :key="band">
+                                    <input type="checkbox" :checked="spotsFilter.bands.includes(band)" @change="toggleFilterItem(spotsFilter.bands, band)">
+                                    {{ band }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.bands, availableBands)">All</button>
+                                <button @click="clearFilter(spotsFilter.bands)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Modes -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('modes')" :class="['filter-btn', { active: isFilterActive('modes') }]">
+                            📡 Modes ▼
+                        </button>
+                        <div v-if="openDropdown === 'modes'" class="dropdown-menu">
+                            <div class="dropdown-list">
+                                <label v-for="mode in availableModes" :key="mode">
+                                    <input type="checkbox" :checked="spotsFilter.modes.includes(mode)" @change="toggleFilterItem(spotsFilter.modes, mode)">
+                                    ⚡ {{ mode }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.modes, availableModes)">All</button>
+                                <button @click="clearFilter(spotsFilter.modes)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Spotter From (Continents) -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('continents')" :class="['filter-btn', { active: isFilterActive('continents') }]">
+                            🌍 Spotter from ▼
+                        </button>
+                        <div v-if="openDropdown === 'continents'" class="dropdown-menu">
+                            <div class="dropdown-list">
+                                <label v-for="cont in availableContinents" :key="cont.id">
+                                    <input type="checkbox" :checked="spotsFilter.continents.includes(cont.id)" @change="toggleFilterItem(spotsFilter.continents, cont.id)">
+                                    🌐 {{ cont.name }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.continents, availableContinents.map(c => c.id))">All</button>
+                                <button @click="clearFilter(spotsFilter.continents)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Zones (CQ) -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('zones')" :class="['filter-btn', { active: isFilterActive('zones') }]">
+                            🌐 Zones ▼
+                        </button>
+                        <div v-if="openDropdown === 'zones'" class="dropdown-menu zones-menu">
+                            <div class="dropdown-grid three-cols">
+                                <label v-for="zone in availableCQs" :key="zone">
+                                    <input type="checkbox" :checked="spotsFilter.cqs.includes(zone)" @change="toggleFilterItem(spotsFilter.cqs, zone)">
+                                    Zone {{ zone }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.cqs, availableCQs)">All</button>
+                                <button @click="clearFilter(spotsFilter.cqs)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Call Status -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('callStatus')" :class="['filter-btn', { active: isFilterActive('callStatus') }]">
+                            📞 Call Status ▼
+                        </button>
+                        <div v-if="openDropdown === 'callStatus'" class="dropdown-menu">
+                            <div class="dropdown-list">
+                                <label v-for="status in availableCallStatuses" :key="status">
+                                    <input type="checkbox" :checked="spotsFilter.callStatuses.includes(status)" @change="toggleFilterItem(spotsFilter.callStatuses, status)">
+                                    ✓ {{ status }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.callStatuses, availableCallStatuses)">All</button>
+                                <button @click="clearFilter(spotsFilter.callStatuses)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- DXCC Status -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('dxccStatus')" :class="['filter-btn', { active: isFilterActive('dxccStatus') }]">
+                            🏆 DXCC Status ▼
+                        </button>
+                        <div v-if="openDropdown === 'dxccStatus'" class="dropdown-menu">
+                            <div class="dropdown-list">
+                                <label v-for="status in availableDxccStatuses" :key="status">
+                                    <input type="checkbox" :checked="spotsFilter.dxccStatuses.includes(status)" @change="toggleFilterItem(spotsFilter.dxccStatuses, status)">
+                                    ✓ {{ status }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.dxccStatuses, availableDxccStatuses)">All</button>
+                                <button @click="clearFilter(spotsFilter.dxccStatuses)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Call (Search) -->
+                    <div class="filter-dropdown">
+                        <input type="text" v-model="spotsFilter.callsign" placeholder="🔍 Call" class="call-search-input">
+                    </div>
+
+                    <!-- Special -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('special')" :class="['filter-btn', { active: isFilterActive('special') }]">
+                            ⭐ Special ▼
+                        </button>
+                        <div v-if="openDropdown === 'special'" class="dropdown-menu">
+                            <div class="dropdown-list">
+                                <label v-for="spec in availableSpecials" :key="spec">
+                                    <input type="checkbox" :checked="spotsFilter.specials.includes(spec)" @change="toggleFilterItem(spotsFilter.specials, spec)">
+                                    △ {{ spec }}
+                                </label>
+                            </div>
+                            <div class="dropdown-footer">
+                                <button @click="selectAllInFilter(spotsFilter.specials, availableSpecials)">All</button>
+                                <button @click="clearFilter(spotsFilter.specials)">Clear</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Worked b4 -->
+                    <div class="filter-dropdown">
+                        <button @click="toggleDropdown('workedB4')" :class="['filter-btn', { active: isFilterActive('workedB4') }]">
+                            📋 Worked b4 ▼
+                        </button>
+                        <div v-if="openDropdown === 'workedB4'" class="dropdown-menu">
+                            <div class="dropdown-list">
+                                <label>
+                                    <input type="checkbox" v-model="spotsFilter.workedB4Include">
+                                    ✅ Include Worked
+                                </label>
+                                <label>
+                                    <input type="checkbox" v-model="spotsFilter.workedB4Exclude">
+                                    ❌ Exclude Worked
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <span style="font-size: 10px; color: #888; margin-left: auto;">{{ filteredSpots.length }} spots</span>
+                <a href="spots-database.html" target="_blank" class="spots-db-link">📊 Spots DB</a>
+                <button @click="clearAllFilters" class="clear-all-btn">🗑️ Clear All</button>
+            </div>
+
+            <!-- Enhanced Spots Table -->
+            <div class="spots-scroll">
+                <table class="spots-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Band</th>
+                            <th>Frequency</th>
+                            <th>Callsign</th>
+                            <th>Mode</th>
+                            <th>Country</th>
+                            <th>CQ</th>
+                            <th>DX de</th>
+                            <th>Call Status</th>
+                            <th>DXCC Status</th>
+                            <th>Special</th>
+                            <th>Worked b4</th>
+                            <th>Comment</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="spot in filteredSpots" :key="spot.id"
+                            :class="['spot-row', getSpotRowClass(spot)]"
+                            @click="tuneToSpot(spot)">
+                            <td style="font-size: 13px;">{{ formatSpotTime(spot.timestamp) }}</td>
+                            <td style="font-size: 13px; font-weight: bold;">{{ spot.band }}</td>
+                            <td style="font-size: 13px; font-family: monospace; color: #4a9eff;">{{ formatSpotFreq(spot.frequency_mhz || parseFloat(spot.frequency) / 1000) }}</td>
+                            <td style="font-size: 13px; font-weight: bold; color: #10b981;">{{ spot.callsign }}</td>
+                            <td style="font-size: 13px;">{{ spot.mode }}</td>
+                            <td style="font-size: 13px; color: #ccc;">{{ spot.country || '-' }}</td>
+                            <td style="font-size: 13px; text-align: center;">{{ spot.cq || '-' }}</td>
+                            <td style="font-size: 13px; color: #ccc;">{{ spot.spotter || '-' }}</td>
+                            <td :style="getCallStatusStyle(spot.call_status)">{{ spot.call_status || '-' }}</td>
+                            <td :style="getDxccStatusStyle(spot.dxcc_status)">{{ spot.dxcc_status || '-' }}</td>
+                            <td style="font-size: 12px; padding: 4px;">
+                                <span v-for="special in (spot.special || '').split(', ').filter(s => s)"
+                                      :key="special"
+                                      :class="['special-badge', `special-${special.toLowerCase()}`]"
+                                      style="display: inline-block; margin-right: 4px; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: bold;">
+                                    {{ special }}
+                                </span>
+                            </td>
+                            <td style="font-size: 12px; color: #10b981; font-weight: 500;">{{ getWorkedDate(spot.callsign, spot.band, spot.mode) }}</td>
+                            <td style="font-size: 13px; color: #aaa;">{{ spot.comment }}</td>
+                        </tr>
+                        <tr v-if="filteredSpots.length === 0">
+                            <td colspan="13" style="text-align: center; padding: 20px; color: #666;">
+                                <div v-if="!clusterConnected" style="color: #ff6666; font-weight: bold; margin-bottom: 10px;">
+                                    ❌ DX Cluster is DISCONNECTED - No spots will be received
+                                </div>
+                                <div v-else>No spots match current filters</div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>

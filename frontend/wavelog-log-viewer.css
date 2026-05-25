@@ -1,0 +1,426 @@
+/**
+ * Wavelog Log Viewer Styles
+ * Direct database log viewing interface
+ */
+
+/* View Mode Toggle */
+.view-mode-toggle {
+    display: flex;
+    gap: 5px;
+    margin-right: 15px;
+}
+
+.view-mode-btn {
+    padding: 6px 12px;
+    background: #2a2a3e;
+    color: #ccc;
+    border: 1px solid #444;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+}
+
+.view-mode-btn:hover {
+    background: #3a3a4e;
+    border-color: #4a9eff;
+    color: #fff;
+}
+
+.view-mode-btn.active {
+    background: #4a9eff;
+    border-color: #4a9eff;
+    color: white;
+    font-weight: bold;
+}
+
+/* Log Controls */
+.log-controls {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: 10px;
+}
+
+/* Log Table Container - Flex-based scrolling to match spots-scroll */
+.log-table-container {
+    width: 100%;
+    flex: 1;
+    overflow: auto;
+    position: relative;
+    padding-bottom: 20px; /* Ensure last row is visible */
+    min-height: 0; /* Important for flex children to allow shrinking */
+    display: block;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+}
+
+/* Log Table Styles */
+.log-table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+    background-color: #1a1a2e;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    table-layout: fixed;
+}
+
+.log-table thead {
+    position: sticky;
+    top: 0;
+    background-color: #0f3460;
+    z-index: 10;
+}
+
+.log-table thead th {
+    padding: 10px 8px;
+    text-align: left;
+    font-size: 12px;
+    font-weight: bold;
+    color: #fff;
+    border-bottom: 2px solid #16a34a;
+    white-space: nowrap;
+    position: relative;
+    user-select: none;
+    min-width: 60px;
+}
+
+/* Column Resizer */
+.log-table thead th .column-resizer {
+    position: absolute;
+    top: 0;
+    right: -4px; /* Center the wider resizer on column edge */
+    width: 8px; /* Wider for easier grabbing */
+    height: 100%;
+    cursor: col-resize;
+    background: transparent;
+    z-index: 11;
+}
+
+.log-table thead th .column-resizer:hover {
+    background: rgba(74, 158, 255, 0.5);
+}
+
+.log-table thead th .column-resizer.resizing {
+    background: rgba(22, 163, 74, 0.7);
+}
+
+/* Column header content wrapper */
+.log-table thead th .column-header-content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 5px;
+}
+
+.log-table thead th .column-visibility-icon {
+    cursor: pointer;
+    opacity: 0.5;
+    font-size: 10px;
+}
+
+.log-table thead th .column-visibility-icon:hover {
+    opacity: 1;
+}
+
+.log-table tbody tr {
+    transition: background-color 0.15s ease;
+}
+
+.log-table tbody tr:hover {
+    background-color: #252540;
+    cursor: default;
+}
+
+.log-table tbody td {
+    padding: 8px;
+    border-bottom: 1px solid #2a2a3e;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Last row spacing */
+.log-table tbody tr:last-child td {
+    padding-bottom: 20px;
+}
+
+/* Log Row Classes */
+.log-row-lotw-confirmed {
+    background-color: rgba(16, 185, 129, 0.1) !important;
+}
+
+.log-row-lotw-confirmed:hover {
+    background-color: rgba(16, 185, 129, 0.2) !important;
+}
+
+.log-row-qsl-confirmed {
+    background-color: rgba(74, 158, 255, 0.1) !important;
+}
+
+.log-row-qsl-confirmed:hover {
+    background-color: rgba(74, 158, 255, 0.2) !important;
+}
+
+/* Loading and Error States */
+.loading-indicator {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+/* Responsive adjustments for log table */
+@media (max-width: 1600px) {
+    .log-table thead th,
+    .log-table tbody td {
+        padding: 6px 5px;
+        font-size: 11px;
+    }
+}
+
+/* Log Filters Row */
+.log-filters-row {
+    display: table-row;
+    background-color: #1a1a2e;
+}
+
+.log-filters-row th {
+    padding: 5px !important;
+    border-bottom: 1px solid #444 !important;
+}
+
+.log-filter-input {
+    width: 100%;
+    padding: 4px 6px;
+    background: #2a2a3e;
+    border: 1px solid #444;
+    border-radius: 3px;
+    color: #fff;
+    font-size: 11px;
+    box-sizing: border-box;
+}
+
+.log-filter-input:focus {
+    outline: none;
+    border-color: #4a9eff;
+}
+
+.log-filter-input::placeholder {
+    color: #666;
+}
+
+/* Log Filter Select (Dropdown) */
+.log-filter-select {
+    width: 100%;
+    padding: 4px 6px;
+    background: #2a2a3e;
+    border: 1px solid #444;
+    border-radius: 3px;
+    color: #fff;
+    font-size: 11px;
+    box-sizing: border-box;
+    cursor: pointer;
+}
+
+.log-filter-select:focus {
+    outline: none;
+    border-color: #4a9eff;
+}
+
+.log-filter-select option {
+    background: #2a2a3e;
+    color: #fff;
+}
+
+/* Column Config Modal */
+.log-column-config-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #1a1a2e;
+    border: 2px solid #4a9eff;
+    border-radius: 8px;
+    padding: 20px;
+    z-index: 1000;
+    max-width: 600px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+.log-column-config-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid #4a9eff;
+}
+
+.log-column-config-header h3 {
+    margin: 0;
+    color: #4a9eff;
+    font-size: 16px;
+}
+
+.log-column-config-close {
+    background: none;
+    border: none;
+    color: #fff;
+    font-size: 24px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+}
+
+.log-column-config-close:hover {
+    color: #ff6666;
+}
+
+.log-column-config-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.log-column-config-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    background: #2a2a3e;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.log-column-config-item:hover {
+    background: #3a3a4e;
+}
+
+.log-column-config-item input[type="checkbox"] {
+    cursor: pointer;
+}
+
+.log-column-config-item label {
+    cursor: pointer;
+    font-size: 13px;
+    color: #ccc;
+    flex: 1;
+    user-select: none;
+}
+
+.log-column-config-footer {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    padding-top: 10px;
+    border-top: 1px solid #444;
+}
+
+.log-column-config-btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+}
+
+.log-column-config-btn-primary {
+    background: #4a9eff;
+    color: white;
+}
+
+.log-column-config-btn-primary:hover {
+    background: #3a8eef;
+}
+
+.log-column-config-btn-secondary {
+    background: #2a2a3e;
+    color: #ccc;
+}
+
+.log-column-config-btn-secondary:hover {
+    background: #3a3a4e;
+}
+
+/* Modal Overlay */
+.log-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 999;
+}
+
+/* Config Button */
+.log-config-btn {
+    padding: 6px 12px;
+    background: #2a2a3e;
+    color: #ccc;
+    border: 1px solid #444;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    margin-left: 5px;
+}
+
+.log-config-btn:hover {
+    background: #3a3a4e;
+    border-color: #4a9eff;
+    color: #fff;
+}
+
+/* Scrollbar styling for log view */
+.log-table-container::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+}
+
+.log-table-container::-webkit-scrollbar-track {
+    background: #1a1a2e;
+}
+
+.log-table-container::-webkit-scrollbar-thumb {
+    background: #4a9eff;
+    border-radius: 6px;
+}
+
+.log-table-container::-webkit-scrollbar-thumb:hover {
+    background: #3a8eef;
+}
+
+.log-table-container::-webkit-scrollbar-corner {
+    background: #1a1a2e;
+}
+
+/* Old scrollbar styling - keep for compatibility */
+.spots-scroll::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+.spots-scroll::-webkit-scrollbar-track {
+    background: #1a1a2e;
+}
+
+.spots-scroll::-webkit-scrollbar-thumb {
+    background: #4a9eff;
+    border-radius: 5px;
+}
+
+.spots-scroll::-webkit-scrollbar-thumb:hover {
+    background: #3a8eef;
+}

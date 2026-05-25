@@ -1,0 +1,37 @@
+        <!-- Row 2: Bands on left, Modes/Filters on right in 2-line layout -->
+        <div class="control-row" style="flex-wrap: wrap; align-items: flex-start;">
+            <!-- Band buttons on LEFT -->
+            <div class="control-group" style="flex: 0 0 auto;">
+                <button v-for="band in bands" 
+                        :key="band"
+                        @click="setBand(band)"
+                        :class="isActiveBand(band) ? 'active' : ''">
+                    {{ band }}
+                </button>
+            </div>
+            
+            <div class="spacer" style="flex: 1;"></div>
+            
+            <!-- Modes and Filters - 2-line layout on RIGHT -->
+            <div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-end; flex: 0 0 auto;">
+                <!-- Modes Row (Line 1) -->
+                <div class="control-group">
+                    <button v-for="mode in modes" 
+                            :key="mode"
+                            @click="setMode(mode)"
+                            :class="radioStatus.mode === mode ? 'active' : ''">
+                        {{ mode }}
+                    </button>
+                </div>
+                
+                <!-- Filters Row (Line 2) -->
+                <div class="control-group" v-if="currentFilters.length > 0">
+                    <button v-for="filter in currentFilters" 
+                            :key="filter.label"
+                            @click="setFilter(filter.lo, filter.hi)"
+                            :class="isActiveFilter(filter) ? 'active' : ''">
+                        {{ filter.label }}
+                    </button>
+                </div>
+            </div>
+        </div>

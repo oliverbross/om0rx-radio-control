@@ -1,0 +1,20 @@
+        <!-- Row 4: TX Frequency if split/RX2 enabled -->
+        <div class="control-row" v-if="radioStatus.split_enabled || radioStatus.rx2_enabled">
+            <span class="label">{{ radioStatus.split_enabled ? 'TX' : 'SUB' }}</span>
+            <div class="sub-freq">{{ formattedSubFreq }}</div>
+        </div>
+        
+        <!-- Row 5: SDC Decoded CW Text Ticker (CW mode only) -->
+        <div class="sdc-ticker-row" v-if="radioStatus.mode === 'CW'">
+            <div class="sdc-ticker-header">
+                <span class="sdc-ticker-title">📡 SDC Decoded</span>
+                <span class="sdc-connection-status" :class="sdcConnected ? 'connected' : 'disconnected'">
+                    {{ sdcConnected ? '● Connected' : '● Disconnected' }}
+                </span>
+            </div>
+            <div class="sdc-ticker-display" ref="sdcTickerDisplay">
+                <span v-if="!sdcConnected" class="sdc-ticker-message">Connecting to SDC broadcast…</span>
+                <span v-else-if="sdcBuffer.length === 0" class="sdc-ticker-message">Listening for decoded CW…</span>
+                <span v-else class="sdc-ticker-text">{{ sdcTickerContent }}</span>
+            </div>
+        </div>
