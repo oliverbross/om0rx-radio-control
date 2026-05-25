@@ -10,8 +10,9 @@ echo "   Complete Professional Interface"
 echo "========================================"
 echo ""
 
-# Get script directory (project root)
-PROJECT_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Get project root from scripts/start/
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"
 
 # Check for Node.js
 echo "🔍 Checking Node.js installation..."
@@ -112,7 +113,7 @@ export WSJTX_UDP_MULTICAST="224.0.0.1"
 export WS_PORT="8091"
 export WSJTX_ENABLED="true"
 
-node sdc-bridge-server.js > /tmp/bridge-server.log 2>&1 &
+node "$PROJECT_ROOT/bridge/sdc-bridge-server.js" > /tmp/bridge-server.log 2>&1 &
 BRIDGE_PID=$!
 
 # Give it a moment to start

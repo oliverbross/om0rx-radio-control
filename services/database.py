@@ -28,7 +28,7 @@ def get_db_connection():
                 host=config.DB_HOST,
                 port=config.DB_PORT,
                 user=config.DB_USER,
-                password=<qrz_password>
+                password=config.DB_PASS,
                 database=config.DB_NAME
             )
         return db_connection

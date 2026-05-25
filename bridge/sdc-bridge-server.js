@@ -7,7 +7,7 @@
 //
 // Setup:
 //   npm init -y
-//   npm install ws @pgogas/wsjtx-js
+//   npm install
 //   node sdc-bridge-server.js
 //
 // Environment variables:

@@ -24,7 +24,7 @@ class Classifier:
     def load(self):
         """Load worked/confirmed data from database"""
         logging.info("Connecting to DB %s:%s/%s as %s", DB_HOST, DB_PORT, DB_NAME, DB_USER)
-        con = mysql.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=<qrz_password> database=DB_NAME, connection_timeout=8)
+        con = mysql.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, database=DB_NAME, connection_timeout=8)
         cur = con.cursor()
 
         cur.execute("""SELECT DISTINCT dxcc FROM vw_qsos_effective WHERE own_station=%s AND dxcc IS NOT NULL""",(MY_STATION,))

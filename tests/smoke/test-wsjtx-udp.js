@@ -6,7 +6,7 @@
  */
 
 import dgram from 'dgram';
-import { WsjtxParser } from './wsjtx-parser.js';
+import { WsjtxParser } from '../../bridge/wsjtx-parser.js';
 
 console.log('\n' + '='.repeat(60));
 console.log('🔍 WSJT-X UDP Listener Diagnostic Tool');

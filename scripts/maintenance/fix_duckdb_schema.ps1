@@ -50,7 +50,7 @@ if (Test-Path $dbPath) {
             Write-Host "✅ Database deleted successfully!" -ForegroundColor Green
             Write-Host ""
             Write-Host "📝 Next steps:" -ForegroundColor Cyan
-            Write-Host "   1. Start the backend: .\start_webapp.ps1"
+            Write-Host "   1. Start the backend: .\start_all.ps1"
             Write-Host "   2. Watch logs for sync progress"
             Write-Host "   3. Sync will complete in a few minutes"
         }

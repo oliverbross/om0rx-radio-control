@@ -518,7 +518,7 @@ class CtyHybridResolver(CtyDatResolver):
         if not ent_map:
             try:
                 import mysql.connector as _mysql
-                con = _mysql.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=<qrz_password> database=DB_NAME, connection_timeout=6)
+                con = _mysql.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, database=DB_NAME, connection_timeout=6)
                 cur = con.cursor()
                 # Try common wavelog table names for entities
                 for sql in [

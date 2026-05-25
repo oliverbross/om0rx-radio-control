@@ -4,7 +4,8 @@
 Write-Host "`n⚡ FlexRadio Multi-Window Launcher" -ForegroundColor Cyan
 Write-Host "==================================`n" -ForegroundColor Cyan
 
-$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 
 # Check if pywebview is installed
 Write-Host "📦 Checking dependencies..." -ForegroundColor Yellow
@@ -56,13 +57,13 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "`n📝 Note: Make sure your backend is running!" -ForegroundColor Yellow
-Write-Host "   Run: .\start_webapp.ps1 (in another PowerShell window)" -ForegroundColor Gray
+Write-Host "   Run: .\start_all.ps1 (from the project root)" -ForegroundColor Gray
 
 Write-Host "`n🚀 Launching FlexRadio windows..." -ForegroundColor Cyan
 Write-Host "   (This will open 3 native desktop windows)" -ForegroundColor Gray
 Write-Host "`n"
 
 # Launch the Python script
-python (Join-Path $ProjectRoot "launch_windows.py")
+python (Join-Path $ProjectRoot "scripts\launch\launch_windows.py")
 
 Write-Host "`n👋 FlexRadio windows closed" -ForegroundColor Cyan

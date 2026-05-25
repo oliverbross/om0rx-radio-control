@@ -3,6 +3,9 @@ Quick test to check QTH vs Country data in Wavelog database
 """
 import pymysql
 from pymysql.cursors import DictCursor
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import config
 
 # Connect to database
@@ -10,7 +13,7 @@ conn = pymysql.connect(
     host=config.DB_HOST,
     port=config.DB_PORT,
     user=config.DB_USER,
-    password=<qrz_password>
+    password=config.DB_PASS,
     database=config.DB_NAME,
     charset='utf8mb4',
     cursorclass=DictCursor

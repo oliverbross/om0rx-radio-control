@@ -1,0 +1,22 @@
+# Backend web server
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+websockets>=13.0
+
+# HTTP clients
+aiohttp>=3.10.0
+httpx>=0.28.0
+requests>=2.32.0
+
+# Database and local log cache
+duckdb>=1.1.0
+mysql-connector-python>=9.0.0
+pymysql>=1.1.0
+
+# FT8/audio processing
+numpy>=2.0.0
+scipy>=1.14.0
+sounddevice>=0.5.0
+
+# Desktop launcher
+pywebview>=5.3.0

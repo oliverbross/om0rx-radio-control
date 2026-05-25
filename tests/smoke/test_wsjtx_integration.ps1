@@ -39,7 +39,7 @@ try {
 
 # Test 4: Check bridge server file exists
 Write-Host "📋 Test 4: Checking bridge server file..." -ForegroundColor Yellow
-if (Test-Path "sdc-bridge-server.js") {
+if (Test-Path "bridge/sdc-bridge-server.js") {
     Write-Host "✅ sdc-bridge-server.js found" -ForegroundColor Green
 } else {
     Write-Host "❌ sdc-bridge-server.js not found" -ForegroundColor Red
@@ -74,7 +74,7 @@ if ($mainContent -match "register_wsjtx_endpoints") {
 
 # Test 7: Check bridge has multi-interface support
 Write-Host "📋 Test 7: Checking bridge multi-interface support..." -ForegroundColor Yellow
-$bridgeContent = Get-Content "sdc-bridge-server.js" -Raw
+$bridgeContent = Get-Content "bridge/sdc-bridge-server.js" -Raw
 if ($bridgeContent -match "getLocalIPAddress") {
     Write-Host "✅ Bridge has auto-interface detection" -ForegroundColor Green
 } else {
@@ -103,7 +103,7 @@ foreach ($port in $ports) {
 
 # Test 9: Startup scripts
 Write-Host "📋 Test 9: Checking startup scripts..." -ForegroundColor Yellow
-if (Test-Path "start_services_only.ps1") {
+if (Test-Path "scripts/start/start_services_only.ps1") {
     Write-Host "✅ start_services_only.ps1 exists (quick test startup)" -ForegroundColor Green
 } else {
     Write-Host "⚠️  start_services_only.ps1 not found" -ForegroundColor Yellow
@@ -124,7 +124,7 @@ Write-Host "✅ All critical components are ready!" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
 Write-Host "  1. Ensure WSJT-X is running with UDP Server enabled" -ForegroundColor White
-Write-Host "  2. Run quick test: .\start_services_only.ps1" -ForegroundColor White
+Write-Host "  2. Run quick test: .\scripts\start\start_services_only.ps1" -ForegroundColor White
 Write-Host "  3. WSJT-X should send packets to the bridge" -ForegroundColor White
 Write-Host "  4. Check bridge window for 'UDP packet received' messages" -ForegroundColor White
 Write-Host ""

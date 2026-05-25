@@ -166,7 +166,7 @@ def main():
     if all_pass:
         print("✅ ALL TESTS PASSED")
         print("\nNext steps:")
-        print("1. Start the application: .\\start_webapp.ps1")
+        print("1. Start the application: .\\start_all.ps1")
         print("2. Test in browser:")
         print("   - Verify mode changes when clicking spots")
         print("   - Verify PJ6Y shows 'SABA & ST EUSTATIUS'")

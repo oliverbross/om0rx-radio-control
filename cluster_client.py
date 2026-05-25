@@ -22,7 +22,7 @@ DX_RE = re.compile(
 class ClusterClient:
     """Async DX Cluster (DXSpider/AR-Cluster) telnet client"""
     
-    def __init__(self, host: str, port: int, callsign: str, password: <qrz_password> = ""):
+    def __init__(self, host: str, port: int, callsign: str, password: str = ""):
         self.host = host
         self.port = port
         self.callsign = callsign
@@ -51,7 +51,8 @@ class ClusterClient:
             await self.writer.drain()
             
             # Send password if provided
-            if self.password: <qrz_password> asyncio.sleep(0.2)
+            if self.password:
+                await asyncio.sleep(0.2)
                 self.writer.write((self.password + "\r\n").encode())
                 await self.writer.drain()
             
@@ -214,7 +215,7 @@ class ClusterManager:
                 - host: str - hostname/IP
                 - port: int - port number
                 - user: str - login username
-                - password: <qrz_password> - login password
+                - password: optional login password
                 - use_as_failover: bool - whether to use as failover if primary fails
                 - name: str - friendly name for logging
         """
@@ -241,7 +242,7 @@ class ClusterManager:
                     host=cluster_cfg.get('host', 'localhost'),
                     port=cluster_cfg.get('port', 7373),
                     callsign=cluster_cfg.get('user', 'N0CALL'),
-                    password=<qrz_password> '')
+                    password=cluster_cfg.get('password', '')
                 )
                 self.cluster_clients.append({
                     'client': client,

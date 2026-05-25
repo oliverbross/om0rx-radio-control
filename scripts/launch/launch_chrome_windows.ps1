@@ -30,7 +30,7 @@ if (-not $backendReady) {
     Write-Host "❌ Backend is not running!" -ForegroundColor Red
     Write-Host ""
     Write-Host "Please start the backend first:" -ForegroundColor Yellow
-    Write-Host "   .\start_webapp.ps1" -ForegroundColor Cyan
+    Write-Host "   .\start_all.ps1" -ForegroundColor Cyan
     Write-Host ""
     Read-Host "Press Enter to exit"
     exit 1

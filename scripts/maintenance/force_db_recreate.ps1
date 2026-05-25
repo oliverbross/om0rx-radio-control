@@ -35,7 +35,7 @@ if (Test-Path $walPath) {
 }
 
 Write-Host "`n✨ Database cleared! Now restart the backend:" -ForegroundColor Cyan
-Write-Host "   .\start_webapp.ps1" -ForegroundColor White
+Write-Host "   .\start_all.ps1" -ForegroundColor White
 Write-Host "`n📊 The database will be recreated with the correct schema" -ForegroundColor Green
 Write-Host "    and sync all ~41,826 QSOs in batches of 1000." -ForegroundColor Green
 Write-Host "`n⏱️  This should take 3-5 minutes total.`n" -ForegroundColor Yellow

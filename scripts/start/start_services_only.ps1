@@ -12,15 +12,19 @@ Write-Host "🧹 Cleaning up old processes..." -ForegroundColor Yellow
 Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
+$bridgeScript = Join-Path $ProjectRoot "bridge\sdc-bridge-server.js"
+
 # Step 1: Start WSJT-X Bridge Server
 Write-Host "📡 Step 1: Starting WSJT-X bridge server..." -ForegroundColor Yellow
-$bridgeProcess = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD'; `$env:TCP_HOST='127.0.0.1'; `$env:TCP_PORT='12166'; `$env:WSJTX_UDP_PORT='2237'; `$env:WSJTX_UDP_MULTICAST='224.0.0.1'; `$env:WS_PORT='8091'; `$env:WSJTX_ENABLED='true'; node sdc-bridge-server.js" -PassThru
+$bridgeProcess = Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$ProjectRoot'; `$env:TCP_HOST='127.0.0.1'; `$env:TCP_PORT='12166'; `$env:WSJTX_UDP_PORT='2237'; `$env:WSJTX_UDP_MULTICAST='224.0.0.1'; `$env:WS_PORT='8091'; `$env:WSJTX_ENABLED='true'; node '$bridgeScript'" -PassThru
 Write-Host "✅ Bridge process started (PID: $($bridgeProcess.Id))" -ForegroundColor Green
 Start-Sleep -Seconds 2
 
 # Step 2: Start backend in background
 Write-Host "📡 Step 2: Starting backend server..." -ForegroundColor Yellow
-$backendProcess = Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD'; & python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude=config.py" -PassThru
+$backendProcess = Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$ProjectRoot'; & python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude=config.py" -PassThru
 Write-Host "✅ Backend process started (PID: $($backendProcess.Id))" -ForegroundColor Green
 
 # Wait for backend to be ready

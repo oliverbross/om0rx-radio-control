@@ -3,7 +3,7 @@
  * This validates that the parser can now receive WSJT-X messages
  */
 
-import { WsjtxParser } from './wsjtx-parser.js';
+import { WsjtxParser } from '../../bridge/wsjtx-parser.js';
 
 const parser = new WsjtxParser();
 

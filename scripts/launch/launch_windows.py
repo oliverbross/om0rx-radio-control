@@ -108,7 +108,7 @@ def check_backend_ready(max_attempts=30, delay=1):
     
     print("❌ Backend is not responding on localhost:8000")
     print("   Please make sure the backend app is running:")
-    print("   Run: .\\start_webapp.ps1")
+    print("   Run: .\\start_all.ps1")
     return False
 
 

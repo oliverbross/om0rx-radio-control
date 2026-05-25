@@ -8,8 +8,9 @@ Write-Host "   Complete Professional Interface" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Get script directory (project root)
-$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Get project root from scripts/start/
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 
 # ============= KILL PORT PROCESSES =============
 Write-Host "🧹 Cleaning up ports..." -ForegroundColor Yellow
@@ -103,7 +104,7 @@ Write-Host ""
 
 # Start Multi-Protocol Bridge Server (SDC + WSJT-X) in background
 Write-Host "🚀 Starting Multi-Protocol Bridge Server (SDC + WSJT-X)..." -ForegroundColor Yellow
-$bridgeScript = Join-Path $ProjectRoot "sdc-bridge-server.js"
+$bridgeScript = Join-Path $ProjectRoot "bridge\sdc-bridge-server.js"
 
 # Set environment variables for WSJT-X integration
 $env:TCP_HOST = "127.0.0.1"
@@ -161,7 +162,7 @@ catch {
     Write-Host ""
     Write-Host "Troubleshooting:" -ForegroundColor Yellow
     Write-Host "1. Make sure Python is installed: python --version" -ForegroundColor White
-    Write-Host "2. Install dependencies: pip install -r documentation/requirements.txt" -ForegroundColor White
+    Write-Host "2. Install dependencies: pip install -r requirements.txt" -ForegroundColor White
     Write-Host "3. Check config.py for correct FlexRadio IP" -ForegroundColor White
     Write-Host ""
     Write-Host "Stopping Bridge Server..." -ForegroundColor Yellow

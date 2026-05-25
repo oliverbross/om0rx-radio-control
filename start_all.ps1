@@ -11,7 +11,8 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # Step 1: Start WSJT-X Bridge Server
 Write-Host "📡 Step 1: Starting WSJT-X bridge server..." -ForegroundColor Yellow
-$bridgeProcess = Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$ProjectRoot'; `$env:TCP_HOST='127.0.0.1'; `$env:TCP_PORT='12166'; `$env:WSJTX_UDP_PORT='2237'; `$env:WSJTX_UDP_MULTICAST='224.0.0.1'; `$env:WS_PORT='8091'; `$env:WSJTX_ENABLED='true'; node sdc-bridge-server.js" -PassThru
+$bridgeScript = Join-Path $ProjectRoot "bridge\sdc-bridge-server.js"
+$bridgeProcess = Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$ProjectRoot'; `$env:TCP_HOST='127.0.0.1'; `$env:TCP_PORT='12166'; `$env:WSJTX_UDP_PORT='2237'; `$env:WSJTX_UDP_MULTICAST='224.0.0.1'; `$env:WS_PORT='8091'; `$env:WSJTX_ENABLED='true'; node '$bridgeScript'" -PassThru
 Write-Host "✅ Bridge process started (PID: $($bridgeProcess.Id))" -ForegroundColor Green
 Start-Sleep -Seconds 2
 
@@ -68,7 +69,7 @@ Write-Host "🚀 Step 3: Launching native windows..." -ForegroundColor Yellow
 Write-Host ""
 
 # Step 3: Launch windows
-& python (Join-Path $ProjectRoot "launch_windows.py")
+& python (Join-Path $ProjectRoot "scripts\launch\launch_windows.py")
 
 # Cleanup
 Write-Host ""

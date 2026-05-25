@@ -12,7 +12,7 @@
  */
 
 import dgram from 'dgram';
-import { WsjtxParser } from './wsjtx-parser.js';
+import { WsjtxParser } from '../../bridge/wsjtx-parser.js';
 
 const WSJTX_UDP_PORT = parseInt(process.env.WSJTX_UDP_PORT || '2237');
 const WSJTX_UDP_MULTICAST = process.env.WSJTX_UDP_MULTICAST || '224.0.0.1';
