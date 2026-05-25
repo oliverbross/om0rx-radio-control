@@ -481,7 +481,7 @@ class SpotUi:
             dd_dx   = MultiCheckDropdown(filters_fr, "DXCC:", [], on_change=refresh_table)
             dd_sp   = MultiCheckDropdown(filters_fr, "Special:", [], on_change=refresh_table)
             try:
-                import config as _cfg_sp
+                from radio_control import config as _cfg_sp
                 self._opt_special = set(['(none)'] + list(getattr(_cfg_sp, 'SPECIAL_PRESET', [])))
                 dd_sp.set_options(sorted(self._opt_special))
             except Exception:
@@ -494,7 +494,7 @@ class SpotUi:
             _fixed_cs    = ['New Call','Worked','Confirmed','New Band','New Mode','New Band+Mode']
             _dx_statuses = ['ATNO','New band','New mode','New band+mode','Need LoTW','Worked','Confirmed']
             try:
-                import config as _cfg
+                from radio_control import config as _cfg
                 _special_from_cfg = list(getattr(_cfg, 'SPECIAL_PRESET', []))
             except Exception:
                 _special_from_cfg = []
@@ -516,7 +516,7 @@ class SpotUi:
                 tv.heading(c, text=c)
                 tv.column(c, width=widths.get(c,110), anchor="w", stretch=(c=="Comment"))
             try:
-                import config as _cfg_colors
+                from radio_control import config as _cfg_colors
                 for _k,_v in getattr(_cfg_colors, "COLORS", {}).items():
                     if _k != "Default":
                         try: tv.tag_configure(_k, background=_to_tk_hex(_v))
@@ -594,7 +594,7 @@ def _to_tk_hex(val:str) -> str:
 
 def color_for_tag(tag:str):
     try:
-        import config as _cfgc
+        from radio_control import config as _cfgc
         cmap = getattr(_cfgc, "COLORS", {})
         return cmap.get(tag, cmap.get("Default", COLOR_DEFAULT))
     except Exception:

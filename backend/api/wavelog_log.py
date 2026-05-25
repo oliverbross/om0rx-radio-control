@@ -188,7 +188,7 @@ async def get_wavelog_statistics():
     - Total QSOs
     """
     try:
-        from wavelog_api import WavelogClient
+        from radio_control.wavelog_api import WavelogClient
         
         client = WavelogClient()
         result = await client.get_statistics()
@@ -219,7 +219,7 @@ async def get_wavelog_wp_statistics():
     - QSOs grouped by mode (with submodes)
     """
     try:
-        from wavelog_api import WavelogClient
+        from radio_control.wavelog_api import WavelogClient
         
         client = WavelogClient()
         result = await client.get_wp_stats()

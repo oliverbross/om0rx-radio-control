@@ -359,7 +359,7 @@ async def process_cluster_spot(spot_data: Dict):
 
         # Log spot to persistent database immediately
         try:
-            from spots_logger import log_spot
+            from radio_control.spots_logger import log_spot
             log_spot(spot_data)
         except Exception as e:
             logger.warning(f"Failed to log spot to database: {e}")
@@ -507,7 +507,7 @@ async def process_cluster_spot(spot_data: Dict):
         if flex and flex.sock:
             try:
                 # Map DXCC status to color and call status to abbreviation
-                from utils import get_dxcc_color, get_call_status_abbreviation
+                from radio_control.utils import get_dxcc_color, get_call_status_abbreviation
                 color = get_dxcc_color(dxcc_status)
                 status_label = get_call_status_abbreviation(call_status)
 

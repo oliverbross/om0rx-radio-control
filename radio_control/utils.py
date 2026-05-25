@@ -172,7 +172,7 @@ def infer_mode(comment: str, band: str, khz: float) -> str:
 
 def extract_special(comment: str) -> str:
     """Extract special tags from comment"""
-    from config import SPECIAL_PATTERNS
+    from radio_control.config import SPECIAL_PATTERNS
     c = (comment or "")
     for name, pat in SPECIAL_PATTERNS.items():
         try:

@@ -139,6 +139,12 @@ async def rotor_bearing(request: Dict[str, Any] = Body(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/rotor/auto/bearing")
+async def rotor_auto_bearing(request: Dict[str, Any] = Body(...)):
+    """Calculate AUTO rotor bearing without moving the rotor."""
+    return await rotor_bearing(request)
+
+
 @router.post("/rotor/auto/goto")
 async def rotor_auto_goto(request: Dict[str, Any] = Body(...)):
     """AUTO rotor GOTO - calculate and move"""

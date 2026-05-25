@@ -285,7 +285,7 @@ async def get_classifier_api(api_client: Optional[WavelogClient] = None) -> Clas
     if _classifier_instance is None:
         if api_client is None:
             # Create default API client
-            from wavelog_api import WavelogClient
+            from radio_control.wavelog_api import WavelogClient
             api_client = WavelogClient()
         
         _classifier_instance = ClassifierAPI(api_client)

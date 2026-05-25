@@ -9,7 +9,7 @@ import sys
 def test_ft8_files():
     """Verify all required FT8 files exist"""
     
-    frontend = Path(__file__).parent / "frontend"
+    frontend = Path(__file__).resolve().parents[2] / "frontend"
     
     required_files = {
         # Core FT8 decoder files
@@ -81,11 +81,7 @@ def test_ft8_files():
     else:
         print("❌ MISSING FILES DETECTED")
         print()
-        print("Run this to copy missing files from ft8play-main:")
-        print()
-        print("  Copy-Item ft8play-main\\docs\\HamGridSquare.js frontend\\")
-        print("  Copy-Item ft8play-main\\docs\\ft8_hashmgr.js frontend\\")
-        print("  Copy-Item ft8play-main\\docs\\ctydata.js frontend\\")
+        print("Check frontend/ and restore missing tracked assets from Git.")
         print()
         return 1
 

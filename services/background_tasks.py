@@ -316,7 +316,7 @@ async def process_cluster_spot(spot_data: dict):
         gridsquare = None  # === FIX: Convert lat/lon to gridsquare for rotor ===
         if latitude is not None and longitude is not None:
             try:
-                from rotor_math import latlon_to_grid
+                from radio_control.rotor_math import latlon_to_grid
                 gridsquare = latlon_to_grid(latitude, longitude, precision=6)
             except:
                 gridsquare = None
@@ -355,7 +355,7 @@ async def process_cluster_spot(spot_data: dict):
         if flex and flex.sock:
             try:
                 # Map DXCC status to color and call status to abbreviation
-                from utils import get_dxcc_color, get_call_status_abbreviation
+                from radio_control.utils import get_dxcc_color, get_call_status_abbreviation
                 color = get_dxcc_color(dxcc_status)
                 status_label = get_call_status_abbreviation(call_status)
 

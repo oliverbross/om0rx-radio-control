@@ -85,7 +85,7 @@ async def search_filtered_spots(req: SpotFilterRequest, request: Request):
     Returns up to 'limit' spots matching all specified filters with cached classifications.
     """
     try:
-        from spots_logger import get_spots_logger
+        from radio_control.spots_logger import get_spots_logger
         
         logger.info(f"🔍 Filtered search: callsign={req.callsign}, bands={req.bands}, modes={req.modes}, limit={req.limit}")
         
@@ -149,7 +149,7 @@ async def tune_to_spot(req: SpotTuneRequest, request: Request):
 async def get_spots_count(request: Request):
     """Get total count of spots from persistent database"""
     try:
-        from spots_logger import get_spots_logger
+        from radio_control.spots_logger import get_spots_logger
         spots_logger = get_spots_logger()
         count = spots_logger.get_spot_count()
         return {"count": count}
@@ -162,7 +162,7 @@ async def get_spots_count(request: Request):
 async def get_recent_spots(request: Request, limit: int = 999999):
     """Get recent spots from persistent database (not just cache)"""
     try:
-        from spots_logger import get_spots_logger
+        from radio_control.spots_logger import get_spots_logger
         spots_logger = get_spots_logger()
         spots = spots_logger.get_recent_spots(limit)
         return {"spots": spots}
@@ -177,7 +177,7 @@ async def get_recent_spots(request: Request, limit: int = 999999):
 async def get_spots_by_callsign(callsign: str, request: Request, limit: int = 100):
     """Get all spots for a specific callsign from persistent database"""
     try:
-        from spots_logger import get_spots_logger
+        from radio_control.spots_logger import get_spots_logger
         spots_logger = get_spots_logger()
         spots = spots_logger.get_spots_by_callsign(callsign, limit)
         return {"callsign": callsign, "count": len(spots), "spots": spots}

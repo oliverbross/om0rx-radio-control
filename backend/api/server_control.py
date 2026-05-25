@@ -139,7 +139,7 @@ async def shutdown_server(request: Request):
 
         # Stop Wavelog sync
         try:
-            from wavelog_sync import stop_wavelog_sync
+            from radio_control.wavelog_sync import stop_wavelog_sync
             await stop_wavelog_sync()
         except:
             pass
@@ -193,7 +193,7 @@ async def restart_server(request: Request):
 
         # Stop Wavelog sync
         try:
-            from wavelog_sync import stop_wavelog_sync
+            from radio_control.wavelog_sync import stop_wavelog_sync
             await stop_wavelog_sync()
         except:
             pass

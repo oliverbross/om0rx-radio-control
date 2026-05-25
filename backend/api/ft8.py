@@ -8,8 +8,7 @@ from typing import Optional, List
 import logging
 import asyncio
 import json
-from radio_control import config
-from pathlib import Path
+from radio_control import config as app_config
 
 from services.ft8_service import get_ft8_service, init_ft8_service
 
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ft8", tags=["ft8"])
 
 # Configuration file path
-FT8_CONFIG_FILE = Path("logs/ft8_config.json")
+FT8_CONFIG_FILE = app_config.LOGS_DIR / "ft8_config.json"
 
 # Try to import sounddevice for audio device enumeration
 try:
@@ -364,108 +363,6 @@ async def get_audio_devices():
     except Exception as e:
         logger.error(f"Error querying audio devices: {e}", exc_info=True)
         return {"input": [], "output": [], "error": str(e)}
-
-
-@router.get("/config")
-async def get_ft8_config():
-    """Get FT8 configuration from config.py"""
-    try:
-        ft8_config = {
-            "mode": getattr(config, "FT8_MODE", "FT8"),
-            "mycall": getattr(config, "FT8_MYCALL", "OM0RX"),
-            "mygrid": getattr(config, "FT8_MYGRID", "JN88"),
-            "networkServer": getattr(config, "FT8_NETWORK_SERVER", "192.168.0.199:4992"),
-            "pttMethod": getattr(config, "FT8_PTT_METHOD", "CAT"),
-            "audioInput": getattr(config, "FT8_AUDIO_INPUT", "default"),
-            "audioOutput": getattr(config, "FT8_AUDIO_OUTPUT", "default"),
-            "sampleRate": getattr(config, "FT8_SAMPLE_RATE", 12000),
-            "autoSequence": getattr(config, "FT8_AUTO_SEQUENCE", False),
-            "txEnabled": getattr(config, "FT8_TX_ENABLED", False),
-            "waterfallHeight": getattr(config, "FT8_WATERFALL_HEIGHT", 100),
-            "useFlexRadioAudio": getattr(config, "FT8_USE_FLEXRADIO_AUDIO", True)
-        }
-        
-        # Get audio devices (FILTER: DAX/FlexRadio devices ONLY + system default)
-        audio_devices = {"input": [], "output": []}
-        if AUDIO_AVAILABLE:
-            try:
-                devices = sd.query_devices()
-                default_input = sd.query_devices(kind='input')
-                default_output = sd.query_devices(kind='output')
-                
-                # Add default device first
-                if default_input:
-                    audio_devices["input"].append(f"default: {default_input['name']}")
-                if default_output:
-                    audio_devices["output"].append(f"default: {default_output['name']}")
-                
-                for idx, device in enumerate(devices):
-                    device_name = device['name']
-                    
-                    # FILTER: Only show DAX, FlexRadio, VoiceMeeter, or Virtual Cable devices
-                    if not any(keyword in device_name for keyword in ['DAX', 'FlexRadio', 'VoiceMeeter', 'Virtual', 'CABLE']):
-                        continue
-                    
-                    device_entry = f"{idx}: {device_name}"
-                    
-                    if device['max_input_channels'] > 0:
-                        audio_devices["input"].append(device_entry)
-                    
-                    if device['max_output_channels'] > 0:
-                        audio_devices["output"].append(device_entry)
-                        
-                logger.info(f"Found {len(audio_devices['input'])} input devices, {len(audio_devices['output'])} output devices")
-            except Exception as e:
-                logger.error(f"Error getting audio devices: {e}")
-        
-        return {
-            "config": ft8_config,
-            "audioDevices": audio_devices
-        }
-    except Exception as e:
-        logger.error(f"Error getting FT8 config: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/config")
-async def update_ft8_config(new_config: dict):
-    """Update FT8 configuration in config.py"""
-    try:
-        # Update config module attributes
-        if "mode" in new_config:
-            config.FT8_MODE = new_config["mode"]
-        if "mycall" in new_config:
-            config.FT8_MYCALL = new_config["mycall"]
-        if "mygrid" in new_config:
-            config.FT8_MYGRID = new_config["mygrid"]
-        if "networkServer" in new_config:
-            config.FT8_NETWORK_SERVER = new_config["networkServer"]
-        if "pttMethod" in new_config:
-            config.FT8_PTT_METHOD = new_config["pttMethod"]
-        if "audioInput" in new_config:
-            config.FT8_AUDIO_INPUT = new_config["audioInput"]
-        if "audioOutput" in new_config:
-            config.FT8_AUDIO_OUTPUT = new_config["audioOutput"]
-        if "sampleRate" in new_config:
-            config.FT8_SAMPLE_RATE = new_config["sampleRate"]
-        if "autoSequence" in new_config:
-            config.FT8_AUTO_SEQUENCE = new_config["autoSequence"]
-        if "txEnabled" in new_config:
-            config.FT8_TX_ENABLED = new_config["txEnabled"]
-        if "waterfallHeight" in new_config:
-            config.FT8_WATERFALL_HEIGHT = new_config["waterfallHeight"]
-        if "useFlexRadioAudio" in new_config:
-            config.FT8_USE_FLEXRADIO_AUDIO = new_config["useFlexRadioAudio"]
-        
-        # Note: This only updates in-memory config. 
-        # For persistent storage, we would need to write to config.py file
-        # or use a database/JSON file for user settings.
-        
-        logger.info(f"FT8 configuration updated: {new_config}")
-        return {"status": "success", "message": "Configuration updated"}
-    except Exception as e:
-        logger.error(f"Error updating FT8 config: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 def register_ft8_endpoints(app):

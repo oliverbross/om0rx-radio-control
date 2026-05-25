@@ -51,7 +51,7 @@ def show_flex_info(root):
     frm.pack(fill='both', expand=True)
     # Read host/port from config
     try:
-        import config as _cfg
+        from radio_control import config as _cfg
         host = getattr(_cfg, 'FLEX_TCP_HOST', '127.0.0.1')
         port = int(getattr(_cfg, 'FLEX_TCP_PORT', 4992))
     except Exception:
@@ -258,7 +258,7 @@ class ConfigDialog:
         co_fr = ttk.Frame(nb); nb.add(co_fr, text="Colours")
         self._color_vars = {}
         color_keys = ['ATNO','New band','New mode','New band+mode','Need LoTW','Worked','Default']
-        import config as _cfg2
+        from radio_control import config as _cfg2
         cur_map = getattr(_cfg2, 'COLORS', {})
         from tkinter import colorchooser
         def _pick_color(key):

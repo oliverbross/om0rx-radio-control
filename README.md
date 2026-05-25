@@ -64,3 +64,7 @@ logs/             Ignored runtime logs
 ## Cleanup Notes
 
 Legacy implementation notes, historical troubleshooting files, and one-off diagnostics are archived under `docs/archive/`. They are kept out of the project root and active test tree so the maintained code is easier to navigate while still preserving useful context.
+
+## Project Review
+
+See `docs/PROJECT_REVIEW.md` for the current architecture review, verified checks, fixed review findings, and recommended next cleanup work before new feature development.

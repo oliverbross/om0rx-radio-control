@@ -8,13 +8,13 @@ import logging
 
 def _config_path():
     """Resolve path to the active config.py loaded by this script."""
-    import config as _cfg
+    from radio_control import config as _cfg
     return os.path.abspath(inspect.getsourcefile(_cfg))
 
 
 def _read_config_values():
     """Read all configuration values from config.py"""
-    import config as _cfg
+    from radio_control import config as _cfg
     vals = {
         "DB_HOST": _cfg.DB_HOST,
         "DB_PORT": _cfg.DB_PORT,
@@ -104,7 +104,7 @@ def _update_config_file(updates: dict):
     with open(path, 'w', encoding='utf-8') as f:
         f.write(txt)
 
-    import config as _cfg
+    from radio_control import config as _cfg
     import importlib as _imp
     _imp.reload(_cfg)
     return path

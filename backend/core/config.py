@@ -47,7 +47,7 @@ def get_config():
                     pass
 
         # Re-import fresh module
-        import config as cfg
+        from radio_control import config as cfg
         importlib.reload(cfg)
 
         config_data = {
@@ -247,7 +247,7 @@ def update_config(config_update: ConfigUpdate):
 
         # Re-import and reload config module (updates in-memory values)
         logger.info(f"🔄 Reloading config module")
-        import config as cfg_fresh
+        from radio_control import config as cfg_fresh
         importlib.reload(cfg_fresh)
         logger.info(f"✅ Config module reloaded")
 

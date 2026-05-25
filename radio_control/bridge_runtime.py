@@ -45,7 +45,7 @@ def _to_tk_hex(val:str) -> str:
 
 def color_for_tag(tag:str):
     try:
-        import config as _cfgc
+        from radio_control import config as _cfgc
         cmap = getattr(_cfgc, "COLORS", {})
         return cmap.get(tag, cmap.get("Default", COLOR_DEFAULT))
     except Exception:

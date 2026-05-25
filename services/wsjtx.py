@@ -233,17 +233,23 @@ class WSJTXService:
             # Get band from frequency (to check if band-specific override exists)
             band = None
             if req.get('frequency_hz'):
-                band = band_from_khz(req['frequency_hz'] / 1e6)
+                band = band_from_khz(req['frequency_hz'] / 1000)
 
             # Check if this band has a specific bearing offset
             band_offset = 0
             if band and hasattr(config, 'ROTOR_BANDS') and band in config.ROTOR_BANDS:
-                band_offset = config.ROTOR_BANDS[band].get("offset", 0)
+                band_config = config.ROTOR_BANDS[band]
+                if isinstance(band_config, dict):
+                    if not band_config.get("enabled", True):
+                        return {"success": False, "reason": f"Rotator disabled for band {band}"}
+                    band_offset = band_config.get("offset", 0)
+                elif not band_config:
+                    return {"success": False, "reason": f"Rotator disabled for band {band}"}
 
             adjusted_bearing = (bearing + band_offset) % 360
 
             # Send command to rotator
-            cmd_result = await self.rotor_service.rotor.rotor_goto({"azimuth": int(adjusted_bearing)})
+            cmd_result = await self.rotor_service.rotor_goto({"azimuth": int(adjusted_bearing)})
 
             if cmd_result:
                 logger.info(f"✅ Rotator command sent: {call} on {bearing}° (adjusted: {adjusted_bearing}°)")

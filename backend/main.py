@@ -263,12 +263,18 @@ async def initialize_services():
     init_wavelog_sync_manager()
     
     # Initialize rotator service (async)
-    from services.rotator import init_rotator_service
+    from services.rotator import get_rotator_service, init_rotator_service
     await init_rotator_service()
 
     # Set up WSJT-X service dependencies (including adif_handler for local ADIF backup)
     wsjtx_service = get_wsjtx_service()
-    wsjtx_service.set_dependencies(wavelog_client, qrz_client, rotor, cty_resolver, adif_handler)
+    wsjtx_service.set_dependencies(
+        wavelog_client,
+        qrz_client,
+        get_rotator_service(),
+        cty_resolver,
+        adif_handler,
+    )
 
     # Set up background task globals
     set_background_globals(

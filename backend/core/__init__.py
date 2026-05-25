@@ -638,7 +638,7 @@ async def process_cluster_spot(spot_data: Dict):
         if flex and flex.sock:
             try:
                 # Map DXCC status to color and call status to abbreviation
-                from utils import get_dxcc_color, get_call_status_abbreviation
+                from radio_control.utils import get_dxcc_color, get_call_status_abbreviation
                 color = get_dxcc_color(dxcc_status)
                 status_label = get_call_status_abbreviation(call_status)
 

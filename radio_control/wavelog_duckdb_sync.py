@@ -8,7 +8,6 @@ import logging
 import duckdb
 from pathlib import Path
 from datetime import datetime
-import os
 from typing import Optional, List, Dict, Any
 import pymysql
 from pymysql.cursors import DictCursor
@@ -27,7 +26,7 @@ class WavelogDuckDBSync:
         Args:
             db_path: Path to DuckDB database (default: data/qso_log.duckdb)
         """
-        self.db_path = Path(db_path or os.path.join(os.path.dirname(__file__), 'data', 'qso_log.duckdb'))
+        self.db_path = Path(db_path) if db_path else config.DATA_DIR / "qso_log.duckdb"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Wavelog MySQL connection config

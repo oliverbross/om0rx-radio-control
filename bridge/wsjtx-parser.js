@@ -103,7 +103,7 @@ class WsjtxParser {
 
       // 2. Dial Frequency (quint64 - Hz)
       if (offset + 8 <= buffer.length) {
-        msg.dialFrequency = buffer.readBigInt64BE(offset);
+        msg.dialFrequency = Number(buffer.readBigInt64BE(offset));
         offset += 8;
       }
 
@@ -216,7 +216,7 @@ class WsjtxParser {
 
       // 5. Tx frequency (Hz) - quint64
       if (offset + 8 <= buffer.length) {
-        msg.dialFrequency = buffer.readBigInt64BE(offset);
+        msg.dialFrequency = Number(buffer.readBigInt64BE(offset));
         offset += 8;
       }
 
