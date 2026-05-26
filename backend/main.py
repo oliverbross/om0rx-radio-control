@@ -12,7 +12,7 @@ from backend.core import (
     # Global state variables
     flex, websocket_clients, dx_spots_cache, db_connection,
     cluster_client, cluster_connected, classifier, cty_resolver,
-    rotor, adif_sync_task, sync_status,
+    rotor, sync_status,
     # Core functions
     _load_rotor_config
 )
@@ -53,7 +53,7 @@ from radio_control import config
 from radio_control.cluster_client import ClusterClient
 from radio_control.classifier_api import get_classifier_api
 from radio_control.cty_resolvers import CtyDatResolver
-from radio_control.wavelog_duckdb_sync import init_wavelog_sync, periodic_wavelog_sync
+from radio_control.wavelog_duckdb_sync import init_wavelog_sync
 from radio_control.rotor_api import RotorController
 from radio_control.wavelog_api import WavelogClient
 from radio_control.qrz_api import QRZClient
@@ -186,10 +186,7 @@ async def init_classifier():
     """Initialize Wavelog API classifier"""
     global classifier
     try:
-        # Initialize in both local scope AND in backend.core
-        import backend.core
         classifier = await get_classifier_api(wavelog_client)
-        backend.core.classifier = classifier  # Update the one in backend.core too!
         logging.info("✅ API-based classifier initialized")
         return True
     except Exception as e:
@@ -221,12 +218,9 @@ def init_rotator():
 
 def init_wavelog_sync_manager():
     """Initialize Wavelog→DuckDB sync manager"""
-    global wavelog_sync_manager, adif_sync_task
-    import backend.core
+    global wavelog_sync_manager
     try:
         wavelog_sync_manager = init_wavelog_sync()
-        # CRITICAL: Also set in backend.core namespace (used by periodic_wavelog_sync)
-        backend.core.wavelog_sync_manager = wavelog_sync_manager
         logging.info("✅ Wavelog→DuckDB sync initialized")
         return True
     except Exception as e:
@@ -289,6 +283,7 @@ async def initialize_services():
     app.state.dx_spots_cache = dx_spots_cache
     app.state.websocket_clients = websocket_clients
     app.state.cluster_client = cluster_client
+    app.state.wavelog_sync_manager = wavelog_sync_manager
 
     # Register all service endpoints and routers
     register_all_services()

@@ -423,13 +423,12 @@ def count_adif_records(file_path: str) -> int:
         return 0
 
 
-# DEPRECATED: Old ADIF→DuckDB sync - replaced by Wavelog→DuckDB sync
-# This function is no longer used. The new sync logic is in backend/core/__init__.py
-# and uses wavelog_duckdb_sync.py module instead of adif_sync.py
+# DEPRECATED: Old ADIF to DuckDB sync - replaced by Wavelog to DuckDB sync.
+# The active periodic sync task lives in radio_control.wavelog_duckdb_sync.
 #
 # async def periodic_adif_sync():
 #     """Periodically sync ADIF file to DuckDB (every 30 seconds)"""
-#     # This function has been replaced by periodic_wavelog_sync() in backend/core/__init__.py
+#     # This function has been replaced by periodic_wavelog_sync().
 #     pass
 
 
@@ -460,8 +459,8 @@ async def start_background_tasks():
 
     # Start Wavelog→DuckDB sync if manager is available
     if wavelog_sync_manager:
-        # Import the periodic_wavelog_sync from backend.core
-        from backend.core import periodic_wavelog_sync
+        from radio_control.wavelog_duckdb_sync import periodic_wavelog_sync
+
         wavelog_task = asyncio.create_task(periodic_wavelog_sync())
         _background_tasks.append(wavelog_task)
         logger.info("✅ Wavelog→DuckDB periodic sync task started")

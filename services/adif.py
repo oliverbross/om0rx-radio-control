@@ -500,14 +500,6 @@ def register_adif_endpoints(app):
     This function can be called from main.py to register all ADIF endpoints.
     """
 
-    # === Sync Status ===
-
-    @app.get("/api/sync-status")
-    async def get_sync_status():
-        """Get ADIF sync status"""
-        service = get_adif_service()
-        return service.get_sync_status()
-
     # === ADIF DuckDB Query Endpoints ===
 
     @app.get("/api/adif/sync")

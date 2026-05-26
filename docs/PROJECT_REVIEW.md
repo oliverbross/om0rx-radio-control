@@ -54,7 +54,7 @@ flowchart LR
 Important ownership boundaries:
 
 - `backend/main.py` orchestrates startup, dependency creation, route registration, and shutdown.
-- `backend/core/__init__.py` currently owns the FastAPI app object and shared state, but still contains deprecated handlers and old startup code.
+- `backend/core/__init__.py` owns the FastAPI app object, shared runtime state declarations, validation handling, and rotor settings bootstrap only.
 - `services/` contains backend service behavior, but some services still use module-level globals.
 - `radio_control/config.py` centralizes defaults and project-relative paths, and loads environment variables or `config_local.py` overrides.
 - `settings/rotor_config.json` persists non-secret rotor AUTO settings.
@@ -72,36 +72,11 @@ These were review findings that were low-risk enough to fix immediately:
 - Fixed WSJT-X parser frequency values to return JavaScript numbers instead of BigInt values.
 - Fixed `tests/smoke/test_ft8_files.py` to look at the real root `frontend/` directory.
 - Aligned Python package metadata version with the app/package version: `2.0.0`.
+- Removed deprecated route handlers, startup handlers, duplicate Pydantic models, and copied background workers from `backend/core/__init__.py`.
+- Moved Wavelog periodic background task startup to import directly from `radio_control/wavelog_duckdb_sync.py`.
+- Removed the remaining duplicate `GET /api/sync-status` registration and made the route report from the active Wavelog sync manager.
 
 ## Review Findings
-
-### P1: Backend Core Still Mixes Active App State With Deprecated Code
-
-`backend/core/__init__.py` still contains deprecated startup code, direct route handlers, model definitions, background-task code, and shared state in one module. It also registers routes that overlap with newer routers:
-
-- `backend/core/__init__.py:125`
-- `backend/core/__init__.py:141`
-- `backend/core/__init__.py:766`
-- `backend/core/__init__.py:874`
-- `backend/core/__init__.py:886`
-
-Confirmed duplicate routes after router registration:
-
-- `GET /api/health`
-- `GET /api/sync-status`
-
-Risk:
-
-- The first registered handler wins, so route behavior can silently come from the older core module instead of the intended router.
-- Future changes may update the wrong handler.
-- Startup/shutdown behavior is harder to reason about because `backend.main` and `backend.core` both participate.
-
-Recommended fix:
-
-- Keep `backend.core` as a small app factory/state module only.
-- Move shared models to `backend/core/models.py`.
-- Delete deprecated startup/background code from `backend/core/__init__.py`.
-- Make `/api/health` and `/api/sync-status` owned by one router only.
 
 ### P1: Configuration Save Writes Into Source Code
 
@@ -157,8 +132,8 @@ Recommended fix:
 
 References:
 
-- `backend/core/__init__.py:54`
-- `backend/core/__init__.py:55`
+- `backend/core/__init__.py:67`
+- `backend/core/__init__.py:68`
 
 Risk:
 
@@ -340,6 +315,7 @@ Passed:
 - Node syntax check for bridge and WSJT-X smoke scripts.
 - `npm audit --omit=dev`.
 - `python -c "import backend.main"`.
+- FastAPI route-table duplicate scan.
 - `python -m pip install -e . --dry-run`.
 - `python scripts\maintenance\check_sync_status.py`.
 - `python tests\smoke\test_ft8_files.py`.
@@ -355,9 +331,9 @@ Not passed because tooling is missing:
 
 Do these before adding new features:
 
-1. Remove deprecated route/startup code from `backend/core/__init__.py`.
-2. Replace source-code config writes with a proper settings file and typed settings loader.
-3. Harden `start_all.ps1` so production/local mode is not using reload or LAN binding by default.
+1. Replace source-code config writes with a proper settings file and typed settings loader.
+2. Harden `start_all.ps1` so production/local mode is not using reload or LAN binding by default.
+3. Restrict CORS defaults for local radio-control use.
 4. Add a real project quality gate script and declare dev/test dependencies.
 5. Introduce an app context/dependency container to reduce module globals.
 6. Add endpoint contract tests for all frontend fetch/WebSocket paths.

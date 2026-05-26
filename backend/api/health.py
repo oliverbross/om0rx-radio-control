@@ -129,15 +129,26 @@ async def get_status(request: Request):
 
 @router.get("/api/sync-status")
 async def get_sync_status(request: Request):
-    """Get ADIF sync status"""
-    sync_status = getattr(request.app.state, 'sync_status', {
+    """Get the Wavelog to DuckDB sync status."""
+    sync_manager = getattr(request.app.state, "wavelog_sync_manager", None)
+    if sync_manager:
+        status = sync_manager.get_sync_status()
+        return {
+            "syncing": False,
+            "last_sync": status.get("last_sync"),
+            "total_records": status.get("total_records", 0),
+            "new_records_this_sync": status.get("last_sync_added", 0),
+            "records_updated": status.get("last_sync_updated", 0),
+            "next_sync_in": 0,
+            **status,
+        }
+
+    sync_status = getattr(request.app.state, "sync_status", {
         "syncing": False,
         "last_sync": None,
         "total_records": 0,
         "new_records_this_sync": 0,
-        "records_skipped": 0,
+        "records_updated": 0,
         "next_sync_in": 0,
-        "adif_file_path": None,
-        "adif_file_size": 0,
     })
     return sync_status
