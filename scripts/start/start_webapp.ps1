@@ -1,11 +1,40 @@
+param(
+    [ValidateSet("local", "development")]
+    [string]$AppEnv = "local",
+    [string]$BackendHost = "127.0.0.1",
+    [int]$BackendPort = 8000,
+    [switch]$Reload
+)
+
 # FlexRadio Web Control v2.0 - Startup Script
-# This script starts both the FastAPI backend and SDC bridge server
+# This script starts both the FastAPI backend and SDC bridge server.
+
+if ($env:APP_ENV) {
+    if ($env:APP_ENV -notin @("local", "development")) {
+        throw "APP_ENV must be 'local' or 'development'. Current value: $env:APP_ENV"
+    }
+    $AppEnv = $env:APP_ENV
+}
+
+if ($env:BACKEND_HOST) {
+    $BackendHost = $env:BACKEND_HOST
+}
+
+if ($env:BACKEND_PORT) {
+    $BackendPort = [int]$env:BACKEND_PORT
+}
+
+$EnableReload = $Reload.IsPresent -or $AppEnv -eq "development" -or $env:UVICORN_RELOAD -in @("1", "true", "yes", "on")
+$BackendProbeHost = if ($BackendHost -eq "0.0.0.0") { "127.0.0.1" } else { $BackendHost }
+$BackendUrl = "http://${BackendProbeHost}:$BackendPort"
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "   FlexRadio Web Control v2.0" -ForegroundColor Cyan
 Write-Host "   Complete Professional Interface" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Mode: $AppEnv | Backend: $BackendUrl | Reload: $EnableReload" -ForegroundColor Cyan
 Write-Host ""
 
 # Get project root from scripts/start/
@@ -84,10 +113,10 @@ Write-Host "✅ READY TO START" -ForegroundColor Green
 Write-Host ""
 Write-Host "📡 Access URLs:" -ForegroundColor Cyan
 Write-Host "   Desktop:    " -NoNewline -ForegroundColor White
-Write-Host "http://localhost:8000" -ForegroundColor Green
-if ($localIP) {
+Write-Host $BackendUrl -ForegroundColor Green
+if ($localIP -and $BackendHost -eq "0.0.0.0") {
     Write-Host "   Mobile:     " -NoNewline -ForegroundColor White
-    Write-Host "http://${localIP}:8000" -ForegroundColor Green
+    Write-Host "http://${localIP}:$BackendPort" -ForegroundColor Green
 }
 Write-Host ""
 
@@ -152,9 +181,17 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
 # Start the server
-# Note: --reload-exclude="config.py" prevents file watcher from restarting when config is modified
 try {
-    python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude="config.py"
+    $env:APP_ENV = $AppEnv
+    $env:BACKEND_HOST = $BackendHost
+    $env:BACKEND_PORT = [string]$BackendPort
+
+    $uvicornArgs = @("-m", "uvicorn", "backend.main:app", "--host", $BackendHost, "--port", $BackendPort)
+    if ($EnableReload) {
+        $uvicornArgs += "--reload"
+    }
+
+    python @uvicornArgs
 }
 catch {
     Write-Host ""
@@ -163,7 +200,7 @@ catch {
     Write-Host "Troubleshooting:" -ForegroundColor Yellow
     Write-Host "1. Make sure Python is installed: python --version" -ForegroundColor White
     Write-Host "2. Install dependencies: pip install -r requirements.txt" -ForegroundColor White
-    Write-Host "3. Check config.py for correct FlexRadio IP" -ForegroundColor White
+    Write-Host "3. Check local settings or config_local.py for correct FlexRadio IP" -ForegroundColor White
     Write-Host ""
     Write-Host "Stopping Bridge Server..." -ForegroundColor Yellow
     Get-Job -Name "Bridge-Server" -ErrorAction SilentlyContinue | Stop-Job

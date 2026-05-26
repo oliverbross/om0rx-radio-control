@@ -1,10 +1,64 @@
+param(
+    [ValidateSet("local", "development")]
+    [string]$AppEnv = "local",
+    [string]$BackendHost = "127.0.0.1",
+    [int]$BackendPort = 8000,
+    [switch]$Reload
+)
+
 # Quick Start: WSJT-X Bridge + Backend Only (No Launcher)
-# Use this for testing without the native windows launcher
+# Use this for testing without the native windows launcher.
+
+if ($env:APP_ENV) {
+    if ($env:APP_ENV -notin @("local", "development")) {
+        throw "APP_ENV must be 'local' or 'development'. Current value: $env:APP_ENV"
+    }
+    $AppEnv = $env:APP_ENV
+}
+
+if ($env:BACKEND_HOST) {
+    $BackendHost = $env:BACKEND_HOST
+}
+
+if ($env:BACKEND_PORT) {
+    $BackendPort = [int]$env:BACKEND_PORT
+}
+
+$EnableReload = $Reload.IsPresent -or $AppEnv -eq "development" -or $env:UVICORN_RELOAD -in @("1", "true", "yes", "on")
+$BackendProbeHost = if ($BackendHost -eq "0.0.0.0") { "127.0.0.1" } else { $BackendHost }
+$BackendUrl = "http://${BackendProbeHost}:$BackendPort"
+
+function Stop-StartedProcess {
+    param(
+        [System.Diagnostics.Process]$Process,
+        [string]$Name
+    )
+
+    if (-not $Process -or $Process.HasExited) {
+        return
+    }
+
+    try {
+        $closed = $Process.CloseMainWindow()
+        if ($closed -and $Process.WaitForExit(5000)) {
+            Write-Host "✅ $Name stopped" -ForegroundColor Green
+            return
+        }
+    }
+    catch {
+        # Fall back to forced termination below.
+    }
+
+    Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+    Write-Host "✅ $Name stopped" -ForegroundColor Green
+}
 
 Write-Host ""
 Write-Host "╔════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║         WSJT-X Bridge + Backend Server               ║" -ForegroundColor Cyan
 Write-Host "╚════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Mode: $AppEnv | Backend: $BackendUrl | Reload: $EnableReload" -ForegroundColor Cyan
 Write-Host ""
 
 # Clean up any existing processes
@@ -24,7 +78,9 @@ Start-Sleep -Seconds 2
 
 # Step 2: Start backend in background
 Write-Host "📡 Step 2: Starting backend server..." -ForegroundColor Yellow
-$backendProcess = Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$ProjectRoot'; & python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude=config.py" -PassThru
+$reloadArgs = if ($EnableReload) { " --reload" } else { "" }
+$backendCommand = "Set-Location '$ProjectRoot'; `$env:APP_ENV='$AppEnv'; `$env:BACKEND_HOST='$BackendHost'; `$env:BACKEND_PORT='$BackendPort'; & python -m uvicorn backend.main:app --host $BackendHost --port $BackendPort$reloadArgs"
+$backendProcess = Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCommand -PassThru
 Write-Host "✅ Backend process started (PID: $($backendProcess.Id))" -ForegroundColor Green
 
 # Wait for backend to be ready
@@ -36,7 +92,7 @@ $backendReady = $false
 while ($attempt -lt $maxAttempts -and -not $backendReady) {
     try {
         $socket = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
-        $socket.Connect("localhost", 8000)
+        $socket.Connect($BackendProbeHost, $BackendPort)
         $socket.Close()
         $backendReady = $true
         Write-Host "✅ Backend is ready!" -ForegroundColor Green
@@ -59,7 +115,7 @@ Write-Host "╔═════════════════════�
 Write-Host "║              Services Ready! ✅                        ║" -ForegroundColor Green
 Write-Host "╚════════════════════════════════════════════════════════╝" -ForegroundColor Green
 Write-Host ""
-Write-Host "🌐 Web Interface: http://localhost:8000" -ForegroundColor Cyan
+Write-Host "🌐 Web Interface: $BackendUrl" -ForegroundColor Cyan
 Write-Host "🔌 WebSocket Bridge: ws://localhost:8091" -ForegroundColor Cyan
 Write-Host "📡 WSJT-X UDP Port: 2237 (multicast: 224.0.0.1)" -ForegroundColor Cyan
 Write-Host ""
@@ -75,6 +131,6 @@ $backendProcess.WaitForExit()
 # Cleanup
 Write-Host ""
 Write-Host "🛑 Stopping services..." -ForegroundColor Yellow
-Stop-Process -Id $bridgeProcess.Id -Force -ErrorAction SilentlyContinue
-Stop-Process -Id $backendProcess.Id -Force -ErrorAction SilentlyContinue
+Stop-StartedProcess -Process $bridgeProcess -Name "Bridge"
+Stop-StartedProcess -Process $backendProcess -Name "Backend"
 Write-Host "✅ All services stopped" -ForegroundColor Green

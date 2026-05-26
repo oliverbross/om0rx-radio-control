@@ -7,6 +7,7 @@ Launches three synchronized windows using pywebview for a native desktop experie
 import sys
 import threading
 import time
+import os
 from pathlib import Path
 
 # Try to import webview, with fallback instructions
@@ -21,11 +22,14 @@ except ImportError:
     print("      pip install pywebview --upgrade")
     print("\n   Or run: .\\launch_windows.ps1")
     print("\n💡 FALLBACK: Use the browser launcher instead:")
-    print("   http://localhost:8000/launcher.html")
+    print("   http://127.0.0.1:8000/launcher.html")
     sys.exit(1)
 
 # Configuration
-BASE_URL = "http://localhost:8000"
+BACKEND_HOST = os.environ.get("BACKEND_HOST", "127.0.0.1")
+BACKEND_PORT = int(os.environ.get("BACKEND_PORT", "8000"))
+BACKEND_CONNECT_HOST = "127.0.0.1" if BACKEND_HOST == "0.0.0.0" else BACKEND_HOST
+BASE_URL = f"http://{BACKEND_CONNECT_HOST}:{BACKEND_PORT}"
 WINDOWS_CONFIG = [
     {
         "title": "FlexRadio - Radio Control",
@@ -91,7 +95,7 @@ def check_backend_ready(max_attempts=30, delay=1):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1)
-            result = sock.connect_ex(('localhost', 8000))
+            result = sock.connect_ex((BACKEND_CONNECT_HOST, BACKEND_PORT))
             sock.close()
             
             if result == 0:
@@ -106,7 +110,7 @@ def check_backend_ready(max_attempts=30, delay=1):
         
         time.sleep(delay)
     
-    print("❌ Backend is not responding on localhost:8000")
+    print(f"❌ Backend is not responding on {BASE_URL}")
     print("   Please make sure the backend app is running:")
     print("   Run: .\\start_all.ps1")
     return False

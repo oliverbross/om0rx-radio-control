@@ -77,31 +77,10 @@ These were review findings that were low-risk enough to fix immediately:
 - Removed the remaining duplicate `GET /api/sync-status` registration and made the route report from the active Wavelog sync manager.
 - Replaced `/api/config` source-code writes with JSON-backed runtime settings in `settings/app_settings.json` and ignored `settings/local_secrets.json`.
 - Updated legacy config helpers to use the same JSON settings store instead of editing `radio_control/config.py`.
+- Hardened launch scripts to bind the backend to `127.0.0.1` by default and make Uvicorn reload a development-mode opt-in.
+- Updated window launchers to respect `BACKEND_HOST` and `BACKEND_PORT` instead of hard-coded `localhost:8000`.
 
 ## Review Findings
-
-### P1: Primary Launcher Uses Development Server Behavior
-
-`start_all.ps1` starts Uvicorn with reload and binds to all interfaces:
-
-- `start_all.ps1:15`
-- `start_all.ps1:21`
-- `start_all.ps1:77`
-- `start_all.ps1:78`
-
-Risk:
-
-- `--reload` is development behavior and can duplicate lifecycle side effects.
-- `--host 0.0.0.0` exposes the local control API on the LAN unless firewalled.
-- The app has shutdown/restart endpoints, radio-control endpoints, and permissive CORS.
-- `Stop-Process -Force` is a hard stop for child processes.
-
-Recommended fix:
-
-- Add an explicit `APP_ENV=development|local` mode.
-- Bind to `127.0.0.1` by default.
-- Use reload only behind a development flag.
-- Add a controlled process supervisor approach for start/stop.
 
 ### P1: CORS Is Wide Open With Credentials Enabled
 
@@ -292,6 +271,7 @@ Passed:
 
 - Python syntax check across maintained Python files.
 - PowerShell parser check across tracked `.ps1` files.
+- Bash syntax check for `scripts/start/start_webapp.sh`.
 - Node syntax check for bridge and WSJT-X smoke scripts.
 - `npm audit --omit=dev`.
 - `python -c "import backend.main"`.
@@ -311,9 +291,9 @@ Not passed because tooling is missing:
 
 Do these before adding new features:
 
-1. Harden `start_all.ps1` so production/local mode is not using reload or LAN binding by default.
-2. Restrict CORS defaults for local radio-control use.
-3. Consolidate remaining config persistence files, especially `settings/rotor_config.json` and `logs/ft8_config.json`, under the settings model.
+1. Restrict CORS defaults for local radio-control use.
+2. Consolidate remaining config persistence files, especially `settings/rotor_config.json` and `logs/ft8_config.json`, under the settings model.
+3. Add a controlled process supervisor if UI-triggered whole-app restart remains required.
 4. Add a real project quality gate script and declare dev/test dependencies.
 5. Introduce an app context/dependency container to reduce module globals.
 6. Add endpoint contract tests for all frontend fetch/WebSocket paths.

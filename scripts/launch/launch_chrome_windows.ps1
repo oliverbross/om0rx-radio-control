@@ -1,3 +1,8 @@
+param(
+    [string]$BackendHost = "127.0.0.1",
+    [int]$BackendPort = 8000
+)
+
 # FlexRadio Chrome App Mode Launcher
 # Launches three windows in Chrome app mode (no URL bar, native-like appearance)
 
@@ -7,14 +12,24 @@ Write-Host "║    FlexRadio Multi-Window Launcher    ║" -ForegroundColor Cyan
 Write-Host "╚════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 
-# Check if backend is running (check port 8000)
+if ($env:BACKEND_HOST) {
+    $BackendHost = $env:BACKEND_HOST
+}
+
+if ($env:BACKEND_PORT) {
+    $BackendPort = [int]$env:BACKEND_PORT
+}
+
+$BackendProbeHost = if ($BackendHost -eq "0.0.0.0") { "127.0.0.1" } else { $BackendHost }
+$BackendUrl = "http://${BackendProbeHost}:$BackendPort"
+
+# Check if backend is running
 Write-Host "🔍 Checking backend..." -ForegroundColor Yellow
 $backendReady = $false
-$port = 8000
 for ($i = 0; $i -lt 5; $i++) {
     try {
         $socket = New-Object System.Net.Sockets.TcpClient
-        $socket.Connect("localhost", $port)
+        $socket.Connect($BackendProbeHost, $BackendPort)
         if ($socket.Connected) {
             $backendReady = $true
             $socket.Close()
@@ -70,7 +85,7 @@ Write-Host ""
 $windows = @(
     @{
         title = "FlexRadio - Radio Control"
-        url = "http://localhost:8000/radio-control.html"
+        url = "$BackendUrl/radio-control.html"
         x = 100
         y = 100
         width = 1000
@@ -78,7 +93,7 @@ $windows = @(
     },
     @{
         title = "FlexRadio - Logging & QRZ"
-        url = "http://localhost:8000/logging.html"
+        url = "$BackendUrl/logging.html"
         x = 1150
         y = 100
         width = 1200
@@ -86,7 +101,7 @@ $windows = @(
     },
     @{
         title = "FlexRadio - DX Spots"
-        url = "http://localhost:8000/spots.html"
+        url = "$BackendUrl/spots.html"
         x = 150
         y = 750
         width = 1400

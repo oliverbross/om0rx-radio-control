@@ -10,7 +10,11 @@ Run the full local application from the project root:
 .\start_all.ps1
 ```
 
-That script starts the Node bridge, FastAPI backend, and desktop/browser launcher using paths relative to this repository. It should not depend on any older checkout.
+That script starts the Node bridge, FastAPI backend, and desktop/browser launcher using paths relative to this repository. It binds the backend to `127.0.0.1:8000` by default and does not use Uvicorn reload unless development mode is requested:
+
+```powershell
+.\start_all.ps1 -AppEnv development -Reload
+```
 
 ## Setup
 

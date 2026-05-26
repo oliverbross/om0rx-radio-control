@@ -3,11 +3,33 @@
 # FlexRadio Web Control v2.0 - Startup Script (Linux)
 # This script starts both the FastAPI backend and SDC bridge server
 
+APP_ENV="${APP_ENV:-local}"
+BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+
+if [ "$APP_ENV" != "local" ] && [ "$APP_ENV" != "development" ]; then
+    echo "APP_ENV must be 'local' or 'development'. Current value: $APP_ENV"
+    exit 1
+fi
+
+ENABLE_RELOAD="false"
+if [ "$APP_ENV" = "development" ] || [ "$UVICORN_RELOAD" = "1" ] || [ "$UVICORN_RELOAD" = "true" ] || [ "$UVICORN_RELOAD" = "yes" ] || [ "$UVICORN_RELOAD" = "on" ]; then
+    ENABLE_RELOAD="true"
+fi
+
+BACKEND_PROBE_HOST="$BACKEND_HOST"
+if [ "$BACKEND_HOST" = "0.0.0.0" ]; then
+    BACKEND_PROBE_HOST="127.0.0.1"
+fi
+BACKEND_URL="http://${BACKEND_PROBE_HOST}:${BACKEND_PORT}"
+
 echo ""
 echo "========================================"
 echo "   FlexRadio Web Control v2.0"
 echo "   Complete Professional Interface"
 echo "========================================"
+echo ""
+echo "Mode: $APP_ENV | Backend: $BACKEND_URL | Reload: $ENABLE_RELOAD"
 echo ""
 
 # Get project root from scripts/start/
@@ -84,9 +106,9 @@ echo ""
 echo "✅ READY TO START"
 echo ""
 echo "📡 Access URLs:"
-echo "   Desktop:    http://localhost:8000"
-if [ -n "$LOCAL_IP" ]; then
-    echo "   Mobile:     http://${LOCAL_IP}:8000"
+echo "   Desktop:    $BACKEND_URL"
+if [ -n "$LOCAL_IP" ] && [ "$BACKEND_HOST" = "0.0.0.0" ]; then
+    echo "   Mobile:     http://${LOCAL_IP}:${BACKEND_PORT}"
 fi
 echo ""
 
@@ -138,7 +160,12 @@ echo ""
 
 # Start the server
 cd "$PROJECT_ROOT"
-python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude="config.py"
+UVICORN_ARGS=(backend.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT")
+if [ "$ENABLE_RELOAD" = "true" ]; then
+    UVICORN_ARGS+=(--reload)
+fi
+
+python3 -m uvicorn "${UVICORN_ARGS[@]}"
 
 # Cleanup: Kill the Bridge Server when Python server exits
 echo ""
