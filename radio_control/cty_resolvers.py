@@ -227,6 +227,19 @@ class CtyDatResolver:
         if not (dat_path and os.path.exists(dat_path)):
             logging.warning("cty.dat not found at: %s", dat_path); return
         self._parse(dat_path)
+
+    @staticmethod
+    def _csv_prefix_tokens(prefixes_str: str) -> list[str]:
+        """Return CTY-style prefix tokens without creating bogus suffix prefixes."""
+        tokens = []
+        for raw_token in re.split(r"[ ,;|\t]+", prefixes_str or ""):
+            token = raw_token.strip().upper().lstrip("*=")
+            if not token:
+                continue
+            token = re.sub(r"\([^)]*\)|\[[^\]]*\]|<[^>]*>", "", token).strip()
+            if token:
+                tokens.append(token)
+        return tokens
     
     def _load_dxcc_from_csv(self, csv_path: str):
         """Load DXCC codes from CSV to create prefix->DXCC mappings"""
@@ -276,7 +289,7 @@ class CtyDatResolver:
                     # Also map all tokenized prefixes to DXCC
                     if len(row) > 9:
                         prefixes_str = row[9].strip()
-                        for tok in [t.strip().upper() for t in re.split(r"[ ,;/=\-]+", prefixes_str) if t.strip()]:
+                        for tok in self._csv_prefix_tokens(prefixes_str):
                             if tok and len(tok) <= 5 and tok not in self.prefix_to_dxcc:
                                 self.prefix_to_dxcc[tok] = dxcc
             
@@ -498,7 +511,7 @@ class CtyHybridResolver(CtyDatResolver):
                             csv_prefix_to_dxcc[pfx_col] = a
                         
                         # Map each tokenized prefix to ADIF
-                        for tok in [t.strip().upper() for t in re.split(r"[ ,;/=\-]+", prefixes_str) if t.strip()]:
+                        for tok in CtyDatResolver._csv_prefix_tokens(prefixes_str):
                             if tok and len(tok) <= 5:  # Filter out invalid prefixes
                                 ent_map[tok] = (a, name)
                                 csv_prefix_to_dxcc[tok] = a

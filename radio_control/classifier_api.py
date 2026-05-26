@@ -1,30 +1,38 @@
 """
-Classifier API - QSO classification using Wavelog API (reliable, async)
-Replaces direct database access with API-based lookups for more accurate results
+Classifier API - QSO classification using Wavelog API and local QSO status.
 """
 
 import logging
-import asyncio
 from typing import Tuple, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime
 from radio_control.wavelog_api import WavelogClient
+from radio_control.qso_status_store import DuckDBQSOStatusStore
+from radio_control.spot_classification import (
+    call_bandmode_from_lookup,
+    call_overall_from_lookup,
+    dxcc_confirmation_from_lookup,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class ClassifierAPI:
     """
-    Classify spots based on worked/confirmed status using Wavelog API.
-    Replaces direct MySQL database access with API calls for more reliable results.
+    Classify spots based on worked/confirmed status.
     
     Features:
-    - Per-callsign API lookups for accurate status
+    - Per-callsign API lookups for accurate call status
+    - Local DuckDB QSO mirror for true DXCC worked status
     - LRU cache to minimize API calls
     - Same interface as original Classifier for compatibility
     - Async-compatible for FastAPI integration
     """
     
-    def __init__(self, api_client: Optional[WavelogClient] = None):
+    def __init__(
+        self,
+        api_client: Optional[WavelogClient] = None,
+        qso_status_store: Optional[DuckDBQSOStatusStore] = None,
+    ):
         """
         Initialize the API-based classifier.
         
@@ -32,6 +40,7 @@ class ClassifierAPI:
             api_client: WavelogClient instance (will create one if not provided)
         """
         self.api_client = api_client
+        self.qso_status_store = qso_status_store or DuckDBQSOStatusStore()
         
         # Simple LRU cache for lookups (callsign -> lookup_result)
         self.lookup_cache: Dict[str, Dict[str, Any]] = {}
@@ -39,11 +48,11 @@ class ClassifierAPI:
         self.cache_ttl = 3600  # Cache for 1 hour
         self.cache_timestamps: Dict[str, datetime] = {}
     
-    def _is_cache_valid(self, callsign: str) -> bool:
+    def _is_cache_valid(self, cache_key: str) -> bool:
         """Check if cache entry is still valid"""
-        if callsign not in self.cache_timestamps:
+        if cache_key not in self.cache_timestamps:
             return False
-        elapsed = (datetime.utcnow() - self.cache_timestamps[callsign]).total_seconds()
+        elapsed = (datetime.utcnow() - self.cache_timestamps[cache_key]).total_seconds()
         return elapsed < self.cache_ttl
     
     def _get_cached(self, callsign: str) -> Optional[Dict[str, Any]]:
@@ -113,8 +122,7 @@ class ClassifierAPI:
         # Check cache first
         cached = self._get_cached(callsign_upper)
         if cached is not None:
-            return (cached.get('call_worked', False), 
-                   cached.get('call_confirmed', False))
+            return call_overall_from_lookup(cached)
         
         # Do API lookup
         data = await self._do_lookup(callsign_upper)
@@ -122,9 +130,7 @@ class ClassifierAPI:
         # Cache result
         if data:
             self._set_cache(callsign_upper, data)
-            worked = data.get('call_worked', False)
-            confirmed = data.get('call_confirmed', False)
-            return worked, confirmed
+            return call_overall_from_lookup(data)
         
         # No data available - treat as not worked/not confirmed
         return False, False
@@ -150,7 +156,7 @@ class ClassifierAPI:
         # Check cache first
         cache_key = f"{callsign_upper}_{band}_{mode}"
         cached = self.lookup_cache.get(cache_key)
-        if cached and self._is_cache_valid(callsign_upper):
+        if cached and self._is_cache_valid(cache_key):
             return (cached.get('new_band', False),
                    cached.get('new_mode', False),
                    cached.get('call_confirmed_band_mode', False))
@@ -160,12 +166,7 @@ class ClassifierAPI:
         
         # Process results
         if data:
-            band_worked = data.get('call_worked_band', False)
-            bandmode_worked = data.get('call_worked_band_mode', False)
-            bandmode_conf = data.get('call_confirmed_band_mode', False)
-            
-            new_band = not band_worked
-            new_mode = band_worked and not bandmode_worked
+            new_band, new_mode, bandmode_conf = call_bandmode_from_lookup(data)
             
             # Cache the band+mode specific result
             self.lookup_cache[cache_key] = {
@@ -180,7 +181,7 @@ class ClassifierAPI:
         # No data - treat as all new
         return True, False, False
     
-    def _extract_dxcc_status_from_call_lookup(self, data: Dict[str, Any], band: Optional[str] = None, 
+    def _extract_dxcc_status_from_call_lookup(self, data: Dict[str, Any], band: Optional[str] = None,
                                               mode: Optional[str] = None) -> Dict[str, bool]:
         """
         Extract DXCC-specific status flags from a call lookup response.
@@ -194,13 +195,14 @@ class ClassifierAPI:
         Returns:
             Dictionary with DXCC status flags
         """
+        confirmed, band_confirmed, bandmode_confirmed = dxcc_confirmation_from_lookup(data)
         result = {
-            'dxcc_worked': data.get('dxcc_confirmed', False),  # Note: API only returns 'worked' as True if confirmed
-            'dxcc_confirmed': data.get('dxcc_confirmed', False),
-            'dxcc_worked_band': data.get('dxcc_confirmed_on_band', False) if band else False,
-            'dxcc_confirmed_band': data.get('dxcc_confirmed_on_band', False) if band else False,
-            'dxcc_worked_band_mode': data.get('dxcc_confirmed_on_band_mode', False) if band and mode else False,
-            'dxcc_confirmed_band_mode': data.get('dxcc_confirmed_on_band_mode', False) if band and mode else False,
+            'dxcc_worked': confirmed,
+            'dxcc_confirmed': confirmed,
+            'dxcc_worked_band': band_confirmed if band else False,
+            'dxcc_confirmed_band': band_confirmed if band else False,
+            'dxcc_worked_band_mode': bandmode_confirmed if band and mode else False,
+            'dxcc_confirmed_band_mode': bandmode_confirmed if band and mode else False,
         }
         return result
     
@@ -208,27 +210,31 @@ class ClassifierAPI:
         """
         Check if DXCC is worked and/or confirmed overall.
         
-        Note: In the Wavelog API model, DXCC status is queried through callsigns (via private_lookup).
-        If a callsign is provided, we can get accurate DXCC status. Otherwise, we default to False.
+        Wavelog private_lookup exposes DXCC confirmation fields only. Worked
+        status comes from the local Wavelog DuckDB mirror when available.
         
         Args:
             dxcc: DXCC number (for compatibility, but callsign lookup is more accurate)
             callsign: Optional callsign to look up DXCC status for
         
         Returns:
-            Tuple of (worked, confirmed) - Note: API doesn't distinguish between worked/confirmed for DXCC,
-                                          so both may be True if confirmed
+            Tuple of (worked, confirmed)
         """
-        if dxcc is None or not callsign:
+        if dxcc is None:
+            return False, False
+
+        local_status = self.qso_status_store.dxcc_overall(dxcc)
+        if local_status is not None:
+            return local_status
+
+        if not callsign:
             return False, False
         
-        # For DXCC overall (no band/mode specified), use a callsign lookup
+        # Fallback: Wavelog private_lookup can only prove confirmed, not worked.
         data = await self._do_lookup(callsign.upper())
         if data:
-            # Extract DXCC status from call lookup response
-            dxcc_worked = data.get('dxcc_confirmed', False)  # Fallback assumption
-            dxcc_confirmed = data.get('dxcc_confirmed', False)
-            return dxcc_worked, dxcc_confirmed
+            dxcc_confirmed, _, _ = dxcc_confirmation_from_lookup(data)
+            return dxcc_confirmed, dxcc_confirmed
         
         return False, False
     
@@ -248,17 +254,19 @@ class ClassifierAPI:
         """
         if dxcc is None or not callsign:
             return False, False, False
+
+        local_flags = self.qso_status_store.dxcc_bandmode_flags(dxcc, band, mode)
+        if local_flags is not None:
+            return local_flags
         
-        # Do API lookup with band and mode for DXCC band/mode specific status
+        # Fallback: use Wavelog confirmations as the minimum known worked state.
         data = await self._do_lookup(callsign.upper(), band=band, mode=mode)
         
         if data:
-            band_worked = data.get('dxcc_confirmed_on_band', False)
-            bandmode_worked = data.get('dxcc_confirmed_on_band_mode', False)
-            bandmode_conf = data.get('dxcc_confirmed_on_band_mode', False)
+            _, band_confirmed, bandmode_conf = dxcc_confirmation_from_lookup(data)
             
-            new_band = not band_worked
-            new_mode = band_worked and not bandmode_worked
+            new_band = not band_confirmed
+            new_mode = band_confirmed and not bandmode_conf
             
             return new_band, new_mode, bandmode_conf
         

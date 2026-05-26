@@ -125,6 +125,8 @@ class WavelogDuckDBSync:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_qso_date ON qso_records(qso_date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_band ON qso_records(band)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_mode ON qso_records(mode)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_dxcc ON qso_records(dxcc)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_dxcc_band_mode ON qso_records(dxcc, band, mode)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_qso_datetime ON qso_records(qso_datetime)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_frequency ON qso_records(frequency)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_time_on ON qso_records(time_on)")

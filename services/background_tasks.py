@@ -13,6 +13,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 # Import required modules
 from radio_control.spot_processor import band_from_khz, infer_mode, extract_special, clean_comment
 from radio_control.spots_logger import log_spot
+from radio_control.spot_classification import classify_call_status, classify_dxcc_status
 
 logger = logging.getLogger(__name__)
 
@@ -244,19 +245,12 @@ async def process_cluster_spot(spot_data: dict):
                 call_worked, call_conf = await classifier.call_overall(dxcall)
                 call_new_band, call_new_mode, call_bandmode_conf = await classifier.call_bandmode_flags(dxcall, band, emode)
 
-                # Call status (band+mode specific) - Check worked FIRST to avoid "New Call" showing as "New Band"
-                if not call_worked:
-                    call_status = "New Call"
-                elif call_bandmode_conf:
-                    call_status = "Confirmed"
-                elif call_new_band and call_new_mode:
-                    call_status = "New Band+Mode"
-                elif call_new_band:
-                    call_status = "New Band"
-                elif call_new_mode:
-                    call_status = "New Mode"
-                else:
-                    call_status = "Worked"
+                call_status = classify_call_status(
+                    call_worked,
+                    call_new_band,
+                    call_new_mode,
+                    call_bandmode_conf,
+                )
             except Exception as e:
                 logger.warning(f"Error getting call status for {dxcall}: {e}")
                 call_status = "Unknown"
@@ -267,37 +261,15 @@ async def process_cluster_spot(spot_data: dict):
                     dx_worked, dx_conf = await classifier.dxcc_overall(dxcc, callsign=dxcall)
                     dx_new_band, dx_new_mode, dx_bandmode_conf = await classifier.dxcc_bandmode_flags(dxcc, band, emode, callsign=dxcall)
 
-                    # DXCC status with C/W prefix (Confirmed/Worked overall status)
-                    if not dx_worked:
-                        dxcc_status = "ATNO"
-                        tag = "ATNO"
-                    elif dx_bandmode_conf:
-                        # Confirmed on this exact band+mode
-                        dxcc_status = "Confirmed"
-                        tag = None
-                    elif dx_new_band and dx_new_mode:
-                        # Need both new band AND new mode
-                        prefix = "C" if dx_conf else "W"
-                        dxcc_status = f"{prefix}/New Band+Mode"
-                        tag = "New band+mode"
-                    elif dx_new_band:
-                        # Need new band
-                        prefix = "C" if dx_conf else "W"
-                        dxcc_status = f"{prefix}/New Band"
-                        tag = "New band"
-                    elif dx_new_mode:
-                        # Need new mode
-                        prefix = "C" if dx_conf else "W"
-                        dxcc_status = f"{prefix}/New Mode"
-                        tag = "New mode"
-                    else:
-                        # Worked on this band+mode but not confirmed
-                        dxcc_status = "Worked"
-                        tag = "Worked"
-
-                    # Override tag for Need LoTW (worked but not confirmed on this band+mode)
-                    if not dx_bandmode_conf and dx_worked and not (dx_new_band or dx_new_mode):
-                        tag = "Need LoTW"
+                    dxcc_display = classify_dxcc_status(
+                        dx_worked,
+                        dx_conf,
+                        dx_new_band,
+                        dx_new_mode,
+                        dx_bandmode_conf,
+                    )
+                    dxcc_status = dxcc_display.status
+                    tag = dxcc_display.tag
 
                 except Exception as e:
                     logger.warning(f"Error getting DXCC status for DXCC {dxcc}: {e}")
