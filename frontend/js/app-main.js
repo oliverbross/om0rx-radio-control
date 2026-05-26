@@ -41,11 +41,13 @@ function mountVueApp() {
     console.log('RadioControlConfig:', window.RadioControlConfig ? '✅' : '❌');
     console.log('RadioControlSolar:', window.RadioControlSolar ? '✅' : '❌');
     console.log('RadioControlWavelogStats:', window.RadioControlWavelogStats ? '✅' : '❌');
+    console.log('WavelogQsoNormalizer:', window.WavelogQsoNormalizer ? '✅' : '❌');
 
     // Check if all required modules are available
     if (!window.FlexRadioCore || !window.FlexRadioWebSocket || !window.FlexRadioControls || 
         !window.FlexRadioUtils || !window.FlexRadioSpots || !window.SDCTicker ||
-        !window.RadioControlConfig || !window.RadioControlSolar || !window.RadioControlWavelogStats) {
+        !window.RadioControlConfig || !window.RadioControlSolar || !window.RadioControlWavelogStats ||
+        !window.WavelogQsoNormalizer) {
         console.error('❌ Missing required modules! Cannot create Vue app.');
         console.error('Make sure all JavaScript files are loaded in the correct order.');
         throw new Error('Missing required modules');
@@ -237,6 +239,13 @@ function mountVueApp() {
             availableLogLimits: [50, 100, 250, 500],
             logColumns: [],  // Will be populated by wavelog-log-viewer.js
             showColumnConfig: false,
+            qsoOutboxStatus: {
+                queued: 0,
+                exists: false,
+                size_bytes: 0,
+                path: ''
+            },
+            qsoOutboxLoading: false,
             logFilters: {
                 callsign: '',
                 mode: '',
@@ -1074,8 +1083,9 @@ function mountVueApp() {
             // Fetch initial status
             await this.fetchInitialStatus();
             
-            // Load worked callsigns from ADIF log
+            // Load worked callsigns from Wavelog
             await this.loadWorkedCallsigns();
+            await this.loadQsoOutboxStatus();
             
             // Load rotor status if enabled
             if (this.rotorEnabled) {
@@ -1126,6 +1136,11 @@ function mountVueApp() {
             setInterval(() => {
                 this.pollSyncStatus();
             }, 5000);
+
+            // Re-poll Wavelog offline outbox status every 30 seconds
+            setInterval(() => {
+                this.loadQsoOutboxStatus();
+            }, 30000);
             
             // Close dropdowns when clicking outside
             document.addEventListener('click', (e) => {
@@ -1681,9 +1696,7 @@ function mountVueApp() {
         },
         
         /**
-         * Load local log QSO data for the Prev QSOs modal
-         * Filters for the callsign currently in the logging form
-         * Uses DuckDB for fast queries - 10.7x faster than ADIF parsing!
+         * Load local log QSO data for the Prev QSOs modal from Wavelog.
          */
         async loadLocalLogDataForModal() {
             const callsign = this.loggingForm.callsign.trim().toUpperCase();
@@ -1695,9 +1708,8 @@ function mountVueApp() {
             try {
                 console.log(`[Local Log Modal] 🔍 Loading QSOs for callsign: ${callsign}`);
                 
-                // Try new DuckDB endpoint first (FAST - ~100ms for filtered results)
                 const startTime = performance.now();
-                const response = await fetch(`/api/qsos/duckdb/by-call?call=${encodeURIComponent(callsign)}`, {
+                const response = await fetch(`/api/wavelog-log/search/${encodeURIComponent(callsign)}?limit=50`, {
                     method: 'GET',
                     headers: { 'Content-Type': 'application/json' }
                 });
@@ -1705,54 +1717,16 @@ function mountVueApp() {
                 const result = await response.json();
                 const elapsedTime = performance.now() - startTime;
                 
-                if (result.success && result.data) {
-                    const qsos = Array.isArray(result.data) ? result.data : [];
-                    console.log(`✅ Loaded ${qsos.length} QSOs for ${callsign} from duckdb in ${elapsedTime.toFixed(2)}ms (backend: ${result.query_time_ms}ms)`);
+                if (result.success && result.qsos) {
+                    const qsos = window.WavelogQsoNormalizer.toLocalLogQsos(result.qsos);
+                    console.log(`✅ Loaded ${qsos.length} Wavelog QSOs for ${callsign} in ${elapsedTime.toFixed(2)}ms`);
                     this.allLocalLogQSOs = qsos;
-                    this.currentLocalLogPage = 1; // Reset to first page
-                } else {
-                    // Fallback to ADIF if DuckDB fails (for robustness)
-                    console.warn(`[Local Log Modal] ⚠️ DuckDB endpoint failed, falling back to ADIF parsing...`);
-                    await this.loadLocalLogDataFromADIF(callsign);
-                }
-            } catch (error) {
-                console.error('[Local Log Modal] ❌ Error loading from DuckDB, falling back to ADIF:', error);
-                // Graceful fallback to ADIF
-                await this.loadLocalLogDataFromADIF(callsign);
-            }
-        },
-        
-        /**
-         * Fallback method: Load local log data from ADIF file
-         * Used if DuckDB is unavailable
-         */
-        async loadLocalLogDataFromADIF(callsign) {
-            try {
-                console.log(`[Local Log Modal] 📋 Loading from ADIF as fallback for: ${callsign}`);
-                
-                const startTime = performance.now();
-                const response = await fetch('/api/adif/all', {
-                    method: 'GET',
-                    headers: { 'Content-Type': 'application/json' }
-                });
-                
-                const result = await response.json();
-                const elapsedTime = performance.now() - startTime;
-                
-                if (result.success && result.data) {
-                    const allQSOs = Array.isArray(result.data) ? result.data : [];
-                    // Filter for matching callsign
-                    const filteredQSOs = allQSOs.filter(qso => 
-                        qso.call && qso.call.toUpperCase() === callsign
-                    );
-                    console.log(`⚠️ Loaded ${filteredQSOs.length} QSOs for ${callsign} from ADIF in ${elapsedTime.toFixed(2)}ms (slower fallback)`);
-                    this.allLocalLogQSOs = filteredQSOs;
                     this.currentLocalLogPage = 1; // Reset to first page
                 } else {
                     this.allLocalLogQSOs = [];
                 }
             } catch (error) {
-                console.error('[Local Log Modal] ❌ Error loading from ADIF fallback:', error);
+                console.error('[Local Log Modal] ❌ Error loading Wavelog QSOs:', error);
                 this.allLocalLogQSOs = [];
             }
         },
@@ -2009,6 +1983,47 @@ function mountVueApp() {
                 }
             } catch (error) {
                 console.error('Error fetching sync status:', error);
+            }
+        },
+
+        async loadQsoOutboxStatus() {
+            try {
+                const response = await fetch('/api/qso/outbox/status');
+                if (!response.ok) {
+                    return;
+                }
+
+                const payload = await response.json();
+                if (payload.success && payload.outbox) {
+                    this.qsoOutboxStatus = payload.outbox;
+                }
+            } catch (error) {
+                console.error('Error fetching QSO outbox status:', error);
+            }
+        },
+
+        async retryQsoOutbox() {
+            if (this.qsoOutboxLoading || !this.qsoOutboxStatus.queued) {
+                return;
+            }
+
+            this.qsoOutboxLoading = true;
+            try {
+                const response = await fetch('/api/qso/outbox/retry', { method: 'POST' });
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const payload = await response.json();
+                if (payload.outbox) {
+                    this.qsoOutboxStatus = payload.outbox;
+                } else {
+                    await this.loadQsoOutboxStatus();
+                }
+            } catch (error) {
+                console.error('Error retrying QSO outbox:', error);
+            } finally {
+                this.qsoOutboxLoading = false;
             }
         },
         

@@ -16,13 +16,13 @@ router = APIRouter(prefix="/api/wavelog-log", tags=["wavelog-log"])
 
 @router.get("/entries")
 async def get_log_entries(
-    limit: int = Query(default=100, ge=1, le=500, description="Number of log entries to return"),
+    limit: int = Query(default=100, ge=1, le=10000, description="Number of log entries to return"),
     station_id: int = Query(default=1, description="Station profile ID")
 ):
     """
     Fetch log entries from Wavelog database
     
-    - **limit**: Number of entries to return (1-500, default: 100)
+    - **limit**: Number of entries to return (1-10000, default: 100)
     - **station_id**: Station profile ID (default: 1)
     
     Returns list of QSO log entries sorted by date (newest first)

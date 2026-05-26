@@ -87,6 +87,25 @@
             background: #10b981;
             border-color: #20c991;
         }
+
+        .qso-outbox-button {
+            min-width: 46px;
+            padding: 4px 8px;
+            font-size: 12px;
+            line-height: 1;
+            border-color: #4a4a4a;
+        }
+
+        .qso-outbox-button:disabled {
+            opacity: 0.75;
+            cursor: default;
+        }
+
+        .qso-outbox-button.qso-outbox-pending {
+            color: #fff7ed;
+            background: #b45309;
+            border-color: #f59e0b;
+        }
         
         /* Frequency display */
         .freq-display {

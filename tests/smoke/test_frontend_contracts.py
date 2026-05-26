@@ -41,9 +41,6 @@ GET_ROUTES = [
     "/api/spots/special",
     "/api/country/data",
     "/api/country/by-name/{name}",
-    "/api/adif/all",
-    "/api/qsos/duckdb",
-    "/api/qsos/duckdb/by-call",
     "/api/qrz/profile/{callsign:path}",
     "/api/qrz/history/{callsign:path}",
     "/api/qso/outbox/status",
@@ -113,6 +110,21 @@ POST_ROUTES = [
     "/api/solar/refresh",
 ]
 
+RETIRED_ROUTES = [
+    ("GET", "/api/adif/sync"),
+    ("GET", "/api/adif/stats"),
+    ("GET", "/api/adif/qsos"),
+    ("GET", "/api/adif/callsign/{callsign}"),
+    ("GET", "/api/adif/band/{band}"),
+    ("GET", "/api/adif/mode/{mode}"),
+    ("GET", "/api/adif/date-range/{start_date}/{end_date}"),
+    ("GET", "/api/adif/worked-before/{callsign}"),
+    ("GET", "/api/adif/count"),
+    ("GET", "/api/adif/all"),
+    ("GET", "/api/qsos/duckdb"),
+    ("GET", "/api/qsos/duckdb/by-call"),
+]
+
 WEBSOCKET_ROUTES = [
     "/ws/radio",
     "/api/ft8/ws",
@@ -156,6 +168,16 @@ def test_frontend_routes_are_registered():
     assert not missing, "Missing frontend contract routes:\n" + "\n".join(missing)
 
 
+def test_legacy_adif_duckdb_routes_are_retired():
+    active = [
+        f"{method} {path}"
+        for method, path in RETIRED_ROUTES
+        if route_exists(method, path)
+    ]
+
+    assert not active, "Retired ADIF/DuckDB routes are still registered:\n" + "\n".join(active)
+
+
 def test_safe_frontend_read_contracts():
     solar_api._solar_cache["timestamp"] = time.time()
     solar_api._solar_cache["data"] = {
@@ -186,6 +208,7 @@ def test_safe_frontend_read_contracts():
     assert_response_has_keys("GET", "/api/spots/stats/mode", {"ok", "data", "date_filter"})
     assert_response_has_keys("GET", "/api/spots/stats/country?limit=5", {"ok", "data", "limit", "date_filter"})
     assert_response_has_keys("GET", "/api/spots/special?limit=5", {"ok", "data", "count"})
+    assert_response_has_keys("GET", "/api/qso/outbox/status", {"success", "outbox"})
     assert_response_has_keys("GET", "/api/solar", {"source", "indices", "hf_conditions"})
 
 
@@ -211,6 +234,7 @@ def test_safe_frontend_post_contracts():
 
 if __name__ == "__main__":
     test_frontend_routes_are_registered()
+    test_legacy_adif_duckdb_routes_are_retired()
     test_safe_frontend_read_contracts()
     test_safe_frontend_post_contracts()
     print("Frontend endpoint contract smoke checks passed")

@@ -5,7 +5,6 @@ Extracted from main.py - handles all background async operations
 
 import asyncio
 import logging
-from pathlib import Path
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -393,33 +392,6 @@ async def poll_dx_spots():
         except Exception as e:
             logger.error(f"Spot monitor error: {e}")
             await asyncio.sleep(30.0)
-
-
-def count_adif_records(file_path: str) -> int:
-    """Count the number of QSO records in an ADIF file"""
-    try:
-        if not Path(file_path).exists():
-            return 0
-
-        count = 0
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            for line in f:
-                # Count EOR (End Of Record) markers - each represents one QSO
-                if '<eor>' in line.lower():
-                    count += 1
-        return count
-    except Exception as e:
-        logger.error(f"❌ Error counting ADIF records: {str(e)}")
-        return 0
-
-
-# DEPRECATED: Old ADIF to DuckDB sync - replaced by Wavelog to DuckDB sync.
-# The active periodic sync task lives in radio_control.wavelog_duckdb_sync.
-#
-# async def periodic_adif_sync():
-#     """Periodically sync ADIF file to DuckDB (every 30 seconds)"""
-#     # This function has been replaced by periodic_wavelog_sync().
-#     pass
 
 
 async def start_background_tasks():

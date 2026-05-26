@@ -101,61 +101,30 @@ const LocalLogModal = {
     },
     
     /**
-     * Load all QSOs from DuckDB backend (fast) - fallback to ADIF if unavailable
+     * Load QSOs from the Wavelog read path.
      */
     async loadQsos() {
         try {
-            console.log('⚡ Loading QSOs from DuckDB...');
+            console.log('⚡ Loading QSOs from Wavelog...');
             const startTime = performance.now();
             
-            // Try DuckDB endpoint first (much faster)
-            const response = await fetch('/api/qsos/duckdb');
+            const response = await fetch('/api/wavelog-log/entries?limit=5000');
             if (response.ok) {
                 const result = await response.json();
-                if (result && result.success && result.data && Array.isArray(result.data)) {
-                    this.allQsos = result.data;
+                if (result && result.success && Array.isArray(result.entries)) {
+                    this.allQsos = window.WavelogQsoNormalizer.toLocalLogQsos(result.entries);
                     const elapsed = performance.now() - startTime;
-                    const source = result.source || 'duckdb';
-                    console.log(`✅ Loaded ${this.allQsos.length} QSOs from ${source} in ${elapsed.toFixed(2)}ms (backend: ${result.query_time_ms || 'N/A'}ms)`);
+                    console.log(`✅ Loaded ${this.allQsos.length} QSOs from Wavelog in ${elapsed.toFixed(2)}ms`);
                 } else {
                     console.warn('⚠️ Unexpected API response format:', result);
                     this.allQsos = [];
                 }
             } else {
-                console.error(`❌ DuckDB endpoint failed: ${response.statusText}, trying ADIF fallback...`);
-                await this.loadQsosFromADIF();
-            }
-        } catch (error) {
-            console.error('❌ Error loading from DuckDB, trying ADIF fallback:', error);
-            await this.loadQsosFromADIF();
-        }
-    },
-    
-    /**
-     * Fallback: Load all QSOs from local ADIF backend (slower but reliable)
-     */
-    async loadQsosFromADIF() {
-        try {
-            console.log('📋 Loading QSOs from ADIF (fallback)...');
-            const startTime = performance.now();
-            
-            const response = await fetch('/api/adif/all');
-            if (response.ok) {
-                const result = await response.json();
-                if (result && result.success && result.data && Array.isArray(result.data)) {
-                    this.allQsos = result.data;
-                    const elapsed = performance.now() - startTime;
-                    console.log(`✅ Loaded ${this.allQsos.length} QSOs from ADIF in ${elapsed.toFixed(2)}ms`);
-                } else {
-                    console.warn('⚠️ Unexpected API response format:', result);
-                    this.allQsos = [];
-                }
-            } else {
-                console.error(`❌ Failed to fetch QSOs: ${response.statusText}`);
+                console.error(`❌ Failed to fetch Wavelog QSOs: ${response.statusText}`);
                 this.allQsos = [];
             }
         } catch (error) {
-            console.error('❌ Error loading QSOs:', error);
+            console.error('❌ Error loading Wavelog QSOs:', error);
             this.allQsos = [];
         }
     },

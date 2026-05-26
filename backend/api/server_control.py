@@ -16,7 +16,6 @@ router = APIRouter()
 async def _prepare_for_process_exit(request: Request, reason: str) -> None:
     """Close local resources before the backend process exits."""
     context = get_app_context(request)
-    adif_sync_task = context.adif_sync_task
     flex = context.flex
 
     if context.websocket_manager:
@@ -29,13 +28,6 @@ async def _prepare_for_process_exit(request: Request, reason: str) -> None:
             except Exception:
                 pass
         websocket_clients.clear()
-
-    if adif_sync_task and not adif_sync_task.done():
-        adif_sync_task.cancel()
-        try:
-            await adif_sync_task
-        except asyncio.CancelledError:
-            pass
 
     try:
         from radio_control.wavelog_sync import stop_wavelog_sync

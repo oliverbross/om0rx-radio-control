@@ -30,7 +30,6 @@ from services.background_tasks import (
 
 # Import additional service modules for initialization
 from services.qso_logging import init_qso_logging_clients, register_qso_logging_endpoints
-from services.adif import init_adif_service, register_adif_endpoints
 from services.rotator import init_rotator_service
 from services.wsjtx import get_wsjtx_service, register_wsjtx_endpoints
 from services.country_data import load_country_data, router as country_data_router
@@ -96,9 +95,6 @@ def register_all_services():
 
     # Register QSO logging endpoints (Wavelog, QRZ, ADIF)
     register_qso_logging_endpoints(app)
-
-    # Register ADIF endpoints (QSO management and sync)
-    register_adif_endpoints(app)
 
     # Register WSJT-X endpoints
     register_wsjtx_endpoints(app)

@@ -52,6 +52,13 @@
                     style="padding: 4px 8px; font-size: 12px;">
                     {{ syncStatus.syncing ? '⟳ Syncing...' : `📊 ${syncStatus.total_records} QSOs` }}
                 </button>
+                <button
+                    @click="retryQsoOutbox"
+                    :disabled="qsoOutboxLoading || !qsoOutboxStatus.queued"
+                    :class="['qso-outbox-button', { 'qso-outbox-pending': qsoOutboxStatus.queued > 0 }]"
+                    :title="qsoOutboxStatus.queued > 0 ? `Retry ${qsoOutboxStatus.queued} queued Wavelog upload(s)` : 'No queued Wavelog uploads'">
+                    {{ qsoOutboxLoading ? '↥ ...' : `↥ ${qsoOutboxStatus.queued || 0}` }}
+                </button>
                 <span class="utc-clock">{{ currentTime }} UTC</span>
             </div>
             

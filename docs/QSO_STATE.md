@@ -37,11 +37,12 @@ Spot DuckDB:
 - Stores received spots and their precomputed display statuses.
 - This is not a QSO log.
 
-## Current Gaps
+## Retired Legacy Paths
 
-- Older ADIF-to-DuckDB code and endpoints still exist. They should be retired or
-  clearly marked legacy after the Wavelog read cache and offline outbox are
-  fully established.
+- Runtime ADIF-to-DuckDB endpoints are retired. Frontend log views now use
+  `/api/wavelog-log/*`, and offline upload visibility uses `/api/qso/outbox/*`.
+- Historical notes for the old ADIF/DuckDB approach remain under
+  `docs/archive/legacy/`.
 - Existing DuckDB files should be treated as cache files. The app should never
   require them as the only copy of a QSO.
 

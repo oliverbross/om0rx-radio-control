@@ -557,49 +557,16 @@ const dxSpotsMethods = {
     
     async loadWorkedCallsigns() {
         try {
-            const response = await fetch('/api/adif/all');
+            const response = await fetch('/api/wavelog-log/entries?limit=5000');
             if (!response.ok) {
                 console.warn('Failed to load worked callsigns');
                 return;
             }
             
             const result = await response.json();
-            if (result.success && result.data) {
-                // Build a map keyed by "CALL-BAND-MODE" to store most recent QSO for each unique combination
-                this.workedCallsigns = {};
-                let skippedCount = 0;
-                
-                result.data.forEach(qso => {
-                    const call = (qso.call || '').toUpperCase();
-                    const band = (qso.band || '').toUpperCase();
-                    const mode = (qso.mode || '').toUpperCase();
-                    
-                    if (call && band && mode) {
-                        // Create composite key: CALL-BAND-MODE
-                        const key = `${call}-${band}-${mode}`;
-                        // Store the first (most recent) QSO for each unique combination
-                        if (!this.workedCallsigns[key]) {
-                            this.workedCallsigns[key] = {
-                                qso_date: qso.qso_date || '',
-                                time_on: qso.time_on || ''
-                            };
-                        }
-                    } else {
-                        // Log skipped entries for debugging
-                        if (!call || !mode) {
-                            skippedCount++;
-                        } else if (!band) {
-                            skippedCount++;
-                            // This is important - if band is missing, log it
-                            console.warn(`⚠️  QSO without BAND: ${call} ${mode} - will try to derive from frequency`);
-                        }
-                    }
-                });
-                
-                if (skippedCount > 0) {
-                    console.warn(`⚠️  Skipped ${skippedCount} QSOs due to missing CALL/BAND/MODE`);
-                }
-                console.log(`✅ Loaded ${Object.keys(this.workedCallsigns).length} worked band/mode combinations from ${result.data.length} total QSOs`);
+            if (result.success && Array.isArray(result.entries)) {
+                this.workedCallsigns = window.WavelogQsoNormalizer.buildWorkedMap(result.entries);
+                console.log(`✅ Loaded ${Object.keys(this.workedCallsigns).length} worked band/mode combinations from ${result.entries.length} Wavelog QSOs`);
                 
                 // Log sample for debugging
                 const keys = Object.keys(this.workedCallsigns);
@@ -607,7 +574,7 @@ const dxSpotsMethods = {
                     console.log(`📝 Sample keys: ${keys.slice(0, 5).join(', ')}`);
                 }
             } else {
-                console.warn('API response missing success or data:', result);
+                console.warn('API response missing success or entries:', result);
             }
         } catch (e) {
             console.error('Error loading worked callsigns:', e);

@@ -7,9 +7,8 @@ transition, so helpers keep those attributes synchronized from the context.
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def default_sync_status() -> Dict[str, Any]:
@@ -40,7 +39,6 @@ class AppContext:
     adif_handler: Any = None
     wavelog_sync_manager: Any = None
     rotor: Any = None
-    adif_sync_task: Optional[asyncio.Task] = None
     sync_status: Dict[str, Any] = field(default_factory=default_sync_status)
 
 
@@ -64,4 +62,3 @@ def sync_app_state(app: Any, context: AppContext) -> None:
     app.state.websocket_clients = context.websocket_clients
     app.state.cluster_client = context.cluster_client
     app.state.wavelog_sync_manager = context.wavelog_sync_manager
-    app.state.adif_sync_task = context.adif_sync_task

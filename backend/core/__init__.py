@@ -95,14 +95,13 @@ qrz_client = context.qrz_client
 adif_handler = context.adif_handler
 wavelog_sync_manager = context.wavelog_sync_manager
 rotor = context.rotor
-adif_sync_task = context.adif_sync_task
 sync_status = context.sync_status
 
 
 def sync_legacy_globals_from_context():
     """Keep old backend.core module globals aligned while routes migrate."""
     global flex, db_connection, cluster_client, cluster_connected, classifier, cty_resolver
-    global wavelog_client, qrz_client, adif_handler, wavelog_sync_manager, rotor, adif_sync_task
+    global wavelog_client, qrz_client, adif_handler, wavelog_sync_manager, rotor
 
     flex = context.flex
     db_connection = context.db_connection
@@ -115,7 +114,6 @@ def sync_legacy_globals_from_context():
     adif_handler = context.adif_handler
     wavelog_sync_manager = context.wavelog_sync_manager
     rotor = context.rotor
-    adif_sync_task = context.adif_sync_task
     sync_app_state(app, context)
 
 
@@ -156,7 +154,6 @@ __all__ = [
     "adif_handler",
     "wavelog_sync_manager",
     "rotor",
-    "adif_sync_task",
     "sync_status",
     "_load_rotor_config",
     "AGCRequest",
