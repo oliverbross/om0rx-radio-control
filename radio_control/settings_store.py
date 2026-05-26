@@ -21,6 +21,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SETTINGS_DIR = PROJECT_ROOT / "settings"
 APP_SETTINGS_PATH = SETTINGS_DIR / "app_settings.json"
 LOCAL_SECRETS_PATH = SETTINGS_DIR / "local_secrets.json"
+LEGACY_ROTOR_CONFIG_PATH = SETTINGS_DIR / "rotor_config.json"
+LEGACY_FT8_CONFIG_PATH = PROJECT_ROOT / "logs" / "ft8_config.json"
 
 
 SECRET_KEYS = {
@@ -208,3 +210,8 @@ def public_config_from_module(config_module: Any, keys: Iterable[str] | None = N
         for key in selected_keys
         if hasattr(config_module, key)
     }
+
+
+def load_legacy_json(path: Path) -> Dict[str, Any]:
+    """Read a legacy JSON settings file for one-time compatibility fallback."""
+    return _read_json(path)

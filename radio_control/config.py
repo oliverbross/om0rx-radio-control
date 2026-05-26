@@ -9,7 +9,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 LOGS_DIR = PROJECT_ROOT / "logs"
 SETTINGS_DIR = PROJECT_ROOT / "settings"
-ROTOR_CONFIG_PATH = SETTINGS_DIR / "rotor_config.json"
 
 _local_config_path = PROJECT_ROOT / "config_local.py"
 if _local_config_path.exists():

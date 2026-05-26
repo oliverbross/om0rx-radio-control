@@ -6,7 +6,6 @@ module intentionally stays small so startup ownership remains clear.
 """
 
 import asyncio
-import json
 import logging
 from typing import Dict, List, Optional
 
@@ -22,6 +21,7 @@ from radio_control.cty_resolvers import CtyDatResolver
 from radio_control.dxbridge import FlexCtl
 from radio_control.qrz_api import QRZClient
 from radio_control.rotor_api import RotorController
+from radio_control.settings_store import LEGACY_ROTOR_CONFIG_PATH, load_legacy_json, save_config_updates
 from radio_control.wavelog_api import WavelogClient
 
 from .models import (
@@ -115,33 +115,19 @@ sync_status = {
 
 
 def _load_rotor_config():
-    """Load persisted non-secret rotor settings into the runtime config module."""
-    try:
-        rotor_config_file = config.ROTOR_CONFIG_PATH
+    """Migrate legacy rotor settings if an old rotor_config.json is still present."""
+    rotor_data = load_legacy_json(LEGACY_ROTOR_CONFIG_PATH)
+    if not rotor_data:
+        return
 
-        if not rotor_config_file.exists():
-            logger.info("No rotor_config.json found, using defaults from config.py")
-            return
+    save_result = save_config_updates(rotor_data)
+    for key in save_result["updated_keys"]:
+        setattr(config, key, rotor_data[key])
 
-        with open(rotor_config_file, "r", encoding="utf-8") as f:
-            rotor_data = json.load(f)
-
-        config.ROTOR_HOME_GRID = rotor_data.get("ROTOR_HOME_GRID", config.ROTOR_HOME_GRID)
-        config.ROTOR_HOME_LAT = rotor_data.get("ROTOR_HOME_LAT", config.ROTOR_HOME_LAT)
-        config.ROTOR_HOME_LON = rotor_data.get("ROTOR_HOME_LON", config.ROTOR_HOME_LON)
-        config.ROTOR_BANDS = rotor_data.get("ROTOR_BANDS", config.ROTOR_BANDS)
-        config.ROTOR_AUTO_ENABLED = rotor_data.get(
-            "ROTOR_AUTO_ENABLED",
-            config.ROTOR_AUTO_ENABLED,
-        )
-
-        logger.info(
-            "Loaded rotor config from JSON: Grid=%s, AUTO=%s",
-            config.ROTOR_HOME_GRID,
-            config.ROTOR_AUTO_ENABLED,
-        )
-    except Exception as exc:
-        logger.warning("Failed to load rotor config from JSON: %s; using defaults", exc)
+    logger.info(
+        "Migrated legacy rotor_config.json keys to app settings: %s",
+        save_result["updated_keys"],
+    )
 
 
 __all__ = [

@@ -57,7 +57,7 @@ Important ownership boundaries:
 - `backend/core/__init__.py` owns the FastAPI app object, shared runtime state declarations, validation handling, and rotor settings bootstrap only.
 - `services/` contains backend service behavior, but some services still use module-level globals.
 - `radio_control/config.py` centralizes defaults and project-relative paths, then layers `config_local.py`, JSON runtime settings, ignored local secrets, and environment overrides.
-- `settings/rotor_config.json` persists non-secret rotor AUTO settings.
+- `settings/app_settings.json` persists non-secret runtime settings, including rotor AUTO and FT8 settings.
 
 ## What Was Fixed During This Review
 
@@ -67,7 +67,7 @@ These were review findings that were low-risk enough to fix immediately:
 - Fixed WSJT-X auto-rotate dependency wiring so it receives the high-level `RotatorService`, not the raw `RotorController`.
 - Fixed WSJT-X auto-rotate band conversion from Hz to kHz and made rotor band config support the current boolean settings format.
 - Added missing `/api/rotor/auto/bearing` alias used by the frontend.
-- Removed duplicate `/api/ft8/config` handlers and moved FT8 config persistence to `config.LOGS_DIR`.
+- Removed duplicate `/api/ft8/config` handlers and moved FT8 config persistence into the shared settings model.
 - Fixed `WavelogDuckDBSync` and legacy `ADIFSyncManager` default DuckDB paths to use `config.DATA_DIR`.
 - Fixed WSJT-X parser frequency values to return JavaScript numbers instead of BigInt values.
 - Fixed `tests/smoke/test_ft8_files.py` to look at the real root `frontend/` directory.
@@ -80,6 +80,7 @@ These were review findings that were low-risk enough to fix immediately:
 - Hardened launch scripts to bind the backend to `127.0.0.1` by default and make Uvicorn reload a development-mode opt-in.
 - Updated window launchers to respect `BACKEND_HOST` and `BACKEND_PORT` instead of hard-coded `localhost:8000`.
 - Restricted default CORS origins to local UI origins and added `CORS_ALLOWED_ORIGINS` for explicit overrides.
+- Consolidated rotor AUTO and FT8 config persistence into `settings/app_settings.json`, with legacy JSON read fallback only.
 
 ## Review Findings
 
@@ -270,12 +271,11 @@ Not passed because tooling is missing:
 
 Do these before adding new features:
 
-1. Consolidate remaining config persistence files, especially `settings/rotor_config.json` and `logs/ft8_config.json`, under the settings model.
-2. Add a controlled process supervisor if UI-triggered whole-app restart remains required.
-3. Add a real project quality gate script and declare dev/test dependencies.
-4. Introduce an app context/dependency container to reduce module globals.
-5. Add endpoint contract tests for all frontend fetch/WebSocket paths.
-6. Split the largest frontend modules after backend contracts are stable.
+1. Add a controlled process supervisor if UI-triggered whole-app restart remains required.
+2. Add a real project quality gate script and declare dev/test dependencies.
+3. Introduce an app context/dependency container to reduce module globals.
+4. Add endpoint contract tests for all frontend fetch/WebSocket paths.
+5. Split the largest frontend modules after backend contracts are stable.
 
 ## Development Standards Going Forward
 

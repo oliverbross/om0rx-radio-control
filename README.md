@@ -40,6 +40,8 @@ Copy-Item config_local.example.py config_local.py
 
 `config_local.py` is intentionally ignored by Git. Keep station-specific credentials, API keys, database passwords, and local bootstrap overrides there or in environment variables. The web configuration dialog persists non-secret runtime settings to `settings/app_settings.json` and secret-bearing values to ignored `settings/local_secrets.json`. Runtime settings override `config_local.py`; environment variables override both.
 
+Rotor AUTO and FT8 settings are part of `settings/app_settings.json`. Older `settings/rotor_config.json` and `logs/ft8_config.json` files are treated as legacy fallback inputs only.
+
 ## Project Layout
 
 ```text

@@ -7,17 +7,19 @@ from pydantic import BaseModel
 from typing import Optional, List
 import logging
 import asyncio
-import json
 from radio_control import config as app_config
+from radio_control.settings_store import (
+    LEGACY_FT8_CONFIG_PATH,
+    load_app_settings,
+    load_legacy_json,
+    save_config_updates,
+)
 
 from services.ft8_service import get_ft8_service, init_ft8_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ft8", tags=["ft8"])
-
-# Configuration file path
-FT8_CONFIG_FILE = app_config.LOGS_DIR / "ft8_config.json"
 
 # Try to import sounddevice for audio device enumeration
 try:
@@ -44,6 +46,73 @@ class FT8Config(BaseModel):
     sampleRate: Optional[int] = 12000
     waterfallHeight: Optional[int] = 100
     useFlexRadioAudio: Optional[bool] = True
+
+
+FT8_FIELD_TO_CONFIG_KEY = {
+    "mode": "FT8_MODE",
+    "mycall": "FT8_MYCALL",
+    "mygrid": "FT8_MYGRID",
+    "auto_sequence": "FT8_AUTO_SEQUENCE",
+    "tx_enabled": "FT8_TX_ENABLED",
+    "networkServer": "FT8_NETWORK_SERVER",
+    "pttMethod": "FT8_PTT_METHOD",
+    "audioInput": "FT8_AUDIO_INPUT",
+    "audioOutput": "FT8_AUDIO_OUTPUT",
+    "sampleRate": "FT8_SAMPLE_RATE",
+    "waterfallHeight": "FT8_WATERFALL_HEIGHT",
+    "useFlexRadioAudio": "FT8_USE_FLEXRADIO_AUDIO",
+}
+
+CONFIG_KEY_TO_FT8_FIELD = {value: key for key, value in FT8_FIELD_TO_CONFIG_KEY.items()}
+
+
+def _ft8_defaults():
+    return {
+        "mode": getattr(app_config, "FT8_MODE", "FT8"),
+        "mycall": getattr(app_config, "FT8_MYCALL", "OM0RX"),
+        "mygrid": getattr(app_config, "FT8_MYGRID", "JN88"),
+        "auto_sequence": getattr(app_config, "FT8_AUTO_SEQUENCE", False),
+        "tx_enabled": getattr(app_config, "FT8_TX_ENABLED", False),
+        "networkServer": getattr(app_config, "FT8_NETWORK_SERVER", "192.168.0.199:4992"),
+        "pttMethod": getattr(app_config, "FT8_PTT_METHOD", "CAT"),
+        "audioInput": getattr(app_config, "FT8_AUDIO_INPUT", "default"),
+        "audioOutput": getattr(app_config, "FT8_AUDIO_OUTPUT", "default"),
+        "sampleRate": getattr(app_config, "FT8_SAMPLE_RATE", 12000),
+        "waterfallHeight": getattr(app_config, "FT8_WATERFALL_HEIGHT", 100),
+        "useFlexRadioAudio": getattr(app_config, "FT8_USE_FLEXRADIO_AUDIO", True),
+    }
+
+
+def _config_to_ft8_payload(config_values: dict):
+    payload = _ft8_defaults()
+    for config_key, value in config_values.items():
+        field = CONFIG_KEY_TO_FT8_FIELD.get(config_key)
+        if field:
+            payload[field] = value
+    return payload
+
+
+def _ft8_payload_to_config(payload: dict):
+    return {
+        config_key: payload[field]
+        for field, config_key in FT8_FIELD_TO_CONFIG_KEY.items()
+        if field in payload
+    }
+
+
+def _load_legacy_ft8_config():
+    legacy_data = load_legacy_json(LEGACY_FT8_CONFIG_PATH)
+    if not legacy_data:
+        return {}
+
+    config_updates = _ft8_payload_to_config(legacy_data)
+    if config_updates:
+        save_config_updates(config_updates)
+        for key, value in config_updates.items():
+            setattr(app_config, key, value)
+        logger.info("Migrated legacy FT8 config keys to app settings: %s", sorted(config_updates))
+
+    return legacy_data
 
 
 class TransmitRequest(BaseModel):
@@ -114,12 +183,13 @@ async def update_config(config: FT8Config):
         service.auto_sequence = config.auto_sequence
         service.tx_enabled = config.tx_enabled
         
-        # Save to disk
-        FT8_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(FT8_CONFIG_FILE, 'w') as f:
-            json.dump(config.dict(), f, indent=2)
-        
-        logger.info(f"✅ FT8 configuration saved to {FT8_CONFIG_FILE}")
+        config_payload = config.dict()
+        config_updates = _ft8_payload_to_config(config_payload)
+        save_config_updates(config_updates)
+        for key, value in config_updates.items():
+            setattr(app_config, key, value)
+
+        logger.info("✅ FT8 configuration saved to app settings")
         
         return {"status": "updated"}
     except Exception as e:
@@ -131,29 +201,16 @@ async def update_config(config: FT8Config):
 async def get_config():
     """Get FT8 configuration"""
     try:
-        # Try to load from disk
-        if FT8_CONFIG_FILE.exists():
-            with open(FT8_CONFIG_FILE, 'r') as f:
-                config_data = json.load(f)
-                logger.info(f"📂 Loaded FT8 configuration from {FT8_CONFIG_FILE}")
-                return config_data
-        else:
-            # Return defaults
-            logger.info("Using default FT8 configuration")
-            return {
-                "mode": "FT8",
-                "mycall": "OM0RX",
-                "mygrid": "JN88",
-                "auto_sequence": False,
-                "tx_enabled": False,
-                "networkServer": "192.168.0.199:4992",
-                "pttMethod": "CAT",
-                "audioInput": "default",
-                "audioOutput": "default",
-                "sampleRate": 12000,
-                "waterfallHeight": 100,
-                "useFlexRadioAudio": True
-            }
+        app_settings = load_app_settings()
+        if any(key in app_settings for key in CONFIG_KEY_TO_FT8_FIELD):
+            return _config_to_ft8_payload(app_settings)
+
+        legacy_config = _load_legacy_ft8_config()
+        if legacy_config:
+            return {**_ft8_defaults(), **legacy_config}
+
+        logger.info("Using default FT8 configuration")
+        return _ft8_defaults()
     except Exception as e:
         logger.error(f"Error loading config: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

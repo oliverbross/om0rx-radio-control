@@ -7,18 +7,16 @@ Includes basic rotator operations, auto-rotation logic, and bearing calculations
 
 import asyncio
 import logging
-import json
-import os
 from typing import Optional, Dict, Any
 from fastapi import HTTPException
 
 # Import required modules
 from radio_control.rotor_api import RotorController
 from radio_control.rotor_math import (
-    grid_to_latlon, latlon_to_grid, initial_bearing,
     calculate_bearing_for_station, get_band_from_frequency
 )
 from radio_control import config
+from radio_control.settings_store import LEGACY_ROTOR_CONFIG_PATH, load_legacy_json, save_config_updates
 logger = logging.getLogger(__name__)
 
 
@@ -62,26 +60,16 @@ class RotatorService:
         logger.info("✅ Rotator service shutdown complete")
 
     def _load_rotor_config(self):
-        """Load rotor configuration from JSON file if it exists"""
-        try:
-            rotor_config_file = config.ROTOR_CONFIG_PATH
+        """Migrate legacy rotor_config.json if it exists."""
+        rotor_data = load_legacy_json(LEGACY_ROTOR_CONFIG_PATH)
+        if not rotor_data:
+            return
 
-            if rotor_config_file.exists():
-                with open(rotor_config_file, 'r', encoding='utf-8') as f:
-                    rotor_data = json.load(f)
+        save_result = save_config_updates(rotor_data)
+        for key in save_result["updated_keys"]:
+            setattr(config, key, rotor_data[key])
 
-                # Update config from JSON
-                config.ROTOR_HOME_GRID = rotor_data.get('ROTOR_HOME_GRID', config.ROTOR_HOME_GRID)
-                config.ROTOR_HOME_LAT = rotor_data.get('ROTOR_HOME_LAT', config.ROTOR_HOME_LAT)
-                config.ROTOR_HOME_LON = rotor_data.get('ROTOR_HOME_LON', config.ROTOR_HOME_LON)
-                config.ROTOR_BANDS = rotor_data.get('ROTOR_BANDS', config.ROTOR_BANDS)
-                config.ROTOR_AUTO_ENABLED = rotor_data.get('ROTOR_AUTO_ENABLED', config.ROTOR_AUTO_ENABLED)
-
-                logger.info(f"✅ Loaded rotor config from JSON: Grid={config.ROTOR_HOME_GRID}, AUTO={config.ROTOR_AUTO_ENABLED}")
-            else:
-                logger.info("ℹ️  No rotor_config.json found, using defaults from config.py")
-        except Exception as e:
-            logger.warning(f"⚠️  Failed to load rotor config from JSON: {e}, using defaults")
+        logger.info("Migrated legacy rotor_config.json keys: %s", save_result["updated_keys"])
 
     # === Basic Rotator Operations ===
 
@@ -203,11 +191,8 @@ class RotatorService:
             config.ROTOR_BANDS = req['bands']
             config.ROTOR_AUTO_ENABLED = req['auto_enabled']
 
-            # Persist to JSON file (won't trigger file watcher)
+            # Persist through the shared settings store.
             try:
-                rotor_config_file = config.ROTOR_CONFIG_PATH
-                rotor_config_file.parent.mkdir(parents=True, exist_ok=True)
-
                 rotor_config_data = {
                     "ROTOR_HOME_GRID": config.ROTOR_HOME_GRID,
                     "ROTOR_HOME_LAT": config.ROTOR_HOME_LAT,
@@ -216,15 +201,14 @@ class RotatorService:
                     "ROTOR_AUTO_ENABLED": config.ROTOR_AUTO_ENABLED,
                 }
 
-                with open(rotor_config_file, 'w', encoding='utf-8') as f:
-                    json.dump(rotor_config_data, f, indent=2)
+                save_config_updates(rotor_config_data)
 
                 bands_count = sum(1 for v in config.ROTOR_BANDS.values() if v) if config.ROTOR_BANDS else 0
-                logger.info(f"✅ Rotor AUTO config saved to JSON: Grid={config.ROTOR_HOME_GRID}, "
+                logger.info(f"✅ Rotor AUTO config saved to app settings: Grid={config.ROTOR_HOME_GRID}, "
                            f"AUTO={config.ROTOR_AUTO_ENABLED}, Bands={bands_count}")
 
             except Exception as save_err:
-                logger.error(f"Failed to persist rotor AUTO config to JSON: {save_err}")
+                logger.error(f"Failed to persist rotor AUTO config to app settings: {save_err}")
                 # Don't fail completely, config is still in memory for this session
 
             return {

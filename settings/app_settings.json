@@ -1,1 +1,32 @@
-{}
+{
+  "FT8_AUDIO_INPUT": "flexradio",
+  "FT8_AUDIO_OUTPUT": "flexradio",
+  "FT8_AUTO_SEQUENCE": false,
+  "FT8_MODE": "FT8",
+  "FT8_MYCALL": "OM0RX",
+  "FT8_MYGRID": "JN88",
+  "FT8_NETWORK_SERVER": "192.168.0.199:4992",
+  "FT8_PTT_METHOD": "CAT",
+  "FT8_SAMPLE_RATE": 48000,
+  "FT8_TX_ENABLED": false,
+  "FT8_USE_FLEXRADIO_AUDIO": true,
+  "FT8_WATERFALL_HEIGHT": 100,
+  "ROTOR_AUTO_ENABLED": true,
+  "ROTOR_BANDS": {
+    "10m": true,
+    "12m": true,
+    "15m": true,
+    "160m": false,
+    "17m": true,
+    "20m": true,
+    "2m": false,
+    "30m": false,
+    "40m": false,
+    "60m": false,
+    "6m": false,
+    "80m": false
+  },
+  "ROTOR_HOME_GRID": "JN88TQ",
+  "ROTOR_HOME_LAT": 48.17,
+  "ROTOR_HOME_LON": 17.08
+}
