@@ -31,6 +31,7 @@ When adding a required module:
 
 - `core.js`, `websocket.js`, `radio-controls.js`, and `utils.js`: radio state, controls, WebSocket handling, and shared helpers.
 - `dx-spots.js`: DX cluster spots, filtering, and spot actions.
+- `config-modal.js`: configuration defaults, config modal state, feature-toggle computed values, and save/load actions.
 - `solar-overlay.js`: reusable solar overlay rendering.
 - `solar-data.js`: Vue solar data state, refresh timer, and HF condition formatting.
 - `wavelog-stats.js`: Vue Wavelog statistics state, API loading, and consolidated mode counts.

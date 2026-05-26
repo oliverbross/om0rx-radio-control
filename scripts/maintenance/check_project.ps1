@@ -184,6 +184,7 @@ print("no duplicate routes")
             "tests\smoke\test_settings_consolidation.py",
             "tests\smoke\test_lifecycle_contract.py",
             "tests\smoke\test_ft8_files.py",
+            "tests\smoke\test_frontend_module_contracts.py",
             "tests\smoke\test_frontend_contracts.py",
             "tests\smoke\test_service_dependency_state.py",
             "tests\smoke\test_wavelog_sync_pagination.py"

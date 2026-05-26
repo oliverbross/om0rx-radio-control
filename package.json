@@ -6,6 +6,7 @@
   "main": "bridge/sdc-bridge-server.js",
   "scripts": {
     "check": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/maintenance/check_project.ps1",
+    "check:frontend": "python tests/smoke/test_frontend_module_contracts.py",
     "start:sdc": "node bridge/sdc-bridge-server.js",
     "start:sdc:debug": "node --inspect bridge/sdc-bridge-server.js"
   },
