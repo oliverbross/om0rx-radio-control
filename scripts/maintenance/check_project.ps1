@@ -182,7 +182,8 @@ print("no duplicate routes")
             "tests\smoke\test_cors_config.py",
             "tests\smoke\test_settings_consolidation.py",
             "tests\smoke\test_lifecycle_contract.py",
-            "tests\smoke\test_ft8_files.py"
+            "tests\smoke\test_ft8_files.py",
+            "tests\smoke\test_frontend_contracts.py"
         )
 
         foreach ($testPath in $safeSmokeTests) {
@@ -201,6 +202,7 @@ print("no duplicate routes")
                 "tests\smoke\test_settings_consolidation.py",
                 "tests\smoke\test_lifecycle_contract.py",
                 "tests\smoke\test_ft8_files.py",
+                "tests\smoke\test_frontend_contracts.py",
                 "-q"
             )
         }

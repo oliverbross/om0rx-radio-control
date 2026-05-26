@@ -158,6 +158,61 @@ async def get_spots_count(request: Request):
         return {"count": 0}
 
 
+@router.get("/api/spots/stats/band")
+async def get_spots_stats_by_band(date: Optional[str] = None):
+    """Get persisted spots grouped by band."""
+    try:
+        from radio_control.spots_logger import get_spots_logger
+        spots_logger = get_spots_logger()
+        stats = spots_logger.get_stats_by_band(date)
+        return {"ok": True, "data": stats, "date_filter": date}
+    except Exception as e:
+        logger.error(f"Error getting band statistics: {e}", exc_info=True)
+        return {"ok": False, "data": [], "date_filter": date, "error": str(e)}
+
+
+@router.get("/api/spots/stats/mode")
+async def get_spots_stats_by_mode(date: Optional[str] = None):
+    """Get persisted spots grouped by mode."""
+    try:
+        from radio_control.spots_logger import get_spots_logger
+        spots_logger = get_spots_logger()
+        stats = spots_logger.get_stats_by_mode(date)
+        return {"ok": True, "data": stats, "date_filter": date}
+    except Exception as e:
+        logger.error(f"Error getting mode statistics: {e}", exc_info=True)
+        return {"ok": False, "data": [], "date_filter": date, "error": str(e)}
+
+
+@router.get("/api/spots/stats/country")
+async def get_spots_stats_by_country(
+    limit: int = 20,
+    date: Optional[str] = None,
+):
+    """Get persisted spots grouped by country."""
+    try:
+        from radio_control.spots_logger import get_spots_logger
+        spots_logger = get_spots_logger()
+        stats = spots_logger.get_stats_by_country(limit, date)
+        return {"ok": True, "data": stats, "limit": limit, "date_filter": date}
+    except Exception as e:
+        logger.error(f"Error getting country statistics: {e}", exc_info=True)
+        return {"ok": False, "data": [], "limit": limit, "date_filter": date, "error": str(e)}
+
+
+@router.get("/api/spots/special")
+async def get_special_event_spots(limit: int = 100):
+    """Get persisted spots tagged as special event stations."""
+    try:
+        from radio_control.spots_logger import get_spots_logger
+        spots_logger = get_spots_logger()
+        spots = spots_logger.get_special_event_spots(limit)
+        return {"ok": True, "data": spots, "count": len(spots)}
+    except Exception as e:
+        logger.error(f"Error getting special event spots: {e}", exc_info=True)
+        return {"ok": False, "data": [], "count": 0, "error": str(e)}
+
+
 @router.get("/api/spots/recent")
 async def get_recent_spots(request: Request, limit: int = 999999):
     """Get recent spots from persistent database (not just cache)"""

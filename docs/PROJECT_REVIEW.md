@@ -85,6 +85,7 @@ These were review findings that were low-risk enough to fix immediately:
 - Added `scripts/maintenance/check_project.ps1` as the fast local quality gate and exposed it through `npm run check`.
 - Introduced `backend.core.context.AppContext` as the explicit runtime context and wired backend startup, health/status, Wavelog sync status, server-control cleanup, and WebSocket ownership through it.
 - Removed remaining active-tree legacy product strings from maintained code and tightened the quality-gate stale-reference scan.
+- Added frontend/backend endpoint contract smoke checks and restored the missing spots database stats/special endpoints used by the frontend.
 
 ## Review Findings
 
@@ -145,6 +146,7 @@ Recommended fix:
 Current state:
 
 - `scripts/maintenance/check_project.ps1` runs the fast local quality gate.
+- Frontend fetch/WebSocket paths now have a smoke contract check in `tests/smoke/test_frontend_contracts.py`.
 - The default gate excludes checks that need MySQL, audio devices, live WSJT-X packets, or network access.
 - `pyproject.toml` declares a `dev` optional dependency group for `pytest` and `ruff`.
 - Several smoke scripts are still executable diagnostics rather than pure tests.
@@ -235,6 +237,7 @@ Passed:
 - `python tests\smoke\test_config_save.py`.
 - `python tests\smoke\test_app_context.py`.
 - `python tests\smoke\test_lifecycle_contract.py`.
+- `python tests\smoke\test_frontend_contracts.py`.
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\maintenance\check_project.ps1`.
 - `node tests\smoke\test-wsjtx-udp.js` received live WSJT-X packets.
 
@@ -248,11 +251,10 @@ Not run by default because they need local station resources:
 
 Do these before adding new features:
 
-1. Add endpoint contract tests for all frontend fetch/WebSocket paths.
-2. Continue migrating routers/services from legacy globals to `AppContext`.
-3. Separate pure tests from live station diagnostics so pytest can become the default unit test runner.
-4. Split the largest frontend modules after backend contracts are stable.
-5. Harden Wavelog sync pagination and failure status reporting.
+1. Continue migrating routers/services from legacy globals to `AppContext`.
+2. Separate pure tests from live station diagnostics so pytest can become the default unit test runner.
+3. Split the largest frontend modules after backend contracts are stable.
+4. Harden Wavelog sync pagination and failure status reporting.
 
 ## Development Standards Going Forward
 

@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""Smoke checks for the frontend/backend API contract."""
+
+import time
+
+import _bootstrap  # noqa: F401
+from fastapi.testclient import TestClient
+
+import backend.main
+from backend.api import solar as solar_api
+
+
+backend.main.register_all_services()
+app = backend.main.app
+client = TestClient(app)
+
+
+GET_ROUTES = [
+    "/api/health",
+    "/api/status",
+    "/api/sync-status",
+    "/api/config",
+    "/api/rotor/status",
+    "/api/rotor/config",
+    "/api/rotor/auto/status",
+    "/api/wsjtx/config",
+    "/api/ft8/status",
+    "/api/ft8/config",
+    "/api/ft8/decoded",
+    "/api/ft8/qsos",
+    "/api/ft8/waterfall",
+    "/api/ft8/audio-devices",
+    "/api/spots",
+    "/api/spots/count",
+    "/api/spots/recent",
+    "/api/spots/callsign/{callsign}",
+    "/api/spots/stats/band",
+    "/api/spots/stats/mode",
+    "/api/spots/stats/country",
+    "/api/spots/special",
+    "/api/country/data",
+    "/api/country/by-name/{name}",
+    "/api/adif/all",
+    "/api/qsos/duckdb",
+    "/api/qsos/duckdb/by-call",
+    "/api/qrz/profile/{callsign:path}",
+    "/api/qrz/history/{callsign:path}",
+    "/api/wavelog/contacts",
+    "/api/wavelog-log/entries",
+    "/api/wavelog-log/stats",
+    "/api/wavelog-log/search/{callsign:path}",
+    "/api/wavelog-log/sync-status",
+    "/api/wavelog-log/statistics",
+    "/api/wavelog-log/wp-statistics",
+    "/api/solar",
+    "/api/solar/health",
+    "/logs/qso_log.adif",
+]
+
+POST_ROUTES = [
+    "/api/frequency",
+    "/api/mode",
+    "/api/band",
+    "/api/filter",
+    "/api/volume",
+    "/api/drive",
+    "/api/tune_power",
+    "/api/mic",
+    "/api/monitor",
+    "/api/agc_threshold",
+    "/api/mox",
+    "/api/tune",
+    "/api/vox",
+    "/api/breakin",
+    "/api/step",
+    "/api/agc",
+    "/api/dsp",
+    "/api/dsp_level",
+    "/api/rit",
+    "/api/xit",
+    "/api/rx2",
+    "/api/split",
+    "/api/config",
+    "/api/rotor/goto",
+    "/api/rotor/direction",
+    "/api/rotor/config",
+    "/api/rotor/bearing",
+    "/api/rotor/auto/bearing",
+    "/api/rotor/auto/config",
+    "/api/rotor/auto/goto",
+    "/api/cluster/command",
+    "/api/cluster/reconnect",
+    "/api/shutdown",
+    "/api/restart",
+    "/api/wsjtx/log-qso",
+    "/api/wsjtx/auto-rotate",
+    "/api/ft8/start",
+    "/api/ft8/stop",
+    "/api/ft8/config",
+    "/api/ft8/transmit",
+    "/api/ft8/cq",
+    "/api/ft8/reply",
+    "/api/ft8/send73",
+    "/api/spots/add-to-radio",
+    "/api/spots/filtered-search",
+    "/api/qso/log",
+    "/api/wavelog/private_lookup",
+    "/api/wavelog/recent_qsos",
+    "/api/wavelog-log/reset-sync",
+    "/api/solar/refresh",
+]
+
+WEBSOCKET_ROUTES = [
+    "/ws/radio",
+    "/api/ft8/ws",
+]
+
+
+def route_exists(method: str, path: str) -> bool:
+    for route in app.routes:
+        route_path = getattr(route, "path", None)
+        route_methods = getattr(route, "methods", set()) or set()
+        if route_path == path and method in route_methods:
+            return True
+    return False
+
+
+def websocket_route_exists(path: str) -> bool:
+    return any(getattr(route, "path", None) == path for route in app.routes)
+
+
+def assert_response_has_keys(method: str, path: str, expected_keys: set[str], **kwargs) -> dict:
+    response = client.request(method, path, **kwargs)
+    assert response.status_code == 200, f"{method} {path} returned {response.status_code}: {response.text}"
+    payload = response.json()
+    missing = expected_keys - set(payload.keys())
+    assert not missing, f"{method} {path} missing keys: {sorted(missing)}"
+    return payload
+
+
+def test_frontend_routes_are_registered():
+    missing = []
+    for path in GET_ROUTES:
+        if not route_exists("GET", path):
+            missing.append(f"GET {path}")
+    for path in POST_ROUTES:
+        if not route_exists("POST", path):
+            missing.append(f"POST {path}")
+    for path in WEBSOCKET_ROUTES:
+        if not websocket_route_exists(path):
+            missing.append(f"WS {path}")
+
+    assert not missing, "Missing frontend contract routes:\n" + "\n".join(missing)
+
+
+def test_safe_frontend_read_contracts():
+    solar_api._solar_cache["timestamp"] = time.time()
+    solar_api._solar_cache["data"] = {
+        "source": "contract-test",
+        "updated": "now",
+        "indices": {},
+        "hf_conditions": {},
+        "quality_levels": {},
+    }
+
+    assert_response_has_keys("GET", "/api/config", {"success", "config"})
+    assert_response_has_keys("GET", "/api/status", {"connected", "cluster_connected"})
+    assert_response_has_keys("GET", "/api/sync-status", {"syncing", "total_records"})
+    assert_response_has_keys("GET", "/api/rotor/status", {"ok", "enabled"})
+    assert_response_has_keys("GET", "/api/rotor/config", {"ok", "enabled", "host"})
+    assert_response_has_keys("GET", "/api/rotor/auto/status", {"ok", "auto_enabled", "home_grid"})
+    assert_response_has_keys("GET", "/api/ft8/status", {"enabled", "mode"})
+    assert_response_has_keys("GET", "/api/ft8/config", {"mode", "mycall", "mygrid"})
+    assert_response_has_keys("GET", "/api/ft8/decoded", {"messages"})
+    assert_response_has_keys("GET", "/api/ft8/qsos", {"qsos"})
+    assert_response_has_keys("GET", "/api/ft8/waterfall", {"waterfall"})
+    assert_response_has_keys("GET", "/api/ft8/audio-devices", {"input", "output"})
+    assert_response_has_keys("GET", "/api/spots", {"spots"})
+    assert_response_has_keys("GET", "/api/spots/count", {"count"})
+    assert_response_has_keys("GET", "/api/spots/recent?limit=5", {"spots"})
+    assert_response_has_keys("GET", "/api/spots/callsign/OM0RX?limit=5", {"callsign", "count", "spots"})
+    assert_response_has_keys("GET", "/api/spots/stats/band", {"ok", "data", "date_filter"})
+    assert_response_has_keys("GET", "/api/spots/stats/mode", {"ok", "data", "date_filter"})
+    assert_response_has_keys("GET", "/api/spots/stats/country?limit=5", {"ok", "data", "limit", "date_filter"})
+    assert_response_has_keys("GET", "/api/spots/special?limit=5", {"ok", "data", "count"})
+    assert_response_has_keys("GET", "/api/solar", {"source", "indices", "hf_conditions"})
+
+
+def test_safe_frontend_post_contracts():
+    assert_response_has_keys(
+        "POST",
+        "/api/spots/filtered-search",
+        {"ok", "spots", "count"},
+        json={"limit": 5},
+    )
+    assert_response_has_keys(
+        "POST",
+        "/api/cluster/command",
+        {"success", "message"},
+        json={"command": "sh/dx"},
+    )
+    assert_response_has_keys(
+        "POST",
+        "/api/cluster/reconnect",
+        {"success", "message"},
+    )
+
+
+if __name__ == "__main__":
+    test_frontend_routes_are_registered()
+    test_safe_frontend_read_contracts()
+    test_safe_frontend_post_contracts()
+    print("Frontend endpoint contract smoke checks passed")
