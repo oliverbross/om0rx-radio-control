@@ -86,6 +86,7 @@ These were review findings that were low-risk enough to fix immediately:
 - Introduced `backend.core.context.AppContext` as the explicit runtime context and wired backend startup, health/status, Wavelog sync status, server-control cleanup, and WebSocket ownership through it.
 - Removed remaining active-tree legacy product strings from maintained code and tightened the quality-gate stale-reference scan.
 - Added frontend/backend endpoint contract smoke checks and restored the missing spots database stats/special endpoints used by the frontend.
+- Replaced direct WebSocket client list mutation with a `ConnectionManager` that broadcasts from snapshots, cleans stale clients centrally, and is exposed through `AppContext`.
 
 ## Review Findings
 
@@ -119,27 +120,6 @@ Recommended fix:
 - Continue moving service dependencies onto `AppContext`.
 - Replace service-level global setters with constructor or FastAPI dependency injection where practical.
 - Keep legacy `app.state.*` compatibility only while routers migrate.
-
-### P2: WebSocket Broadcast Lists Are Not Protected
-
-`services/websocket.py` keeps clients in a mutable list and removes disconnected clients while other broadcasts may be iterating:
-
-- `services/websocket.py:14`
-- `services/websocket.py:25`
-- `services/websocket.py:32`
-- `services/websocket.py:44`
-- `services/websocket.py:51`
-
-Risk:
-
-- Concurrent broadcasts can mutate the same list.
-- A stale client may survive or a client may be removed twice.
-
-Recommended fix:
-
-- Use a `ConnectionManager` class with an `asyncio.Lock`.
-- Store clients in a `set`.
-- Send from a snapshot and handle disconnect cleanup centrally.
 
 ### P2: Tests Need Better Separation After The Quality Gate
 

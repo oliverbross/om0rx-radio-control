@@ -16,16 +16,19 @@ router = APIRouter()
 async def _prepare_for_process_exit(request: Request, reason: str) -> None:
     """Close local resources before the backend process exits."""
     context = get_app_context(request)
-    websocket_clients = context.websocket_clients
     adif_sync_task = context.adif_sync_task
     flex = context.flex
 
-    for ws in list(websocket_clients):
-        try:
-            await ws.close(code=1001, reason=reason)
-        except Exception:
-            pass
-    websocket_clients.clear()
+    if context.websocket_manager:
+        await context.websocket_manager.close_all(reason)
+    else:
+        websocket_clients = context.websocket_clients
+        for ws in list(websocket_clients):
+            try:
+                await ws.close(code=1001, reason=reason)
+            except Exception:
+                pass
+        websocket_clients.clear()
 
     if adif_sync_task and not adif_sync_task.done():
         adif_sync_task.cancel()

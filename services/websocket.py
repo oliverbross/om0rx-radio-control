@@ -5,66 +5,109 @@ WebSocket broadcasting and endpoint management for FlexRadio Web Control
 import asyncio
 import logging
 import json
-from typing import List, Dict, Optional
+from typing import List, Dict, Iterable
 from fastapi import WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger(__name__)
 
-# Global WebSocket clients list
+
+class ConnectionManager:
+    """Track WebSocket clients and broadcast from stable snapshots."""
+
+    def __init__(self, legacy_clients: List[WebSocket] | None = None):
+        self._clients: set[WebSocket] = set()
+        self._legacy_clients = legacy_clients
+        self._lock = asyncio.Lock()
+        if legacy_clients:
+            self._clients.update(legacy_clients)
+
+    def bind_legacy_clients(self, clients: List[WebSocket]) -> None:
+        self._legacy_clients = clients
+        self._clients = set(clients)
+
+    async def connect(self, websocket: WebSocket) -> int:
+        async with self._lock:
+            self._clients.add(websocket)
+            if self._legacy_clients is not None and websocket not in self._legacy_clients:
+                self._legacy_clients.append(websocket)
+            return len(self._clients)
+
+    async def disconnect(self, websocket: WebSocket) -> None:
+        async with self._lock:
+            self._clients.discard(websocket)
+            if self._legacy_clients is not None and websocket in self._legacy_clients:
+                self._legacy_clients.remove(websocket)
+
+    async def broadcast(self, message_type: str, data) -> None:
+        async with self._lock:
+            clients = tuple(self._clients)
+
+        if not clients:
+            return
+
+        message = json.dumps({"type": message_type, "data": data})
+        disconnected = []
+
+        for client in clients:
+            try:
+                await client.send_text(message)
+            except Exception as e:
+                logger.warning("Failed to send %s WebSocket message: %s", message_type, e)
+                disconnected.append(client)
+
+        if disconnected:
+            await self.disconnect_many(disconnected)
+
+    async def disconnect_many(self, clients: Iterable[WebSocket]) -> None:
+        async with self._lock:
+            for client in clients:
+                self._clients.discard(client)
+                if self._legacy_clients is not None and client in self._legacy_clients:
+                    self._legacy_clients.remove(client)
+
+    async def close_all(self, reason: str) -> None:
+        async with self._lock:
+            clients = tuple(self._clients)
+            self._clients.clear()
+            if self._legacy_clients is not None:
+                self._legacy_clients.clear()
+
+        for client in clients:
+            try:
+                await client.close(code=1001, reason=reason)
+            except Exception:
+                pass
+
+
+# Compatibility list while older code still reads app.state.websocket_clients.
 websocket_clients: List[WebSocket] = []
+websocket_manager = ConnectionManager(websocket_clients)
 
 
 async def broadcast_status(data: dict):
     """Broadcast status to all WebSocket clients"""
-    if not websocket_clients:
-        return
-
-    message = json.dumps({"type": "status", "data": data})
-    disconnected = []
-
-    for client in websocket_clients:
-        try:
-            await client.send_text(message)
-        except Exception as e:
-            logger.warning(f"Failed to send to WebSocket: {e}")
-            disconnected.append(client)
-
-    for client in disconnected:
-        websocket_clients.remove(client)
+    await websocket_manager.broadcast("status", data)
 
 
 async def broadcast_spots(spots: List[Dict]):
     """Broadcast DX spots to all WebSocket clients"""
-    if not websocket_clients:
-        return
-
-    message = json.dumps({"type": "spots", "data": spots})
-    disconnected = []
-
-    for client in websocket_clients:
-        try:
-            await client.send_text(message)
-        except Exception as e:
-            logger.warning(f"Failed to broadcast spots: {e}")
-            disconnected.append(client)
-
-    for client in disconnected:
-        websocket_clients.remove(client)
+    await websocket_manager.broadcast("spots", spots)
 
 
 def register_websocket_endpoint(app, flex=None, dx_spots_cache=None, ws_clients=None):
     """Register the WebSocket endpoint with the FastAPI app"""
-    global websocket_clients
+    global websocket_clients, websocket_manager
 
     if ws_clients is not None:
         websocket_clients = ws_clients
+        websocket_manager.bind_legacy_clients(ws_clients)
 
     @app.websocket("/ws/radio")
     async def websocket_endpoint(websocket: WebSocket):
         """WebSocket for real-time updates"""
         await websocket.accept()
-        websocket_clients.append(websocket)
-        logger.info(f"✅ WebSocket connected (total: {len(websocket_clients)})")
+        total_clients = await websocket_manager.connect(websocket)
+        logger.info(f"✅ WebSocket connected (total: {total_clients})")
 
         try:
             # Send initial status
@@ -105,5 +148,6 @@ def register_websocket_endpoint(app, flex=None, dx_spots_cache=None, ws_clients=
         except Exception as e:
             logger.error(f"WebSocket error: {e}")
         finally:
-            if websocket in websocket_clients:
-                websocket_clients.remove(websocket)
+            await websocket_manager.disconnect(websocket)
+
+    return websocket_manager

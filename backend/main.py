@@ -86,12 +86,13 @@ def register_all_services():
     register_radio_endpoints(app, context.flex, broadcast_status)
 
     # Register WebSocket endpoint
-    register_websocket_endpoint(
+    context.websocket_manager = register_websocket_endpoint(
         app,
         context.flex,
         context.dx_spots_cache,
         context.websocket_clients,
     )
+    sync_runtime_state()
 
     # Register QSO logging endpoints (Wavelog, QRZ, ADIF)
     register_qso_logging_endpoints(app)

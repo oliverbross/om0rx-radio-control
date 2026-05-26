@@ -26,6 +26,7 @@ def default_sync_status() -> Dict[str, Any]:
 @dataclass
 class AppContext:
     flex: Any = None
+    websocket_manager: Any = None
     websocket_clients: List[Any] = field(default_factory=list)
     dx_spots_cache: List[Dict[str, Any]] = field(default_factory=list)
     db_connection: Any = None
@@ -55,6 +56,7 @@ def get_app_context(request_or_app: Any) -> AppContext:
 def sync_app_state(app: Any, context: AppContext) -> None:
     """Expose context fields through legacy app.state attributes."""
     app.state.flex = context.flex
+    app.state.websocket_manager = context.websocket_manager
     app.state.sync_status = context.sync_status
     app.state.dx_spots_cache = context.dx_spots_cache
     app.state.websocket_clients = context.websocket_clients
