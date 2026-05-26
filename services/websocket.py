@@ -52,8 +52,12 @@ async def broadcast_spots(spots: List[Dict]):
         websocket_clients.remove(client)
 
 
-def register_websocket_endpoint(app, flex=None, dx_spots_cache=None):
+def register_websocket_endpoint(app, flex=None, dx_spots_cache=None, ws_clients=None):
     """Register the WebSocket endpoint with the FastAPI app"""
+    global websocket_clients
+
+    if ws_clients is not None:
+        websocket_clients = ws_clients
 
     @app.websocket("/ws/radio")
     async def websocket_endpoint(websocket: WebSocket):

@@ -32,8 +32,8 @@ def show_about_dialog(root):
     top.transient(root); top.grab_set()
     frm = ttk.Frame(top, padding=16)
     frm.pack(fill='both', expand=True)
-    msg = ('Wave-Flex Spot Sync 0.1 beta\n'
-           '@2025 Oliver Bross OM0RX\n'
+    msg = ('OM0RX Radio Control 2.0\n'
+           '@2026 Oliver Bross OM0RX\n'
            'Based on Python, Wavelog custom API.')
     ttk.Label(frm, text=msg, justify='center').pack(pady=(4,12))
     ttk.Button(frm, text='OK', command=top.destroy).pack()

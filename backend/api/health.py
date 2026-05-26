@@ -1,5 +1,7 @@
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request
 import logging
+
+from backend.core import get_app_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -7,7 +9,7 @@ router = APIRouter()
 @router.get("/api/health")
 async def health_check(request: Request):
     """Health check"""
-    flex = request.app.state.flex
+    flex = get_app_context(request).flex
     connected = flex is not None and flex.sock is not None
     return {
         "status": "ok" if connected else "disconnected",
@@ -20,11 +22,12 @@ async def health_check(request: Request):
 async def get_status(request: Request):
     """Get complete radio status"""
     logger.info("📊 /api/status endpoint called")
-    flex = getattr(request.app.state, 'flex', None)
+    context = get_app_context(request)
+    flex = context.flex
     logger.info(f"🔍 Flex object: {flex}")
     
     # Get cluster status and info
-    cluster_client = getattr(request.app.state, 'cluster_client', None)
+    cluster_client = context.cluster_client
     cluster_status = {
         "connected": cluster_client.connected if cluster_client else False,
         "activeName": "",
@@ -130,7 +133,8 @@ async def get_status(request: Request):
 @router.get("/api/sync-status")
 async def get_sync_status(request: Request):
     """Get the Wavelog to DuckDB sync status."""
-    sync_manager = getattr(request.app.state, "wavelog_sync_manager", None)
+    context = get_app_context(request)
+    sync_manager = context.wavelog_sync_manager
     if sync_manager:
         status = sync_manager.get_sync_status()
         return {
@@ -143,12 +147,12 @@ async def get_sync_status(request: Request):
             **status,
         }
 
-    sync_status = getattr(request.app.state, "sync_status", {
+    sync_status = context.sync_status or {
         "syncing": False,
         "last_sync": None,
         "total_records": 0,
         "new_records_this_sync": 0,
         "records_updated": 0,
         "next_sync_in": 0,
-    })
+    }
     return sync_status

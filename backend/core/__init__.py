@@ -5,25 +5,16 @@ Route handlers and background workers live in backend.api and services. This
 module intentionally stays small so startup ownership remains clear.
 """
 
-import asyncio
 import logging
-from typing import Dict, List, Optional
 
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from radio_control import config
-from radio_control.adif_handler import ADIFHandler
-from radio_control.classifier_api import ClassifierAPI
-from radio_control.cluster_client import ClusterManager
-from radio_control.cty_resolvers import CtyDatResolver
-from radio_control.dxbridge import FlexCtl
-from radio_control.qrz_api import QRZClient
-from radio_control.rotor_api import RotorController
 from radio_control.settings_store import LEGACY_ROTOR_CONFIG_PATH, load_legacy_json, save_config_updates
-from radio_control.wavelog_api import WavelogClient
 
+from .context import AppContext, get_app_context, install_app_context, sync_app_state
 from .models import (
     AGCRequest,
     BandRequest,
@@ -61,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 
 app = FastAPI(title="FlexRadio Web Control", version="2.0.0")
+context = AppContext()
 
 CORS_ALLOWED_ORIGINS = list(getattr(config, "CORS_ALLOWED_ORIGINS", []))
 
@@ -73,6 +65,7 @@ app.add_middleware(
 )
 
 logger.info("CORS allowed origins: %s", CORS_ALLOWED_ORIGINS)
+install_app_context(app, context)
 
 
 @app.exception_handler(RequestValidationError)
@@ -89,29 +82,41 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     }
 
 
-flex: Optional[FlexCtl] = None
-websocket_clients: List[WebSocket] = []
-dx_spots_cache: List[Dict] = []
-db_connection = None
-cluster_client: Optional[ClusterManager] = None
-cluster_connected = False
-classifier: Optional[ClassifierAPI] = None
-cty_resolver: Optional[CtyDatResolver] = None
-wavelog_client: Optional[WavelogClient] = None
-qrz_client: Optional[QRZClient] = None
-adif_handler: Optional[ADIFHandler] = None
-wavelog_sync_manager = None
-rotor: Optional[RotorController] = None
-adif_sync_task: Optional[asyncio.Task] = None
+flex = context.flex
+websocket_clients = context.websocket_clients
+dx_spots_cache = context.dx_spots_cache
+db_connection = context.db_connection
+cluster_client = context.cluster_client
+cluster_connected = context.cluster_connected
+classifier = context.classifier
+cty_resolver = context.cty_resolver
+wavelog_client = context.wavelog_client
+qrz_client = context.qrz_client
+adif_handler = context.adif_handler
+wavelog_sync_manager = context.wavelog_sync_manager
+rotor = context.rotor
+adif_sync_task = context.adif_sync_task
+sync_status = context.sync_status
 
-sync_status = {
-    "syncing": False,
-    "last_sync": None,
-    "total_records": 0,
-    "new_records_this_sync": 0,
-    "records_updated": 0,
-    "next_sync_in": 0,
-}
+
+def sync_legacy_globals_from_context():
+    """Keep old backend.core module globals aligned while routes migrate."""
+    global flex, db_connection, cluster_client, cluster_connected, classifier, cty_resolver
+    global wavelog_client, qrz_client, adif_handler, wavelog_sync_manager, rotor, adif_sync_task
+
+    flex = context.flex
+    db_connection = context.db_connection
+    cluster_client = context.cluster_client
+    cluster_connected = context.cluster_connected
+    classifier = context.classifier
+    cty_resolver = context.cty_resolver
+    wavelog_client = context.wavelog_client
+    qrz_client = context.qrz_client
+    adif_handler = context.adif_handler
+    wavelog_sync_manager = context.wavelog_sync_manager
+    rotor = context.rotor
+    adif_sync_task = context.adif_sync_task
+    sync_app_state(app, context)
 
 
 def _load_rotor_config():
@@ -132,6 +137,11 @@ def _load_rotor_config():
 
 __all__ = [
     "app",
+    "context",
+    "AppContext",
+    "get_app_context",
+    "sync_app_state",
+    "sync_legacy_globals_from_context",
     "validation_exception_handler",
     "flex",
     "websocket_clients",

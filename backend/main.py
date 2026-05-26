@@ -9,12 +9,11 @@ import logging
 # === Core Imports ===
 from backend.core import (
     app,  # FastAPI app instance
-    # Global state variables
-    flex, websocket_clients, dx_spots_cache, db_connection,
-    cluster_client, cluster_connected, classifier, cty_resolver,
-    rotor, sync_status,
+    context,
     # Core functions
-    _load_rotor_config
+    _load_rotor_config,
+    sync_app_state,
+    sync_legacy_globals_from_context,
 )
 
 # === Service Imports ===
@@ -59,11 +58,23 @@ from radio_control.wavelog_api import WavelogClient
 from radio_control.qrz_api import QRZClient
 from radio_control.adif_handler import ADIFHandler
 
-# === Module-level global variables ===
-wavelog_client = None
-qrz_client = None
-adif_handler = None
-wavelog_sync_manager = None
+# === Compatibility aliases while routes migrate to context ===
+wavelog_client = context.wavelog_client
+qrz_client = context.qrz_client
+adif_handler = context.adif_handler
+wavelog_sync_manager = context.wavelog_sync_manager
+
+
+def sync_runtime_state():
+    """Synchronize compatibility globals and legacy app.state attributes."""
+    global wavelog_client, qrz_client, adif_handler, wavelog_sync_manager
+
+    wavelog_client = context.wavelog_client
+    qrz_client = context.qrz_client
+    adif_handler = context.adif_handler
+    wavelog_sync_manager = context.wavelog_sync_manager
+    sync_app_state(app, context)
+    sync_legacy_globals_from_context()
 
 
 # === Service Registration ===
@@ -72,10 +83,15 @@ def register_all_services():
     """Register all service endpoints and functionality"""
 
     # Register radio control endpoints
-    register_radio_endpoints(app, flex, broadcast_status)
+    register_radio_endpoints(app, context.flex, broadcast_status)
 
     # Register WebSocket endpoint
-    register_websocket_endpoint(app, flex, dx_spots_cache)
+    register_websocket_endpoint(
+        app,
+        context.flex,
+        context.dx_spots_cache,
+        context.websocket_clients,
+    )
 
     # Register QSO logging endpoints (Wavelog, QRZ, ADIF)
     register_qso_logging_endpoints(app)
@@ -109,18 +125,18 @@ def register_all_services():
 
 def init_flex_radio():
     """Initialize FlexRadio connection"""
-    global flex
     try:
         host = getattr(config, 'FLEX_TCP_HOST', '192.168.1.100')
         port = getattr(config, 'FLEX_TCP_PORT', 4992)
         slice_id = getattr(config, 'FLEX_SLICE_ID', 0)
 
         logging.info(f"Initializing FlexCtl: {host}:{port}, slice {slice_id}")
-        flex = FlexCtl(host, port, slice_id)
+        context.flex = FlexCtl(host, port, slice_id)
 
-        if flex.connect():
+        if context.flex.connect():
             logging.info("✅ FlexRadio connected successfully")
-            set_radio_instance(flex)  # Update radio service
+            set_radio_instance(context.flex)  # Update radio service
+            sync_runtime_state()
             return True
         else:
             logging.error("❌ FlexRadio connection failed")
@@ -132,11 +148,11 @@ def init_flex_radio():
 
 def init_database():
     """Initialize database connection"""
-    global db_connection
     try:
-        db_connection = init_db_connection()
-        if db_connection:
+        context.db_connection = init_db_connection()
+        if context.db_connection:
             logging.info("✅ Database connection initialized")
+            sync_runtime_state()
             return True
         else:
             logging.warning("⚠️ Database connection failed")
@@ -148,19 +164,19 @@ def init_database():
 
 def init_cluster_client():
     """Initialize cluster client"""
-    global cluster_client
     try:
         cluster_host = getattr(config, 'CLUSTER_HOST', 'localhost')
         cluster_port = getattr(config, 'CLUSTER_PORT', 7373)
         cluster_user = getattr(config, 'CLUSTER_USER', 'N0CALL')
         cluster_pass = getattr(config, 'CLUSTER_PASS', '')
 
-        cluster_client = ClusterClient(cluster_host, cluster_port, cluster_user, cluster_pass)
-        cluster_client.set_spot_callback(process_cluster_spot)
+        context.cluster_client = ClusterClient(cluster_host, cluster_port, cluster_user, cluster_pass)
+        context.cluster_client.set_spot_callback(process_cluster_spot)
 
         # Start cluster in background
-        asyncio.create_task(cluster_client.run())
+        asyncio.create_task(context.cluster_client.run())
         logging.info("✅ Cluster client started")
+        sync_runtime_state()
         return True
     except Exception as e:
         logging.error(f"❌ Cluster client initialization failed: {e}")
@@ -169,13 +185,17 @@ def init_cluster_client():
 
 def init_cty_resolver():
     """Initialize CTY resolver"""
-    global cty_resolver
     try:
         dat_path = getattr(config, 'CTY_DAT_PATH', None)
         csv_path = getattr(config, 'CTY_CSV_PATH', None)
         ignore_suffixes = getattr(config, 'CTY_IGNORE_SUFFIXES', [])
-        cty_resolver = CtyDatResolver(dat_path, csv_path=csv_path, ignore_suffixes=ignore_suffixes)
+        context.cty_resolver = CtyDatResolver(
+            dat_path,
+            csv_path=csv_path,
+            ignore_suffixes=ignore_suffixes,
+        )
         logging.info("✅ CTY resolver loaded")
+        sync_runtime_state()
         return True
     except Exception as e:
         logging.error(f"❌ CTY resolver failed: {e}")
@@ -184,10 +204,10 @@ def init_cty_resolver():
 
 async def init_classifier():
     """Initialize Wavelog API classifier"""
-    global classifier
     try:
-        classifier = await get_classifier_api(wavelog_client)
+        context.classifier = await get_classifier_api(context.wavelog_client)
         logging.info("✅ API-based classifier initialized")
+        sync_runtime_state()
         return True
     except Exception as e:
         logging.error(f"❌ Classifier initialization failed: {e}")
@@ -196,7 +216,6 @@ async def init_classifier():
 
 def init_rotator():
     """Initialize rotator controller"""
-    global rotor
     try:
         rotor_enabled = getattr(config, 'ROTOR_ENABLED', False)
         if rotor_enabled:
@@ -205,8 +224,9 @@ def init_rotator():
             rotor_protocol = getattr(config, 'ROTOR_PROTOCOL', 'DCU-1')
             rotor_timeout = getattr(config, 'ROTOR_TIMEOUT_SEC', 2.5)
 
-            rotor = RotorController(rotor_host, rotor_port, rotor_protocol, rotor_timeout)
+            context.rotor = RotorController(rotor_host, rotor_port, rotor_protocol, rotor_timeout)
             logging.info(f"✅ Rotator initialized: {rotor_host}:{rotor_port} ({rotor_protocol})")
+            sync_runtime_state()
             return True
         else:
             logging.info("ℹ️ Rotator disabled in config")
@@ -218,10 +238,10 @@ def init_rotator():
 
 def init_wavelog_sync_manager():
     """Initialize Wavelog→DuckDB sync manager"""
-    global wavelog_sync_manager
     try:
-        wavelog_sync_manager = init_wavelog_sync()
+        context.wavelog_sync_manager = init_wavelog_sync()
         logging.info("✅ Wavelog→DuckDB sync initialized")
+        sync_runtime_state()
         return True
     except Exception as e:
         logging.error(f"❌ Wavelog→DuckDB sync initialization failed: {e}")
@@ -238,10 +258,10 @@ async def initialize_services():
     _load_rotor_config()
 
     # Initialize logging clients
-    global wavelog_client, qrz_client, adif_handler, cty_resolver
-    wavelog_client = WavelogClient()
-    qrz_client = QRZClient()
-    adif_handler = ADIFHandler()
+    context.wavelog_client = WavelogClient()
+    context.qrz_client = QRZClient()
+    context.adif_handler = ADIFHandler()
+    sync_runtime_state()
 
     # Initialize services
     init_database()
@@ -249,7 +269,12 @@ async def initialize_services():
     init_cty_resolver()  # Initialize before QSO logging
     
     # Initialize QSO logging service with clients (after cty_resolver)
-    init_qso_logging_clients(wavelog_client, qrz_client, adif_handler, cty_resolver)
+    init_qso_logging_clients(
+        context.wavelog_client,
+        context.qrz_client,
+        context.adif_handler,
+        context.cty_resolver,
+    )
     
     await init_classifier()  # Async
     init_cluster_client()
@@ -263,27 +288,28 @@ async def initialize_services():
     # Set up WSJT-X service dependencies (including adif_handler for local ADIF backup)
     wsjtx_service = get_wsjtx_service()
     wsjtx_service.set_dependencies(
-        wavelog_client,
-        qrz_client,
+        context.wavelog_client,
+        context.qrz_client,
         get_rotator_service(),
-        cty_resolver,
-        adif_handler,
+        context.cty_resolver,
+        context.adif_handler,
     )
 
     # Set up background task globals
     set_background_globals(
-        flex, websocket_clients, dx_spots_cache, cluster_client, cluster_connected,
-        cty_resolver, classifier, wavelog_sync_manager, sync_status,
+        context.flex,
+        context.websocket_clients,
+        context.dx_spots_cache,
+        context.cluster_client,
+        context.cluster_connected,
+        context.cty_resolver,
+        context.classifier,
+        context.wavelog_sync_manager,
+        context.sync_status,
         broadcast_status, broadcast_spots
     )
 
-    # Set app state for API endpoints
-    app.state.flex = flex
-    app.state.sync_status = sync_status
-    app.state.dx_spots_cache = dx_spots_cache
-    app.state.websocket_clients = websocket_clients
-    app.state.cluster_client = cluster_client
-    app.state.wavelog_sync_manager = wavelog_sync_manager
+    sync_runtime_state()
 
     # Register all service endpoints and routers
     register_all_services()
@@ -300,16 +326,16 @@ async def cleanup_services():
     await stop_background_tasks()
 
     # Close connections
-    if wavelog_client:
+    if context.wavelog_client:
         try:
-            await wavelog_client.close_session()
+            await context.wavelog_client.close_session()
             logging.info("✅ Wavelog HTTP session closed")
         except Exception as e:
             logging.error(f"❌ Error closing Wavelog session: {e}")
 
-    if flex:
+    if context.flex:
         try:
-            flex.close()
+            context.flex.close()
             logging.info("✅ FlexRadio connection closed")
         except Exception as e:
             logging.error(f"❌ Error closing FlexRadio: {e}")

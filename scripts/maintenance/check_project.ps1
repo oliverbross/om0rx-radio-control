@@ -177,6 +177,7 @@ print("no duplicate routes")
 
     Invoke-CheckStep "Safe smoke checks" {
         $safeSmokeTests = @(
+            "tests\smoke\test_app_context.py",
             "tests\smoke\test_config_save.py",
             "tests\smoke\test_cors_config.py",
             "tests\smoke\test_settings_consolidation.py",
@@ -195,6 +196,7 @@ print("no duplicate routes")
                 "-m",
                 "pytest",
                 "tests\smoke\test_config_save.py",
+                "tests\smoke\test_app_context.py",
                 "tests\smoke\test_cors_config.py",
                 "tests\smoke\test_settings_consolidation.py",
                 "tests\smoke\test_lifecycle_contract.py",
@@ -210,7 +212,7 @@ print("no duplicate routes")
             return
         }
 
-        & rg -n "Wave-Flex-Spots|waave-flex-spots|wave-flex-spots|wave-flex|waave-flex|c:\\Projects\\wave|documentation\\FEATURE_NAME|/documentation" . -g "*.*" -g "!docs/archive/**" -g "!vendor/**" -g "!node_modules/**" -g "!.git/**" -g "!scripts/maintenance/check_project.ps1"
+        & rg -n "(?i)Wave-Flex-Spots|waave-flex-spots|wave-flex-spots|wave-flex|waave-flex|waveflex|c:\\Projects\\wave|documentation\\FEATURE_NAME|/documentation" . -g "*.*" -g "!docs/archive/**" -g "!vendor/**" -g "!node_modules/**" -g "!.git/**" -g "!scripts/maintenance/check_project.ps1"
         if ($LASTEXITCODE -eq 0) {
             throw "Old project references were found"
         }

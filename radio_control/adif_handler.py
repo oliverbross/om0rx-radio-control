@@ -16,8 +16,8 @@ class ADIFHandler:
     
     ADIF_HEADER = """Amateur Radio Logbook
 <ADIF_VER:4>3.1.0
-<PROGRAMID:13>WaveFlex Spots
-<PROGRAMVERSION:5>1.0.0
+<PROGRAMID:19>OM0RX Radio Control
+<PROGRAMVERSION:5>2.0.0
 <EOH>"""
 
     def __init__(self, log_path: str = None):

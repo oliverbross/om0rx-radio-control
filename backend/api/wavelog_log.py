@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from typing import Optional
 import logging
 
+from backend.core import get_app_context
 from services.wavelog_log import get_wavelog_log_service
 
 logger = logging.getLogger(__name__)
@@ -114,9 +115,7 @@ async def get_wavelog_sync_status(request: Request):
     - Sync state (running/idle)
     """
     try:
-        # Access wavelog_sync_manager from main.py
-        import backend.main
-        sync_manager = backend.main.wavelog_sync_manager
+        sync_manager = get_app_context(request).wavelog_sync_manager
         
         if sync_manager:
             status = sync_manager.get_sync_status()
@@ -141,6 +140,7 @@ async def get_wavelog_sync_status(request: Request):
 
 @router.post("/reset-sync")
 async def reset_wavelog_sync(
+    request: Request,
     clear_data: bool = Query(default=False, description="Clear all synced data (if True)")
 ):
     """
@@ -151,9 +151,7 @@ async def reset_wavelog_sync(
     Use this if sync gets stuck or you want to re-sync all data from scratch.
     """
     try:
-        # Access wavelog_sync_manager from main.py
-        import backend.main
-        sync_manager = backend.main.wavelog_sync_manager
+        sync_manager = get_app_context(request).wavelog_sync_manager
         
         if not sync_manager:
             raise HTTPException(status_code=503, detail="Sync manager not initialized")

@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import signal
+from backend.core import get_app_context
 from radio_control import config
 from radio_control.lifecycle import reload_enabled, supervisor_enabled, write_lifecycle_request
 from radio_control.settings_store import public_config_from_module, save_config_updates
@@ -14,9 +15,10 @@ router = APIRouter()
 
 async def _prepare_for_process_exit(request: Request, reason: str) -> None:
     """Close local resources before the backend process exits."""
-    websocket_clients = getattr(request.app.state, 'websocket_clients', [])
-    adif_sync_task = getattr(request.app.state, 'adif_sync_task', None)
-    flex = getattr(request.app.state, 'flex', None)
+    context = get_app_context(request)
+    websocket_clients = context.websocket_clients
+    adif_sync_task = context.adif_sync_task
+    flex = context.flex
 
     for ws in list(websocket_clients):
         try:

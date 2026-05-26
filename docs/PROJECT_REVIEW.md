@@ -83,40 +83,41 @@ These were review findings that were low-risk enough to fix immediately:
 - Consolidated rotor AUTO and FT8 config persistence into `settings/app_settings.json`, with legacy JSON read fallback only.
 - Added a lifecycle-aware startup supervisor: backend restart/shutdown endpoints now write an ignored runtime request file and exit, while `start_all.ps1` or `scripts/start/start_services_only.ps1` owns restarting sibling bridge/backend processes.
 - Added `scripts/maintenance/check_project.ps1` as the fast local quality gate and exposed it through `npm run check`.
+- Introduced `backend.core.context.AppContext` as the explicit runtime context and wired backend startup, health/status, Wavelog sync status, server-control cleanup, and WebSocket ownership through it.
+- Removed remaining active-tree legacy product strings from maintained code and tightened the quality-gate stale-reference scan.
 
 ## Review Findings
 
-### P2: Runtime State Is Spread Across Globals, App State, And Setters
+### P2: Runtime State Is Still Partly Spread Across Globals And Setters
 
 State exists in:
 
-- `backend.core` globals.
-- `app.state`.
+- `backend.core.context.AppContext`.
+- legacy `backend.core` compatibility globals.
+- legacy `app.state.*` attributes synchronized from the context.
 - `services.radio` globals.
-- `services.websocket.websocket_clients`.
 - `services.background_tasks` globals.
 - module-level singleton services such as FT8, ADIF, Wavelog, WSJT-X, and rotor.
 
 Examples:
 
-- `backend/main.py:281`
-- `backend/main.py:285`
-- `services/websocket.py:14`
+- `backend/main.py:68`
+- `backend/main.py:299`
 - `services/background_tasks.py:49`
 - `services/radio.py:469`
 
 Risk:
 
-- Dependency ownership is unclear.
-- Tests must import and mutate globals.
+- Dependency ownership is clearer at the app boundary, but several services still receive state through global setters.
+- Some tests still import and mutate process-global state.
 - Registering routes more than once can duplicate handlers.
 - Shutdown and reconnect behavior is hard to verify.
 
 Recommended fix:
 
-- Introduce an `AppContext` dataclass or dependency container.
-- Put runtime service instances in `app.state.context`.
-- Inject dependencies through FastAPI dependencies or service constructors.
+- Continue moving service dependencies onto `AppContext`.
+- Replace service-level global setters with constructor or FastAPI dependency injection where practical.
+- Keep legacy `app.state.*` compatibility only while routers migrate.
 
 ### P2: WebSocket Broadcast Lists Are Not Protected
 
@@ -232,6 +233,7 @@ Passed:
 - `python tests\smoke\test_ft8_files.py`.
 - `python tests\smoke\test_qth_data.py`.
 - `python tests\smoke\test_config_save.py`.
+- `python tests\smoke\test_app_context.py`.
 - `python tests\smoke\test_lifecycle_contract.py`.
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\maintenance\check_project.ps1`.
 - `node tests\smoke\test-wsjtx-udp.js` received live WSJT-X packets.
@@ -246,8 +248,8 @@ Not run by default because they need local station resources:
 
 Do these before adding new features:
 
-1. Introduce an app context/dependency container to reduce module globals.
-2. Add endpoint contract tests for all frontend fetch/WebSocket paths.
+1. Add endpoint contract tests for all frontend fetch/WebSocket paths.
+2. Continue migrating routers/services from legacy globals to `AppContext`.
 3. Separate pure tests from live station diagnostics so pytest can become the default unit test runner.
 4. Split the largest frontend modules after backend contracts are stable.
 5. Harden Wavelog sync pagination and failure status reporting.

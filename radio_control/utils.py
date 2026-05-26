@@ -48,7 +48,7 @@ def setup_flex_logging():
         
         print(f'✅ File logging enabled: {log_path}')
         logging.info('='*80)
-        logging.info('Wave-Flex Spot Sync - FlexRadio Control Debug Log')
+        logging.info('OM0RX Radio Control Debug Log')
         logging.info('='*80)
         return True
     except Exception as e:

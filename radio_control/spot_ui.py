@@ -24,7 +24,7 @@ class SpotUi:
             except Exception as e:
                 logging.warning("UI disabled (Tk): %s", e); return
 
-            root=tk.Tk(); root.title("Wave-Flex Bridge — Live Spots")
+            root=tk.Tk(); root.title("OM0RX Radio Control - Live Spots")
             _apply_dark_theme(root)
             _apply_dark_theme(root)
             _attach_menu_to_root(root)

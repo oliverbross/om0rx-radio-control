@@ -30,7 +30,7 @@ class QRZClient:
             params = {
                 'username': self.username,
                 'password': self.password,
-                'agent': 'WaveFlex/1.0'
+                'agent': 'OM0RXRadioControl/2.0'
             }
             
             url = f"{self.api_url}?{urlencode(params)}"
