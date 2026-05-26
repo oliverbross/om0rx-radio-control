@@ -43,7 +43,8 @@ const PowerControl = {
                 this.serverOffline = true;
             } else {
                 console.error('❌ Shutdown failed:', response.status);
-                alert('Failed to shutdown server');
+                const error = await response.json().catch(() => ({}));
+                alert(error.detail || 'Failed to shutdown server');
             }
         } catch (error) {
             console.error('❌ Shutdown error:', error);
@@ -81,7 +82,8 @@ const PowerControl = {
                 }, 3000);
             } else {
                 console.error('❌ Restart failed:', response.status);
-                alert('Failed to restart server');
+                const error = await response.json().catch(() => ({}));
+                alert(error.detail || 'Failed to restart server');
             }
         } catch (error) {
             console.error('❌ Restart error:', error);

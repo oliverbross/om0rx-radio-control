@@ -2,59 +2,41 @@
 
 ## Documentation Location
 
-**All documentation files MUST be placed in the `/documentation` folder.**
+Maintained project documentation belongs in `/docs`.
 
-### Applies to:
-- All `.md` files (Markdown documentation)
-- All `.txt` files (Markdown documentation)
-- Project guides and README files
-- Implementation summaries
-- Technical documentation
-- User guides and tutorials
+### Applies To
+
+- Project guides and README-style references
+- Implementation notes that are still current
 - Architecture documentation
 - API documentation
-- Change logs and update notes
 - Testing documentation
-- Deployment guides
+- Deployment or startup guides
 
-### Exceptions:
-- Root-level `README.md` (if serves as project entry point)
-- `LICENSE.md` or `LICENSE` files
-- `.zencoder/rules/*.md` files (Zencoder configuration)
+### Exceptions
 
-### Directory Structure:
-```
-/documentation/
-  ├── PROJECT.md              # Main project documentation
-  ├── QUICKSTART.md           # Quick start guide
-  ├── TESTING.md              # Testing guide
-  ├── IMPLEMENTATION_*.md     # Implementation details
-  ├── *_SUMMARY.md            # Feature summaries
-  ├── *_COMPLETE.md           # Completion reports
-  └── requirements.txt        # Dependencies (if applicable)
+- Root-level `README.md`
+- Root-level project metadata such as `LICENSE`
+- `.zencoder/rules/*.md` files
+
+### Directory Structure
+
+```text
+docs/
+├── PROJECT_REVIEW.md      Current architecture review and next work
+└── archive/               Historical notes and diagnostics
 ```
 
-### When Creating Documentation:
-1. **Always check** if `/documentation` folder exists
-2. **Place all new .md files** in `/documentation/`
-3. **Use descriptive names** (e.g., `BIDIRECTIONAL_SYNC_COMPLETE.md`, `FREQUENCY_CONTROL_UPDATE.md`)
-4. **Keep root clean** - avoid cluttering the project root with documentation files
-5. **Update existing docs** in their current location (don't duplicate)
+### When Creating Documentation
 
-### Naming Conventions:
-- Use UPPERCASE for significant documentation: `PROJECT.md`, `QUICKSTART.md`
-- Use descriptive prefixes: `IMPLEMENTATION_`, `TESTING_`, `API_`
-- Use suffixes for status: `_SUMMARY.md`, `_COMPLETE.md`, `_UPDATE.md`
-- Be specific: `SLIDER_FIXES_SUMMARY.md` instead of `FIXES.md`
+1. Place maintained docs under `docs/`.
+2. Use `docs/archive/` for historical notes that should not guide current work.
+3. Keep root clean; do not add one-off summaries or reports there.
+4. Update existing docs in place instead of duplicating them.
 
-### Benefits:
-✅ Keeps project root clean and organized
-✅ Easy to find all documentation in one place
-✅ Prevents documentation files from being scattered
-✅ Makes it clear where new documentation should go
-✅ Improves project maintainability
+## Example Commands
 
-## Example Commands:
-When creating documentation, use paths like:
-- `c:\Projects\wave-flex-spots\documentation\FEATURE_NAME.md`
-- NOT: `c:\Projects\wave-flex-spots\FEATURE_NAME.md`
+When creating maintained documentation, use paths like:
+
+- `C:\Projects\om0rx-radio-control\docs\FEATURE_NAME.md`
+- Not: `C:\Projects\om0rx-radio-control\FEATURE_NAME.md`

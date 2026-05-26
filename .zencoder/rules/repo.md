@@ -1,74 +1,59 @@
-# wave-flex-spots Repository Information
+# OM0RX Radio Control Repository Information
 
 ## Project Overview
-**FlexRadio Web Control Application** - A modern web-based control interface for FlexRadio systems with DX cluster spot integration.
+
+OM0RX Radio Control is a self-contained local control app for a FlexRadio station.
+It combines a FastAPI backend, browser frontend, Node.js bridge for SDC/WSJT-X
+traffic, Wavelog/QRZ integrations, rotor controls, and FT8 support.
 
 ## Technology Stack
-- **Frontend**: Vue.js 3 (CDN-based), vanilla JavaScript
-- **Backend**: Python FastAPI with WebSocket support
-- **Radio Interface**: FlexRadio SmartSDR API via `dxbridge.py`
-- **DX Spots**: Integration with DX cluster for real-time spot updates
+
+- Frontend: static HTML, Vue.js 3 from CDN, and vanilla JavaScript modules
+- Backend: Python FastAPI with WebSocket support
+- Bridge: Node.js WebSocket/TCP/UDP bridge in `bridge/`
+- Radio interface: FlexRadio SmartSDR helpers in `radio_control/`
+- Runtime data: `data/`, `logs/`, and `settings/`
 
 ## Project Structure
-```
-wave-flex-spots/
-├── frontend/
-│   ├── app.js           # Vue.js application (809 lines)
-│   └── index.html       # Main HTML interface
-├── backend/
-│   ├── main.py          # FastAPI server with WebSocket
-│   └── __init__.py
-├── documentation/       # All project documentation
-├── logs/                # All log files (flex_debug.log, etc.)
-├── config.py            # Configuration (DO NOT MODIFY config-original*)
-├── dxbridge.py          # FlexRadio interface (DO NOT MODIFY dxbridge-original*)
-├── test_backend.py      # Backend tests
-└── start_webapp.ps1     # PowerShell startup script
-```
 
-## Architecture
-- **WebSocket Communication**: Real-time bidirectional sync between UI and radio
-- **Optimistic Updates**: Immediate UI feedback with backend confirmation
-- **Debounced Commands**: 150ms delay on slider controls to prevent flooding
-- **Responsive Design**: Modern, mobile-friendly interface
-
-## Key Features
-1. **Full Radio Control**: Frequency, mode, filters, power, audio levels
-2. **DX Spots Integration**: Live spot updates with filtering
-3. **Interactive Frequency Control**: Mouse wheel and arrow key tuning
-4. **Bidirectional Sync**: All 30+ controls sync both ways (UI ↔ Radio)
-5. **Real-time Updates**: S-meter, TX state, all controls
+```text
+om0rx-radio-control/
+├── backend/          FastAPI app and route modules
+├── bridge/           Node.js SDC and WSJT-X bridge
+├── frontend/         Browser UI assets
+├── radio_control/    Core station, radio, logging, and integration logic
+├── services/         Backend service modules
+├── settings/         Tracked non-secret runtime settings
+├── scripts/          Launch, startup, and maintenance scripts
+├── tests/smoke/      Lightweight smoke checks
+├── docs/             Current docs and archived notes
+├── data/             Static data plus ignored runtime databases
+└── logs/             Ignored runtime logs
+```
 
 ## Development Guidelines
-1. **Documentation**: All `.md` files go in `/documentation/` folder
-2. **Logs**: All log files go in `/logs/` folder
-3. **Original Files**: Never modify `*-original-do-not-modify.*` files
-4. **WebSocket Updates**: All radio state changes go through `updateRadioStatus()`
-5. **Slider Debouncing**: Use 150ms debounce for all slider controls
-6. **Optimistic Updates**: Update local state immediately, then send command
 
-## CRITICAL - WSJT-X Configuration
-⚠️ **NEVER CHANGE** the WSJT-X UDP multicast address - it is ALWAYS **224.0.0.1**
-- WSJT-X broadcasts packets to multicast address 224.0.0.1
-- This is the standard WSJT-X protocol behavior
-- Environment variable: `WSJTX_UDP_MULTICAST` must ALWAYS be "224.0.0.1"
-- WSJT-X UDP port: **2237** (do not change)
-- Bridge WebSocket: **8091** (do not change)
+1. Keep the project self-contained under `C:\Projects\om0rx-radio-control`.
+2. Use `.\start_all.ps1` as the primary local entry point.
+3. Keep station-specific secrets in ignored `config_local.py` or `settings/local_secrets.json`.
+4. Persist non-secret runtime settings in `settings/app_settings.json`.
+5. Put maintained documentation in `docs/`, not the project root.
+6. Put smoke checks in `tests/smoke/`.
+7. Do not add new root-level runtime files unless they are true project metadata.
 
 ## Important Files
-- `frontend/app.js`: Main Vue.js application with all UI logic
-- `backend/main.py`: FastAPI server with WebSocket and API endpoints
-- `dxbridge.py`: FlexRadio SmartSDR interface layer
-- `config.py`: Application configuration settings
-- `documentation/PROJECT.md`: Detailed project documentation
+
+- `start_all.ps1`: primary local supervisor and launcher
+- `backend/main.py`: FastAPI application entry point
+- `backend/api/`: API routers
+- `bridge/sdc-bridge-server.js`: SDC/WSJT-X bridge
+- `radio_control/config.py`: defaults plus layered overrides
+- `settings/app_settings.json`: tracked non-secret runtime settings
+- `docs/PROJECT_REVIEW.md`: current architecture review and next work
 
 ## Testing
-- Run backend tests: `python test_backend.py`
-- Start application: `.\start_webapp.ps1`
-- Access UI: http://localhost:8000
 
-## Notes
-- This is a Windows-based project (PowerShell, Win32)
-- Python 3.14 is being used
-- Vue.js 3 is loaded from CDN (no build process)
-- Real-time communication via WebSocket on `/ws/radio`
+- Python syntax check: compile maintained Python directories.
+- Smoke checks: run targeted scripts in `tests/smoke/`.
+- PowerShell parser check: parse tracked `.ps1` files before startup script changes.
+- Start application: `.\start_all.ps1`.

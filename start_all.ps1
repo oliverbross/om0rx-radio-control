@@ -7,7 +7,8 @@ param(
 )
 
 # FlexRadio Complete Startup - Backend + Bridge + Multi-Window Launcher
-# This script starts backend, WSJT-X bridge, and launches the native windows.
+# This script owns local process lifecycle. Backend restart/shutdown endpoints
+# write a lifecycle request and exit; this supervisor decides what restarts.
 
 if ($env:APP_ENV) {
     if ($env:APP_ENV -notin @("local", "development")) {
@@ -23,6 +24,11 @@ if ($env:BACKEND_HOST) {
 if ($env:BACKEND_PORT) {
     $BackendPort = [int]$env:BACKEND_PORT
 }
+
+$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$BridgeScript = Join-Path $ProjectRoot "bridge\sdc-bridge-server.js"
+$LauncherScript = Join-Path $ProjectRoot "scripts\launch\launch_windows.py"
+$LifecycleRequestPath = Join-Path $ProjectRoot "logs\app_lifecycle_request.json"
 
 $EnableReload = $Reload.IsPresent -or $AppEnv -eq "development" -or $env:UVICORN_RELOAD -in @("1", "true", "yes", "on")
 $BackendProbeHost = if ($BackendHost -eq "0.0.0.0") { "127.0.0.1" } else { $BackendHost }
@@ -53,6 +59,77 @@ function Stop-StartedProcess {
     Write-Host "✅ $Name stopped" -ForegroundColor Green
 }
 
+function Clear-LifecycleRequest {
+    Remove-Item -LiteralPath $LifecycleRequestPath -Force -ErrorAction SilentlyContinue
+}
+
+function Get-LifecycleAction {
+    if (-not (Test-Path -LiteralPath $LifecycleRequestPath)) {
+        return $null
+    }
+
+    try {
+        $request = Get-Content -LiteralPath $LifecycleRequestPath -Raw | ConvertFrom-Json
+        return $request.action
+    }
+    catch {
+        Write-Host "⚠️ Could not read lifecycle request: $($_.Exception.Message)" -ForegroundColor Yellow
+        return $null
+    }
+}
+
+function Start-BridgeProcess {
+    Write-Host "📡 Starting WSJT-X bridge server..." -ForegroundColor Yellow
+    $bridgeCommand = "Set-Location '$ProjectRoot'; `$env:TCP_HOST='127.0.0.1'; `$env:TCP_PORT='12166'; `$env:WSJTX_UDP_PORT='2237'; `$env:WSJTX_UDP_MULTICAST='224.0.0.1'; `$env:WS_PORT='8091'; `$env:WSJTX_ENABLED='true'; & node '$BridgeScript'"
+    $process = Start-Process powershell -ArgumentList "-NoProfile", "-Command", $bridgeCommand -WindowStyle Hidden -PassThru
+    Write-Host "✅ Bridge process started (PID: $($process.Id))" -ForegroundColor Green
+    Start-Sleep -Seconds 2
+    return $process
+}
+
+function Start-BackendProcess {
+    Write-Host "📡 Starting backend server..." -ForegroundColor Yellow
+    $reloadArgs = if ($EnableReload) { " --reload" } else { "" }
+    $reloadFlag = if ($EnableReload) { "1" } else { "0" }
+    $backendCommand = "Set-Location '$ProjectRoot'; `$env:APP_ENV='$AppEnv'; `$env:APP_LIFECYCLE_SUPERVISOR='1'; `$env:APP_UVICORN_RELOAD='$reloadFlag'; `$env:BACKEND_HOST='$BackendHost'; `$env:BACKEND_PORT='$BackendPort'; & python -m uvicorn backend.main:app --host $BackendHost --port $BackendPort$reloadArgs"
+    $process = Start-Process powershell -ArgumentList "-NoProfile", "-Command", $backendCommand -WindowStyle Hidden -PassThru
+    Write-Host "✅ Backend process started (PID: $($process.Id))" -ForegroundColor Green
+    return $process
+}
+
+function Wait-BackendReady {
+    Write-Host "⏳ Waiting for backend to be ready..." -ForegroundColor Yellow
+    $maxAttempts = 30
+    $attempt = 0
+
+    while ($attempt -lt $maxAttempts) {
+        try {
+            $socket = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+            $socket.Connect($BackendProbeHost, $BackendPort)
+            $socket.Close()
+            Write-Host "✅ Backend is ready!" -ForegroundColor Green
+            return $true
+        }
+        catch {
+            Start-Sleep -Seconds 1
+            $attempt++
+            if ($attempt % 5 -eq 0) {
+                Write-Host "   Still waiting... ($attempt/$maxAttempts)" -ForegroundColor Gray
+            }
+        }
+    }
+
+    return $false
+}
+
+function Start-LauncherProcess {
+    Write-Host "🚀 Launching native windows..." -ForegroundColor Yellow
+    $launcherCommand = "Set-Location '$ProjectRoot'; `$env:APP_ENV='$AppEnv'; `$env:BACKEND_HOST='$BackendHost'; `$env:BACKEND_PORT='$BackendPort'; & python '$LauncherScript'"
+    $process = Start-Process powershell -ArgumentList "-NoProfile", "-Command", $launcherCommand -WindowStyle Hidden -PassThru
+    Write-Host "✅ Launcher process started (PID: $($process.Id))" -ForegroundColor Green
+    return $process
+}
+
 Write-Host ""
 Write-Host "╔════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║    FlexRadio Multi-Window Launcher + WSJT-X Bridge   ║" -ForegroundColor Cyan
@@ -61,78 +138,74 @@ Write-Host ""
 Write-Host "Mode: $AppEnv | Backend: $BackendUrl | Reload: $EnableReload" -ForegroundColor Cyan
 Write-Host ""
 
-$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$bridgeProcess = $null
+$backendProcess = $null
+$launcherProcess = $null
 
-# Step 1: Start WSJT-X Bridge Server
-Write-Host "📡 Step 1: Starting WSJT-X bridge server..." -ForegroundColor Yellow
-$bridgeScript = Join-Path $ProjectRoot "bridge\sdc-bridge-server.js"
-$bridgeProcess = Start-Process powershell -ArgumentList "-NoExit", "-Command", "Set-Location '$ProjectRoot'; `$env:TCP_HOST='127.0.0.1'; `$env:TCP_PORT='12166'; `$env:WSJTX_UDP_PORT='2237'; `$env:WSJTX_UDP_MULTICAST='224.0.0.1'; `$env:WS_PORT='8091'; `$env:WSJTX_ENABLED='true'; node '$bridgeScript'" -PassThru
-Write-Host "✅ Bridge process started (PID: $($bridgeProcess.Id))" -ForegroundColor Green
-Start-Sleep -Seconds 2
+try {
+    Clear-LifecycleRequest
 
-# Step 2: Start backend in background
-Write-Host "📡 Step 2: Starting backend server..." -ForegroundColor Yellow
-$reloadArgs = if ($EnableReload) { " --reload" } else { "" }
-$backendCommand = "Set-Location '$ProjectRoot'; `$env:APP_ENV='$AppEnv'; `$env:BACKEND_HOST='$BackendHost'; `$env:BACKEND_PORT='$BackendPort'; & python -m uvicorn backend.main:app --host $BackendHost --port $BackendPort$reloadArgs"
-$backendProcess = Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCommand -PassThru
-Write-Host "✅ Backend process started (PID: $($backendProcess.Id))" -ForegroundColor Green
+    $bridgeProcess = Start-BridgeProcess
+    $backendProcess = Start-BackendProcess
 
-# Wait for backend to be ready (socket-based check - more reliable)
-Write-Host "⏳ Waiting for backend to be ready..." -ForegroundColor Yellow
-$maxAttempts = 30
-$attempt = 0
-$backendReady = $false
-
-while ($attempt -lt $maxAttempts -and -not $backendReady) {
-    try {
-        $socket = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
-        $socket.Connect($BackendProbeHost, $BackendPort)
-        $socket.Close()
-        $backendReady = $true
-        Write-Host "✅ Backend is ready!" -ForegroundColor Green
+    if (-not (Wait-BackendReady)) {
+        Write-Host "❌ Backend failed to start after 30 seconds" -ForegroundColor Red
+        Write-Host "Check the application logs for configuration or dependency errors." -ForegroundColor Red
+        Read-Host "Press Enter to exit"
+        exit 1
     }
-    catch {
-        # Backend not ready yet
-    }
-    
-    if (-not $backendReady) {
-        Start-Sleep -Seconds 1
-        $attempt++
-        if ($attempt % 5 -eq 0) {
-            Write-Host "   Still waiting... ($attempt/$maxAttempts)" -ForegroundColor Gray
+
+    Write-Host ""
+    Write-Host "✅ WSJT-X Bridge connected on WebSocket :8091" -ForegroundColor Green
+    Write-Host "✅ Backend available at $BackendUrl" -ForegroundColor Green
+    Write-Host ""
+
+    $launcherProcess = Start-LauncherProcess
+
+    while ($true) {
+        if ($backendProcess.HasExited) {
+            $action = Get-LifecycleAction
+
+            if ($action -eq "restart") {
+                Write-Host "🔄 Restart request received from backend" -ForegroundColor Yellow
+                Stop-StartedProcess -Process $bridgeProcess -Name "Bridge"
+                Clear-LifecycleRequest
+
+                $bridgeProcess = Start-BridgeProcess
+                $backendProcess = Start-BackendProcess
+
+                if (-not (Wait-BackendReady)) {
+                    Write-Host "❌ Backend failed to restart after 30 seconds" -ForegroundColor Red
+                    break
+                }
+
+                Write-Host "✅ Services restarted; existing windows can reconnect" -ForegroundColor Green
+                continue
+            }
+
+            if ($action -eq "shutdown") {
+                Write-Host "🛑 Shutdown request received from backend" -ForegroundColor Yellow
+                break
+            }
+
+            Write-Host "⚠️ Backend process exited without a lifecycle request" -ForegroundColor Yellow
+            break
         }
+
+        if ($launcherProcess -and $launcherProcess.HasExited) {
+            Write-Host "👋 Launcher windows closed" -ForegroundColor Cyan
+            break
+        }
+
+        Start-Sleep -Seconds 1
     }
 }
-
-if (-not $backendReady) {
-    Write-Host "❌ Backend failed to start after $maxAttempts seconds" -ForegroundColor Red
-    Write-Host "Check the backend window for errors" -ForegroundColor Red
+finally {
     Write-Host ""
-    Write-Host "Backend window shows these errors:" -ForegroundColor Yellow
-    Write-Host "   • pythonnet compatibility issues" -ForegroundColor White
-    Write-Host "   • Missing dependencies" -ForegroundColor White
-    Write-Host "   • Configuration errors" -ForegroundColor White
-    Write-Host ""
-    Read-Host "Press Enter to exit"
-    exit 1
+    Write-Host "🛑 Stopping managed processes..." -ForegroundColor Yellow
+    Stop-StartedProcess -Process $backendProcess -Name "Backend"
+    Stop-StartedProcess -Process $bridgeProcess -Name "Bridge"
+    Stop-StartedProcess -Process $launcherProcess -Name "Launcher"
+    Clear-LifecycleRequest
+    Write-Host "✅ All managed processes stopped" -ForegroundColor Green
 }
-
-Write-Host ""
-Write-Host "✅ WSJT-X Bridge connected on WebSocket :8091" -ForegroundColor Green
-Write-Host "✅ Backend available at $BackendUrl" -ForegroundColor Green
-Write-Host ""
-Write-Host "🚀 Step 3: Launching native windows..." -ForegroundColor Yellow
-Write-Host ""
-
-# Step 3: Launch windows
-$env:APP_ENV = $AppEnv
-$env:BACKEND_HOST = $BackendHost
-$env:BACKEND_PORT = [string]$BackendPort
-& python (Join-Path $ProjectRoot "scripts\launch\launch_windows.py")
-
-# Cleanup
-Write-Host ""
-Write-Host "🛑 Stopping services..." -ForegroundColor Yellow
-Stop-StartedProcess -Process $bridgeProcess -Name "Bridge"
-Stop-StartedProcess -Process $backendProcess -Name "Backend"
-Write-Host "✅ All services stopped" -ForegroundColor Green

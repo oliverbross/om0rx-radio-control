@@ -81,6 +81,7 @@ These were review findings that were low-risk enough to fix immediately:
 - Updated window launchers to respect `BACKEND_HOST` and `BACKEND_PORT` instead of hard-coded `localhost:8000`.
 - Restricted default CORS origins to local UI origins and added `CORS_ALLOWED_ORIGINS` for explicit overrides.
 - Consolidated rotor AUTO and FT8 config persistence into `settings/app_settings.json`, with legacy JSON read fallback only.
+- Added a lifecycle-aware startup supervisor: backend restart/shutdown endpoints now write an ignored runtime request file and exit, while `start_all.ps1` or `scripts/start/start_services_only.ps1` owns restarting sibling bridge/backend processes.
 
 ## Review Findings
 
@@ -136,27 +137,6 @@ Recommended fix:
 - Use a `ConnectionManager` class with an `asyncio.Lock`.
 - Store clients in a `set`.
 - Send from a snapshot and handle disconnect cleanup centrally.
-
-### P2: Shutdown/Restart Endpoints Need A Clear Ownership Model
-
-Shutdown and restart endpoints call `os.kill(os.getpid(), signal.SIGTERM)`:
-
-- `backend/api/server_control.py:113`
-- `backend/api/server_control.py:158`
-- `backend/api/server_control.py:167`
-- `backend/api/server_control.py:212`
-
-Risk:
-
-- Under Uvicorn reload, SIGTERM may target the worker process while the reloader remains.
-- Under `start_all.ps1`, the Node bridge and launcher are sibling processes, not children owned by the backend.
-- UI restart may not restart the whole app consistently.
-
-Recommended fix:
-
-- Treat process lifecycle as the launcher’s responsibility.
-- Backend shutdown endpoint should request shutdown, not own full app restart.
-- Build a small local supervisor script/module if restart from UI is required.
 
 ### P2: Tests Are Not Yet A Reliable Gate
 
@@ -261,6 +241,7 @@ Passed:
 - `python tests\smoke\test_ft8_files.py`.
 - `python tests\smoke\test_qth_data.py`.
 - `python tests\smoke\test_config_save.py`.
+- `python tests\smoke\test_lifecycle_contract.py`.
 - `node tests\smoke\test-wsjtx-udp.js` received live WSJT-X packets.
 
 Not passed because tooling is missing:
@@ -271,11 +252,11 @@ Not passed because tooling is missing:
 
 Do these before adding new features:
 
-1. Add a controlled process supervisor if UI-triggered whole-app restart remains required.
-2. Add a real project quality gate script and declare dev/test dependencies.
-3. Introduce an app context/dependency container to reduce module globals.
-4. Add endpoint contract tests for all frontend fetch/WebSocket paths.
-5. Split the largest frontend modules after backend contracts are stable.
+1. Add a real project quality gate script and declare dev/test dependencies.
+2. Introduce an app context/dependency container to reduce module globals.
+3. Add endpoint contract tests for all frontend fetch/WebSocket paths.
+4. Split the largest frontend modules after backend contracts are stable.
+5. Harden Wavelog sync pagination and failure status reporting.
 
 ## Development Standards Going Forward
 

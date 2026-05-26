@@ -18,6 +18,8 @@ That script starts the Node bridge, FastAPI backend, and desktop/browser launche
 
 The backend only allows browser origins for the local UI by default. For deliberate remote access, set `CORS_ALLOWED_ORIGINS` to a comma-separated list or JSON array in the environment, `config_local.py`, or the settings store.
 
+`start_all.ps1` is also the local lifecycle supervisor. UI restart requests are written to an ignored runtime request file under `logs/` and handled by the launcher script, so the backend no longer tries to restart sibling processes by itself. Restart and shutdown controls are disabled while Uvicorn reload mode is active.
+
 ## Setup
 
 Install Python dependencies:

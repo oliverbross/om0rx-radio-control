@@ -72,8 +72,8 @@ Add to `.gitignore`:
 - Consider archiving old logs if long-term retention is needed
 
 ## Example File Paths:
-✅ CORRECT: `c:\Projects\wave-flex-spots\logs\flex_debug.log`
-❌ INCORRECT: `c:\Projects\wave-flex-spots\flex_debug.log`
+✅ CORRECT: `C:\Projects\om0rx-radio-control\logs\flex_debug.log`
+❌ INCORRECT: `C:\Projects\om0rx-radio-control\flex_debug.log`
 
-✅ CORRECT: `c:\Projects\wave-flex-spots\logs\backend.log`
-❌ INCORRECT: `c:\Projects\wave-flex-spots\backend.log`
+✅ CORRECT: `C:\Projects\om0rx-radio-control\logs\backend.log`
+❌ INCORRECT: `C:\Projects\om0rx-radio-control\backend.log`
