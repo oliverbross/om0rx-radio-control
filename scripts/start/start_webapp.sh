@@ -5,7 +5,7 @@
 
 APP_ENV="${APP_ENV:-local}"
 BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
-BACKEND_PORT="${BACKEND_PORT:-8000}"
+BACKEND_PORT="${BACKEND_PORT:-8080}"
 
 if [ "$APP_ENV" != "local" ] && [ "$APP_ENV" != "development" ]; then
     echo "APP_ENV must be 'local' or 'development'. Current value: $APP_ENV"

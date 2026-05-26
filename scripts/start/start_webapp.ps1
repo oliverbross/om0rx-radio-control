@@ -2,7 +2,7 @@ param(
     [ValidateSet("local", "development")]
     [string]$AppEnv = "local",
     [string]$BackendHost = "127.0.0.1",
-    [int]$BackendPort = 8000,
+    [int]$BackendPort = 8080,
     [switch]$Reload
 )
 
@@ -43,7 +43,7 @@ $ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 
 # ============= KILL PORT PROCESSES =============
 Write-Host "🧹 Cleaning up ports..." -ForegroundColor Yellow
-$portsToClean = @(2237, 8091, 8000, 12166)
+$portsToClean = @(2237, 8091, $BackendPort, 12166)
 foreach ($port in $portsToClean) {
     $processes = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
     if ($processes) {

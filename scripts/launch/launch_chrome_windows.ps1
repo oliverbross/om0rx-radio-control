@@ -1,6 +1,6 @@
 param(
     [string]$BackendHost = "127.0.0.1",
-    [int]$BackendPort = 8000
+    [int]$BackendPort = 8080
 )
 
 # FlexRadio Chrome App Mode Launcher

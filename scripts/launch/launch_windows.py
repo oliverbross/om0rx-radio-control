@@ -22,12 +22,12 @@ except ImportError:
     print("      pip install pywebview --upgrade")
     print("\n   Or run: .\\launch_windows.ps1")
     print("\n💡 FALLBACK: Use the browser launcher instead:")
-    print("   http://127.0.0.1:8000/launcher.html")
+    print("   http://127.0.0.1:8080/launcher.html")
     sys.exit(1)
 
 # Configuration
 BACKEND_HOST = os.environ.get("BACKEND_HOST", "127.0.0.1")
-BACKEND_PORT = int(os.environ.get("BACKEND_PORT", "8000"))
+BACKEND_PORT = int(os.environ.get("BACKEND_PORT", "8080"))
 BACKEND_CONNECT_HOST = "127.0.0.1" if BACKEND_HOST == "0.0.0.0" else BACKEND_HOST
 BASE_URL = f"http://{BACKEND_CONNECT_HOST}:{BACKEND_PORT}"
 WINDOWS_CONFIG = [

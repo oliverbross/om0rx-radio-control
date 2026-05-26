@@ -38,10 +38,13 @@ function mountVueApp() {
     console.log('FlexRadioUtils:', window.FlexRadioUtils ? '✅' : '❌');
     console.log('FlexRadioSpots:', window.FlexRadioSpots ? '✅' : '❌');
     console.log('SDCTicker:', window.SDCTicker ? '✅' : '❌');
+    console.log('RadioControlSolar:', window.RadioControlSolar ? '✅' : '❌');
+    console.log('RadioControlWavelogStats:', window.RadioControlWavelogStats ? '✅' : '❌');
 
     // Check if all required modules are available
     if (!window.FlexRadioCore || !window.FlexRadioWebSocket || !window.FlexRadioControls || 
-        !window.FlexRadioUtils || !window.FlexRadioSpots || !window.SDCTicker) {
+        !window.FlexRadioUtils || !window.FlexRadioSpots || !window.SDCTicker ||
+        !window.RadioControlSolar || !window.RadioControlWavelogStats) {
         console.error('❌ Missing required modules! Cannot create Vue app.');
         console.error('Make sure all JavaScript files are loaded in the correct order.');
         throw new Error('Missing required modules');
@@ -55,6 +58,8 @@ function mountVueApp() {
             ...window.FlexRadioCore.data,
             ...window.FlexRadioSpots.data,
             ...window.SDCTicker.data,
+            ...window.RadioControlSolar.data,
+            ...window.RadioControlWavelogStats.data,
             ...(window.ft8ModalMixin ? window.ft8ModalMixin.data() : {}),
             
             // Additional data properties that weren't in core
@@ -258,15 +263,6 @@ function mountVueApp() {
             qrzHistory: [],
             qrzLoading: false,
             
-            // Solar Conditions Data
-            solarData: null,
-            solarUpdateTimer: null,
-            
-            // Wavelog Statistics Data
-            wavelogStats: null,
-            wavelogWpStats: null,
-            statsLoading: false,
-            
             // DXCC Status Data
             dxccStatus: {},
             dxccBands: {},
@@ -406,62 +402,8 @@ function mountVueApp() {
             return zones.sort((a, b) => parseInt(a) - parseInt(b));
         },
         
-        // Solar conditions computed properties
-        isDaytime() {
-            const hour = new Date().getHours();
-            return hour >= 6 && hour < 20; // 6 AM to 8 PM considered day
-        },
-        
-        // Wavelog Statistics computed properties
-        consolidatedWavelogModes() {
-            if (!this.wavelogWpStats || !this.wavelogWpStats.statistics || !this.wavelogWpStats.statistics.totalgroupedmodes) {
-                console.log('❌ No wavelog WP stats available for consolidation');
-                return [];
-            }
-            
-            const modes = this.wavelogWpStats.statistics.totalgroupedmodes;
-            console.log('🔍 Raw modes data:', modes);
-            
-            // Initialize consolidated categories
-            const consolidated = {
-                CW: 0,
-                SSB: 0,
-                DIGI: 0
-            };
-            
-            // Define which modes belong to each category
-            const ssbModes = ['SSB', 'USB', 'LSB', 'AM', 'FM'];
-            const digitalModes = ['FT8', 'FT4', 'MFSK', 'RTTY', 'PSK', 'PSK31', 'PSK63', 'JT65', 'JT9', 
-                                  'OLIVIA', 'DOMINO', 'HELL', 'MT63', 'THOR', 'THROB', 'CONTESTI', 'JS8'];
-            
-            // Consolidate mode counts
-            modes.forEach(modeObj => {
-                const mode = (modeObj.col_submode || modeObj.col_mode).toUpperCase();
-                const count = parseInt(modeObj.count || modeObj.total) || 0;
-                console.log(`  Mode: ${mode}, Count: ${count}, Raw obj:`, modeObj);
-                
-                if (mode === 'CW') {
-                    consolidated.CW += count;
-                } else if (ssbModes.includes(mode)) {
-                    consolidated.SSB += count;
-                } else if (digitalModes.includes(mode)) {
-                    consolidated.DIGI += count;
-                } else {
-                    // If unknown digital-sounding mode, add to DIGI
-                    console.log(`⚠️ Unknown mode "${mode}" added to DIGI`);
-                    consolidated.DIGI += count;
-                }
-            });
-            
-            console.log('✅ Consolidated totals:', consolidated);
-            
-            // Convert to array format for template
-            return [
-                { mode: 'CW', total: consolidated.CW },
-                { mode: 'SSB', total: consolidated.SSB },
-                { mode: 'DIGI', total: consolidated.DIGI }
-            ];
-        },
+        ...window.RadioControlSolar.computed,
+        ...window.RadioControlWavelogStats.computed,
         
         // Pagination for Previous QSOs
         prevQSOsPageCount() {
@@ -648,6 +590,8 @@ function mountVueApp() {
         ...window.FlexRadioUtils,
         ...window.FlexRadioSpots.methods,
         ...window.SDCTicker.methods,
+        ...window.RadioControlSolar.methods,
+        ...window.RadioControlWavelogStats.methods,
         ...PowerControl,
         ...(window.ft8ModalMixin ? window.ft8ModalMixin.methods : {}),
         
@@ -2350,125 +2294,6 @@ function mountVueApp() {
             }
         },
 
-        // === Solar Data Methods ===
-        
-        async loadSolarData() {
-            try {
-                console.log('🌞 Loading solar data...');
-                const response = await fetch('/api/solar');
-                if (!response.ok) {
-                    throw new Error(`API error: ${response.status}`);
-                }
-                
-                const data = await response.json();
-                this.solarData = data;
-                console.log('✅ Solar data loaded:', data.indices);
-                
-                return data;
-            } catch (error) {
-                console.error('❌ Failed to load solar data:', error);
-                this.solarData = null;
-                return null;
-            }
-        },
-        
-        setupSolarDataRefresh() {
-            // Clear existing timer
-            if (this.solarUpdateTimer) {
-                clearInterval(this.solarUpdateTimer);
-            }
-            
-            // Set up 10-minute refresh
-            this.solarUpdateTimer = setInterval(() => {
-                this.loadSolarData();
-            }, 10 * 60 * 1000); // 10 minutes
-            
-            console.log('✅ Solar data auto-refresh setup (10 minutes)');
-        },
-        
-        formatBandName(band) {
-            // Convert '80m_40m' to '80-40m', '30m_20m' to '30-20m', etc.
-            return band.replace('m_', '-').replace('_', '-');
-        },
-        
-        getHFCondition(conditions, isDaytime) {
-            return isDaytime ? conditions.day : conditions.night;
-        },
-        
-        getHFConditionClass(conditions, isDaytime) {
-            const condition = isDaytime ? conditions.day : conditions.night;
-            if (!condition) return 'unknown';
-            
-            const cond = condition.toLowerCase();
-            if (cond.includes('good') || cond.includes('excellent')) return 'good';
-            if (cond.includes('fair') || cond.includes('normal')) return 'fair';
-            if (cond.includes('poor') || cond.includes('bad')) return 'poor';
-            return 'unknown';
-        },
-        
-        getSolarData() {
-            return window.SolarOverlay ? window.SolarOverlay.getSolarData() : this.solarData;
-        },
-        
-        // === Wavelog Statistics Methods ===
-        
-        async loadWavelogStatistics() {
-            try {
-                console.log('📊 Loading Wavelog statistics...');
-                this.statsLoading = true;
-                
-                // Fetch both statistics endpoints
-                const [statsResponse, wpStatsResponse] = await Promise.all([
-                    fetch('/api/wavelog-log/statistics'),
-                    fetch('/api/wavelog-log/wp-statistics')
-                ]);
-                
-                if (statsResponse.ok) {
-                    const statsData = await statsResponse.json();
-                    console.log('📊 Raw statistics response:', JSON.stringify(statsData, null, 2));
-                    this.wavelogStats = statsData.data;
-                    console.log('✅ Wavelog statistics loaded:', this.wavelogStats);
-                    console.log('  - Today:', this.wavelogStats?.Today);
-                    console.log('  - Month:', this.wavelogStats?.month_qsos);
-                    console.log('  - Year:', this.wavelogStats?.year_qsos);
-                    console.log('  - Total:', this.wavelogStats?.total_qsos);
-                } else {
-                    console.error('❌ Failed to load Wavelog statistics:', statsResponse.status);
-                }
-                
-                if (wpStatsResponse.ok) {
-                    const wpStatsData = await wpStatsResponse.json();
-                    console.log('📊 Raw WP statistics response:', JSON.stringify(wpStatsData, null, 2));
-                    this.wavelogWpStats = wpStatsData.data;
-                    console.log('✅ Wavelog WP statistics loaded:', this.wavelogWpStats);
-                    if (this.wavelogWpStats?.statistics?.totalgroupedmodes) {
-                        console.log('  - Total modes:', this.wavelogWpStats.statistics.totalgroupedmodes.length);
-                        // Show consolidated mode breakdown
-                        const consolidated = this.consolidatedWavelogModes;
-                        console.log('📊 Consolidated modes:', consolidated);
-                        console.log('  - CW:', consolidated[0]?.total || 0);
-                        console.log('  - SSB:', consolidated[1]?.total || 0);
-                        console.log('  - DIGI:', consolidated[2]?.total || 0);
-                    }
-                } else {
-                    console.error('❌ Failed to load Wavelog WP statistics:', wpStatsResponse.status);
-                }
-                
-            } catch (error) {
-                console.error('❌ Failed to load Wavelog statistics:', error);
-                this.wavelogStats = null;
-                this.wavelogWpStats = null;
-            } finally {
-                this.statsLoading = false;
-            }
-        },
-        
-        formatModeCount(mode, submode, count) {
-            if (submode) {
-                return `${mode}/${submode}: ${count}`;
-            }
-            return `${mode}: ${count}`;
-        },
     },
     
     async mounted() {
@@ -2496,6 +2321,7 @@ function mountVueApp() {
     },
     
     beforeUnmount() {
+        this.cleanupSolarDataRefresh();
         // Clean up SDC ticker WebSocket connection
         this.cleanupSDCTicker();
     }

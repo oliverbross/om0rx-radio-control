@@ -5,6 +5,7 @@ Clean orchestrator that imports and registers all modular components
 
 import asyncio
 import logging
+import os
 
 # === Core Imports ===
 from backend.core import (
@@ -360,7 +361,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "backend.main:app",
         host="0.0.0.0",
-        port=8000,
+        port=int(os.environ.get("BACKEND_PORT", "8080")),
         reload=True,
         log_level="info"
     )

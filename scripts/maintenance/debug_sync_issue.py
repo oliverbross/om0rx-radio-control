@@ -48,7 +48,7 @@ def check_sync_issue():
     import requests
     try:
         # Query through the API to avoid locking issues
-        response = requests.get("http://localhost:8000/api/qso/query", params={
+        response = requests.get("http://localhost:8080/api/qso/query", params={
             "limit": 10,
             "sort": "wavelog_id",
             "order": "desc"
@@ -64,7 +64,7 @@ def check_sync_issue():
             print(f"❌ API returned status {response.status_code}")
     except Exception as e:
         print(f"❌ Could not query API: {e}")
-        print("\n💡 Make sure backend is running on http://localhost:8000")
+        print("\n💡 Make sure backend is running on http://localhost:8080")
 
 if __name__ == "__main__":
     check_sync_issue()

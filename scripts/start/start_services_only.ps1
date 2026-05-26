@@ -2,7 +2,7 @@ param(
     [ValidateSet("local", "development")]
     [string]$AppEnv = "local",
     [string]$BackendHost = "127.0.0.1",
-    [int]$BackendPort = 8000,
+    [int]$BackendPort = 8080,
     [switch]$Reload
 )
 

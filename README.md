@@ -10,7 +10,7 @@ Run the full local application from the project root:
 .\start_all.ps1
 ```
 
-That script starts the Node bridge, FastAPI backend, and desktop/browser launcher using paths relative to this repository. It binds the backend to `127.0.0.1:8000` by default and does not use Uvicorn reload unless development mode is requested:
+That script starts the Node bridge, FastAPI backend, and desktop/browser launcher using paths relative to this repository. It binds the backend to `127.0.0.1:8080` by default and does not use Uvicorn reload unless development mode is requested:
 
 ```powershell
 .\start_all.ps1 -AppEnv development -Reload
@@ -70,6 +70,7 @@ logs/             Ignored runtime logs
 - `bridge/sdc-bridge-server.js` handles SDC/WSJT-X bridge traffic.
 - `radio_control/config.py` contains defaults and loads overrides from `config_local.py`, `settings/app_settings.json`, ignored `settings/local_secrets.json`, and environment variables.
 - `frontend/index.html` is the main browser UI.
+- `docs/FRONTEND.md` documents the no-build frontend module pattern and script-order contract.
 
 ## Quality Gate
 

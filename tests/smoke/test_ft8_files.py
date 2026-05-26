@@ -71,7 +71,7 @@ def test_ft8_files():
         print()
         print("Next steps:")
         print("  1. Start backend: python -m backend.main")
-        print("  2. Open browser: http://localhost:8000")
+        print("  2. Open browser: http://localhost:8080")
         print("  3. Click FT8 button and check console (F12)")
         print("  4. You should see:")
         print("     ✅ ft8_lib WASM module loaded")

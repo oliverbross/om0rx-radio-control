@@ -78,7 +78,7 @@ These were review findings that were low-risk enough to fix immediately:
 - Replaced `/api/config` source-code writes with JSON-backed runtime settings in `settings/app_settings.json` and ignored `settings/local_secrets.json`.
 - Updated legacy config helpers to use the same JSON settings store instead of editing `radio_control/config.py`.
 - Hardened launch scripts to bind the backend to `127.0.0.1` by default and make Uvicorn reload a development-mode opt-in.
-- Updated window launchers to respect `BACKEND_HOST` and `BACKEND_PORT` instead of hard-coded `localhost:8000`.
+- Updated window launchers to respect `BACKEND_HOST` and `BACKEND_PORT` instead of hard-coded localhost URLs.
 - Restricted default CORS origins to local UI origins and added `CORS_ALLOWED_ORIGINS` for explicit overrides.
 - Consolidated rotor AUTO and FT8 config persistence into `settings/app_settings.json`, with legacy JSON read fallback only.
 - Added a lifecycle-aware startup supervisor: backend restart/shutdown endpoints now write an ignored runtime request file and exit, while `start_all.ps1` or `scripts/start/start_services_only.ps1` owns restarting sibling bridge/backend processes.
@@ -128,6 +128,12 @@ Recommended fix:
 ### P2: Frontend Is Functional But Too Large And Untyped
 
 The frontend is mostly static JS with a very large `app-main.js`, direct DOM access, and many direct `fetch()` calls.
+
+Current progress:
+
+- `solar-data.js` owns Vue solar state, refresh, and HF condition formatting.
+- `wavelog-stats.js` owns Vue Wavelog dashboard statistics state, loading, and mode consolidation.
+- `docs/FRONTEND.md` now documents the active no-build module pattern and script-order contract.
 
 Risk:
 
@@ -216,9 +222,10 @@ Not run by default because they need local station resources:
 Do these before adding new features:
 
 1. Split the largest frontend modules now that backend contracts are covered.
-2. Add a frontend lint/type-check strategy appropriate for the no-build app.
-3. Add deeper Wavelog incremental sync tests and review MySQL timeout/retry behavior.
-4. Decide whether `requirements.txt` remains a compatibility file or becomes generated from `pyproject.toml`.
+2. Continue extracting cohesive `app-main.js` domains, starting with configuration, QRZ/DXCC lookup, and previous-QSO state.
+3. Add a frontend lint/type-check strategy appropriate for the no-build app.
+4. Add deeper Wavelog incremental sync tests and review MySQL timeout/retry behavior.
+5. Decide whether `requirements.txt` remains a compatibility file or becomes generated from `pyproject.toml`.
 
 ## Development Standards Going Forward
 

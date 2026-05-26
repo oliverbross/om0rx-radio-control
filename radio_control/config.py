@@ -73,7 +73,7 @@ def _cfg_list(name, default):
 
 
 BACKEND_HOST = _cfg_value("BACKEND_HOST", "127.0.0.1")
-BACKEND_PORT = _cfg_int("BACKEND_PORT", 8000)
+BACKEND_PORT = _cfg_int("BACKEND_PORT", 8080)
 CORS_ALLOWED_ORIGINS = _cfg_list(
     "CORS_ALLOWED_ORIGINS",
     [

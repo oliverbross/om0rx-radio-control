@@ -89,7 +89,7 @@ if ($bridgeContent -match "127\.0\.0\.1.*addMembership" -or ($bridgeContent -mat
 
 # Test 8: Port availability
 Write-Host "📋 Test 8: Checking port availability..." -ForegroundColor Yellow
-$ports = @(8000, 8091, 2237, 12166)
+$ports = @(8080, 8091, 2237, 12166)
 foreach ($port in $ports) {
     try {
         $socket = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
