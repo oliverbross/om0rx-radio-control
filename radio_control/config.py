@@ -1,6 +1,9 @@
 import os
 import importlib.util
 from pathlib import Path
+
+from radio_control.settings_store import load_app_settings, load_local_secrets
+
 # config.py (ver5.8)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
@@ -16,10 +19,17 @@ if _local_config_path.exists():
 else:
     _local_config = None
 
+_app_settings = load_app_settings()
+_local_secrets = load_local_secrets()
+
 
 def _cfg_value(name, default):
     if name in os.environ:
         return os.environ[name]
+    if name in _local_secrets:
+        return _local_secrets[name]
+    if name in _app_settings:
+        return _app_settings[name]
     if _local_config is not None and hasattr(_local_config, name):
         return getattr(_local_config, name)
     return default

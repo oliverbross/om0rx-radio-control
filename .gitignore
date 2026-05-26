@@ -36,6 +36,7 @@ node_modules/
 # Project specific
 config-local.py
 config_local.py
+settings/local_secrets.json
 
 # Database files
 data/*

@@ -32,7 +32,7 @@ Create local configuration from the example:
 Copy-Item config_local.example.py config_local.py
 ```
 
-`config_local.py` is intentionally ignored by Git. Keep station-specific credentials, API keys, database passwords, radio IPs, and local overrides there or in environment variables.
+`config_local.py` is intentionally ignored by Git. Keep station-specific credentials, API keys, database passwords, and local bootstrap overrides there or in environment variables. The web configuration dialog persists non-secret runtime settings to `settings/app_settings.json` and secret-bearing values to ignored `settings/local_secrets.json`. Runtime settings override `config_local.py`; environment variables override both.
 
 ## Project Layout
 
@@ -58,7 +58,7 @@ logs/             Ignored runtime logs
 - `start_all.ps1` is the primary entry point.
 - `backend/main.py` runs the FastAPI application.
 - `bridge/sdc-bridge-server.js` handles SDC/WSJT-X bridge traffic.
-- `radio_control/config.py` contains defaults and loads overrides from environment variables or `config_local.py`.
+- `radio_control/config.py` contains defaults and loads overrides from `config_local.py`, `settings/app_settings.json`, ignored `settings/local_secrets.json`, and environment variables.
 - `frontend/index.html` is the main browser UI.
 
 ## Cleanup Notes

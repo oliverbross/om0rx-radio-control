@@ -1,86 +1,67 @@
 #!/usr/bin/env python3
-"""Test config save functionality"""
+"""Smoke test that config saves do not modify Python source files."""
 
-import re
-import os
 from pathlib import Path
+import importlib
+import os
+
+import _bootstrap  # noqa: F401
+from radio_control import config
+from radio_control.settings_store import (
+    APP_SETTINGS_PATH,
+    LOCAL_SECRETS_PATH,
+    save_config_updates,
+)
+
 
 project_root = Path(__file__).resolve().parents[2]
 config_path = project_root / "radio_control" / "config.py"
 
-print(f"📝 Reading config from: {config_path}")
-with open(config_path, 'r', encoding='utf-8') as f:
-    original_txt = f.read()
 
-print(f"✅ Read {len(original_txt)} bytes")
+def read_text_if_exists(path: Path):
+    return path.read_text(encoding="utf-8") if path.exists() else None
 
-# Show current WINKEYER_ENABLED value
-import _bootstrap  # noqa: F401
-from radio_control import config
-print(f"🔍 Current WINKEYER_ENABLED in memory: {config.WINKEYER_ENABLED}")
 
-# Try to replace it
-key = "WINKEYER_ENABLED"
-new_value = False
-formatted_value = "False"
+original_config_text = config_path.read_text(encoding="utf-8")
+original_app_settings = read_text_if_exists(APP_SETTINGS_PATH)
+original_local_secrets = read_text_if_exists(LOCAL_SECRETS_PATH)
+original_winkeyer_enabled = getattr(config, "WINKEYER_ENABLED", None)
+original_qrz_username = getattr(config, "QRZ_USERNAME", None)
 
-def _replace_block(text, key, new_value_src):
-    print(f"\n🔍 Looking for: ^[ \\t]*{key}\\s*=")
-    start_re = re.compile(rf"^[ \t]*{re.escape(key)}\s*=", re.M)
-    m = start_re.search(text)
-    
-    if not m:
-        print(f"❌ Key '{key}' NOT FOUND in config file!")
-        return None
-    
-    print(f"✅ Found '{key}' at position {m.start()}-{m.end()}")
-    print(f"   Match: {repr(text[m.start():m.start()+50])}")
-    
-    rep = f"{key} = {new_value_src}"
-    end_re = re.compile(r"^([A-Z_][A-Z0-9_]*\s*=)", re.M)
-    m_end = end_re.search(text, pos=m.end())
-    
-    if m_end:
-        print(f"✅ Found next key at position {m_end.start()}: {m_end.group()}")
-        new_text = text[:m.start()] + rep + "\n" + text[m_end.start():]
+try:
+    result = save_config_updates(
+        {
+            "WINKEYER_ENABLED": False,
+            "QRZ_USERNAME": "SMOKE_TEST_USER",
+            "UNSUPPORTED_TEST_KEY": "ignored",
+        }
+    )
+
+    assert config_path.read_text(encoding="utf-8") == original_config_text
+    assert "WINKEYER_ENABLED" in result["app_settings_keys"]
+    assert "QRZ_USERNAME" in result["local_secret_keys"]
+    assert "UNSUPPORTED_TEST_KEY" in result["rejected_keys"]
+
+    if "WINKEYER_ENABLED" not in os.environ:
+        importlib.reload(config)
+        assert config.WINKEYER_ENABLED is False
+    if "QRZ_USERNAME" not in os.environ:
+        importlib.reload(config)
+        assert config.QRZ_USERNAME == "SMOKE_TEST_USER"
+
+    print("✅ Config save uses JSON settings and leaves radio_control/config.py unchanged")
+finally:
+    if original_app_settings is None:
+        APP_SETTINGS_PATH.unlink(missing_ok=True)
     else:
-        print(f"⚠️  No next key found, replacing to end of file")
-        new_text = text[:m.start()] + rep + "\n"
-    
-    return new_text
+        APP_SETTINGS_PATH.write_text(original_app_settings, encoding="utf-8")
 
-new_txt = _replace_block(original_txt, key, formatted_value)
+    if original_local_secrets is None:
+        LOCAL_SECRETS_PATH.unlink(missing_ok=True)
+    else:
+        LOCAL_SECRETS_PATH.write_text(original_local_secrets, encoding="utf-8")
 
-if new_txt is None:
-    print("❌ Replacement failed!")
-    exit(1)
-
-print(f"\n📊 Size comparison: original={len(original_txt)}, new={len(new_txt)}")
-print(f"📊 Changed: {original_txt != new_txt}")
-
-# Check what was replaced
-print(f"\n🔍 New value in file:")
-new_line_match = re.search(rf"^{key}\s*=.*$", new_txt, re.M)
-if new_line_match:
-    print(f"   {new_line_match.group()}")
-
-# Write to test file
-test_path = project_root / "config_test.py"
-print(f"\n💾 Writing test to: {test_path}")
-with open(test_path, 'w', encoding='utf-8') as f:
-    f.write(new_txt)
-
-# Verify
-with open(test_path, 'r', encoding='utf-8') as f:
-    verify_txt = f.read()
-
-if verify_txt == new_txt:
-    print(f"✅ File written and verified successfully!")
-    # Check the specific line
-    for line in verify_txt.split('\n'):
-        if 'WINKEYER_ENABLED' in line:
-            print(f"✅ Line in file: {line}")
-else:
-    print(f"❌ File verification failed!")
-
-print("\n✅ Test completed!")
+    if original_winkeyer_enabled is not None:
+        setattr(config, "WINKEYER_ENABLED", original_winkeyer_enabled)
+    if original_qrz_username is not None:
+        setattr(config, "QRZ_USERNAME", original_qrz_username)

@@ -1,10 +1,11 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 import asyncio
 import logging
 import os
 import signal
-from datetime import datetime
 from radio_control import config
+from radio_control.settings_store import public_config_from_module, save_config_updates
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -12,31 +13,11 @@ router = APIRouter()
 
 @router.get("/api/config")
 async def get_config():
-    """Get application configuration (safe, non-sensitive values only)"""
+    """Get application configuration values used by the local UI."""
     try:
-        # Return only configuration values that are safe to expose to frontend
         config_data = {
             "success": True,
-            "config": {
-                "MY_STATION": getattr(config, 'MY_STATION', 'N0CALL'),
-                "ROTOR_ENABLED": getattr(config, 'ROTOR_ENABLED', False),
-                "ROTOR_TYPE": getattr(config, 'ROTOR_TYPE', ''),
-                "ROTOR_AUTO_ENABLED": getattr(config, 'ROTOR_AUTO_ENABLED', False),
-                "ROTOR_AUTO_DELAY_SEC": getattr(config, 'ROTOR_AUTO_DELAY_SEC', 2),
-                "WSJTX_ENABLED": getattr(config, 'WSJTX_ENABLED', True),
-                "WSJTX_AUTO_LOG": getattr(config, 'WSJTX_AUTO_LOG', True),
-                "WSJTX_AUTO_ROTATE": getattr(config, 'WSJTX_AUTO_ROTATE', True),
-                "WAVELOG_ENABLED": getattr(config, 'WAVELOG_ENABLED', True),
-                "QRZ_ENABLED": getattr(config, 'QRZ_ENABLED', True),
-                "CLUSTER_ENABLED": getattr(config, 'CLUSTER_ENABLED', False),
-                "CLUSTERS": getattr(config, 'CLUSTERS', []),
-                "WINKEYER_ENABLED": getattr(config, 'WINKEYER_ENABLED', False),
-                "WINKEYER_PORT": getattr(config, 'WINKEYER_PORT', 'COM3'),
-                "WINKEYER_BAUDRATE": getattr(config, 'WINKEYER_BAUDRATE', 1200),
-                "WINKEYER_DEFAULT_WPM": getattr(config, 'WINKEYER_DEFAULT_WPM', 20),
-                "WINKEYER_MEMORIES": getattr(config, 'WINKEYER_MEMORIES', {}),
-                "COLORS": getattr(config, 'COLORS', {}),
-            }
+            "config": public_config_from_module(config),
         }
         return config_data
     except Exception as e:
@@ -50,7 +31,7 @@ async def get_config():
 
 @router.post("/api/config")
 async def save_config(request: Request):
-    """Save application configuration"""
+    """Save application configuration without modifying Python source files."""
     try:
         body = await request.json()
         config_updates = body.get('config', {})
@@ -61,45 +42,23 @@ async def save_config(request: Request):
                 "error": "No configuration data provided"
             }
         
-        # Get the config file path
-        import inspect
-        config_file = inspect.getfile(config)
-        
-        # Read current config file
-        with open(config_file, 'r') as f:
-            config_lines = f.readlines()
-        
-        # Update configuration values
-        updated_keys = set()
-        for i, line in enumerate(config_lines):
-            for key, value in config_updates.items():
-                # Match lines like "KEY = value"
-                if line.strip().startswith(key + ' =') or line.strip().startswith(key + '='):
-                    # Prepare the new value
-                    if isinstance(value, str):
-                        new_value = f'"{value}"'
-                    elif isinstance(value, dict):
-                        new_value = str(value)
-                    elif isinstance(value, list):
-                        new_value = str(value)
-                    else:
-                        new_value = str(value)
-                    
-                    # Create the new line
-                    config_lines[i] = f"{key} = {new_value}\n"
-                    updated_keys.add(key)
-                    logger.info(f"✏️ Updated config: {key} = {new_value}")
-        
-        # Write back to config file
-        with open(config_file, 'w') as f:
-            f.writelines(config_lines)
-        
-        logger.info(f"✅ Configuration saved: {list(updated_keys)}")
+        save_result = save_config_updates(config_updates)
+
+        for key in save_result["updated_keys"]:
+            setattr(config, key, config_updates[key])
+
+        if save_result["rejected_keys"]:
+            logger.warning("Rejected unsupported config keys: %s", save_result["rejected_keys"])
+
+        logger.info("✅ Configuration saved: %s", save_result["updated_keys"])
         
         return {
             "success": True,
-            "message": f"Configuration saved ({len(updated_keys)} values updated)",
-            "updated_keys": list(updated_keys)
+            "message": f"Configuration saved ({len(save_result['updated_keys'])} values updated)",
+            "updated_keys": save_result["updated_keys"],
+            "app_settings_keys": save_result["app_settings_keys"],
+            "local_secret_keys": save_result["local_secret_keys"],
+            "rejected_keys": save_result["rejected_keys"],
         }
         
     except Exception as e:

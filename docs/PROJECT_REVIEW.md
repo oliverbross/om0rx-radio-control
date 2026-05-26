@@ -17,7 +17,7 @@ OM0RX Radio Control is a local station-control application for a FlexRadio-based
 - Core radio, cluster, logging, Wavelog, QRZ, CTY, and ADIF logic in `radio_control/`.
 - A browser-based frontend in `frontend/`.
 - A Node.js bridge in `bridge/` for SDC Skimmer TCP traffic and WSJT-X UDP traffic.
-- Runtime data in `data/`, logs in `logs/`, tracked non-secret settings in `settings/`, and local secrets in ignored `config_local.py`.
+- Runtime data in `data/`, logs in `logs/`, tracked non-secret settings in `settings/`, and local secrets in ignored `config_local.py` or `settings/local_secrets.json`.
 
 The primary user entry point is:
 
@@ -56,7 +56,7 @@ Important ownership boundaries:
 - `backend/main.py` orchestrates startup, dependency creation, route registration, and shutdown.
 - `backend/core/__init__.py` owns the FastAPI app object, shared runtime state declarations, validation handling, and rotor settings bootstrap only.
 - `services/` contains backend service behavior, but some services still use module-level globals.
-- `radio_control/config.py` centralizes defaults and project-relative paths, and loads environment variables or `config_local.py` overrides.
+- `radio_control/config.py` centralizes defaults and project-relative paths, then layers `config_local.py`, JSON runtime settings, ignored local secrets, and environment overrides.
 - `settings/rotor_config.json` persists non-secret rotor AUTO settings.
 
 ## What Was Fixed During This Review
@@ -75,30 +75,10 @@ These were review findings that were low-risk enough to fix immediately:
 - Removed deprecated route handlers, startup handlers, duplicate Pydantic models, and copied background workers from `backend/core/__init__.py`.
 - Moved Wavelog periodic background task startup to import directly from `radio_control/wavelog_duckdb_sync.py`.
 - Removed the remaining duplicate `GET /api/sync-status` registration and made the route report from the active Wavelog sync manager.
+- Replaced `/api/config` source-code writes with JSON-backed runtime settings in `settings/app_settings.json` and ignored `settings/local_secrets.json`.
+- Updated legacy config helpers to use the same JSON settings store instead of editing `radio_control/config.py`.
 
 ## Review Findings
-
-### P1: Configuration Save Writes Into Source Code
-
-`POST /api/config` writes directly to `radio_control/config.py`:
-
-- `backend/api/server_control.py:51`
-- `backend/api/server_control.py:66`
-- `backend/api/server_control.py:95`
-
-Risk:
-
-- Runtime UI changes modify tracked application source.
-- Secrets or station-specific values could accidentally be committed.
-- With `uvicorn --reload`, source writes can trigger restarts.
-- Config persistence is split between `config.py`, `config_local.py`, `settings/rotor_config.json`, and `logs/ft8_config.json`.
-
-Recommended fix:
-
-- Make `radio_control/config.py` defaults-only.
-- Persist UI-edited settings to `settings/app_settings.json`.
-- Keep secrets only in `config_local.py` or environment variables.
-- Add a typed settings loader that merges defaults, tracked settings, local secrets, and env overrides in a deterministic order.
 
 ### P1: Primary Launcher Uses Development Server Behavior
 
@@ -331,9 +311,9 @@ Not passed because tooling is missing:
 
 Do these before adding new features:
 
-1. Replace source-code config writes with a proper settings file and typed settings loader.
-2. Harden `start_all.ps1` so production/local mode is not using reload or LAN binding by default.
-3. Restrict CORS defaults for local radio-control use.
+1. Harden `start_all.ps1` so production/local mode is not using reload or LAN binding by default.
+2. Restrict CORS defaults for local radio-control use.
+3. Consolidate remaining config persistence files, especially `settings/rotor_config.json` and `logs/ft8_config.json`, under the settings model.
 4. Add a real project quality gate script and declare dev/test dependencies.
 5. Introduce an app context/dependency container to reduce module globals.
 6. Add endpoint contract tests for all frontend fetch/WebSocket paths.
