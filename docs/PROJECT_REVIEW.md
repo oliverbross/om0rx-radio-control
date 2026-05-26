@@ -79,30 +79,9 @@ These were review findings that were low-risk enough to fix immediately:
 - Updated legacy config helpers to use the same JSON settings store instead of editing `radio_control/config.py`.
 - Hardened launch scripts to bind the backend to `127.0.0.1` by default and make Uvicorn reload a development-mode opt-in.
 - Updated window launchers to respect `BACKEND_HOST` and `BACKEND_PORT` instead of hard-coded `localhost:8000`.
+- Restricted default CORS origins to local UI origins and added `CORS_ALLOWED_ORIGINS` for explicit overrides.
 
 ## Review Findings
-
-### P1: CORS Is Wide Open With Credentials Enabled
-
-`backend/core/__init__.py` configures:
-
-- `allow_origins=["*"]`
-- `allow_credentials=True`
-
-References:
-
-- `backend/core/__init__.py:67`
-- `backend/core/__init__.py:68`
-
-Risk:
-
-- For a radio-control app, broad browser access is not a good default.
-- If the API is reachable on the LAN, another page could potentially interact with local control endpoints.
-
-Recommended fix:
-
-- Restrict origins to `http://localhost:8000`, `http://127.0.0.1:8000`, and any explicitly configured local UI origins.
-- Keep no-auth endpoints local-only unless deliberate remote access is added later.
 
 ### P2: Runtime State Is Spread Across Globals, App State, And Setters
 
@@ -291,13 +270,12 @@ Not passed because tooling is missing:
 
 Do these before adding new features:
 
-1. Restrict CORS defaults for local radio-control use.
-2. Consolidate remaining config persistence files, especially `settings/rotor_config.json` and `logs/ft8_config.json`, under the settings model.
-3. Add a controlled process supervisor if UI-triggered whole-app restart remains required.
-4. Add a real project quality gate script and declare dev/test dependencies.
-5. Introduce an app context/dependency container to reduce module globals.
-6. Add endpoint contract tests for all frontend fetch/WebSocket paths.
-7. Split the largest frontend modules after backend contracts are stable.
+1. Consolidate remaining config persistence files, especially `settings/rotor_config.json` and `logs/ft8_config.json`, under the settings model.
+2. Add a controlled process supervisor if UI-triggered whole-app restart remains required.
+3. Add a real project quality gate script and declare dev/test dependencies.
+4. Introduce an app context/dependency container to reduce module globals.
+5. Add endpoint contract tests for all frontend fetch/WebSocket paths.
+6. Split the largest frontend modules after backend contracts are stable.
 
 ## Development Standards Going Forward
 

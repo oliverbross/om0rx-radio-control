@@ -62,13 +62,17 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="FlexRadio Web Control", version="2.0.0")
 
+CORS_ALLOWED_ORIGINS = list(getattr(config, "CORS_ALLOWED_ORIGINS", []))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+logger.info("CORS allowed origins: %s", CORS_ALLOWED_ORIGINS)
 
 
 @app.exception_handler(RequestValidationError)

@@ -16,6 +16,8 @@ That script starts the Node bridge, FastAPI backend, and desktop/browser launche
 .\start_all.ps1 -AppEnv development -Reload
 ```
 
+The backend only allows browser origins for the local UI by default. For deliberate remote access, set `CORS_ALLOWED_ORIGINS` to a comma-separated list or JSON array in the environment, `config_local.py`, or the settings store.
+
 ## Setup
 
 Install Python dependencies:

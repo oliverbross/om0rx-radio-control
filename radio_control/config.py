@@ -52,6 +52,37 @@ def _cfg_bool(name, default):
     return bool(value)
 
 
+def _cfg_list(name, default):
+    value = _cfg_value(name, default)
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if stripped.startswith("["):
+            import json
+
+            parsed = json.loads(stripped)
+            if not isinstance(parsed, list):
+                raise ValueError(f"{name} must be a JSON array or comma-separated list")
+            return parsed
+        return [item.strip() for item in stripped.split(",") if item.strip()]
+    return default
+
+
+BACKEND_HOST = _cfg_value("BACKEND_HOST", "127.0.0.1")
+BACKEND_PORT = _cfg_int("BACKEND_PORT", 8000)
+CORS_ALLOWED_ORIGINS = _cfg_list(
+    "CORS_ALLOWED_ORIGINS",
+    [
+        f"http://localhost:{BACKEND_PORT}",
+        f"http://127.0.0.1:{BACKEND_PORT}",
+    ],
+)
+
 DB_HOST = _cfg_value("DB_HOST", "")
 DB_PORT = _cfg_int("DB_PORT", 3306)
 DB_NAME = _cfg_value("DB_NAME", "")
