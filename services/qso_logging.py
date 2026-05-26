@@ -14,6 +14,7 @@ from radio_control.wavelog_api import WavelogClient
 from radio_control.qrz_api import QRZClient
 from radio_control.adif_handler import ADIFHandler
 from radio_control.cty_resolvers import CtyDatResolver
+from radio_control.qso_outbox import get_qso_outbox
 
 logger = logging.getLogger(__name__)
 
@@ -136,13 +137,27 @@ async def log_qso(qso: QSORequest):
             logger.error(f"ADIF save failed: {str(e)}", exc_info=True)
             adif_saved = False
 
-        logger.info(f"✅ QSO processed: {qso.callsign} on {qso.frequency} MHz (Wavelog: {wavelog_result.get('success')}, ADIF: {adif_saved})")
+        outbox_queued = False
+        if not wavelog_result.get('success'):
+            reason = wavelog_result.get('message') or wavelog_result.get('error') or 'Wavelog upload failed'
+            outbox_queued = get_qso_outbox().enqueue(qso_dict, reason=reason)
+
+        logger.info(
+            "✅ QSO processed: %s on %s MHz (Wavelog: %s, ADIF: %s, Outbox: %s)",
+            qso.callsign,
+            qso.frequency,
+            wavelog_result.get('success'),
+            adif_saved,
+            outbox_queued,
+        )
 
         return {
-            "success": wavelog_result.get('success', True) or adif_saved,  # Success if either succeeded
+            "success": wavelog_result.get('success', False) or outbox_queued,
             "message": wavelog_result.get('message', 'QSO logged successfully'),
             "wavelog": wavelog_result,
-            "adif_saved": adif_saved
+            "adif_saved": adif_saved,
+            "outbox_queued": outbox_queued,
+            "outbox": get_qso_outbox().status(),
         }
 
     except HTTPException:
@@ -329,6 +344,22 @@ async def wavelog_recent_qsos(req: RecentQSOsRequest):
         import traceback
         logger.debug(traceback.format_exc())
         return {'success': False, 'message': str(e)}
+
+
+@router.get("/api/qso/outbox/status")
+async def qso_outbox_status():
+    """Return the offline Wavelog upload outbox status."""
+    return {"success": True, "outbox": get_qso_outbox().status()}
+
+
+@router.post("/api/qso/outbox/retry")
+async def retry_qso_outbox(max_records: int = 20):
+    """Retry queued Wavelog uploads from the offline ADIF outbox."""
+    global wavelog_client
+    if not wavelog_client:
+        wavelog_client = WavelogClient()
+    result = await get_qso_outbox().replay(wavelog_client, max_records=max_records)
+    return {"success": result.get("success", False), "result": result, "outbox": get_qso_outbox().status()}
 
 
 @router.get("/api/wavelog/contacts")

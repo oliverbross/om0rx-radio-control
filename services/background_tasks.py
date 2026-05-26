@@ -452,6 +452,20 @@ async def start_background_tasks():
         tasks.append(wavelog_task)
         logger.info("✅ Wavelog→DuckDB read-cache periodic sync task started")
 
+    if service.context.wavelog_client:
+        from radio_control import config
+        from radio_control.qso_outbox import get_qso_outbox
+
+        outbox_task = asyncio.create_task(
+            get_qso_outbox().replay_periodically(
+                service.context.wavelog_client,
+                interval_seconds=getattr(config, "WAVELOG_OUTBOX_RETRY_INTERVAL", 60),
+                max_records=getattr(config, "WAVELOG_OUTBOX_RETRY_BATCH_SIZE", 20),
+            )
+        )
+        tasks.append(outbox_task)
+        logger.info("✅ Wavelog offline outbox retry task started")
+
     logger.info(f"✅ All background tasks started ({len(tasks)} tasks)")
 
 

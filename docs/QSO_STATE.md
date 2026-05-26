@@ -13,8 +13,18 @@ Wavelog:
 Local ADIF:
 - Offline safety net and portable backup.
 - The app writes ADIF when a QSO is logged locally.
-- If Wavelog cannot be reached, the QSO must still be preserved here so it can
-  be replayed later.
+- `logs/qso_log.adif` is the normal local archive.
+- If Wavelog cannot be reached, the failed upload is also written to
+  `logs/wavelog_outbox.adif` for replay.
+
+Wavelog outbox:
+- `logs/wavelog_outbox.adif` contains only QSOs that still need to be uploaded
+  to Wavelog.
+- The retry task starts with the backend and periodically submits queued ADIF
+  records to Wavelog.
+- Manual controls:
+  - `GET /api/qso/outbox/status`
+  - `POST /api/qso/outbox/retry`
 
 DuckDB QSO cache:
 - Rebuildable read cache, not a second logbook.
@@ -29,9 +39,6 @@ Spot DuckDB:
 
 ## Current Gaps
 
-- Manual QSO logging always writes local ADIF after attempting Wavelog. The next
-  improvement should split this into normal backup ADIF plus an explicit
-  unsent/outbox ADIF for failed Wavelog uploads.
 - Older ADIF-to-DuckDB code and endpoints still exist. They should be retired or
   clearly marked legacy after the Wavelog read cache and offline outbox are
   fully established.

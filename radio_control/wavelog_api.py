@@ -156,7 +156,7 @@ class WavelogClient:
         cls._adif_cache_time = datetime.utcnow()
         logger.debug(f"Cached ADIF data in memory ({len(adif_data)} bytes)")
         
-    def _build_adif_string(self, qso_data: Dict[str, Any]) -> str:
+    def build_adif_string(self, qso_data: Dict[str, Any]) -> str:
         """Build ADIF format string from QSO data"""
         callsign = (qso_data.get('callsign') or '').strip().upper()
         frequency = qso_data.get('frequency', 0)
@@ -369,6 +369,70 @@ class WavelogClient:
         adif_parts.append("<eor>")
         
         return "".join(adif_parts)
+
+    def _build_adif_string(self, qso_data: Dict[str, Any]) -> str:
+        """Backward-compatible wrapper for older callers."""
+        return self.build_adif_string(qso_data)
+
+    async def submit_adif_string(self, adif_string: str) -> Dict[str, Any]:
+        """Submit an already formatted ADIF record/string to Wavelog."""
+        session = None
+        try:
+            endpoint = f"{self.api_url}/api/qso"
+            payload = {
+                'key': self.api_key,
+                'station_profile_id': self.station_id,
+                'type': 'adif',
+                'string': adif_string,
+            }
+
+            try:
+                session = await self._get_session()
+                use_persistent = True
+            except Exception as e:
+                logger.warning(f"Failed to get persistent session, creating temporary: {str(e)}")
+                session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+                use_persistent = False
+
+            try:
+                async with session.post(endpoint, json=payload) as resp:
+                    response_text = await resp.text()
+                    if resp.status in (200, 201):
+                        try:
+                            result = json.loads(response_text)
+                        except Exception:
+                            result = {'response': response_text}
+
+                        if result.get('status') in ('ok', 'success', 'successful', 'created'):
+                            return {
+                                'success': True,
+                                'message': 'QSO logged successfully',
+                                'data': result,
+                            }
+
+                        logger.error(f"Wavelog API response unclear: {response_text}")
+                        return {
+                            'success': False,
+                            'message': 'Unclear response from Wavelog',
+                            'error': response_text,
+                        }
+
+                    logger.error(f"Wavelog API error ({resp.status}): {response_text}")
+                    return {
+                        'success': False,
+                        'message': f'Wavelog API error: {resp.status}',
+                        'error': response_text,
+                    }
+            finally:
+                if not use_persistent and session and not session.closed:
+                    await session.close()
+
+        except asyncio.TimeoutError:
+            logger.error("Wavelog API timeout")
+            return {'success': False, 'message': 'Wavelog API timeout'}
+        except Exception as e:
+            logger.error(f"Wavelog QSO logging error: {str(e)}", exc_info=True)
+            return {'success': False, 'message': str(e)}
     
     async def log_qso(self, qso_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -395,58 +459,15 @@ class WavelogClient:
         Returns:
             Response dict with success status and message
         """
-        session = None
         try:
-            # Prepare API endpoint
-            endpoint = f"{self.api_url}/api/qso"
-            
             # Build ADIF format string
-            adif_string = self._build_adif_string(qso_data)
-            
-            # Build request payload according to Wavelog API spec
-            payload = {
-                'key': self.api_key,                    # Wavelog uses 'key', not 'api_key'
-                'station_profile_id': self.station_id,  # Wavelog uses 'station_profile_id', not 'station_id'
-                'type': 'adif',                         # Must be 'adif'
-                'string': adif_string,                  # ADIF formatted string
-            }
+            adif_string = self.build_adif_string(qso_data)
             
             logger.debug(f"Submitting QSO to Wavelog: {adif_string[:100]}...")
-            
-            # Use persistent session with fallback to temporary session
-            try:
-                session = await self._get_session()
-                use_persistent = True
-            except Exception as e:
-                logger.warning(f"Failed to get persistent session, creating temporary: {str(e)}")
-                session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
-                use_persistent = False
-            
-            try:
-                async with session.post(endpoint, json=payload) as resp:
-                    response_text = await resp.text()
-                    
-                    # Wavelog returns 200 (OK) or 201 (Created) on success
-                    if resp.status in (200, 201):
-                        try:
-                            result = json.loads(response_text)
-                        except:
-                            result = {'response': response_text}
-                        
-                        # Check if API indicates success in the response
-                        if result.get('status') in ('ok', 'success', 'successful', 'created'):
-                            logger.info(f"✅ QSO logged to Wavelog: {qso_data['callsign']} on {qso_data.get('frequency')} MHz (Status: {result.get('status')})")
-                            return {'success': True, 'message': 'QSO logged successfully', 'data': result}
-                        else:
-                            logger.error(f"Wavelog API response unclear: {response_text}")
-                            return {'success': False, 'message': 'Unclear response from Wavelog', 'error': response_text}
-                    else:
-                        logger.error(f"Wavelog API error ({resp.status}): {response_text}")
-                        return {'success': False, 'message': f'Wavelog API error: {resp.status}', 'error': response_text}
-            finally:
-                # Close temporary session if we created one
-                if not use_persistent and session and not session.closed:
-                    await session.close()
+            result = await self.submit_adif_string(adif_string)
+            if result.get('success'):
+                logger.info(f"✅ QSO logged to Wavelog: {qso_data['callsign']} on {qso_data.get('frequency')} MHz")
+            return result
                         
         except asyncio.TimeoutError:
             logger.error("Wavelog API timeout")

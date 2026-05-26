@@ -12,6 +12,7 @@ from fastapi import HTTPException
 # Import required modules
 from radio_control.spot_processor import band_from_khz
 from radio_control.rotor_math import grid_to_latlon, initial_bearing
+from radio_control.qso_outbox import get_qso_outbox
 from radio_control import config
 logger = logging.getLogger(__name__)
 
@@ -182,15 +183,31 @@ class WSJTXService:
                 }
             else:
                 logger.error(f"❌ Failed to log QSO to Wavelog: {result}")
+                outbox_queued = get_qso_outbox().enqueue(
+                    qso_data,
+                    reason=(result or {}).get("message", "WSJT-X Wavelog upload failed"),
+                )
                 # If Wavelog fails but ADIF saved, still return partial success
-                if adif_saved:
-                    logger.info(f"ℹ️  QSO saved to ADIF locally but Wavelog failed: {call}")
+                if adif_saved or outbox_queued:
+                    logger.info(
+                        "ℹ️  QSO saved locally but Wavelog failed: %s (ADIF: %s, Outbox: %s)",
+                        call,
+                        adif_saved,
+                        outbox_queued,
+                    )
                     return {
                         "success": False,
                         "adif_saved": True,
-                        "message": f"Wavelog logging failed but QSO saved to local ADIF: {result.get('message', str(result))}"
+                        "outbox_queued": outbox_queued,
+                        "message": (
+                            "Wavelog logging failed but QSO saved locally: "
+                            f"{(result or {}).get('message', str(result))}"
+                        )
                     }
-                raise HTTPException(status_code=500, detail=f"Failed to log QSO: {result.get('message', str(result))}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to log QSO: {(result or {}).get('message', str(result))}",
+                )
 
         except HTTPException:
             raise
