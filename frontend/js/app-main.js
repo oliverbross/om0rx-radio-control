@@ -71,11 +71,11 @@ function mountVueApp() {
                 CLUSTER_ENABLED: false,
                 // Multi-Cluster Configuration (up to 5 clusters with failover)
                 CLUSTERS: [
-                    { enabled: true, host: 'localhost', port: 7373, user: 'N0CALL', password: <qrz_password>, use_as_failover: false, name: 'Cluster 1 (Primary)' },
-                    { enabled: false, host: 'localhost', port: 7373, user: 'N0CALL', password: <qrz_password>, use_as_failover: true, name: 'Cluster 2 (Failover)' },
-                    { enabled: false, host: 'localhost', port: 7373, user: 'N0CALL', password: <qrz_password>, use_as_failover: true, name: 'Cluster 3 (Failover)' },
-                    { enabled: false, host: 'localhost', port: 7373, user: 'N0CALL', password: <qrz_password>, use_as_failover: true, name: 'Cluster 4 (Failover)' },
-                    { enabled: false, host: 'localhost', port: 7373, user: 'N0CALL', password: <qrz_password>, use_as_failover: true, name: 'Cluster 5 (Failover)' }
+                    { enabled: true, host: 'localhost', port: 7373, user: 'N0CALL', password: '', use_as_failover: false, name: 'Cluster 1 (Primary)' },
+                    { enabled: false, host: 'localhost', port: 7373, user: 'N0CALL', password: '', use_as_failover: true, name: 'Cluster 2 (Failover)' },
+                    { enabled: false, host: 'localhost', port: 7373, user: 'N0CALL', password: '', use_as_failover: true, name: 'Cluster 3 (Failover)' },
+                    { enabled: false, host: 'localhost', port: 7373, user: 'N0CALL', password: '', use_as_failover: true, name: 'Cluster 4 (Failover)' },
+                    { enabled: false, host: 'localhost', port: 7373, user: 'N0CALL', password: '', use_as_failover: true, name: 'Cluster 5 (Failover)' }
                 ],
                 // WSJT-X Configuration
                 WSJTX_ENABLED: true,

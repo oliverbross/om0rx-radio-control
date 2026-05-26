@@ -82,6 +82,7 @@ These were review findings that were low-risk enough to fix immediately:
 - Restricted default CORS origins to local UI origins and added `CORS_ALLOWED_ORIGINS` for explicit overrides.
 - Consolidated rotor AUTO and FT8 config persistence into `settings/app_settings.json`, with legacy JSON read fallback only.
 - Added a lifecycle-aware startup supervisor: backend restart/shutdown endpoints now write an ignored runtime request file and exit, while `start_all.ps1` or `scripts/start/start_services_only.ps1` owns restarting sibling bridge/backend processes.
+- Added `scripts/maintenance/check_project.ps1` as the fast local quality gate and exposed it through `npm run check`.
 
 ## Review Findings
 
@@ -138,35 +139,25 @@ Recommended fix:
 - Store clients in a `set`.
 - Send from a snapshot and handle disconnect cleanup centrally.
 
-### P2: Tests Are Not Yet A Reliable Gate
+### P2: Tests Need Better Separation After The Quality Gate
 
 Current state:
 
-- Python syntax checks pass.
-- Node syntax checks pass.
-- PowerShell parser checks pass.
-- `npm audit --omit=dev` passes.
-- Standalone smoke scripts run, but `pytest` is not installed.
-- `pyproject.toml` now declares a `dev` optional dependency group for `pytest` and `ruff`.
-
-Observed:
-
-```text
-python -m pytest tests\smoke -q
-C:\Python314\python.exe: No module named pytest
-```
+- `scripts/maintenance/check_project.ps1` runs the fast local quality gate.
+- The default gate excludes checks that need MySQL, audio devices, live WSJT-X packets, or network access.
+- `pyproject.toml` declares a `dev` optional dependency group for `pytest` and `ruff`.
+- Several smoke scripts are still executable diagnostics rather than pure tests.
 
 Risk:
 
-- The repository has pytest configuration, but no declared test dependency.
-- Some smoke scripts depend on live station state or local data.
-- There is no single reliable command for developers to run before changes.
+- A full `pytest tests/smoke` run is still not the right command because some scripts perform live integration work at import/runtime.
+- Live station checks are useful, but they need explicit naming and isolation.
 
 Recommended fix:
 
-- Install dev tooling with `python -m pip install -e .[dev]`.
-- Separate pure unit tests from hardware/live integration checks.
-- Add a `scripts/maintenance/check_project.ps1` quality gate.
+- Move pure tests into a dedicated test subset that can run under pytest by default.
+- Keep hardware/live-radio checks under an explicit integration path or naming convention.
+- Add CI later once pure tests are isolated from station-specific checks.
 
 ### P2: Frontend Is Functional But Too Large And Untyped
 
@@ -242,19 +233,22 @@ Passed:
 - `python tests\smoke\test_qth_data.py`.
 - `python tests\smoke\test_config_save.py`.
 - `python tests\smoke\test_lifecycle_contract.py`.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\maintenance\check_project.ps1`.
 - `node tests\smoke\test-wsjtx-udp.js` received live WSJT-X packets.
 
-Not passed because tooling is missing:
+Not run by default because they need local station resources:
 
-- `python -m pytest tests\smoke -q`
+- MySQL-backed Wavelog diagnostics.
+- Audio-device FT8 diagnostics.
+- Live WSJT-X packet checks.
 
 ## Recommended Next Work
 
 Do these before adding new features:
 
-1. Add a real project quality gate script and declare dev/test dependencies.
-2. Introduce an app context/dependency container to reduce module globals.
-3. Add endpoint contract tests for all frontend fetch/WebSocket paths.
+1. Introduce an app context/dependency container to reduce module globals.
+2. Add endpoint contract tests for all frontend fetch/WebSocket paths.
+3. Separate pure tests from live station diagnostics so pytest can become the default unit test runner.
 4. Split the largest frontend modules after backend contracts are stable.
 5. Harden Wavelog sync pagination and failure status reporting.
 

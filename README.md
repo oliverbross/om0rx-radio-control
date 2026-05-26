@@ -71,6 +71,21 @@ logs/             Ignored runtime logs
 - `radio_control/config.py` contains defaults and loads overrides from `config_local.py`, `settings/app_settings.json`, ignored `settings/local_secrets.json`, and environment variables.
 - `frontend/index.html` is the main browser UI.
 
+## Quality Gate
+
+Run the fast local project check before committing:
+
+```powershell
+.\scripts\maintenance\check_project.ps1
+```
+
+The default gate runs syntax checks, backend import checks, duplicate route scanning, safe smoke checks, stale project-reference scanning, and Git whitespace checks. Optional live or network checks are explicit:
+
+```powershell
+.\scripts\maintenance\check_project.ps1 -IncludeLive
+.\scripts\maintenance\check_project.ps1 -IncludeNpmAudit
+```
+
 ## Cleanup Notes
 
 Legacy implementation notes, historical troubleshooting files, and one-off diagnostics are archived under `docs/archive/`. They are kept out of the project root and active test tree so the maintained code is easier to navigate while still preserving useful context.
