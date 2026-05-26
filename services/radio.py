@@ -9,18 +9,39 @@ The module can be imported and endpoints can be registered with a FastAPI app.
 """
 
 import logging
+from dataclasses import dataclass
 from fastapi import HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Awaitable, Callable, Optional
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Global radio instance (will be set when registering endpoints)
-flex = None
+@dataclass
+class RadioControlState:
+    """Runtime dependencies for radio control endpoints."""
 
-# WebSocket broadcasting function (will be set when registering endpoints)
-broadcast_status = None
+    flex: Any = None
+    broadcast_func: Optional[Callable[[dict], Awaitable[None]]] = None
+
+
+radio_control_state = RadioControlState()
+
+
+def configure_radio_control(flex_instance=None, broadcast_func=None) -> RadioControlState:
+    radio_control_state.flex = flex_instance
+    if broadcast_func is not None:
+        radio_control_state.broadcast_func = broadcast_func
+    return radio_control_state
+
+
+def get_radio_instance():
+    return radio_control_state.flex
+
+
+async def broadcast_status(data: dict):
+    if radio_control_state.broadcast_func:
+        await radio_control_state.broadcast_func(data)
 
 # === Pydantic Models ===
 
@@ -73,6 +94,7 @@ class StepRequest(BaseModel):
 
 async def set_frequency(req: FrequencyRequest):
     """Set frequency"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -90,6 +112,7 @@ async def set_frequency(req: FrequencyRequest):
 
 async def set_mode(req: ModeRequest):
     """Set mode"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -107,6 +130,7 @@ async def set_mode(req: ModeRequest):
 
 async def set_band(req: BandRequest):
     """Set band"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -124,6 +148,7 @@ async def set_band(req: BandRequest):
 
 async def set_filter(req: FilterRequest):
     """Set filter"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -141,6 +166,7 @@ async def set_filter(req: FilterRequest):
 
 async def set_volume(req: SliderRequest):
     """Set volume"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -157,6 +183,7 @@ async def set_volume(req: SliderRequest):
 
 async def set_drive(req: SliderRequest):
     """Set drive (RF power)"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -173,6 +200,7 @@ async def set_drive(req: SliderRequest):
 
 async def set_tune_power(req: SliderRequest):
     """Set tune power"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -189,6 +217,7 @@ async def set_tune_power(req: SliderRequest):
 
 async def set_mic(req: SliderRequest):
     """Set mic level"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -205,6 +234,7 @@ async def set_mic(req: SliderRequest):
 
 async def set_monitor(req: SliderRequest):
     """Set monitor level (auto-enables monitor when > 0)"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -221,6 +251,7 @@ async def set_monitor(req: SliderRequest):
 
 async def set_agc_threshold(req: SliderRequest):
     """Set AGC threshold"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -239,6 +270,7 @@ async def set_agc_threshold(req: SliderRequest):
 
 async def toggle_mox(req: ToggleRequest):
     """Toggle MOX"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -255,6 +287,7 @@ async def toggle_mox(req: ToggleRequest):
 
 async def toggle_tune(req: ToggleRequest):
     """Toggle TUNE"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -271,6 +304,7 @@ async def toggle_tune(req: ToggleRequest):
 
 async def toggle_vox(req: ToggleRequest):
     """Toggle VOX"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -287,6 +321,7 @@ async def toggle_vox(req: ToggleRequest):
 
 async def toggle_breakin(req: ToggleRequest):
     """Toggle CW Break-In (QSK)"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -303,6 +338,7 @@ async def toggle_breakin(req: ToggleRequest):
 
 async def set_tuning_step(req: StepRequest):
     """Set tuning step in Hz"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -321,6 +357,7 @@ async def set_tuning_step(req: StepRequest):
 
 async def set_agc(req: AGCRequest):
     """Set AGC mode (off, slow, med, fast)"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -339,6 +376,7 @@ async def set_agc(req: AGCRequest):
 
 async def set_dsp(req: DSPRequest):
     """Set DSP controls (NB, NR, ANF, APF)"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -366,6 +404,7 @@ async def set_dsp(req: DSPRequest):
 
 async def set_dsp_level(req: DSPLevelRequest):
     """Set DSP level (nb_level, nr_level, anf_level, apf_level)"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -384,6 +423,7 @@ async def set_dsp_level(req: DSPLevelRequest):
 
 async def set_rit(req: RITXITRequest):
     """Set RIT enabled and frequency offset"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -400,6 +440,7 @@ async def set_rit(req: RITXITRequest):
 
 async def set_xit(req: RITXITRequest):
     """Set XIT enabled and frequency offset"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -418,6 +459,7 @@ async def set_xit(req: RITXITRequest):
 
 async def set_rx2(req: RX2Request):
     """Enable/disable RX2"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -443,6 +485,7 @@ async def set_rx2(req: RX2Request):
 
 async def set_split(req: SplitRequest):
     """Enable/disable SPLIT operation"""
+    flex = get_radio_instance()
     if not flex:
         raise HTTPException(status_code=503, detail="Radio not initialized")
 
@@ -475,13 +518,7 @@ def register_radio_endpoints(app, flex_instance=None, broadcast_func=None):
         flex_instance: FlexCtl radio instance (optional, can be set later)
         broadcast_func: WebSocket broadcast function (optional, can be set later)
     """
-    global flex, broadcast_status
-
-    # Set global instances
-    if flex_instance is not None:
-        flex = flex_instance
-    if broadcast_func is not None:
-        broadcast_status = broadcast_func
+    configure_radio_control(flex_instance, broadcast_func)
 
     # Register endpoints
     app.post("/api/frequency")(set_frequency)
@@ -519,12 +556,10 @@ def register_radio_endpoints(app, flex_instance=None, broadcast_func=None):
 
 
 def set_radio_instance(flex_instance):
-    """Set the global radio instance"""
-    global flex
-    flex = flex_instance
+    """Set the radio instance used by registered endpoints."""
+    radio_control_state.flex = flex_instance
 
 
 def set_broadcast_function(broadcast_func):
-    """Set the global broadcast function"""
-    global broadcast_status
-    broadcast_status = broadcast_func
+    """Set the broadcaster used by registered endpoints."""
+    radio_control_state.broadcast_func = broadcast_func

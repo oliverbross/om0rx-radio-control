@@ -1,8 +1,6 @@
-"""
-Test script for Wavelog Log Service
-Verify database connection and data retrieval
-"""
+"""Live diagnostic for Wavelog log service database retrieval."""
 
+import sys
 import _bootstrap  # noqa: F401
 from services.wavelog_log import get_wavelog_log_service
 

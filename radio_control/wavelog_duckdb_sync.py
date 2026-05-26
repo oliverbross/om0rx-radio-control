@@ -42,6 +42,7 @@ class WavelogDuckDBSync:
         
         # Station ID from config
         self.station_id = int(getattr(config, 'WAVELOG_STATION_ID', 1))
+        self.last_sync_error: Optional[str] = None
         
         # Initialize database
         self._init_database()
@@ -197,8 +198,7 @@ class WavelogDuckDBSync:
     
     def _fetch_changed_records(self, last_modified: Optional[datetime] = None, 
                                last_id: Optional[int] = None, 
-                               batch_size: int = 1000, 
-                               offset: int = 0) -> List[Dict]:
+                               batch_size: int = 1000) -> List[Dict]:
         """
         Fetch records from Wavelog that have been added or modified since last sync
         
@@ -206,7 +206,6 @@ class WavelogDuckDBSync:
             last_modified: Last modification timestamp from previous sync
             last_id: Last Wavelog COL_PRIMARY_KEY from previous sync
             batch_size: Number of records to fetch in one batch (default: 1000)
-            offset: Offset for pagination (used in initial sync)
             
         Returns:
             List of QSO records from Wavelog
@@ -267,7 +266,7 @@ class WavelogDuckDBSync:
                 """
                 params = (self.station_id, last_modified, last_modified, last_id or 0, batch_size)
             else:
-                # Initial sync: fetch all records in batches
+                # Initial sync: keyset pagination by primary key avoids slow OFFSET scans.
                 query = """
                     SELECT 
                         COL_PRIMARY_KEY,
@@ -312,16 +311,21 @@ class WavelogDuckDBSync:
                         last_modified
                     FROM TABLE_HRD_CONTACTS_V01
                     WHERE station_id = %s
-                    ORDER BY last_modified ASC, COL_PRIMARY_KEY ASC
-                    LIMIT %s OFFSET %s
+                    AND COL_PRIMARY_KEY > %s
+                    ORDER BY COL_PRIMARY_KEY ASC
+                    LIMIT %s
                 """
-                params = (self.station_id, batch_size, offset)
+                params = (self.station_id, last_id or 0, batch_size)
             
             with conn.cursor() as cursor:
                 cursor.execute(query, params)
                 results = cursor.fetchall()
                 
-                logger.info(f"📥 Fetched {len(results)} records from Wavelog database (offset: {offset})")
+                logger.info(
+                    "📥 Fetched %s records from Wavelog database (after id: %s)",
+                    len(results),
+                    last_id or 0,
+                )
                 return results
                 
         except Exception as e:
@@ -528,7 +532,7 @@ class WavelogDuckDBSync:
             updated_count = 0
             latest_modified = last_modified
             latest_id = last_id or 0
-            offset = 0
+            initial_cursor_id = last_id or 0
             batch_num = 0
             
             if is_initial_sync:
@@ -537,11 +541,9 @@ class WavelogDuckDBSync:
             while True:
                 # Fetch a batch of records from Wavelog
                 if is_initial_sync:
-                    # Initial sync: use pagination with LIMIT/OFFSET
-                    wavelog_records = self._fetch_changed_records(None, None, batch_size, offset)
+                    wavelog_records = self._fetch_changed_records(None, initial_cursor_id, batch_size)
                 else:
-                    # Incremental sync: fetch only changed records (single batch)
-                    wavelog_records = self._fetch_changed_records(last_modified, last_id, batch_size, 0)
+                    wavelog_records = self._fetch_changed_records(last_modified, last_id, batch_size)
                 
                 # If no more records, we're done
                 if not wavelog_records:
@@ -570,11 +572,16 @@ class WavelogDuckDBSync:
                         # Track latest modified timestamp and ID
                         record_modified = wavelog_record.get('last_modified')
                         record_id = wavelog_record.get('COL_PRIMARY_KEY')
+
+                        if is_initial_sync and record_id and record_id > initial_cursor_id:
+                            initial_cursor_id = record_id
                         
                         if record_modified and (latest_modified is None or record_modified > latest_modified):
                             latest_modified = record_modified
                             latest_id = record_id
                         elif record_modified == latest_modified and record_id > latest_id:
+                            latest_id = record_id
+                        elif is_initial_sync and latest_modified is None and record_id > latest_id:
                             latest_id = record_id
                             
                     except Exception as e:
@@ -600,9 +607,6 @@ class WavelogDuckDBSync:
                 if len(wavelog_records) < batch_size:
                     break
                 
-                # Move to next batch
-                offset += batch_size
-            
             # Final commit
             conn.commit()
             
@@ -612,6 +616,7 @@ class WavelogDuckDBSync:
             # Update sync metadata
             self._update_sync_metadata(conn, latest_modified, latest_id, total_records, 
                                       added_count, updated_count)
+            self.last_sync_error = None
             
             conn.close()
             
@@ -629,6 +634,7 @@ class WavelogDuckDBSync:
             
         except Exception as e:
             logger.error(f"❌ Wavelog sync failed: {e}", exc_info=True)
+            self.last_sync_error = str(e)
             return {
                 'synced': False,
                 'error': str(e),
@@ -645,6 +651,8 @@ class WavelogDuckDBSync:
                 conn.close()
                 return {
                     'initialized': False,
+                    'status': 'failed' if self.last_sync_error else 'not_initialized',
+                    'last_sync_error': self.last_sync_error,
                     'message': 'Sync not yet initialized'
                 }
             
@@ -658,12 +666,17 @@ class WavelogDuckDBSync:
                 'last_wavelog_id': metadata['last_wavelog_id'],
                 'total_records': total_records,
                 'last_sync_added': metadata['last_sync_added'],
-                'last_sync_updated': metadata['last_sync_updated']
+                'last_sync_updated': metadata['last_sync_updated'],
+                'last_sync_error': self.last_sync_error,
+                'status': 'failed' if self.last_sync_error else 'ok',
             }
         except Exception as e:
             logger.error(f"❌ Error getting sync status: {e}")
+            self.last_sync_error = str(e)
             return {
-                'error': str(e)
+                'status': 'failed',
+                'error': str(e),
+                'last_sync_error': self.last_sync_error,
             }
     
     def reset_sync(self, clear_data: bool = False) -> Dict[str, Any]:

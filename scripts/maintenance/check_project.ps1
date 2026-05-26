@@ -146,6 +146,7 @@ print("no duplicate routes")
         $jsFiles += Get-ChildItem -Path "bridge" -Filter *.js -File
         $jsFiles += Get-ChildItem -Path "frontend\js" -Filter *.js -File
         $jsFiles += Get-ChildItem -Path "tests\smoke" -Filter *.js -File
+        $jsFiles += Get-ChildItem -Path "tests\live" -Filter *.js -File
 
         foreach ($file in $jsFiles) {
             Invoke-NativeCommand node @("--check", $file.FullName)
@@ -183,7 +184,9 @@ print("no duplicate routes")
             "tests\smoke\test_settings_consolidation.py",
             "tests\smoke\test_lifecycle_contract.py",
             "tests\smoke\test_ft8_files.py",
-            "tests\smoke\test_frontend_contracts.py"
+            "tests\smoke\test_frontend_contracts.py",
+            "tests\smoke\test_service_dependency_state.py",
+            "tests\smoke\test_wavelog_sync_pagination.py"
         )
 
         foreach ($testPath in $safeSmokeTests) {
@@ -193,18 +196,7 @@ print("no duplicate routes")
 
     if ($UsePytest) {
         Invoke-CheckStep "Pytest safe smoke subset" {
-            Invoke-NativeCommand python @(
-                "-m",
-                "pytest",
-                "tests\smoke\test_config_save.py",
-                "tests\smoke\test_app_context.py",
-                "tests\smoke\test_cors_config.py",
-                "tests\smoke\test_settings_consolidation.py",
-                "tests\smoke\test_lifecycle_contract.py",
-                "tests\smoke\test_ft8_files.py",
-                "tests\smoke\test_frontend_contracts.py",
-                "-q"
-            )
+            Invoke-NativeCommand python @("-m", "pytest", "tests\smoke", "-q")
         }
     }
 
@@ -241,9 +233,9 @@ print("no duplicate routes")
     if ($IncludeLive) {
         Invoke-CheckStep "Live/local integration checks" {
             $liveChecks = @(
-                "tests\smoke\test_qth_data.py",
-                "tests\smoke\test_wsjtx_adif.py",
-                "tests\smoke\test_ft8_status.py"
+                "tests\live\test_qth_data.py",
+                "tests\live\test_wsjtx_adif.py",
+                "tests\live\test_ft8_status.py"
             )
 
             foreach ($testPath in $liveChecks) {

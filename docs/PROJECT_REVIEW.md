@@ -87,30 +87,34 @@ These were review findings that were low-risk enough to fix immediately:
 - Removed remaining active-tree legacy product strings from maintained code and tightened the quality-gate stale-reference scan.
 - Added frontend/backend endpoint contract smoke checks and restored the missing spots database stats/special endpoints used by the frontend.
 - Replaced direct WebSocket client list mutation with a `ConnectionManager` that broadcasts from snapshots, cleans stale clients centrally, and is exposed through `AppContext`.
+- Moved background task dependencies into a configured `BackgroundTaskService` that reads from `AppContext` instead of copied module globals.
+- Moved radio endpoint dependencies into an explicit `RadioControlState` instead of raw module-level `flex` and broadcaster globals.
+- Moved live station diagnostics out of `tests/smoke/` into `tests/live/`, leaving `tests/smoke/` as the safe local test subset.
+- Added `docs/TESTING.md` to document default checks, safe smoke tests, and live diagnostics.
+- Hardened Wavelog initial sync to use keyset pagination and report the last sync failure in status responses.
+- Removed the unused legacy `services/spots.py` duplicate now that active spots endpoints live in `backend/api/spots.py` and cluster spot processing lives in `services/background_tasks.py`.
 
 ## Review Findings
 
-### P2: Runtime State Is Still Partly Spread Across Globals And Setters
+### P2: Runtime State Still Has Some Legacy Compatibility Surface
 
 State exists in:
 
 - `backend.core.context.AppContext`.
 - legacy `backend.core` compatibility globals.
 - legacy `app.state.*` attributes synchronized from the context.
-- `services.radio` globals.
-- `services.background_tasks` globals.
 - module-level singleton services such as FT8, ADIF, Wavelog, WSJT-X, and rotor.
 
 Examples:
 
 - `backend/main.py:68`
-- `backend/main.py:299`
-- `services/background_tasks.py:49`
-- `services/radio.py:469`
+- `backend/main.py:307`
+- `services/ft8_service.py`
+- `services/wsjtx.py`
 
 Risk:
 
-- Dependency ownership is clearer at the app boundary, but several services still receive state through global setters.
+- Dependency ownership is clearer at the app boundary, but some services still expose process-wide singletons.
 - Some tests still import and mutate process-global state.
 - Registering routes more than once can duplicate handlers.
 - Shutdown and reconnect behavior is hard to verify.
@@ -120,27 +124,6 @@ Recommended fix:
 - Continue moving service dependencies onto `AppContext`.
 - Replace service-level global setters with constructor or FastAPI dependency injection where practical.
 - Keep legacy `app.state.*` compatibility only while routers migrate.
-
-### P2: Tests Need Better Separation After The Quality Gate
-
-Current state:
-
-- `scripts/maintenance/check_project.ps1` runs the fast local quality gate.
-- Frontend fetch/WebSocket paths now have a smoke contract check in `tests/smoke/test_frontend_contracts.py`.
-- The default gate excludes checks that need MySQL, audio devices, live WSJT-X packets, or network access.
-- `pyproject.toml` declares a `dev` optional dependency group for `pytest` and `ruff`.
-- Several smoke scripts are still executable diagnostics rather than pure tests.
-
-Risk:
-
-- A full `pytest tests/smoke` run is still not the right command because some scripts perform live integration work at import/runtime.
-- Live station checks are useful, but they need explicit naming and isolation.
-
-Recommended fix:
-
-- Move pure tests into a dedicated test subset that can run under pytest by default.
-- Keep hardware/live-radio checks under an explicit integration path or naming convention.
-- Add CI later once pure tests are isolated from station-specific checks.
 
 ### P2: Frontend Is Functional But Too Large And Untyped
 
@@ -164,11 +147,11 @@ Recommended fix:
   - modals
 - Add lightweight contract tests for fetch endpoints used by the frontend.
 
-### P2: Wavelog Sync Is Operational But Needs Hardening
+### P3: Wavelog Sync Still Needs Deeper Integration Coverage
 
-`radio_control/wavelog_duckdb_sync.py` now writes to the correct project data directory. The sync logic is clear, but still has risk areas:
+`radio_control/wavelog_duckdb_sync.py` now writes to the correct project data directory,
+uses keyset pagination for initial sync, and reports last sync failures. Remaining risk areas:
 
-- Initial sync uses `LIMIT/OFFSET`, which can become slow on large tables.
 - Sync metadata assumes `last_modified` is reliable and monotonic.
 - Database connections are opened per batch and should be reviewed for timeout and error behavior.
 
@@ -178,11 +161,10 @@ References:
 - `radio_control/wavelog_duckdb_sync.py:316`
 - `radio_control/wavelog_duckdb_sync.py:505`
 
-Recommended fix:
+Recommended follow-up:
 
-- Prefer keyset pagination for initial sync.
 - Add tests for incremental sync edge cases.
-- Add explicit status for failed sync versus no changes.
+- Review Wavelog MySQL connection timeouts and retry behavior.
 
 ### P3: Dependency And Metadata Management Is Duplicated
 
@@ -206,20 +188,22 @@ Passed:
 - Python syntax check across maintained Python files.
 - PowerShell parser check across tracked `.ps1` files.
 - Bash syntax check for `scripts/start/start_webapp.sh`.
-- Node syntax check for bridge and WSJT-X smoke scripts.
+- Node syntax check for bridge scripts and live WSJT-X diagnostics.
 - `npm audit --omit=dev`.
 - `python -c "import backend.main"`.
 - FastAPI route-table duplicate scan.
 - `python -m pip install -e . --dry-run`.
 - `python scripts\maintenance\check_sync_status.py`.
 - `python tests\smoke\test_ft8_files.py`.
-- `python tests\smoke\test_qth_data.py`.
+- `python tests\live\test_qth_data.py`.
 - `python tests\smoke\test_config_save.py`.
 - `python tests\smoke\test_app_context.py`.
 - `python tests\smoke\test_lifecycle_contract.py`.
 - `python tests\smoke\test_frontend_contracts.py`.
+- `python tests\smoke\test_service_dependency_state.py`.
+- `python tests\smoke\test_wavelog_sync_pagination.py`.
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\maintenance\check_project.ps1`.
-- `node tests\smoke\test-wsjtx-udp.js` received live WSJT-X packets.
+- `node tests\live\test-wsjtx-udp.js` received live WSJT-X packets.
 
 Not run by default because they need local station resources:
 
@@ -231,10 +215,10 @@ Not run by default because they need local station resources:
 
 Do these before adding new features:
 
-1. Continue migrating routers/services from legacy globals to `AppContext`.
-2. Separate pure tests from live station diagnostics so pytest can become the default unit test runner.
-3. Split the largest frontend modules after backend contracts are stable.
-4. Harden Wavelog sync pagination and failure status reporting.
+1. Split the largest frontend modules now that backend contracts are covered.
+2. Add a frontend lint/type-check strategy appropriate for the no-build app.
+3. Add deeper Wavelog incremental sync tests and review MySQL timeout/retry behavior.
+4. Decide whether `requirements.txt` remains a compatibility file or becomes generated from `pyproject.toml`.
 
 ## Development Standards Going Forward
 

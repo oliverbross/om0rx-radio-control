@@ -18,17 +18,16 @@ from backend.core import (
 
 # === Service Imports ===
 from services.database import get_db_connection as init_db_connection
-from services.radio import register_radio_endpoints, set_radio_instance, set_broadcast_function
+from services.radio import register_radio_endpoints, set_radio_instance
 from services.websocket import register_websocket_endpoint, broadcast_status, broadcast_spots
 from services.background_tasks import (
-    set_globals as set_background_globals,
+    configure_background_tasks,
     start_background_tasks,
     stop_background_tasks,
     process_cluster_spot
 )
 
 # Import additional service modules for initialization
-from services.spots import get_spots_logger
 from services.qso_logging import init_qso_logging_clients, register_qso_logging_endpoints
 from services.adif import init_adif_service, register_adif_endpoints
 from services.rotator import init_rotator_service
@@ -278,6 +277,13 @@ async def initialize_services():
     )
     
     await init_classifier()  # Async
+    context.background_task_service = configure_background_tasks(
+        context,
+        broadcast_status,
+        broadcast_spots,
+    )
+    sync_runtime_state()
+
     init_cluster_client()
     init_rotator()
     init_wavelog_sync_manager()
@@ -294,20 +300,6 @@ async def initialize_services():
         get_rotator_service(),
         context.cty_resolver,
         context.adif_handler,
-    )
-
-    # Set up background task globals
-    set_background_globals(
-        context.flex,
-        context.websocket_clients,
-        context.dx_spots_cache,
-        context.cluster_client,
-        context.cluster_connected,
-        context.cty_resolver,
-        context.classifier,
-        context.wavelog_sync_manager,
-        context.sync_status,
-        broadcast_status, broadcast_spots
     )
 
     sync_runtime_state()

@@ -5,45 +5,54 @@ Extracted from main.py - handles all background async operations
 
 import asyncio
 import logging
-import time
-from datetime import datetime
 from pathlib import Path
-import concurrent.futures
-from functools import partial
+from dataclasses import dataclass, field
+from types import SimpleNamespace
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 # Import required modules
 from radio_control.spot_processor import band_from_khz, infer_mode, extract_special, clean_comment
-from radio_control.spots_logger import get_spots_logger, log_spot
-from radio_control.cty_resolvers import CtyDatResolver
-from radio_control.classifier_api import ClassifierAPI
+from radio_control.spots_logger import log_spot
 
 logger = logging.getLogger(__name__)
 
-# Global state (will be set by main application)
-flex = None
-websocket_clients = []
-dx_spots_cache = []
-cluster_client = None
-cluster_connected = False
-cty_resolver = None
-classifier = None
-wavelog_sync_manager = None
-sync_status = {
-    "syncing": False,
-    "last_sync": None,
-    "total_records": 0,
-    "new_records_this_sync": 0,
-    "records_skipped": 0,
-    "next_sync_in": 0,
-    "adif_file_path": None,
-    "adif_file_size": 0,
-    "adif_file_modified": None,
-    "adif_qso_count": 0,
-}
 
-# Import broadcast functions (will be injected)
-broadcast_status = None
-broadcast_spots = None
+BroadcastStatus = Callable[[dict], Awaitable[None]]
+BroadcastSpots = Callable[[List[Dict]], Awaitable[None]]
+
+
+@dataclass
+class BackgroundTaskService:
+    """Runtime dependencies and task handles for backend background workers."""
+
+    context: Any
+    broadcast_status: BroadcastStatus
+    broadcast_spots: BroadcastSpots
+    tasks: List[asyncio.Task] = field(default_factory=list)
+
+
+_service: Optional[BackgroundTaskService] = None
+
+
+def configure_background_tasks(
+    context: Any,
+    broadcast_stat_func: BroadcastStatus,
+    broadcast_spot_func: BroadcastSpots,
+) -> BackgroundTaskService:
+    """Configure background workers from the application context."""
+    global _service
+    _service = BackgroundTaskService(context, broadcast_stat_func, broadcast_spot_func)
+    return _service
+
+
+def get_background_task_service() -> Optional[BackgroundTaskService]:
+    return _service
+
+
+def require_background_task_service() -> BackgroundTaskService:
+    if _service is None:
+        raise RuntimeError("Background task service is not configured")
+    return _service
 
 
 def set_globals(
@@ -59,31 +68,31 @@ def set_globals(
     broadcast_stat_func,
     broadcast_spot_func
 ):
-    """Set global variables from main application"""
-    global flex, websocket_clients, dx_spots_cache, cluster_client, cluster_connected
-    global cty_resolver, classifier, wavelog_sync_manager, sync_status
-    global broadcast_status, broadcast_spots
-
-    flex = flex_ctl
-    websocket_clients = ws_clients
-    dx_spots_cache = dx_cache
-    cluster_client = cluster
-    cluster_connected = cluster_conn
-    cty_resolver = cty_res
-    classifier = classif
-    wavelog_sync_manager = wavelog_sync
-    sync_status = sync_stats
-    broadcast_status = broadcast_stat_func
-    broadcast_spots = broadcast_spot_func
+    """Compatibility wrapper for older startup wiring."""
+    context = SimpleNamespace(
+        flex=flex_ctl,
+        websocket_clients=ws_clients,
+        dx_spots_cache=dx_cache,
+        cluster_client=cluster,
+        cluster_connected=cluster_conn,
+        cty_resolver=cty_res,
+        classifier=classif,
+        wavelog_sync_manager=wavelog_sync,
+        sync_status=sync_stats,
+    )
+    return configure_background_tasks(context, broadcast_stat_func, broadcast_spot_func)
 
 
 async def poll_radio_status():
     """Poll radio for status updates - continuous sync for all parameters"""
+    service = require_background_task_service()
+    context = service.context
     consecutive_failures = 0
     max_failures = 5
     
     while True:
         try:
+            flex = context.flex
             if flex:
                 # Check socket health - reconnect if needed
                 if not flex.sock:
@@ -118,7 +127,7 @@ async def poll_radio_status():
                         if 'drive' in status_update:
                             logger.info(f"📡 SYNC: drive={status_update['drive']}")
                         
-                        await broadcast_status(status_update)
+                        await service.broadcast_status(status_update)
                         flex.last_state_changed = {}
                     
                     # Force reconnect if too many consecutive failures
@@ -143,12 +152,14 @@ async def poll_radio_status():
 
 async def monitor_cluster_status():
     """Monitor cluster connection status and broadcast to clients"""
-    global cluster_client, cluster_connected
+    service = require_background_task_service()
+    context = service.context
 
     last_status = None
 
     while True:
         try:
+            cluster_client = context.cluster_client
             current_connected = cluster_client.connected if cluster_client else False
 
             # Only broadcast when status changes
@@ -171,9 +182,9 @@ async def monitor_cluster_status():
                         logger.debug(f"Could not get cluster info: {e}")
                 
                 logger.info(f"🔗 Cluster status: {'✅ Connected' if current_connected else '❌ Disconnected'}")
-                await broadcast_status(status)
+                await service.broadcast_status(status)
                 last_status = current_connected
-                cluster_connected = current_connected
+                context.cluster_connected = current_connected
 
             # Check every 3 seconds
             await asyncio.sleep(3)
@@ -184,7 +195,11 @@ async def monitor_cluster_status():
 
 async def process_cluster_spot(spot_data: dict):
     """Process spot from cluster - classify and store"""
-    global dx_spots_cache, cty_resolver, classifier
+    service = require_background_task_service()
+    context = service.context
+    cty_resolver = context.cty_resolver
+    classifier = context.classifier
+    dx_spots_cache = context.dx_spots_cache
 
     try:
         freq_khz = spot_data['freq_khz']
@@ -349,9 +364,10 @@ async def process_cluster_spot(spot_data: dict):
             dx_spots_cache.pop()
 
         # Broadcast to connected clients
-        await broadcast_spots([spot])
+        await service.broadcast_spots([spot])
 
         # Send spot to SmartSDR panadapter
+        flex = context.flex
         if flex and flex.sock:
             try:
                 # Map DXCC status to color and call status to abbreviation
@@ -387,7 +403,8 @@ async def process_cluster_spot(spot_data: dict):
 
 async def poll_dx_spots():
     """Monitor spot cache (disabled - using real-time cluster only)"""
-    global dx_spots_cache
+    service = require_background_task_service()
+    context = service.context
 
     while True:
         try:
@@ -395,10 +412,11 @@ async def poll_dx_spots():
             await asyncio.sleep(30.0)
 
             # Log stats
+            dx_spots_cache = context.dx_spots_cache
             if dx_spots_cache:
                 logger.debug(f"Spot cache: {len(dx_spots_cache)} spots")
-                if cluster_client:
-                    logger.debug(f"Cluster connected: {cluster_client.connected}")
+                if context.cluster_client:
+                    logger.debug(f"Cluster connected: {context.cluster_client.connected}")
 
         except Exception as e:
             logger.error(f"Spot monitor error: {e}")
@@ -432,74 +450,77 @@ def count_adif_records(file_path: str) -> int:
 #     pass
 
 
-# === Task Management ===
-
-_background_tasks = []
-
 async def start_background_tasks():
     """Start all background tasks"""
-    global _background_tasks
+    service = require_background_task_service()
+    tasks = service.tasks
 
     logger.info("🚀 Starting background tasks...")
 
     # Start radio polling
     radio_task = asyncio.create_task(poll_radio_status())
-    _background_tasks.append(radio_task)
+    tasks.append(radio_task)
     logger.info("✅ Radio status polling started")
 
     # Start cluster monitoring
     cluster_task = asyncio.create_task(monitor_cluster_status())
-    _background_tasks.append(cluster_task)
+    tasks.append(cluster_task)
     logger.info("✅ Cluster status monitoring started")
 
     # Start spot polling (monitoring only)
     spots_task = asyncio.create_task(poll_dx_spots())
-    _background_tasks.append(spots_task)
+    tasks.append(spots_task)
     logger.info("✅ Spot cache monitoring started")
 
     # Start Wavelog→DuckDB sync if manager is available
-    if wavelog_sync_manager:
+    if service.context.wavelog_sync_manager:
         from radio_control.wavelog_duckdb_sync import periodic_wavelog_sync
 
         wavelog_task = asyncio.create_task(periodic_wavelog_sync())
-        _background_tasks.append(wavelog_task)
+        tasks.append(wavelog_task)
         logger.info("✅ Wavelog→DuckDB periodic sync task started")
 
-    logger.info(f"✅ All background tasks started ({len(_background_tasks)} tasks)")
+    logger.info(f"✅ All background tasks started ({len(tasks)} tasks)")
 
 
 async def stop_background_tasks():
     """Stop all background tasks"""
-    global _background_tasks
+    service = get_background_task_service()
+    if service is None:
+        return
+
+    tasks = service.tasks
 
     logger.info("⏹️ Stopping background tasks...")
 
-    for task in _background_tasks:
+    for task in tasks:
         if not task.done():
             task.cancel()
 
     # Wait for tasks to complete
     try:
-        await asyncio.gather(*_background_tasks, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
     except asyncio.CancelledError:
         pass
 
-    _background_tasks.clear()
+    tasks.clear()
     logger.info("✅ All background tasks stopped")
 
 
 def get_background_task_status():
     """Get status of background tasks"""
+    service = get_background_task_service()
+    tasks = service.tasks if service else []
     return {
-        "total_tasks": len(_background_tasks),
-        "running_tasks": sum(1 for task in _background_tasks if not task.done()),
-        "completed_tasks": sum(1 for task in _background_tasks if task.done()),
+        "total_tasks": len(tasks),
+        "running_tasks": sum(1 for task in tasks if not task.done()),
+        "completed_tasks": sum(1 for task in tasks if task.done()),
         "tasks": [
             {
                 "name": task.get_name() if hasattr(task, 'get_name') else str(task),
                 "done": task.done(),
                 "cancelled": task.cancelled() if task.done() else False
             }
-            for task in _background_tasks
+            for task in tasks
         ]
     }
