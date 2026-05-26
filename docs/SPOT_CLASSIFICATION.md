@@ -25,6 +25,9 @@ CTY:
 - `data/cty.csv` supplies ADIF/DXCC IDs that `cty.dat` does not directly expose.
 - Prefix tokens must not be split on slash, equals, or hyphen. Doing so can turn
   portable/special calls into bogus one-letter prefixes.
+- `=CALL` entries in `cty.dat` are exact-call matches, not prefixes.
+- Update CTY files with `scripts/maintenance/update_cty_data.ps1` when new
+  country-files data is released.
 
 Wavelog:
 - `/api/private_lookup` is used for callsign worked/confirmed fields.
@@ -58,10 +61,18 @@ DXCC status:
 
 ## Known Follow-Ups
 
-- Add an explicit CTY update command/scheduled task so `data/cty.dat` and
-  `data/cty.csv` are refreshed from the official source in a controlled way.
 - Store the resolved ADIF/DXCC number in `data/spots.duckdb` alongside country
   and status so historic spot audits can explain exactly which entity was used.
-- Add an admin/debug endpoint that explains one callsign classification:
-  CTY match, resolved ADIF, Wavelog call flags, local QSO DXCC flags, and final
-  display status.
+- Add an optional scheduled automation around the CTY update command once we are
+  happy with the update cadence.
+
+## Diagnostics
+
+Use `/api/spots/explain/{callsign}` to inspect one spot classification. Optional
+query parameters are `band`, `mode`, `frequency_khz`, and `comment`.
+
+Example:
+
+```text
+/api/spots/explain/RI0SP?band=17m&mode=FT8
+```

@@ -238,10 +238,10 @@ def init_rotator():
 
 
 def init_wavelog_sync_manager():
-    """Initialize Wavelog→DuckDB sync manager"""
+    """Initialize the Wavelog→DuckDB read-cache sync manager."""
     try:
         context.wavelog_sync_manager = init_wavelog_sync()
-        logging.info("✅ Wavelog→DuckDB sync initialized")
+        logging.info("✅ Wavelog→DuckDB read-cache sync initialized")
         sync_runtime_state()
         return True
     except Exception as e:

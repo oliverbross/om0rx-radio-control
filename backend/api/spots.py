@@ -72,6 +72,131 @@ async def get_spots(
     return {"spots": filtered_spots}
 
 
+@router.get("/api/spots/explain/{callsign:path}")
+async def explain_spot_classification(
+    callsign: str,
+    request: Request,
+    band: Optional[str] = None,
+    mode: Optional[str] = None,
+    frequency_khz: Optional[float] = None,
+    comment: str = "",
+):
+    """Explain CTY resolution and Wavelog/DXCC classification for one callsign."""
+    try:
+        from radio_control.spot_processor import band_from_khz, infer_mode
+        from radio_control.spot_classification import classify_call_status, classify_dxcc_status
+
+        callsign_upper = callsign.strip().upper()
+        if not callsign_upper:
+            raise HTTPException(status_code=400, detail="callsign is required")
+
+        resolved_band = band
+        if not resolved_band and frequency_khz is not None:
+            resolved_band = band_from_khz(frequency_khz)
+        resolved_mode = mode
+        if not resolved_mode and frequency_khz is not None:
+            resolved_mode = infer_mode(comment or "", resolved_band, frequency_khz)
+
+        cty_resolver = getattr(request.app.state, "cty_resolver", None)
+        classifier = getattr(request.app.state, "classifier", None)
+
+        cty_info = cty_resolver.lookup(callsign_upper) if cty_resolver else {}
+        dxcc = cty_info.get("dxcc")
+
+        call_flags = {}
+        dxcc_flags = {}
+        call_status = "Unknown"
+        dxcc_status = "Unknown"
+        tag = None
+
+        if classifier:
+            call_worked, call_confirmed = await classifier.call_overall(callsign_upper)
+            call_new_band, call_new_mode, call_bandmode_confirmed = (
+                await classifier.call_bandmode_flags(callsign_upper, resolved_band, resolved_mode)
+            )
+            call_flags = {
+                "worked": call_worked,
+                "confirmed": call_confirmed,
+                "new_band": call_new_band,
+                "new_mode": call_new_mode,
+                "bandmode_confirmed": call_bandmode_confirmed,
+            }
+            call_status = classify_call_status(
+                call_worked,
+                call_new_band,
+                call_new_mode,
+                call_bandmode_confirmed,
+            )
+
+            if dxcc is not None:
+                dxcc_worked, dxcc_confirmed = await classifier.dxcc_overall(
+                    dxcc,
+                    callsign=callsign_upper,
+                )
+                dxcc_new_band, dxcc_new_mode, dxcc_bandmode_confirmed = (
+                    await classifier.dxcc_bandmode_flags(
+                        dxcc,
+                        resolved_band,
+                        resolved_mode,
+                        callsign=callsign_upper,
+                    )
+                )
+                dxcc_flags = {
+                    "worked": dxcc_worked,
+                    "confirmed": dxcc_confirmed,
+                    "new_band": dxcc_new_band,
+                    "new_mode": dxcc_new_mode,
+                    "bandmode_confirmed": dxcc_bandmode_confirmed,
+                }
+                dxcc_display = classify_dxcc_status(
+                    dxcc_worked,
+                    dxcc_confirmed,
+                    dxcc_new_band,
+                    dxcc_new_mode,
+                    dxcc_bandmode_confirmed,
+                )
+                dxcc_status = dxcc_display.status
+                tag = dxcc_display.tag
+
+        qso_cache = {}
+        if classifier and getattr(classifier, "qso_status_store", None):
+            qso_cache = classifier.qso_status_store.diagnostics()
+
+        return {
+            "ok": True,
+            "callsign": callsign_upper,
+            "inputs": {
+                "band": resolved_band,
+                "mode": resolved_mode,
+                "frequency_khz": frequency_khz,
+                "comment": comment,
+            },
+            "cty": cty_info,
+            "call": {
+                "status": call_status,
+                "flags": call_flags,
+            },
+            "dxcc": {
+                "adif": dxcc,
+                "status": dxcc_status,
+                "tag": tag,
+                "flags": dxcc_flags,
+            },
+            "sources": {
+                "cty": "data/cty.dat + data/cty.csv",
+                "call_status": "Wavelog private_lookup",
+                "dxcc_worked": "local Wavelog DuckDB read cache",
+                "dxcc_confirmed": "local Wavelog DuckDB read cache",
+            },
+            "qso_cache": qso_cache,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error explaining spot classification for %s: %s", callsign, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/api/spots/filtered-search")
 async def search_filtered_spots(req: SpotFilterRequest, request: Request):
     """

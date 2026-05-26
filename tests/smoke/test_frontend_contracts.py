@@ -32,6 +32,7 @@ GET_ROUTES = [
     "/api/ft8/audio-devices",
     "/api/spots",
     "/api/spots/count",
+    "/api/spots/explain/{callsign:path}",
     "/api/spots/recent",
     "/api/spots/callsign/{callsign}",
     "/api/spots/stats/band",

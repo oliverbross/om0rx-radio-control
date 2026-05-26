@@ -444,13 +444,13 @@ async def start_background_tasks():
     tasks.append(spots_task)
     logger.info("✅ Spot cache monitoring started")
 
-    # Start Wavelog→DuckDB sync if manager is available
+    # Start Wavelog→DuckDB read-cache sync if manager is available
     if service.context.wavelog_sync_manager:
         from radio_control.wavelog_duckdb_sync import periodic_wavelog_sync
 
         wavelog_task = asyncio.create_task(periodic_wavelog_sync())
         tasks.append(wavelog_task)
-        logger.info("✅ Wavelog→DuckDB periodic sync task started")
+        logger.info("✅ Wavelog→DuckDB read-cache periodic sync task started")
 
     logger.info(f"✅ All background tasks started ({len(tasks)} tasks)")
 

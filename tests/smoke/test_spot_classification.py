@@ -27,8 +27,10 @@ def test_cty_csv_prefix_tokens_do_not_misclassify_u_prefix():
 
     assert ua3["country"] == "European Russia"
     assert ua3["dxcc"] == 54
+    assert ua3["exact_match"] is False
     assert ri0sp["country"] == "European Russia"
     assert ri0sp["dxcc"] == 54
+    assert ri0sp["exact_match"] is True
 
 
 def test_dxcc_worked_status_comes_from_local_qso_log():

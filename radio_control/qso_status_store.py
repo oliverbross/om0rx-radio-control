@@ -29,6 +29,21 @@ class DuckDBQSOStatusStore:
     def available(self) -> bool:
         return self.db_path.exists()
 
+    def diagnostics(self) -> dict[str, object]:
+        """Return cache health details for classification diagnostics."""
+        loaded = self._ensure_loaded()
+        return {
+            "db_path": str(self.db_path),
+            "available": self.available(),
+            "loaded": loaded,
+            "loaded_mtime": self._loaded_mtime,
+            "dxcc_worked_count": len(self.dxcc_worked),
+            "dxcc_confirmed_count": len(self.dxcc_confirmed),
+            "dxcc_band_worked_count": len(self.dxcc_band_worked),
+            "dxcc_mode_worked_count": len(self.dxcc_mode_worked),
+            "dxcc_bandmode_confirmed_count": len(self.dxcc_bandmode_confirmed),
+        }
+
     def dxcc_overall(self, dxcc: int | None) -> Optional[tuple[bool, bool]]:
         """Return (worked, confirmed) for a DXCC, or None when the DB is unavailable."""
         if dxcc is None:

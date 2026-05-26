@@ -1,7 +1,9 @@
 """
-Wavelog to DuckDB Synchronization Module
-Syncs QSO data from Wavelog MySQL database to local DuckDB for failover
-Uses smart sync to track changes via last_modified timestamp
+Wavelog to DuckDB read-cache synchronization.
+
+Wavelog remains the source of truth. This module builds a local DuckDB cache for
+fast UI reads and live DX spot classification, and the cache can be rebuilt from
+Wavelog when needed.
 """
 
 import logging
@@ -17,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class WavelogDuckDBSync:
-    """Manages synchronization of Wavelog MySQL database to local DuckDB"""
+    """Manage synchronization from Wavelog MySQL to the local read cache."""
     
     def __init__(self, db_path: str = None):
         """

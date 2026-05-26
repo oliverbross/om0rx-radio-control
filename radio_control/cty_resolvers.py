@@ -215,7 +215,7 @@ class CtyDatResolver:
     PRIMARY_PREFIX_TO_DXCC = {}
     
     def __init__(self, dat_path: str, csv_path: str = None, ignore_suffixes=None):
-        self.entries = []   # list of (prefix, meta)
+        self.entries = []   # list of (prefix, meta, exact_match)
         self.ignore_suffixes=set(ignore_suffixes or [])
         self.miss_log=0
         self.prefix_to_dxcc = {}  # Maps prefix -> DXCC code
@@ -240,6 +240,17 @@ class CtyDatResolver:
             if token:
                 tokens.append(token)
         return tokens
+
+    @staticmethod
+    def _dat_prefix_token(raw_token: str) -> tuple[str, bool] | None:
+        """Parse a cty.dat prefix token into a match token and exact-call flag."""
+        raw = (raw_token or "").strip().upper()
+        if not raw:
+            return None
+        exact_match = raw.startswith("=")
+        token = raw.lstrip("*=")
+        token = re.sub(r"\([^)]*\)|\[[^\]]*\]|<[^>]*>", "", token).strip()
+        return (token, exact_match) if token else None
     
     def _load_dxcc_from_csv(self, csv_path: str):
         """Load DXCC codes from CSV to create prefix->DXCC mappings"""
@@ -360,42 +371,56 @@ class CtyDatResolver:
                     for token in [t.strip() for t in line_content.split(',') if t.strip()]:
                         if not token:
                             continue
-                        token = token.lstrip('=').strip()
-                        if not token:
+                        parsed = self._dat_prefix_token(token)
+                        if not parsed:
                             continue
-                        self.entries.append((token, current))
+                        match_token, exact_match = parsed
+                        self.entries.append((match_token, current, exact_match))
                         # Map prefix to DXCC if available
                         if current.get("dxcc"):
-                            self.prefix_to_dxcc[token.upper()] = current.get("dxcc")
+                            self.prefix_to_dxcc[match_token.upper()] = current.get("dxcc")
         
-        self.entries.sort(key=lambda x: len(x[0]), reverse=True)
+        self.entries.sort(key=lambda x: (len(x[0]), x[2]), reverse=True)
         logging.info("Loaded %d CTY.DAT prefixes, %d with DXCC codes", len(self.entries), len(self.prefix_to_dxcc))
 
     def lookup(self, callsign: str):
         """Look up callsign in cty.dat and add DXCC from prefix mapping"""
         if not callsign: return {}
         cs = callsign.upper().strip()
-        for suf in self.ignore_suffixes:
-            if cs.endswith(suf.upper()):
-                cs = cs[:-len(suf)]
-        
-        # Find matching prefix from cty.dat
-        for pfx, meta in self.entries:
-            if cs.startswith(pfx.upper()):
-                # Get country info from cty.dat
+        ignore_suffixes = {suffix.upper() for suffix in self.ignore_suffixes}
+        slash_parts = [part for part in cs.split("/") if part]
+        slash_candidates = [part for part in slash_parts if part not in ignore_suffixes]
+        candidates = [cs]
+        candidates.extend(sorted(slash_candidates, key=len, reverse=True))
+
+        seen = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+
+            # Find matching prefix from cty.dat
+            for pfx, meta, exact_match in self.entries:
+                pfx_upper = pfx.upper()
+                if (exact_match and candidate != pfx_upper) or (
+                    not exact_match and not candidate.startswith(pfx_upper)
+                ):
+                    continue
                 result = {
-                    "country": meta.get("country"), 
+                    "country": meta.get("country"),
                     "cq": meta.get("cq"),
-                    "itu": meta.get("itu"), 
+                    "itu": meta.get("itu"),
                     "continent": meta.get("continent"),
                     "latitude": meta.get("latitude"),  # === FIX: Include latitude ===
                     "longitude": meta.get("longitude"),  # === FIX: Include longitude ===
-                    "utc_offset": meta.get("utc_offset"), 
+                    "utc_offset": meta.get("utc_offset"),
                     "primary_prefix": meta.get("primary_prefix"),
-                    "prefix": pfx, 
+                    "prefix": pfx,
+                    "matched_candidate": candidate,
+                    "exact_match": exact_match,
                     "dxcc": meta.get("dxcc")
                 }
-                
+
                 # Add DXCC from CSV mapping if available
                 if not result["dxcc"]:
                     # Try longest match first from prefix_to_dxcc
@@ -404,7 +429,7 @@ class CtyDatResolver:
                         if check_pfx in self.prefix_to_dxcc:
                             result["dxcc"] = self.prefix_to_dxcc[check_pfx]
                             break
-                
+
                 return result
         
         self.miss_log += 1
@@ -560,7 +585,7 @@ class CtyHybridResolver(CtyDatResolver):
         matched = 0
         self.entity_to_adif = {}  # Create reverse mapping: country_name -> ADIF
         
-        for pfx, meta in self.entries:
+        for pfx, meta, _exact_match in self.entries:
             country = meta.get("country") or ""
             primary = (meta.get("primary_prefix") or "").strip().upper()
             adif = None; name = None
