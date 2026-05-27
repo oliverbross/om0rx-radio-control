@@ -86,6 +86,8 @@ class FlexCtl:
         self.last_state_changed = {}
         # Subscription timeout - re-subscribe if we haven't heard from radio in a while
         self.last_subscription_time = 0
+        self.last_resubscribe_time = 0
+        self.last_radio_message_time = 0
         logging.info(f"FlexCtl initialized for {host}:{port} slice {slice_id}")
 
     def connect(self) -> bool:
@@ -110,6 +112,7 @@ class FlexCtl:
             self._send("sub radio all")
             self._send("sub tx all")
             self._send("sub transmit all")
+            self.last_resubscribe_time = time.time()
             
             # Test: Try to read subscription confirmation
             self.sock.settimeout(0.5)
@@ -637,35 +640,46 @@ class FlexCtl:
         
         try:
             import re as _re
+            import time as _time
             # Set short timeout for non-blocking reads
             old_timeout = self.sock.gettimeout()
             self.sock.settimeout(0.2)  # 200ms timeout (was 100ms, too short)
             logging.debug(f"🔍 REFRESH STARTING: Connected to {self.host}:{self.port}, slice_id={self.slice_id}")
             
-            # Re-subscribe periodically to ensure we get all updates
-            # (subscription state can be lost or expire)
-            try:
-                self._send("sub slice all")
-                self._send("sub tx all")
-                self._send("sub transmit all")
-            except Exception as e:
-                logging.debug(f"FlexCtl re-subscription attempt: {e}")
+            # Re-subscribe only occasionally. Doing this every poll creates
+            # noisy SmartSDR client activity and can make the radio look like
+            # it is constantly being reconnected.
+            now = _time.time()
+            if now - float(self.last_resubscribe_time or 0) > 60:
+                try:
+                    self._send("sub slice all")
+                    self._send("sub tx all")
+                    self._send("sub transmit all")
+                    self.last_resubscribe_time = now
+                except Exception as e:
+                    logging.debug(f"FlexCtl re-subscription attempt: {e}")
             
             # Read ALL pending messages from socket (not just one!)
             messages_read = 0
             state_changed = {}  # Track what changed
-            import time as _time
             
             while True:
                 try:
-                    resp = self.sock.recv(4096).decode(errors="ignore").strip()
+                    chunk = self.sock.recv(4096)
+                    if not chunk:
+                        logging.warning("FlexCtl socket closed by SmartSDR")
+                        try:
+                            self.sock.close()
+                        except Exception:
+                            pass
+                        self.sock = None
+                        return False
+                    resp = chunk.decode(errors="ignore").strip()
                     if not resp:
-                        if messages_read == 0:
-                            logging.debug("🔍 SOCKET RECV: Got empty response (no messages waiting)")
                         break
                     
                     messages_read += 1
-                    self.last_subscription_time = _time.time()  # Track last message time
+                    self.last_radio_message_time = _time.time()
                     logging.debug(f"FlexCtl refresh: {resp[:100]}...")  # Log first 100 chars
                     
                     # Parse ALL subscription updates for mode/freq/filter/band changes
@@ -886,15 +900,8 @@ class FlexCtl:
             if old_timeout is not None:
                 self.sock.settimeout(old_timeout)
             
-            # If we got NO messages and no frequency, force reconnect to refresh subscriptions
-            if messages_read == 0 and 'freq' not in state_changed:
-                logging.warning("⚠️  No subscription messages received - forcing socket reconnect to refresh subscriptions")
-                try:
-                    if self.sock:
-                        self.sock.close()
-                except:
-                    pass
-                self.sock = None  # Force reconnect on next cycle
+            # No messages during a poll is normal when the operator is not
+            # changing radio state. Keep the TCP client connected.
             
             # Return state_changed dict for UI updates
             self.last_state_changed = state_changed

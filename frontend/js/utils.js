@@ -4,6 +4,26 @@
 console.log('✅ Loading utils.js module...');
 
 const utilityMethods = {
+    async fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+            const response = await fetch(url, {
+                ...options,
+                signal: controller.signal
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            return await response.json();
+        } finally {
+            clearTimeout(timeout);
+        }
+    },
+
     // === Frequency Formatting ===
     
     formatFrequency(freq) {
@@ -257,17 +277,43 @@ const utilityMethods = {
     },
     
     // === Status Color Styling ===
+
+    getConfiguredStatusColor(status, fallback = '#FFFFFF') {
+        const value = String(status || '').trim();
+        if (!value) {
+            return fallback;
+        }
+        const colors = this.configData?.COLORS || {};
+        const candidates = [
+            value,
+            value.replace(/\bBand\b/g, 'band').replace(/\bMode\b/g, 'mode'),
+            value.replace(/\bband\b/g, 'Band').replace(/\bmode\b/g, 'Mode')
+        ];
+        for (const key of candidates) {
+            const raw = colors[key];
+            if (typeof raw === 'string') {
+                if (/^#[0-9a-fA-F]{8}$/.test(raw)) {
+                    return `#${raw.slice(3)}`;
+                }
+                if (/^#[0-9a-fA-F]{6}$/.test(raw)) {
+                    return raw;
+                }
+            }
+        }
+        return fallback;
+    },
     
     getCallStatusStyle(status) {
         const colors = {
             'New Call': '#FF6B35',        // Orange-Red (exciting new contact!)
-            'New Band': '#4A9EFF',        // Bright Blue  
-            'New Mode': '#FFD93D',        // Yellow
+            'New Band': '#00BFFF',        // Bright Blue
+            'New Mode': '#FFC000',        // Yellow
             'New Band+Mode': '#E91E63',   // Pink (special combo!)
             'Worked': '#B0B0B0',          // Gray
-            'Confirmed': '#10B981'        // Green
+            'Confirmed': '#10B981',       // Green
+            'Unknown': '#666666'
         };
-        const color = colors[status] || '#fff';
+        const color = this.getConfiguredStatusColor(status, colors[status] || '#fff');
         return `font-size: 13px; font-weight: bold; color: ${color};`;
     },
     
@@ -284,89 +330,154 @@ const utilityMethods = {
             'Confirmed': '#10B981',       // Green
             'Unknown': '#666666'          // Dark Gray (unresolved DXCC)
         };
-        const color = colors[status] || '#fff';
+        const color = this.getConfiguredStatusColor(status, colors[status] || '#fff');
         return `font-size: 13px; font-weight: bold; color: ${color};`;
     },
     
     // === QRZ API Integration ===
     
-    async loadQRZProfile() {
+    async loadQRZProfile(options = {}) {
+        const triggerRotor = options.triggerRotor !== false;
+        const includeHistory = options.includeHistory !== false;
+        const forceRefresh = options.forceRefresh === true;
         const callsign = this.loggingForm.callsign.trim().toUpperCase();
         if (!callsign) return;
-        
+
+        const requestId = (this.qrzRequestSeq || 0) + 1;
+        this.qrzRequestSeq = requestId;
         this.qrzLoading = true;
-        try {
-            const encodedCallsign = encodeURIComponent(callsign);
-            const response = await fetch(`/api/qrz/profile/${encodedCallsign}`);
-            this.qrzProfile = await response.json();
-            
-            if (this.qrzProfile.success) {
-                // Clear fields that might not be in QRZ profile to avoid retaining previous values
-                this.loggingForm.name = '';
-                this.loggingForm.qth = '';
-                this.loggingForm.gridsquare = '';
-                this.loggingForm.country = '';
-                this.loggingForm.state = '';
-                this.loggingForm.continent = '';
-                this.loggingForm.cq_zone = '';
-                this.loggingForm.itu_zone = '';
-                this.loggingForm.email = '';  // Always clear email to prevent retention from previous QSO
-                
-                // Station Tab - Auto-populate from QRZ
-                if (this.qrzProfile.name) {
-                    this.loggingForm.name = this.qrzProfile.name;
-                }
-                if (this.qrzProfile.state || this.qrzProfile.country) {
-                    // Build location string from state and country
-                    const locParts = [];
-                    if (this.qrzProfile.state) locParts.push(this.qrzProfile.state);
-                    if (this.qrzProfile.country) locParts.push(this.qrzProfile.country);
-                    if (locParts.length > 0) {
-                        this.loggingForm.qth = locParts.join(', ');
-                    }
-                }
-                
-                // General Tab - Auto-populate from QRZ
-                if (this.qrzProfile.country) {
-                    this.loggingForm.country = this.qrzProfile.country;
-                }
-                if (this.qrzProfile.state) {
-                    this.loggingForm.state = this.qrzProfile.state;
-                }
-                if (this.qrzProfile.cont) {
-                    this.loggingForm.continent = this.qrzProfile.cont;
-                }
-                if (this.qrzProfile.cqzone) {
-                    this.loggingForm.cq_zone = this.qrzProfile.cqzone;
-                }
-                if (this.qrzProfile.ituzone) {
-                    this.loggingForm.itu_zone = this.qrzProfile.ituzone;
-                }
-                if (this.qrzProfile.grid) {
-                    this.loggingForm.gridsquare = this.qrzProfile.grid;
-                }
-                if (this.qrzProfile.email) {
-                    this.loggingForm.email = this.qrzProfile.email;
-                }
-                
-                // Load Wavelog data to fill in any missing fields
-                await this.loadWavelogProfile();
-                
-                // Trigger AUTO rotor if enabled
-                const gridsquare = this.qrzProfile.grid || null;
-                const frequency_khz = this.loggingForm.frequency * 1000;  // Convert MHz to kHz
-                this.rotorAutoGoto(callsign, frequency_khz, gridsquare, null, null);
-                
-                // Also load history
-                const histResponse = await fetch(`/api/qrz/history/${encodedCallsign}?limit=8`);
-                const histData = await histResponse.json();
-                this.qrzHistory = histData.data || [];
+        this.qrzError = null;
+        this.lastWavelogProfile = null;
+
+        const applyProfile = (profile) => {
+            if (this.loggingForm.callsign.trim().toUpperCase() !== callsign) {
+                return;
             }
+
+            this.qrzProfile = profile || { success: false };
+
+            if (!this.qrzProfile.success) {
+                this.qrzError = this.qrzProfile.message || 'QRZ profile not found';
+                return;
+            }
+
+            this.qrzError = null;
+
+            // Clear fields that might not be in QRZ profile to avoid retaining previous values.
+            this.loggingForm.name = '';
+            this.loggingForm.qth = '';
+            this.loggingForm.gridsquare = '';
+            this.loggingForm.country = '';
+            this.loggingForm.state = '';
+            this.loggingForm.continent = '';
+            this.loggingForm.cq_zone = '';
+            this.loggingForm.itu_zone = '';
+            this.loggingForm.email = '';
+
+            if (this.qrzProfile.name) {
+                this.loggingForm.name = this.qrzProfile.name;
+            }
+            if (this.qrzProfile.state || this.qrzProfile.country) {
+                const locParts = [];
+                if (this.qrzProfile.state) locParts.push(this.qrzProfile.state);
+                if (this.qrzProfile.country) locParts.push(this.qrzProfile.country);
+                if (locParts.length > 0) {
+                    this.loggingForm.qth = locParts.join(', ');
+                }
+            }
+            if (this.qrzProfile.country) this.loggingForm.country = this.qrzProfile.country;
+            if (this.qrzProfile.state) this.loggingForm.state = this.qrzProfile.state;
+            if (this.qrzProfile.cont) this.loggingForm.continent = this.qrzProfile.cont;
+            if (this.qrzProfile.cqzone) this.loggingForm.cq_zone = this.qrzProfile.cqzone;
+            if (this.qrzProfile.ituzone) this.loggingForm.itu_zone = this.qrzProfile.ituzone;
+            if (this.qrzProfile.grid) this.loggingForm.gridsquare = this.qrzProfile.grid;
+            if (this.qrzProfile.email) this.loggingForm.email = this.qrzProfile.email;
+        };
+
+        try {
+            const now = Date.now();
+            const cached = this.qrzProfileCache?.[callsign];
+            let profile;
+
+            if (!forceRefresh && cached?.profile?.success && now - cached.timestamp < 24 * 60 * 60 * 1000) {
+                profile = cached.profile;
+            } else {
+                const encodedCallsign = encodeURIComponent(callsign);
+                if (!this.qrzProfileInflight) this.qrzProfileInflight = {};
+                if (!this.qrzProfileInflight[callsign]) {
+                    this.qrzProfileInflight[callsign] = this.fetchJsonWithTimeout(`/api/qrz/profile/${encodedCallsign}`, {}, 8000)
+                        .finally(() => {
+                            delete this.qrzProfileInflight[callsign];
+                        });
+                }
+                profile = await this.qrzProfileInflight[callsign];
+                if (profile?.success) {
+                    this.qrzProfileCache[callsign] = { profile, timestamp: Date.now() };
+                } else {
+                    delete this.qrzProfileCache[callsign];
+                }
+            }
+
+            applyProfile(profile);
+
+            if (
+                triggerRotor &&
+                profile?.success &&
+                profile?.grid &&
+                this.loggingForm.callsign.trim().toUpperCase() === callsign
+            ) {
+                const frequency_khz = this.loggingForm.frequency * 1000;
+                this.rotorAutoGoto(callsign, frequency_khz, profile.grid, null, null, {
+                    qrz_grid: profile.grid,
+                    location_source: 'qrz'
+                });
+            }
+
+            const wavelogData = await this.loadWavelogProfile();
+
+            if (
+                triggerRotor &&
+                !profile?.grid &&
+                this.loggingForm.callsign.trim().toUpperCase() === callsign
+            ) {
+                const gridsquare = this.loggingForm.gridsquare || null;
+                const frequency_khz = this.loggingForm.frequency * 1000;
+                this.rotorAutoGoto(callsign, frequency_khz, gridsquare, null, null, {
+                    wavelog_grid: wavelogData?.gridsquare || null,
+                    location_source: wavelogData?.gridsquare ? 'wavelog' : null
+                });
+            }
+
+            if (includeHistory && this.loggingForm.callsign.trim().toUpperCase() === callsign) {
+                const encodedCallsign = encodeURIComponent(callsign);
+                this.fetchJsonWithTimeout(`/api/qrz/history/${encodedCallsign}?limit=8`, {}, 8000)
+                    .then(histData => {
+                        if (this.loggingForm.callsign.trim().toUpperCase() === callsign) {
+                            this.qrzHistory = histData.data || [];
+                        }
+                    })
+                    .catch(error => console.warn('QRZ history error:', error));
+            }
+
+            return {
+                qrz: profile,
+                wavelog: this.lastWavelogProfile || null
+            };
         } catch (error) {
             console.error('QRZ profile error:', error);
-            this.qrzProfile = { success: false };
+            if (this.loggingForm.callsign.trim().toUpperCase() === callsign) {
+                const message = error.name === 'AbortError' ? 'QRZ lookup timed out' : error.message;
+                this.qrzProfile = { success: false, message };
+                this.qrzError = message;
+            }
+            return {
+                qrz: this.qrzProfile,
+                wavelog: this.lastWavelogProfile || null
+            };
         } finally {
-            this.qrzLoading = false;
+            if (this.qrzRequestSeq === requestId) {
+                this.qrzLoading = false;
+            }
         }
     },
     
@@ -374,20 +485,18 @@ const utilityMethods = {
         // Use Wavelog private_lookup to get additional data
         const callsign = this.loggingForm.callsign.trim().toUpperCase();
         if (!callsign) return;
-        
-        try {
-            const response = await fetch('/api/wavelog/private_lookup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    callsign: callsign,
-                    band: this.freqToBand(this.loggingForm.frequency) || '20m',
-                    mode: this.loggingForm.mode || 'SSB'
-                })
-            });
-            
-            const data = await response.json();
-            if (data && typeof data === 'object') {
+
+        const band = this.freqToBand(this.loggingForm.frequency) || '20m';
+        const mode = this.loggingForm.mode || 'SSB';
+        const cacheKey = `${callsign}|${band}|${mode}`;
+
+        const applyWavelogData = (rawData) => {
+            const data = rawData?.data && typeof rawData.data === 'object' ? rawData.data : rawData;
+            this.lastWavelogProfile = data && typeof data === 'object' ? data : null;
+            this.lastWavelogRawLookup = rawData && typeof rawData === 'object' ? rawData : null;
+            this.lastWavelogLookupKey = cacheKey;
+
+            if (data && typeof data === 'object' && this.loggingForm.callsign.trim().toUpperCase() === callsign) {
                 // Fill in missing fields from Wavelog
                 if (data.gridsquare && !this.loggingForm.gridsquare) {
                     this.loggingForm.gridsquare = data.gridsquare;
@@ -414,33 +523,84 @@ const utilityMethods = {
                     this.loggingForm.qsl_manager = data.qsl_manager;
                 }
             }
+
+            return this.lastWavelogProfile;
+        };
+
+        try {
+            const cached = this.wavelogLookupCache?.[cacheKey];
+            if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
+                return applyWavelogData(cached.rawData);
+            }
+
+            if (!this.wavelogLookupInflight) this.wavelogLookupInflight = {};
+            if (!this.wavelogLookupInflight[cacheKey]) {
+                this.wavelogLookupInflight[cacheKey] = this.fetchJsonWithTimeout('/api/wavelog/private_lookup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ callsign, band, mode })
+                }, 8000).finally(() => {
+                    delete this.wavelogLookupInflight[cacheKey];
+                });
+            }
+
+            const rawData = await this.wavelogLookupInflight[cacheKey];
+            this.wavelogLookupCache[cacheKey] = { rawData, timestamp: Date.now() };
+            return applyWavelogData(rawData);
         } catch (error) {
             console.error('Wavelog lookup error:', error);
             // Silently fail - this is optional enhancement
+            this.lastWavelogProfile = null;
+            return null;
         }
     },
     
-    async loadDXCCStatus() {
+    async loadDXCCStatus(options = {}) {
         const callsign = this.loggingForm.callsign.trim().toUpperCase();
         if (!callsign) return;
-        
+
+        const requestId = (this.dxccRequestSeq || 0) + 1;
+        this.dxccRequestSeq = requestId;
         this.dxccLoading = true;
         try {
             // Use private_lookup API with optional band and mode parameters
             const band = this.loggingForm.frequency ? this.freqToBand(this.loggingForm.frequency) : null;
             const mode = this.loggingForm.mode || null;
-            
-            const response = await fetch('/api/wavelog/private_lookup', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    callsign: callsign,
-                    band: band || '20m',
-                    mode: mode || 'SSB'
-                })
-            });
-            this.dxccStatus = await response.json();
-            
+            const cacheKey = `${callsign}|${band || '20m'}|${mode || 'SSB'}`;
+            let rawData = null;
+
+            if (!options.force && this.lastWavelogLookupKey === cacheKey && this.lastWavelogRawLookup) {
+                rawData = this.lastWavelogRawLookup;
+            } else {
+                const cached = this.wavelogLookupCache?.[cacheKey];
+                if (!options.force && cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
+                    rawData = cached.rawData;
+                }
+            }
+
+            if (!rawData) {
+                rawData = await this.fetchJsonWithTimeout('/api/wavelog/private_lookup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        callsign: callsign,
+                        band: band || '20m',
+                        mode: mode || 'SSB'
+                    })
+                }, 8000);
+
+                if (!this.wavelogLookupCache) this.wavelogLookupCache = {};
+                this.wavelogLookupCache[cacheKey] = { rawData, timestamp: Date.now() };
+                this.lastWavelogRawLookup = rawData;
+                this.lastWavelogLookupKey = cacheKey;
+            }
+
+            if (this.loggingForm.callsign.trim().toUpperCase() !== callsign) {
+                return;
+            }
+
+            this.dxccStatus = rawData;
+
             // Parse private_lookup data
             if (this.dxccStatus.success && this.dxccStatus.data) {
                 this.dxccBands = this.parseDXCCData(this.dxccStatus.data);
@@ -449,11 +609,15 @@ const utilityMethods = {
             console.error('DXCC status error:', error);
             this.dxccStatus = { success: false };
         } finally {
-            this.dxccLoading = false;
+            if (this.dxccRequestSeq === requestId) {
+                this.dxccLoading = false;
+            }
         }
-        
+
         // Load previous QSOs
-        this.loadPreviousQSOs();
+        if (options.loadPreviousQSOs !== false) {
+            this.loadPreviousQSOs();
+        }
     },
     
     async loadPreviousQSOs() {
@@ -467,17 +631,19 @@ const utilityMethods = {
         try {
             console.log(`[Previous QSOs] 🔍 Loading for callsign: ${callsign}`);
             
-            const response = await fetch('/api/wavelog/recent_qsos', {
+            const result = await this.fetchJsonWithTimeout('/api/wavelog/recent_qsos', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     callsign: callsign,
                     limit: 5
                 })
-            });
-            
-            const result = await response.json();
+            }, 8000);
             console.log(`[Previous QSOs] 📡 Full response:`, result);
+
+            if (this.loggingForm.callsign.trim().toUpperCase() !== callsign) {
+                return;
+            }
             
             if (result.success && result.data) {
                 // Handle both array and object responses
@@ -533,7 +699,7 @@ const utilityMethods = {
         if (mode.includes('CW')) {
             this.loggingForm.rst_sent = '599';
             this.loggingForm.rst_rcvd = '599';
-        } else if (mode.includes('FT8') || mode.includes('FT4') || mode.includes('JS8') || 
+        } else if (mode.includes('FT8') || mode.includes('FT4') || mode.includes('FT2') || mode.includes('JS8') ||
                    mode.includes('MSK144') || mode.includes('WSPR') || mode.includes('JT')) {
             // Digital modes typically use signal reports
             this.loggingForm.rst_sent = '+00';
@@ -584,13 +750,14 @@ const utilityMethods = {
         
         const colors = {
             'New Call': '#FF6B35',        // Orange-Red (exciting new contact!)
-            'New Band': '#4A9EFF',        // Bright Blue  
-            'New Mode': '#FFD93D',        // Yellow
+            'New Band': '#00BFFF',        // Bright Blue
+            'New Mode': '#FFC000',        // Yellow
             'New Band+Mode': '#E91E63',   // Pink (special combo!)
             'Worked': '#B0B0B0',          // Gray
-            'Confirmed': '#10B981'        // Green
+            'Confirmed': '#10B981',       // Green
+            'Unknown': '#666666'
         };
-        const color = colors[status] || '#FFFFFF';
+        const color = this.getConfiguredStatusColor(status, colors[status] || '#FFFFFF');
         return { color: color, fontWeight: 'bold', fontSize: '13px' };
     },
     
@@ -612,7 +779,7 @@ const utilityMethods = {
             'Confirmed': '#10B981',       // Green
             'Unknown': '#666666'          // Dark Gray (unresolved DXCC)
         };
-        const color = colors[status] || '#FFFFFF';
+        const color = this.getConfiguredStatusColor(status, colors[status] || '#FFFFFF');
         return { color: color, fontWeight: 'bold', fontSize: '13px' };
     }
 };

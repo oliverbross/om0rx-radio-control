@@ -6,11 +6,243 @@
   "FT8_MYCALL": "OM0RX",
   "FT8_MYGRID": "JN88",
   "FT8_NETWORK_SERVER": "192.168.0.199:4992",
+  "FT8_OPERATOR_SETTINGS": {
+    "alerts": {
+      "new": {
+        "call": false,
+        "continent": false,
+        "cqZone": false,
+        "dxcc": false,
+        "grid": false,
+        "ituZone": false
+      },
+      "onBand": {
+        "call": false,
+        "continent": false,
+        "cqZone": false,
+        "dxcc": false,
+        "grid": false,
+        "ituZone": false
+      }
+    },
+    "autoIgnore": false,
+    "automation": {
+      "allowedModes": {
+        "FT2": false,
+        "FT4": true,
+        "FT8": true
+      },
+      "autoCQCount": 5,
+      "autoCQRemaining": 5,
+      "autoCallCount": 5,
+      "autoCallRemaining": 5,
+      "autoLogToWavelog": true,
+      "avoidLogged": true,
+      "bandHopping": false,
+      "bandPlan": "05:20m,17m,15m,12m,10m\n20:30m,40m,80m,160m",
+      "enabled": false,
+      "hopIntervalSeconds": 120,
+      "lastHopAt": 0,
+      "lastHopKey": "",
+      "maxAttemptsPerTarget": 3,
+      "minSignal": -30,
+      "modeSwitching": false,
+      "priority": "last",
+      "requireHeardBeforeCall": true,
+      "retryBackoffMinutes": 10,
+      "retryResetMinutes": 60,
+      "spotHuntEnabled": false,
+      "spotListenSeconds": 120,
+      "treat73AsCQ": true
+    },
+    "cqOnly": false,
+    "customAlerts": "",
+    "display": {
+      "waterfall": false
+    },
+    "filterPrefixes": "",
+    "filtering": true,
+    "filters": {
+      "continents": {
+        "AF": true,
+        "AN": true,
+        "AS": true,
+        "EU": true,
+        "NA": true,
+        "OC": true,
+        "SA": true
+      },
+      "lotwOnly": false,
+      "new": {
+        "call": false,
+        "continent": false,
+        "cqZone": false,
+        "dxcc": false,
+        "grid": false,
+        "ituZone": false
+      },
+      "onBand": {
+        "call": true,
+        "continent": false,
+        "cqZone": false,
+        "dxcc": false,
+        "grid": true,
+        "ituZone": false
+      }
+    },
+    "frequencyPlan": [
+      {
+        "band": "160m",
+        "ft4": null,
+        "ft8": 1.84
+      },
+      {
+        "band": "80m",
+        "ft4": 3.575,
+        "ft8": 3.573
+      },
+      {
+        "band": "60m",
+        "ft4": null,
+        "ft8": 5.357
+      },
+      {
+        "band": "40m",
+        "ft4": 7.0475,
+        "ft8": 7.074
+      },
+      {
+        "band": "30m",
+        "ft4": 10.14,
+        "ft8": 10.136
+      },
+      {
+        "band": "20m",
+        "ft4": 14.08,
+        "ft8": 14.074
+      },
+      {
+        "band": "17m",
+        "ft4": 18.104,
+        "ft8": 18.1
+      },
+      {
+        "band": "15m",
+        "ft4": 21.14,
+        "ft8": 21.074
+      },
+      {
+        "band": "12m",
+        "ft4": 24.919,
+        "ft8": 24.915
+      },
+      {
+        "band": "10m",
+        "ft4": 28.18,
+        "ft8": 28.074
+      },
+      {
+        "band": "6m",
+        "ft4": 50.318,
+        "ft8": 50.313
+      }
+    ],
+    "ignoredStations": "",
+    "prefixFilterMode": "off",
+    "specialActivity": {
+      "autoDetectFromSpot": true,
+      "callOnlyAfterDecode": true,
+      "enabled": false,
+      "houndTxMax": 4000,
+      "houndTxMin": 1000,
+      "returnToStandardAfterQso": true,
+      "role": "hound",
+      "submode": "standard",
+      "superFoxLowestTone": 750,
+      "superFoxOtp": false,
+      "superFoxOtpKey": "",
+      "superFoxOtpUrl": "https://www.9dx.cc",
+      "superFoxShowOtp": false,
+      "superFoxTxMax": 3000,
+      "superFoxTxMin": 200,
+      "superFoxVerified": false
+    },
+    "stateFilter": "",
+    "stateFilterMode": "off",
+    "statusColors": {
+      "call": {
+        "Confirmed": "#10B981",
+        "Default": "#FFFFFF",
+        "New Band": "#00BFFF",
+        "New Band+Mode": "#E91E63",
+        "New Call": "#FF6B35",
+        "New Mode": "#FFC000",
+        "Unknown": "#666666",
+        "Worked": "#B0B0B0"
+      },
+      "dxcc": {
+        "ATNO": "#FF8C00",
+        "C/New Band": "#4A9EFF",
+        "C/New Band+Mode": "#9C27B0",
+        "C/New Mode": "#FFD93D",
+        "Confirmed": "#10B981",
+        "Default": "#FFFFFF",
+        "Unknown": "#666666",
+        "W/New Band": "#00BCD4",
+        "W/New Band+Mode": "#FF5722",
+        "W/New Mode": "#FFA726",
+        "Worked": "#B0B0B0"
+      }
+    },
+    "wsjtz": {
+      "alertCommand": "",
+      "debug": "screen",
+      "freeFrequency": {
+        "enabled": true,
+        "range": "wide"
+      },
+      "ignoreList": {
+        "permanent": "",
+        "resetInterval": 0
+      },
+      "misc": {
+        "applyFilteringToCallers": true,
+        "autoTuneAfterBandChange": false,
+        "disableWriteAll": true,
+        "disableWriteFoxQso": true,
+        "noFoxQsy": true,
+        "processTailenders": true,
+        "resetWatchdogAnywhere": true,
+        "setRxToTxWhenFinished": true,
+        "udpFiltering": true
+      },
+      "rxWindows": {
+        "clearRxOnBandChange": false,
+        "colourAll": true,
+        "countryPadding": 42,
+        "freezeBandActivity": false,
+        "highlightDX": true,
+        "rawViewDXCC": false,
+        "removeExtra": true,
+        "separatorColor": "#777777",
+        "showBearing": true,
+        "showDistance": true,
+        "showState": true
+      },
+      "settingsTab": "rx",
+      "watchdog": {
+        "enabled": true,
+        "ft4": 2,
+        "ft8": 2
+      }
+    }
+  },
   "FT8_PTT_METHOD": "CAT",
   "FT8_SAMPLE_RATE": 48000,
   "FT8_TX_ENABLED": false,
   "FT8_USE_FLEXRADIO_AUDIO": true,
   "FT8_WATERFALL_HEIGHT": 100,
+  "ROTOR_AUTO_DELAY_SEC": 2,
   "ROTOR_AUTO_ENABLED": true,
   "ROTOR_BANDS": {
     "10m": true,

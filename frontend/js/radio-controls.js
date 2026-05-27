@@ -287,7 +287,7 @@ const radioControlMethods = {
             return;
         }
 
-        const az = Math.round(this.rotorAzimuth);
+        const az = ((Math.round(this.rotorAzimuth) % 360) + 360) % 360;
         if (az < 0 || az > 359) {
             alert('Azimuth must be between 0 and 359 degrees');
             return;
@@ -342,23 +342,24 @@ const radioControlMethods = {
 
     async checkRotorStatus() {
         if (!this.rotorEnabled) return;
+        if (this.rotorStatusLoading) return;
+        this.rotorStatusLoading = true;
         
         try {
-            const response = await fetch('/api/rotor/status');
-            if (response.ok) {
-                const data = await response.json();
-                if (data.enabled) {
-                    this.rotorConnected = data.azimuth !== null;
-                    if (data.azimuth !== null) {
-                        this.rotorAzimuth = data.azimuth;
-                    }
-                } else {
-                    this.rotorConnected = false;
+            const data = await this.fetchJsonWithTimeout('/api/rotor/status', {}, 4000);
+            if (data.enabled) {
+                this.rotorConnected = data.azimuth !== null;
+                if (data.azimuth !== null) {
+                    this.rotorAzimuth = data.azimuth;
                 }
+            } else {
+                this.rotorConnected = false;
             }
         } catch (error) {
             console.error('Failed to check rotor status:', error);
             this.rotorConnected = false;
+        } finally {
+            this.rotorStatusLoading = false;
         }
     },
 
@@ -382,7 +383,60 @@ const radioControlMethods = {
         console.log('⏸️ Rotor AUTO action cancelled');
     },
 
-    async rotorAutoGoto(callsign, frequency_khz, gridsquare, latitude, longitude) {
+    buildRotorRequest(callsign, frequency_khz, gridsquare, latitude, longitude, options = {}) {
+        return {
+            callsign,
+            frequency_khz,
+            gridsquare: gridsquare || null,
+            latitude: latitude ?? null,
+            longitude: longitude ?? null,
+            location_source: options.location_source || options.source || null,
+            grid_source: options.grid_source || null,
+            qrz_grid: options.qrz_grid || null,
+            qrz_gridsquare: options.qrz_gridsquare || null,
+            wavelog_grid: options.wavelog_grid || null,
+            wavelog_gridsquare: options.wavelog_gridsquare || null,
+            qrz_latitude: options.qrz_latitude ?? null,
+            qrz_longitude: options.qrz_longitude ?? null,
+            wavelog_latitude: options.wavelog_latitude ?? null,
+            wavelog_longitude: options.wavelog_longitude ?? null,
+            cty_latitude: options.cty_latitude ?? null,
+            cty_longitude: options.cty_longitude ?? null
+        };
+    },
+
+    updateBeamingDisplay(callsign, data) {
+        if (data.short_path_bearing === undefined || data.long_path_bearing === undefined) {
+            return;
+        }
+
+        this.currentBeamingCallsign = callsign;
+        this.shortPathBearing = data.short_path_bearing;
+        this.longPathBearing = data.long_path_bearing;
+        this.beamingSource = data.source || null;
+        this.beamingSourceLabel = data.source_label || data.source || null;
+        this.beamingConfidence = data.confidence || null;
+        this.beamingApproximate = !!data.approximate;
+        this.lastBeamingTime = new Date();
+    },
+
+    async resolveRotorTarget(callsign, frequency_khz, gridsquare, latitude, longitude, options = {}) {
+        const response = await fetch('/api/rotor/resolve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(this.buildRotorRequest(callsign, frequency_khz, gridsquare, latitude, longitude, options))
+        });
+
+        if (!response.ok) {
+            throw new Error(`Rotor resolve failed: HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        this.updateBeamingDisplay(callsign, data);
+        return data;
+    },
+
+    async rotorAutoGoto(callsign, frequency_khz, gridsquare, latitude, longitude, options = {}) {
         // Only proceed if AUTO is enabled
         if (!this.rotorAutoEnabled || !this.rotorEnabled) {
             console.warn(`⚠️ rotorAutoGoto called but not enabled: rotorAutoEnabled=${this.rotorAutoEnabled}, rotorEnabled=${this.rotorEnabled}`);
@@ -395,7 +449,7 @@ const radioControlMethods = {
         this.cancelRotorAuto();
 
         // Set pending info
-        this.rotorAutoPending = { callsign, frequency_khz, gridsquare, latitude, longitude };
+        this.rotorAutoPending = { callsign, frequency_khz, gridsquare, latitude, longitude, options };
         const delayMs = (this.configData.ROTOR_AUTO_DELAY_SEC || 2.0) * 1000;
         console.log(`⏱️ Rotor AUTO pending: ${callsign} - waiting ${delayMs/1000}s for cancellation`);
 
@@ -410,11 +464,7 @@ const radioControlMethods = {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        callsign: callsign,
-                        frequency_khz: frequency_khz,
-                        gridsquare: gridsquare,
-                        latitude: latitude,
-                        longitude: longitude
+                        ...this.buildRotorRequest(callsign, frequency_khz, gridsquare, latitude, longitude, options)
                     })
                 });
 
@@ -423,17 +473,15 @@ const radioControlMethods = {
                     console.log(`📡 Rotor AUTO response:`, data);
                     
                     // Always update beaming display if we have bearing data
+                    this.updateBeamingDisplay(callsign, data);
                     if (data.short_path_bearing !== undefined && data.long_path_bearing !== undefined) {
-                        this.currentBeamingCallsign = callsign;
-                        this.shortPathBearing = data.short_path_bearing;
-                        this.longPathBearing = data.long_path_bearing;
-                        this.lastBeamingTime = new Date();
                         console.log(`✅ Beaming display updated: SP=${data.short_path_bearing}°, LP=${data.long_path_bearing}°`);
                     }
                     
                     if (data.ok) {
                         console.log(`✅ AUTO rotor moved to ${data.bearing}°: ${callsign}`);
-                        this.showStatus(`🤖 Rotor → ${data.bearing}° for ${callsign}`, 'success');
+                        const qualifier = data.approximate ? ' approx.' : '';
+                        this.showStatus(`🤖 Rotor → ${data.bearing}°${qualifier} for ${callsign}`, 'success');
                     } else {
                         console.log(`ℹ️ Rotor AUTO not executed: ${data.message}`);
                         this.showStatus(`⚠️ AUTO rotor: ${data.message}`, 'warning');
@@ -526,11 +574,17 @@ const radioControlMethods = {
             return;
         }
         
-        // Get current azimuth and toggle by 180 degrees
-        let newAz = this.rotorAzimuth + 180;
-        if (newAz >= 360) {
-            newAz = newAz - 360;
+        let newAz = this.rotorPreset === 'longpath' && this.longPathBearing !== null
+            ? this.longPathBearing
+            : this.shortPathBearing;
+        if (this.rotorPreset !== 'shortpath' && this.rotorPreset !== 'longpath') {
+            newAz = this.rotorAzimuth + 180;
         }
+        if (newAz === null || newAz === undefined || isNaN(newAz)) {
+            alert('No bearing available for selected path');
+            return;
+        }
+        newAz = ((Math.round(newAz) % 360) + 360) % 360;
         
         console.log(`🌐 Director toggle: ${this.rotorPreset} at ${this.rotorAzimuth}° → ${Math.round(newAz)}°`);
         

@@ -7,6 +7,9 @@ window.RadioControlWavelogStats = {
         wavelogStats: null,
         wavelogWpStats: null,
         statsLoading: false,
+        wavelogStatsRefreshTimer: null,
+        wavelogStatsRetryTimers: [],
+        wavelogStatsLastLoadedAt: 0,
     },
 
     computed: {
@@ -57,42 +60,35 @@ window.RadioControlWavelogStats = {
     },
 
     methods: {
-        async loadWavelogStatistics() {
+        async loadWavelogStatistics(options = {}) {
+            const force = Boolean(options.force);
+            if (this.statsLoading && !force) {
+                return;
+            }
+
             try {
                 console.log('📊 Loading Wavelog statistics...');
                 this.statsLoading = true;
+                const cacheBust = force ? `?t=${Date.now()}` : '';
 
                 const [statsResponse, wpStatsResponse] = await Promise.all([
-                    fetch('/api/wavelog-log/statistics'),
-                    fetch('/api/wavelog-log/wp-statistics'),
+                    fetch(`/api/wavelog-log/statistics${cacheBust}`, { cache: 'no-store' }),
+                    fetch(`/api/wavelog-log/wp-statistics${cacheBust}`, { cache: 'no-store' }),
                 ]);
 
                 if (statsResponse.ok) {
                     const statsData = await statsResponse.json();
-                    console.log('📊 Raw statistics response:', JSON.stringify(statsData, null, 2));
                     this.wavelogStats = statsData.data;
+                    this.wavelogStatsLastLoadedAt = Date.now();
                     console.log('✅ Wavelog statistics loaded:', this.wavelogStats);
-                    console.log('  - Today:', this.wavelogStats?.Today);
-                    console.log('  - Month:', this.wavelogStats?.month_qsos);
-                    console.log('  - Year:', this.wavelogStats?.year_qsos);
-                    console.log('  - Total:', this.wavelogStats?.total_qsos);
                 } else {
                     console.error('❌ Failed to load Wavelog statistics:', statsResponse.status);
                 }
 
                 if (wpStatsResponse.ok) {
                     const wpStatsData = await wpStatsResponse.json();
-                    console.log('📊 Raw WP statistics response:', JSON.stringify(wpStatsData, null, 2));
                     this.wavelogWpStats = wpStatsData.data;
                     console.log('✅ Wavelog WP statistics loaded:', this.wavelogWpStats);
-                    if (this.wavelogWpStats?.statistics?.totalgroupedmodes) {
-                        console.log('  - Total modes:', this.wavelogWpStats.statistics.totalgroupedmodes.length);
-                        const consolidated = this.consolidatedWavelogModes;
-                        console.log('📊 Consolidated modes:', consolidated);
-                        console.log('  - CW:', consolidated[0]?.total || 0);
-                        console.log('  - SSB:', consolidated[1]?.total || 0);
-                        console.log('  - DIGI:', consolidated[2]?.total || 0);
-                    }
                 } else {
                     console.error('❌ Failed to load Wavelog WP statistics:', wpStatsResponse.status);
                 }
@@ -102,6 +98,78 @@ window.RadioControlWavelogStats = {
                 this.wavelogWpStats = null;
             } finally {
                 this.statsLoading = false;
+            }
+        },
+
+        setupWavelogStatisticsRefresh() {
+            this.cleanupWavelogStatisticsRefresh();
+            this.wavelogStatsRefreshTimer = setInterval(() => {
+                this.loadWavelogStatistics();
+            }, 60000);
+        },
+
+        cleanupWavelogStatisticsRefresh() {
+            if (this.wavelogStatsRefreshTimer) {
+                clearInterval(this.wavelogStatsRefreshTimer);
+                this.wavelogStatsRefreshTimer = null;
+            }
+            for (const timer of this.wavelogStatsRetryTimers || []) {
+                clearTimeout(timer);
+            }
+            this.wavelogStatsRetryTimers = [];
+        },
+
+        clearWavelogLookupCaches(callsign = '') {
+            const call = String(callsign || '').trim().toUpperCase();
+            if (!call) {
+                this.wavelogLookupCache = {};
+                this.lastWavelogRawLookup = null;
+                this.lastWavelogLookupKey = null;
+                return;
+            }
+
+            if (this.wavelogLookupCache) {
+                for (const key of Object.keys(this.wavelogLookupCache)) {
+                    if (key.startsWith(`${call}|`)) {
+                        delete this.wavelogLookupCache[key];
+                    }
+                }
+            }
+            if (this.lastWavelogLookupKey?.startsWith(`${call}|`)) {
+                this.lastWavelogRawLookup = null;
+                this.lastWavelogLookupKey = null;
+            }
+        },
+
+        scheduleWavelogStatisticsRefresh(reason = 'scheduled', delays = [0]) {
+            for (const delay of delays) {
+                const timer = setTimeout(async () => {
+                    this.wavelogStatsRetryTimers = (this.wavelogStatsRetryTimers || []).filter(item => item !== timer);
+                    console.log(`📊 Refreshing Wavelog statistics (${reason})`);
+                    await this.loadWavelogStatistics({ force: true });
+                }, Math.max(0, Number(delay) || 0));
+                this.wavelogStatsRetryTimers.push(timer);
+            }
+        },
+
+        async handleQsoLogged(qsoData = {}) {
+            const callsign = qsoData.callsign || qsoData.call || this.loggingForm?.callsign || '';
+            this.clearWavelogLookupCaches(callsign);
+            this.scheduleWavelogStatisticsRefresh('QSO logged', [0, 8000, 30000]);
+
+            if (typeof this.loadWorkedCallsigns === 'function') {
+                await this.loadWorkedCallsigns();
+            }
+            if (typeof this.loadQsoOutboxStatus === 'function') {
+                await this.loadQsoOutboxStatus();
+            }
+            if (
+                callsign &&
+                this.loggingForm?.callsign &&
+                String(this.loggingForm.callsign).trim().toUpperCase() === String(callsign).trim().toUpperCase() &&
+                typeof this.loadDXCCStatus === 'function'
+            ) {
+                await this.loadDXCCStatus({ force: true });
             }
         },
 

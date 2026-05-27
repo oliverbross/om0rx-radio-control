@@ -157,6 +157,23 @@ function autoPopulateLogQsoForm(dxCall, dxGrid, frequency, txRst, rxRst) {
     
     log('info', 'wsjtx', `Form populated: ${form.callsign} @ ${form.frequency} MHz`);
     log('debug', 'wsjtx', `Grid: ${form.gridsquare}, Mode: ${form.mode}`);
+
+    if (typeof window.vueInstance.loadQRZProfile === 'function') {
+      const triggerLookup = () => {
+        window.vueInstance.loadQRZProfile({
+          triggerRotor: false,
+          includeHistory: false
+        }).catch(error => {
+          log('debug', 'wsjtx', `QRZ enrichment skipped: ${error.message}`);
+        });
+      };
+
+      if (typeof window.vueInstance.$nextTick === 'function') {
+        window.vueInstance.$nextTick(triggerLookup);
+      } else {
+        setTimeout(triggerLookup, 0);
+      }
+    }
     
   } catch (e) {
     log('warn', 'wsjtx', 'Could not auto-populate QSO form:', e.message);

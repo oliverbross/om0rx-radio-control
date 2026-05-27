@@ -3,6 +3,30 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32) && !defined(__MINGW32__)
+static char* ftx_stpcpy(char* dst, const char* src)
+{
+    while ((*dst = *src) != '\0')
+    {
+        ++dst;
+        ++src;
+    }
+    return dst;
+}
+#define stpcpy ftx_stpcpy
+#elif defined(_WIN32)
+static char* ftx_stpcpy(char* dst, const char* src)
+{
+    while ((*dst = *src) != '\0')
+    {
+        ++dst;
+        ++src;
+    }
+    return dst;
+}
+#define stpcpy ftx_stpcpy
+#endif
+
 #define LOG_LEVEL LOG_WARN
 #include "debug.h"
 

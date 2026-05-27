@@ -71,6 +71,16 @@ function mountVueApp() {
             statusMessage: null,
             currentTime: '00:00:00',
             spotsFilterDebounceTimer: null,  // Debounce timer for spots filter changes
+            suppressCallsignLookup: false,
+            qrzProfileCache: {},
+            qrzProfileInflight: {},
+            qrzRequestSeq: 0,
+            wavelogLookupCache: {},
+            wavelogLookupInflight: {},
+            dxccRequestSeq: 0,
+            digitalModeChannel: null,
+            rotorStatusLoading: false,
+            syncStatusLoading: false,
             
             // Additional Information modal
             showAdditionalInfoModal: false,
@@ -99,6 +109,10 @@ function mountVueApp() {
             currentBeamingCallsign: null,
             shortPathBearing: null,
             longPathBearing: null,
+            beamingSource: null,
+            beamingSourceLabel: null,
+            beamingConfidence: null,
+            beamingApproximate: false,
             lastBeamingTime: null,
             
             // WinKeyer Data
@@ -191,6 +205,7 @@ function mountVueApp() {
             qrzProfile: {},
             qrzHistory: [],
             qrzLoading: false,
+            qrzError: null,
             
             // DXCC Status Data
             dxccStatus: {},
@@ -214,6 +229,7 @@ function mountVueApp() {
             // QRZ Profile Data
             qrzProfile: { success: false },
             qrzLoading: false,
+            qrzError: null,
             qrzHistory: [],
             
             // DXCC Status Data
@@ -421,7 +437,15 @@ function mountVueApp() {
                 // Reset bearings when new callsign is entered (will be recalculated if needed)
                 this.shortPathBearing = null;
                 this.longPathBearing = null;
+                this.beamingSource = null;
+                this.beamingSourceLabel = null;
+                this.beamingConfidence = null;
+                this.beamingApproximate = false;
                 
+                if (this.suppressCallsignLookup) {
+                    return;
+                }
+
                 if (newCallsign !== oldCallsign && newCallsign.length >= 3) {
                     // Debounce the lookup
                     if (this.dxccLookupTimer) {
@@ -430,7 +454,6 @@ function mountVueApp() {
                     this.dxccLookupTimer = setTimeout(() => {
                         this.loadQRZProfile();
                         this.loadDXCCStatus();
-                        this.loadPreviousQSOs();
                     }, 500);
                 }
             } else {
@@ -438,6 +461,10 @@ function mountVueApp() {
                 this.currentBeamingCallsign = null;
                 this.shortPathBearing = null;
                 this.longPathBearing = null;
+                this.beamingSource = null;
+                this.beamingSourceLabel = null;
+                this.beamingConfidence = null;
+                this.beamingApproximate = false;
             }
         },
         
@@ -445,7 +472,11 @@ function mountVueApp() {
         'radioStatus.mode'(newMode) {
             // Sync mode to logging form when radio mode changes
             const convertedMode = newMode === 'USB' || newMode === 'LSB' ? 'SSB' : newMode;
-            this.loggingForm.mode = convertedMode;
+            const currentLogMode = String(this.loggingForm.mode || '').toUpperCase();
+            const radioDigitalMode = ['DIGU', 'DIGL'].includes(String(newMode || '').toUpperCase());
+            if (!(radioDigitalMode && ['FT8', 'FT4', 'FT2'].includes(currentLogMode))) {
+                this.loggingForm.mode = convertedMode;
+            }
             
             // Update current step index when mode changes
             if (this.stepsByMode[newMode]) {
@@ -651,8 +682,17 @@ function mountVueApp() {
         
         formatSearchDate(dateStr) {
             if (!dateStr) return '-';
+            if (/^\d{8}(\d{4,6})?$/.test(dateStr)) {
+                const year = dateStr.substring(0, 4);
+                const month = dateStr.substring(4, 6);
+                const day = dateStr.substring(6, 8);
+                const hour = dateStr.length >= 12 ? dateStr.substring(8, 10) : '00';
+                const minute = dateStr.length >= 12 ? dateStr.substring(10, 12) : '00';
+                return `${month}/${day}/${year.substring(2)} ${hour}:${minute}`;
+            }
             try {
                 const date = new Date(dateStr);
+                if (Number.isNaN(date.getTime())) return dateStr;
                 return date.toLocaleString('en-US', {
                     year: '2-digit',
                     month: '2-digit',
@@ -691,6 +731,52 @@ function mountVueApp() {
         },
         
         // === Prev QSOs Modal Methods (duplicate of callsign search for independent use) ===
+        buildPrevQsosResults(callsign, qsos) {
+            const normalized = (qsos || []).map((qso, index) => {
+                const timeOn = qso.time_on && qso.qso_date
+                    ? `${qso.qso_date}${qso.time_on}`
+                    : (qso.time_on || qso.qso_date || '');
+                return {
+                    id: `${qso.call || qso.callsign || callsign}-${qso.qso_date || ''}-${qso.time_on || ''}-${index}`,
+                    callsign: (qso.call || qso.callsign || callsign).toUpperCase(),
+                    time_on: timeOn,
+                    qso_date: qso.qso_date || '',
+                    mode: qso.mode || '',
+                    rst_sent: qso.rst_sent || '',
+                    rst_rcvd: qso.rst_rcvd || '',
+                    band: qso.band || '',
+                    lotw_sent: qso.lotw_sent || qso.lotw_qsl_sent || '',
+                    lotw_rcvd: qso.lotw_rcvd || qso.lotw_qsl || '',
+                    country: qso.country || '',
+                    gridsquare: qso.gridsquare || '',
+                    name: qso.name || '',
+                };
+            });
+
+            const matrix = {};
+            for (const qso of normalized) {
+                const mode = (qso.mode || '').toUpperCase();
+                const band = qso.band || '';
+                if (!mode || !band) continue;
+                if (!matrix[mode]) matrix[mode] = {};
+                matrix[mode][band] = {
+                    worked: true,
+                    confirmed: qso.lotw_rcvd === 'Y'
+                };
+            }
+
+            const firstWith = (field) => normalized.find(qso => qso[field])?.[field] || '';
+            return {
+                qsos: normalized,
+                summary: {
+                    dxcc: firstWith('country'),
+                    gridsquare: firstWith('gridsquare'),
+                    name: firstWith('name')
+                },
+                matrix
+            };
+        },
+
         async openPrevQsosModal() {
             const callsign = this.loggingForm.callsign.trim().toUpperCase();
             if (!callsign) {
@@ -708,27 +794,27 @@ function mountVueApp() {
             try {
                 console.log(`🔍 Searching Prev QSOs for callsign: ${callsign}`);
                 
-                // URL encode the callsign to handle slashes (e.g., OH2NBC/P, OH2NBC/MM)
-                const encodedCallsign = encodeURIComponent(callsign);
-                const response = await fetch(`/api/wavelog-log/search/${encodedCallsign}`);
-                if (!response.ok) {
-                    throw new Error(`Failed to search: ${response.statusText}`);
-                }
-                
-                const data = await response.json();
+                const data = await this.fetchJsonWithTimeout('/api/wavelog/recent_qsos', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        callsign,
+                        limit: 20
+                    })
+                }, 7000);
+
                 if (data.success) {
-                    this.prevQsosResults = {
-                        qsos: data.qsos,
-                        summary: data.summary,
-                        matrix: data.matrix
-                    };
-                    console.log(`✅ Found ${data.count} QSOs for ${callsign}`);
+                    const qsos = Array.isArray(data.data) ? data.data : [];
+                    this.prevQsosResults = this.buildPrevQsosResults(callsign, qsos);
+                    console.log(`✅ Found ${qsos.length} QSOs for ${callsign}`);
                 } else {
-                    throw new Error('Search failed');
+                    throw new Error(data.message || 'Previous QSO search failed');
                 }
             } catch (error) {
                 console.error('❌ Error searching Prev QSOs:', error);
-                this.prevQsosError = error.message;
+                this.prevQsosError = error.name === 'AbortError'
+                    ? 'Previous QSO lookup timed out'
+                    : error.message;
             } finally {
                 this.prevQsosLoading = false;
             }
@@ -1075,6 +1161,7 @@ function mountVueApp() {
             
             // Initialize Wavelog Statistics for DXCC Panel
             await this.loadWavelogStatistics();
+            this.setupWavelogStatisticsRefresh();
             console.log('✅ Wavelog statistics initialized for DXCC panel');
             
             // Connect WebSocket
@@ -1114,12 +1201,12 @@ function mountVueApp() {
             this.updateClock();
             setInterval(this.updateClock, 1000);
             
-            // Poll rotor status every 5 seconds if enabled
+            // Poll rotor status periodically if enabled. Radio state itself is pushed by WebSocket.
             setInterval(() => {
                 if (this.rotorEnabled) {
                     this.checkRotorStatus();
                 }
-            }, 5000);
+            }, 10000);
             
             // Poll sync status every 5 seconds
             this.pollSyncStatus();  // Initial poll
@@ -1132,10 +1219,10 @@ function mountVueApp() {
                 }
             }, 1000);
             
-            // Re-poll sync status every 5 seconds
+            // Re-poll sync status periodically; the backend sync manager returns cached status while busy.
             setInterval(() => {
                 this.pollSyncStatus();
-            }, 5000);
+            }, 30000);
 
             // Re-poll Wavelog offline outbox status every 30 seconds
             setInterval(() => {
@@ -1165,7 +1252,7 @@ function mountVueApp() {
             const voiceModes = ['SSB', 'USB', 'LSB', 'AM', 'FM', 'NFM', 'SAM', 'DFM'];
             
             // Digital modes get 3-digit RST (599)
-            const digitalModes = ['CW', 'RTTY', 'DIGL', 'DIGU', 'PSK', 'FT8', 'FT4', 'JT65', 'DIGI'];
+            const digitalModes = ['CW', 'RTTY', 'DIGL', 'DIGU', 'PSK', 'FT8', 'FT4', 'FT2', 'JT65', 'DIGI'];
             
             if (voiceModes.includes(mode.toUpperCase())) {
                 this.loggingForm.rst_sent = 59;
@@ -1190,6 +1277,76 @@ function mountVueApp() {
         getCallStatusStyle: window.FlexRadioUtils.getCallStatusStyle,
         getDxccStatusStyle: window.FlexRadioUtils.getDxccStatusStyle,
         freqToBand: window.FlexRadioUtils.freqToBand,
+
+        setupDigitalModeBridge() {
+            if (this.digitalModeChannel || typeof BroadcastChannel === 'undefined') {
+                return;
+            }
+            try {
+                this.digitalModeChannel = new BroadcastChannel('om0rx-digital-mode');
+                this.digitalModeChannel.onmessage = event => {
+                    const message = event.data || {};
+                    if (message.source === 'main-window') {
+                        return;
+                    }
+                    this.handleDigitalModeBridgeEvent(message);
+                };
+                console.log('✅ Digital mode bridge initialized');
+            } catch (error) {
+                console.warn('Unable to initialize digital mode bridge:', error);
+            }
+        },
+
+        closeDigitalModeBridge() {
+            if (this.digitalModeChannel) {
+                this.digitalModeChannel.close();
+                this.digitalModeChannel = null;
+            }
+        },
+
+        async handleDigitalModeBridgeEvent(message) {
+            if (!message || !message.type) {
+                return;
+            }
+            if (message.type === 'decoded-selected' || message.type === 'qso-complete') {
+                await this.applyDigitalSelectionToLog(message.payload || {}, message.type);
+            }
+        },
+
+        async applyDigitalSelectionToLog(payload, eventType = 'decoded-selected') {
+            const callsign = String(payload.callsign || payload.call || '').toUpperCase();
+            if (!callsign) {
+                return;
+            }
+            const frequencyMhz = Number(payload.frequency_mhz || payload.frequency || this.radioStatus.frequency || 0);
+            const mode = String(payload.mode || 'FT8').toUpperCase();
+            const spot = {
+                callsign,
+                frequency_mhz: frequencyMhz,
+                frequency: frequencyMhz ? String(frequencyMhz * 1000) : '',
+                band: payload.band || (frequencyMhz ? this.freqToBand(frequencyMhz) : ''),
+                mode,
+                comment: payload.comment || (eventType === 'qso-complete' ? 'Completed in built-in digital window' : 'Selected in built-in digital window'),
+                gridsquare: payload.gridsquare || payload.grid || '',
+                latitude: payload.latitude ?? null,
+                longitude: payload.longitude ?? null,
+                country: payload.country || '',
+                call_status: payload.call_status || '',
+                dxcc_status: payload.dxcc_status || '',
+                _skipDigitalBroadcast: true
+            };
+
+            await this.tuneToSpot(spot);
+
+            if (eventType === 'qso-complete') {
+                if (payload.rst_sent) this.loggingForm.rst_sent = payload.rst_sent;
+                if (payload.rst_received) this.loggingForm.rst_received = payload.rst_received;
+                if (payload.logged) {
+                    await this.handleQsoLogged(payload);
+                }
+                this.showStatus(`Digital QSO ready to log: ${callsign}`, 'success');
+            }
+        },
         
         // Initial status fetch
         async fetchInitialStatus() {
@@ -1223,24 +1380,25 @@ function mountVueApp() {
         
         // Rotor status loading
         async loadRotorStatus() {
+            if (this.rotorStatusLoading) return;
+            this.rotorStatusLoading = true;
             try {
-                const response = await fetch('/api/rotor/status');
-                if (response.ok) {
-                    const data = await response.json();
-                    console.log('🌐 Rotor status:', data);
-                    if (data.enabled) {
-                        this.rotorConnected = data.azimuth !== null;
-                        if (data.azimuth !== null) {
-                            this.rotorAzimuth = data.azimuth;
-                        }
-                        console.log('✅ Rotator connected');
-                    } else {
-                        this.rotorConnected = false;
+                const data = await this.fetchJsonWithTimeout('/api/rotor/status', {}, 4000);
+                console.log('🌐 Rotor status:', data);
+                if (data.enabled) {
+                    this.rotorConnected = data.azimuth !== null;
+                    if (data.azimuth !== null) {
+                        this.rotorAzimuth = data.azimuth;
                     }
+                    console.log('✅ Rotator connected');
+                } else {
+                    this.rotorConnected = false;
                 }
             } catch (error) {
                 console.error('Failed to fetch rotor status:', error);
                 this.rotorConnected = false;
+            } finally {
+                this.rotorStatusLoading = false;
             }
         },
         
@@ -1508,15 +1666,18 @@ function mountVueApp() {
                 
                 if (data.success || data.wavelog?.success) {
                     this.showLoggingStatus('success', `✅ QSO logged: ${qsoData.callsign}`);
+                    await this.handleQsoLogged(qsoData);
                     
                     // === TRIGGER ROTOR AUTO IF ENABLED (for manually logged QSO) ===
                     if (this.rotorAutoEnabled && this.rotorEnabled) {
                         const frequencyKhz = qsoData.frequency * 1000;
                         const gridsquare = qsoData.gridsquare || null;
-                        const latitude = qsoData.latitude || null;
-                        const longitude = qsoData.longitude || null;
+                        const latitude = qsoData.latitude ?? null;
+                        const longitude = qsoData.longitude ?? null;
                         console.log(`🤖 AUTO rotor triggered for manual QSO: ${qsoData.callsign} on ${qsoData.frequency} MHz`);
-                        this.rotorAutoGoto(qsoData.callsign, frequencyKhz, gridsquare, latitude, longitude);
+                        this.rotorAutoGoto(qsoData.callsign, frequencyKhz, gridsquare, latitude, longitude, {
+                            location_source: gridsquare ? 'manual_grid' : 'manual_coordinates'
+                        });
                     }
                     
                     // Clear form after successful submission
@@ -1603,6 +1764,7 @@ function mountVueApp() {
             
             // Clear associated data
             this.qrzProfile = {};
+            this.qrzError = null;
             this.dxccStatus = {};
             this.previousQSOs = [];
             this.allPreviousQSOs = [];
@@ -1974,15 +2136,16 @@ function mountVueApp() {
         
         // Sync Status Methods
         async pollSyncStatus() {
+            if (this.syncStatusLoading) return;
+            this.syncStatusLoading = true;
             try {
-                const response = await fetch('/api/sync-status');
-                if (response.ok) {
-                    this.syncStatus = await response.json();
-                    // Set countdown timer from the response
-                    this.syncCountdownTimer = this.syncStatus.next_sync_in || 0;
-                }
+                this.syncStatus = await this.fetchJsonWithTimeout('/api/sync-status', {}, 4000);
+                // Set countdown timer from the response
+                this.syncCountdownTimer = this.syncStatus.next_sync_in || 0;
             } catch (error) {
                 console.error('Error fetching sync status:', error);
+            } finally {
+                this.syncStatusLoading = false;
             }
         },
 
@@ -2088,6 +2251,7 @@ function mountVueApp() {
         
         // Now initialize the app (which will call init() on WinKeyerUI if it exists)
         await this.initializeApp();
+        this.setupDigitalModeBridge();
         
         // Initialize WSJT-X handler to listen for station clicks from bridge
         if (typeof initWsjtxHandler === 'function') {
@@ -2100,6 +2264,8 @@ function mountVueApp() {
     
     beforeUnmount() {
         this.cleanupSolarDataRefresh();
+        this.cleanupWavelogStatisticsRefresh();
+        this.closeDigitalModeBridge();
         // Clean up SDC ticker WebSocket connection
         this.cleanupSDCTicker();
     }

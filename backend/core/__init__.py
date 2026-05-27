@@ -51,7 +51,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-app = FastAPI(title="FlexRadio Web Control", version="2.0.0")
+app = FastAPI(title="OM0RX Radio Control", version="2.0.0")
 context = AppContext()
 
 CORS_ALLOWED_ORIGINS = list(getattr(config, "CORS_ALLOWED_ORIGINS", []))

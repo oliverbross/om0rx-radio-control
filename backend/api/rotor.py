@@ -50,6 +50,8 @@ async def rotor_goto(request: Dict[str, Any] = Body(...)):
         if azimuth is None:
             raise ValueError("Missing 'azimuth' parameter")
         return await service.rotor_goto(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in rotor goto: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -64,6 +66,8 @@ async def rotor_direction(request: Dict[str, Any] = Body(...)):
         if direction is None:
             raise ValueError("Missing 'direction' parameter")
         return await service.rotor_direction(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in rotor direction: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -75,6 +79,8 @@ async def rotor_stop():
     service = get_rotor_service()
     try:
         return await service.rotor_stop()
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error stopping rotor: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -88,6 +94,8 @@ async def rotor_config(request: Dict[str, Any] = Body(...)):
     service = get_rotor_service()
     try:
         return await service.set_rotor_config(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in rotor config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -99,6 +107,8 @@ async def get_rotor_config():
     service = get_rotor_service()
     try:
         return await service.get_rotor_config()
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting rotor config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -112,6 +122,8 @@ async def get_rotor_auto_status():
     service = get_rotor_service()
     try:
         return await service.get_rotor_auto_status()
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting rotor AUTO status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -123,6 +135,8 @@ async def rotor_auto_config(request: Dict[str, Any] = Body(...)):
     service = get_rotor_service()
     try:
         return await service.set_rotor_auto_config(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in rotor AUTO config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -134,8 +148,23 @@ async def rotor_bearing(request: Dict[str, Any] = Body(...)):
     service = get_rotor_service()
     try:
         return await service.calculate_rotor_bearing(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error calculating bearing: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rotor/resolve")
+async def rotor_resolve(request: Dict[str, Any] = Body(...)):
+    """Resolve the best rotator target and return diagnostics without moving."""
+    service = get_rotor_service()
+    try:
+        return service.resolve_rotor_target(request)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error resolving rotor target: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -151,6 +180,8 @@ async def rotor_auto_goto(request: Dict[str, Any] = Body(...)):
     service = get_rotor_service()
     try:
         return await service.rotor_auto_goto(request)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in AUTO rotor goto: {e}")
         raise HTTPException(status_code=500, detail=str(e))

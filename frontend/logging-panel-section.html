@@ -481,8 +481,12 @@
                     -->
                 </div>
 
+                <div v-else-if="qrzError" style="color: #fbbf24; text-align: center; padding: 20px;">
+                    QRZ lookup failed: {{ qrzError }}
+                </div>
+
                 <div v-else-if="!qrzLoading" style="color: #666; text-align: center; padding: 20px;">
-                    👆 Enter a callsign to view profile
+                    {{ loggingForm.callsign ? 'No QRZ profile loaded' : 'Enter a callsign to view profile' }}
                 </div>
             </div>
 

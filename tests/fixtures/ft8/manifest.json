@@ -1,0 +1,44 @@
+{
+  "format": "ft8-rx-fixtures-v1",
+  "sample_rate": 12000,
+  "window_seconds": 15,
+  "fixtures": [
+    {
+      "file": "wsjtx_dax_rx1_directsound_20260526_083558.wav",
+      "sample_rate": 12000,
+      "seconds": 15.0,
+      "start_utc": "2026-05-26T06:36:15.015987+00:00",
+      "captured_at": "2026-05-26T06:36:30.507953+00:00",
+      "oracle": "WSJT-X jt9.exe",
+      "expected_messages": [
+        "RA3RGQ R4WCD -09",
+        "RN3YN RL9U NO33",
+        "JA3WPN UA6YW RR73",
+        "RC7LX UA3PCP R-18",
+        "CQ BD8ABR OM31",
+        "9J2FI JA8KJH QN02",
+        "OH1CL JE1VTZ PM95",
+        "BH3NLG OH8KA KP25",
+        "9J2FI JA2UDU 73",
+        "CQ R9CA LO97",
+        "CQ TA4SSK KM57"
+      ],
+      "ft8_lib_expected_messages": [
+        "RL3QGD R6JAG RR73",
+        "EA7FJP RZ6FA RR73",
+        "RA3RGQ R4WCD -09",
+        "OH1CL JE1VTZ PM95",
+        "SP9BGL BG3NBD OM99",
+        "9J2FI JA2UDU 73",
+        "CQ BD8ABR OM31",
+        "SP9BGL JH1FNU RR73",
+        "RC7LX UA3PCP R-18",
+        "E21TMW JA3GAK R-01",
+        "BH3NLG OH8KA KP25",
+        "JA3WPN UA6YW RR73",
+        "CQ JA3LBF PM74",
+        "CQ TA4SSK KM57"
+      ]
+    }
+  ]
+}

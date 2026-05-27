@@ -8,6 +8,7 @@ Wavelog when needed.
 
 import logging
 import duckdb
+import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -45,6 +46,15 @@ class WavelogDuckDBSync:
         # Station ID from config
         self.station_id = int(getattr(config, 'WAVELOG_STATION_ID', 1))
         self.last_sync_error: Optional[str] = None
+        self._db_lock = threading.RLock()
+        self._sync_active = False
+        self._cached_status: Dict[str, Any] = {
+            'initialized': False,
+            'status': 'not_initialized',
+            'last_sync_error': None,
+            'total_records': 0,
+            'message': 'Sync not yet initialized',
+        }
         
         # Initialize database
         self._init_database()
@@ -53,15 +63,17 @@ class WavelogDuckDBSync:
     
     def _init_database(self):
         """Initialize DuckDB schema and metadata tables"""
+        conn = None
         try:
-            conn = duckdb.connect(str(self.db_path))
+            with self._db_lock:
+                conn = duckdb.connect(str(self.db_path))
             
-            # Create sequence FIRST (must exist before table references it)
-            conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_qso_id START 1")
-            
-            # Create QSO records table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS qso_records (
+                # Create sequence FIRST (must exist before table references it)
+                conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_qso_id START 1")
+
+                # Create QSO records table
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS qso_records (
                     id INTEGER PRIMARY KEY DEFAULT nextval('seq_qso_id'),
                     wavelog_id BIGINT UNIQUE,
                     call VARCHAR,
@@ -105,12 +117,12 @@ class WavelogDuckDBSync:
                     creation_date TIMESTAMP,
                     last_modified TIMESTAMP,
                     sync_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            # Create sync metadata table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS sync_metadata (
+                    )
+                """)
+
+                # Create sync metadata table
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS sync_metadata (
                     id INTEGER PRIMARY KEY,
                     last_sync_timestamp TIMESTAMP,
                     last_wavelog_modified TIMESTAMP,
@@ -118,28 +130,30 @@ class WavelogDuckDBSync:
                     total_records_synced INTEGER,
                     last_sync_added INTEGER,
                     last_sync_updated INTEGER
-                )
-            """)
-            
-            # Create indexes for fast queries
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_wavelog_id ON qso_records(wavelog_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_call ON qso_records(call)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_qso_date ON qso_records(qso_date)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_band ON qso_records(band)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_mode ON qso_records(mode)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_dxcc ON qso_records(dxcc)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_dxcc_band_mode ON qso_records(dxcc, band, mode)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_qso_datetime ON qso_records(qso_datetime)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_frequency ON qso_records(frequency)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_time_on ON qso_records(time_on)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_last_modified ON qso_records(last_modified)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_call_band_mode ON qso_records(call, band, mode)")
-            
-            conn.close()
+                    )
+                """)
+
+                # Create indexes for fast queries
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_wavelog_id ON qso_records(wavelog_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_call ON qso_records(call)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_qso_date ON qso_records(qso_date)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_band ON qso_records(band)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_mode ON qso_records(mode)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_dxcc ON qso_records(dxcc)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_dxcc_band_mode ON qso_records(dxcc, band, mode)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_qso_datetime ON qso_records(qso_datetime)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_frequency ON qso_records(frequency)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_time_on ON qso_records(time_on)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_last_modified ON qso_records(last_modified)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_call_band_mode ON qso_records(call, band, mode)")
+
             logger.info("✅ DuckDB schema initialized for Wavelog sync")
         except Exception as e:
             logger.error(f"❌ Failed to initialize DuckDB: {str(e)}", exc_info=True)
             raise
+        finally:
+            if conn is not None:
+                conn.close()
     
     def _get_wavelog_connection(self):
         """Create a new Wavelog database connection"""
@@ -521,149 +535,179 @@ class WavelogDuckDBSync:
         Returns:
             Dictionary with sync results
         """
+        conn = None
+        self._sync_active = True
         try:
-            conn = duckdb.connect(str(self.db_path))
-            
-            # Get last sync metadata
-            metadata = self._get_sync_metadata(conn)
-            last_modified = metadata['last_wavelog_modified'] if metadata else None
-            last_id = metadata['last_wavelog_id'] if metadata else None
-            
-            is_initial_sync = (last_modified is None)
-            
-            # Process records
-            added_count = 0
-            updated_count = 0
-            latest_modified = last_modified
-            latest_id = last_id or 0
-            initial_cursor_id = last_id or 0
-            batch_num = 0
-            
-            if is_initial_sync:
-                logger.info(f"🔄 Starting INITIAL sync (batched: {batch_size} records per batch)")
-            
-            while True:
-                # Fetch a batch of records from Wavelog
-                if is_initial_sync:
-                    wavelog_records = self._fetch_changed_records(None, initial_cursor_id, batch_size)
-                else:
-                    wavelog_records = self._fetch_changed_records(last_modified, last_id, batch_size)
-                
-                # If no more records, we're done
-                if not wavelog_records:
-                    break
-                
-                batch_num += 1
-                batch_added = 0
-                batch_updated = 0
-                
-                # Process this batch
-                for wavelog_record in wavelog_records:
-                    try:
-                        # Convert to DuckDB format
-                        duckdb_record = self._convert_wavelog_to_duckdb(wavelog_record)
-                        
-                        # Upsert record
-                        action = self._upsert_record(conn, duckdb_record)
-                        
-                        if action == 'added':
-                            added_count += 1
-                            batch_added += 1
-                        else:
-                            updated_count += 1
-                            batch_updated += 1
-                        
-                        # Track latest modified timestamp and ID
-                        record_modified = wavelog_record.get('last_modified')
-                        record_id = wavelog_record.get('COL_PRIMARY_KEY')
+            with self._db_lock:
+                conn = duckdb.connect(str(self.db_path))
 
-                        if is_initial_sync and record_id and record_id > initial_cursor_id:
-                            initial_cursor_id = record_id
-                        
-                        if record_modified and (latest_modified is None or record_modified > latest_modified):
-                            latest_modified = record_modified
-                            latest_id = record_id
-                        elif record_modified == latest_modified and record_id > latest_id:
-                            latest_id = record_id
-                        elif is_initial_sync and latest_modified is None and record_id > latest_id:
-                            latest_id = record_id
-                            
-                    except Exception as e:
-                        logger.error(f"❌ Error processing Wavelog record {wavelog_record.get('COL_PRIMARY_KEY')}: {e}")
-                        continue
-                
-                # Commit this batch
-                conn.commit()
-                
-                # Get current total
-                total_records = conn.execute("SELECT COUNT(*) FROM qso_records").fetchone()[0]
-                
-                # Log progress for initial sync
+            # Get last sync metadata
+                metadata = self._get_sync_metadata(conn)
+                last_modified = metadata['last_wavelog_modified'] if metadata else None
+                last_id = metadata['last_wavelog_id'] if metadata else None
+
+                is_initial_sync = (last_modified is None)
+
+                # Process records
+                added_count = 0
+                updated_count = 0
+                latest_modified = last_modified
+                latest_id = last_id or 0
+                initial_cursor_id = last_id or 0
+                batch_num = 0
+
                 if is_initial_sync:
-                    logger.info(f"✅ Batch {batch_num}: +{batch_added} new, ~{batch_updated} updated | "
-                               f"Total: {total_records} QSOs synced")
-                
-                # For incremental sync, we only fetch one batch
-                if not is_initial_sync:
-                    break
-                
-                # For initial sync, if we got fewer records than batch_size, we're done
-                if len(wavelog_records) < batch_size:
-                    break
-                
-            # Final commit
-            conn.commit()
-            
-            # Get final total record count
-            total_records = conn.execute("SELECT COUNT(*) FROM qso_records").fetchone()[0]
-            
-            # Update sync metadata
-            self._update_sync_metadata(conn, latest_modified, latest_id, total_records, 
-                                      added_count, updated_count)
-            self.last_sync_error = None
-            
-            conn.close()
-            
-            if added_count > 0 or updated_count > 0:
-                logger.info(f"✅ Wavelog sync complete: {added_count} added, {updated_count} updated, "
-                           f"total: {total_records}")
-            
-            return {
-                'synced': True,
-                'records_added': added_count,
-                'records_updated': updated_count,
-                'total_records': total_records,
-                'message': f'Synced {added_count + updated_count} records from Wavelog'
-            }
-            
+                    logger.info(f"🔄 Starting INITIAL sync (batched: {batch_size} records per batch)")
+
+                while True:
+                    # Fetch a batch of records from Wavelog
+                    if is_initial_sync:
+                        wavelog_records = self._fetch_changed_records(None, initial_cursor_id, batch_size)
+                    else:
+                        wavelog_records = self._fetch_changed_records(last_modified, last_id, batch_size)
+
+                    # If no more records, we're done
+                    if not wavelog_records:
+                        break
+
+                    batch_num += 1
+                    batch_added = 0
+                    batch_updated = 0
+
+                    # Process this batch
+                    for wavelog_record in wavelog_records:
+                        try:
+                            # Convert to DuckDB format
+                            duckdb_record = self._convert_wavelog_to_duckdb(wavelog_record)
+
+                            # Upsert record
+                            action = self._upsert_record(conn, duckdb_record)
+
+                            if action == 'added':
+                                added_count += 1
+                                batch_added += 1
+                            else:
+                                updated_count += 1
+                                batch_updated += 1
+
+                            # Track latest modified timestamp and ID
+                            record_modified = wavelog_record.get('last_modified')
+                            record_id = wavelog_record.get('COL_PRIMARY_KEY')
+
+                            if is_initial_sync and record_id and record_id > initial_cursor_id:
+                                initial_cursor_id = record_id
+
+                            if record_modified and (latest_modified is None or record_modified > latest_modified):
+                                latest_modified = record_modified
+                                latest_id = record_id
+                            elif record_modified == latest_modified and record_id > latest_id:
+                                latest_id = record_id
+                            elif is_initial_sync and latest_modified is None and record_id > latest_id:
+                                latest_id = record_id
+
+                        except Exception as e:
+                            logger.error(f"❌ Error processing Wavelog record {wavelog_record.get('COL_PRIMARY_KEY')}: {e}")
+                            continue
+
+                    # Commit this batch
+                    conn.commit()
+
+                    # Get current total
+                    total_records = conn.execute("SELECT COUNT(*) FROM qso_records").fetchone()[0]
+
+                    # Log progress for initial sync
+                    if is_initial_sync:
+                        logger.info(f"✅ Batch {batch_num}: +{batch_added} new, ~{batch_updated} updated | "
+                                   f"Total: {total_records} QSOs synced")
+
+                    # For incremental sync, we only fetch one batch
+                    if not is_initial_sync:
+                        break
+
+                    # For initial sync, if we got fewer records than batch_size, we're done
+                    if len(wavelog_records) < batch_size:
+                        break
+
+                # Final commit
+                conn.commit()
+
+                # Get final total record count
+                total_records = conn.execute("SELECT COUNT(*) FROM qso_records").fetchone()[0]
+
+                # Update sync metadata
+                self._update_sync_metadata(conn, latest_modified, latest_id, total_records,
+                                          added_count, updated_count)
+                self.last_sync_error = None
+
+                if added_count > 0 or updated_count > 0:
+                    logger.info(f"✅ Wavelog sync complete: {added_count} added, {updated_count} updated, "
+                               f"total: {total_records}")
+
+                self._cached_status = {
+                    'initialized': True,
+                    'last_sync': datetime.now(),
+                    'last_wavelog_modified': latest_modified,
+                    'last_wavelog_id': latest_id,
+                    'total_records': total_records,
+                    'last_sync_added': added_count,
+                    'last_sync_updated': updated_count,
+                    'last_sync_error': None,
+                    'status': 'ok',
+                }
+
+                return {
+                    'synced': True,
+                    'records_added': added_count,
+                    'records_updated': updated_count,
+                    'total_records': total_records,
+                    'message': f'Synced {added_count + updated_count} records from Wavelog'
+                }
+
         except Exception as e:
             logger.error(f"❌ Wavelog sync failed: {e}", exc_info=True)
             self.last_sync_error = str(e)
+            self._cached_status = {
+                **self._cached_status,
+                'status': 'failed',
+                'last_sync_error': self.last_sync_error,
+                'error': str(e),
+            }
             return {
                 'synced': False,
                 'error': str(e),
                 'message': f'Sync failed: {str(e)}'
             }
+        finally:
+            if conn is not None:
+                conn.close()
+            self._sync_active = False
     
     def get_sync_status(self) -> Dict[str, Any]:
         """Get current sync status and statistics"""
+        if self._sync_active or not self._db_lock.acquire(blocking=False):
+            return {
+                **self._cached_status,
+                'syncing': self._sync_active,
+            }
+
+        conn = None
         try:
             conn = duckdb.connect(str(self.db_path))
             metadata = self._get_sync_metadata(conn)
             
             if not metadata:
-                conn.close()
-                return {
+                self._cached_status = {
                     'initialized': False,
                     'status': 'failed' if self.last_sync_error else 'not_initialized',
                     'last_sync_error': self.last_sync_error,
+                    'total_records': 0,
                     'message': 'Sync not yet initialized'
                 }
+                return self._cached_status
             
             total_records = conn.execute("SELECT COUNT(*) FROM qso_records").fetchone()[0]
-            conn.close()
             
-            return {
+            self._cached_status = {
                 'initialized': True,
                 'last_sync': metadata['last_sync_timestamp'],
                 'last_wavelog_modified': metadata['last_wavelog_modified'],
@@ -674,14 +718,20 @@ class WavelogDuckDBSync:
                 'last_sync_error': self.last_sync_error,
                 'status': 'failed' if self.last_sync_error else 'ok',
             }
+            return self._cached_status
         except Exception as e:
-            logger.error(f"❌ Error getting sync status: {e}")
+            logger.debug(f"Could not read sync status from DuckDB, returning cached status: {e}")
             self.last_sync_error = str(e)
             return {
+                **self._cached_status,
                 'status': 'failed',
                 'error': str(e),
                 'last_sync_error': self.last_sync_error,
             }
+        finally:
+            if conn is not None:
+                conn.close()
+            self._db_lock.release()
     
     def reset_sync(self, clear_data: bool = False) -> Dict[str, Any]:
         """
@@ -755,12 +805,14 @@ async def periodic_wavelog_sync():
     while True:
         try:
             # Do immediate first sync, then wait configured interval between subsequent syncs
-            if not first_run:
+            if first_run:
+                await asyncio.sleep(0)
+            else:
                 await asyncio.sleep(sync_interval)
             first_run = False
             
             if _sync_instance is not None:
-                result = _sync_instance.sync()
+                result = await asyncio.to_thread(_sync_instance.sync)
                 if result['synced']:
                     logger.info(f"✅ Wavelog sync: +{result['records_added']} new, "
                                f"~{result['records_updated']} updated, "

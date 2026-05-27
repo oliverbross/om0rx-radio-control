@@ -2,6 +2,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import duckdb
+import asyncio
 
 import _bootstrap  # noqa: F401
 
@@ -105,9 +106,32 @@ def test_classifier_uses_qso_log_for_dxcc_worked_status():
         )
         conn.close()
 
-        import asyncio
-
         assert asyncio.run(_classifier_dxcc_status(db_path)) == (True, False)
+
+
+class _UnavailableStatusStore:
+    def dxcc_overall(self, dxcc):
+        return None
+
+    def dxcc_bandmode_flags(self, dxcc, band, mode):
+        return None
+
+
+def test_classifier_does_not_invent_atno_when_worked_cache_unavailable():
+    classifier = ClassifierAPI(api_client=None, qso_status_store=_UnavailableStatusStore())
+
+    assert asyncio.run(
+        classifier.dxcc_overall(279, callsign="MM3WYM", allow_unconfirmed_fallback=False)
+    ) is None
+    assert asyncio.run(
+        classifier.dxcc_bandmode_flags(
+            279,
+            "20m",
+            "FT8",
+            callsign="MM3WYM",
+            allow_unconfirmed_fallback=False,
+        )
+    ) is None
 
 
 if __name__ == "__main__":
@@ -115,4 +139,5 @@ if __name__ == "__main__":
     test_dxcc_worked_status_comes_from_local_qso_log()
     test_private_lookup_dxcc_fields_are_confirmation_only()
     test_classifier_uses_qso_log_for_dxcc_worked_status()
+    test_classifier_does_not_invent_atno_when_worked_cache_unavailable()
     print("spot classification smoke checks passed")

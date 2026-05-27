@@ -3,6 +3,7 @@ Classifier API - QSO classification using Wavelog API and local QSO status.
 """
 
 import logging
+import asyncio
 from typing import Tuple, Optional, Dict, Any
 from datetime import datetime
 from radio_control.wavelog_api import WavelogClient
@@ -47,6 +48,13 @@ class ClassifierAPI:
         self.cache_max_size = 500  # Keep last 500 lookups
         self.cache_ttl = 3600  # Cache for 1 hour
         self.cache_timestamps: Dict[str, datetime] = {}
+        self.lookup_inflight: Dict[str, asyncio.Task] = {}
+
+    def _cache_key(self, callsign: str, band: Optional[str] = None, mode: Optional[str] = None) -> str:
+        callsign_upper = (callsign or "").upper()
+        if band or mode:
+            return f"{callsign_upper}|{(band or '').strip()}|{(mode or '').strip().upper()}"
+        return callsign_upper
     
     def _is_cache_valid(self, cache_key: str) -> bool:
         """Check if cache entry is still valid"""
@@ -79,6 +87,29 @@ class ClassifierAPI:
         
         self.lookup_cache[callsign] = data
         self.cache_timestamps[callsign] = datetime.utcnow()
+
+    async def _lookup(self, callsign: str, band: Optional[str] = None,
+                      mode: Optional[str] = None) -> Dict[str, Any]:
+        """Return a cached/in-flight Wavelog lookup for this callsign context."""
+        cache_key = self._cache_key(callsign, band, mode)
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
+        task = self.lookup_inflight.get(cache_key)
+        if task is None:
+            task = asyncio.create_task(self._do_lookup((callsign or "").upper(), band=band, mode=mode))
+            self.lookup_inflight[cache_key] = task
+
+        try:
+            data = await task
+        finally:
+            if self.lookup_inflight.get(cache_key) is task:
+                self.lookup_inflight.pop(cache_key, None)
+
+        if data:
+            self._set_cache(cache_key, data)
+        return data or {}
     
     async def _do_lookup(self, callsign: str, band: Optional[str] = None, 
                         mode: Optional[str] = None) -> Dict[str, Any]:
@@ -119,17 +150,8 @@ class ClassifierAPI:
         """
         callsign_upper = (callsign or "").upper()
         
-        # Check cache first
-        cached = self._get_cached(callsign_upper)
-        if cached is not None:
-            return call_overall_from_lookup(cached)
-        
-        # Do API lookup
-        data = await self._do_lookup(callsign_upper)
-        
-        # Cache result
+        data = await self._lookup(callsign_upper)
         if data:
-            self._set_cache(callsign_upper, data)
             return call_overall_from_lookup(data)
         
         # No data available - treat as not worked/not confirmed
@@ -153,33 +175,34 @@ class ClassifierAPI:
         """
         callsign_upper = (callsign or "").upper()
         
-        # Check cache first
-        cache_key = f"{callsign_upper}_{band}_{mode}"
-        cached = self.lookup_cache.get(cache_key)
-        if cached and self._is_cache_valid(cache_key):
-            return (cached.get('new_band', False),
-                   cached.get('new_mode', False),
-                   cached.get('call_confirmed_band_mode', False))
-        
-        # Do API lookup with band and mode
-        data = await self._do_lookup(callsign_upper, band=band, mode=mode)
+        data = await self._lookup(callsign_upper, band=band, mode=mode)
         
         # Process results
         if data:
-            new_band, new_mode, bandmode_conf = call_bandmode_from_lookup(data)
-            
-            # Cache the band+mode specific result
-            self.lookup_cache[cache_key] = {
-                'new_band': new_band,
-                'new_mode': new_mode,
-                'call_confirmed_band_mode': bandmode_conf
-            }
-            self.cache_timestamps[cache_key] = datetime.utcnow()
-            
-            return new_band, new_mode, bandmode_conf
+            return call_bandmode_from_lookup(data)
         
         # No data - treat as all new
         return True, False, False
+
+    async def call_status_flags(
+        self,
+        callsign: str,
+        band: str,
+        mode: str,
+    ) -> Tuple[bool, bool, bool, bool, bool]:
+        """
+        Return call worked plus band/mode flags from one private_lookup call.
+
+        Wavelog's band/mode lookup payload includes the overall call flags, so
+        live spot classification should not pay for a separate overall lookup.
+        """
+        data = await self._lookup(callsign, band=band, mode=mode)
+        if data:
+            call_worked, call_confirmed = call_overall_from_lookup(data)
+            new_band, new_mode, bandmode_conf = call_bandmode_from_lookup(data)
+            return call_worked, call_confirmed, new_band, new_mode, bandmode_conf
+
+        return False, False, True, False, False
     
     def _extract_dxcc_status_from_call_lookup(self, data: Dict[str, Any], band: Optional[str] = None,
                                               mode: Optional[str] = None) -> Dict[str, bool]:
@@ -206,7 +229,12 @@ class ClassifierAPI:
         }
         return result
     
-    async def dxcc_overall(self, dxcc: Optional[int], callsign: Optional[str] = None) -> Tuple[bool, bool]:
+    async def dxcc_overall(
+        self,
+        dxcc: Optional[int],
+        callsign: Optional[str] = None,
+        allow_unconfirmed_fallback: bool = True,
+    ) -> Optional[Tuple[bool, bool]]:
         """
         Check if DXCC is worked and/or confirmed overall.
         
@@ -217,29 +245,45 @@ class ClassifierAPI:
             dxcc: DXCC number (for compatibility, but callsign lookup is more accurate)
             callsign: Optional callsign to look up DXCC status for
         
+        Args:
+            allow_unconfirmed_fallback: When False, an unavailable local
+                worked-status cache returns None instead of treating the DXCC
+                as not worked. This prevents false ATNO classifications while
+                the local Wavelog mirror is warming or temporarily unavailable.
+
         Returns:
-            Tuple of (worked, confirmed)
+            Tuple of (worked, confirmed), or None when the worked-status source
+            is unavailable and an unconfirmed fallback would be unsafe.
         """
         if dxcc is None:
             return False, False
 
-        local_status = self.qso_status_store.dxcc_overall(dxcc)
+        try:
+            local_status = await asyncio.wait_for(
+                asyncio.to_thread(self.qso_status_store.dxcc_overall, dxcc),
+                timeout=0.75,
+            )
+        except asyncio.TimeoutError:
+            logger.debug("Timed out reading DXCC overall status cache for %s", dxcc)
+            local_status = None
         if local_status is not None:
             return local_status
 
         if not callsign:
-            return False, False
+            return (False, False) if allow_unconfirmed_fallback else None
         
         # Fallback: Wavelog private_lookup can only prove confirmed, not worked.
-        data = await self._do_lookup(callsign.upper())
+        data = await self._lookup(callsign.upper())
         if data:
             dxcc_confirmed, _, _ = dxcc_confirmation_from_lookup(data)
-            return dxcc_confirmed, dxcc_confirmed
+            if dxcc_confirmed:
+                return True, True
         
-        return False, False
+        return (False, False) if allow_unconfirmed_fallback else None
     
     async def dxcc_bandmode_flags(self, dxcc: Optional[int], band: str, 
-                                  mode: str, callsign: Optional[str] = None) -> Tuple[bool, bool, bool]:
+                                  mode: str, callsign: Optional[str] = None,
+                                  allow_unconfirmed_fallback: bool = True) -> Optional[Tuple[bool, bool, bool]]:
         """
         Check DXCC band/mode specific flags.
         
@@ -250,28 +294,41 @@ class ClassifierAPI:
             callsign: Optional callsign to look up DXCC status for (more accurate)
         
         Returns:
-            Tuple of (new_band, new_mode, bandmode_conf)
+            Tuple of (new_band, new_mode, bandmode_conf), or None when the
+            local worked-status source is unavailable and an unconfirmed
+            fallback would be unsafe.
         """
         if dxcc is None or not callsign:
-            return False, False, False
+            return (False, False, False) if allow_unconfirmed_fallback else None
 
-        local_flags = self.qso_status_store.dxcc_bandmode_flags(dxcc, band, mode)
+        try:
+            local_flags = await asyncio.wait_for(
+                asyncio.to_thread(self.qso_status_store.dxcc_bandmode_flags, dxcc, band, mode),
+                timeout=0.75,
+            )
+        except asyncio.TimeoutError:
+            logger.debug("Timed out reading DXCC band/mode status cache for %s %s %s", dxcc, band, mode)
+            local_flags = None
         if local_flags is not None:
             return local_flags
         
         # Fallback: use Wavelog confirmations as the minimum known worked state.
-        data = await self._do_lookup(callsign.upper(), band=band, mode=mode)
+        data = await self._lookup(callsign.upper(), band=band, mode=mode)
         
         if data:
             _, band_confirmed, bandmode_conf = dxcc_confirmation_from_lookup(data)
             
+            if not band_confirmed and not bandmode_conf and not allow_unconfirmed_fallback:
+                return None
+
             new_band = not band_confirmed
             new_mode = band_confirmed and not bandmode_conf
             
             return new_band, new_mode, bandmode_conf
         
-        # If lookup fails, assume all new
-        return True, False, False
+        # If lookup fails, do not invent an ATNO/new-band result unless the
+        # caller explicitly accepts unsafe fallbacks.
+        return (True, False, False) if allow_unconfirmed_fallback else None
 
 
 # Global instance

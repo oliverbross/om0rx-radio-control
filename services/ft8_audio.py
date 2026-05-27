@@ -46,10 +46,6 @@ class FT8AudioProcessor:
     FT4_NUM_TONES = 4
     FT4_EXPECTED_SYMBOLS = 105
     
-    # Buffer parameters
-    BUFFER_OVERFLOW_THRESHOLD = 0.9  # Trigger cleanup at 90% capacity
-    BUFFER_CLEANUP_PERCENT = 0.1     # Remove oldest 10%
-    
     # Butterworth filter order
     FILTER_ORDER = 4
     EXTRACTION_FILTER_ORDER = 6
@@ -77,11 +73,11 @@ class FT8AudioProcessor:
         self.sample_rate = sample_rate
         self.fft_size = self.DEFAULT_FFT_SIZE
         
-        # Audio buffer (15 seconds for FT8, 6 seconds for FT4)
-        buffer_seconds = 15 if mode == 'FT8' else 6
+        # Keep slightly more than one receive slot so the decoder can take an
+        # exact 15-second FT8 window without the deque dropping under length.
+        buffer_seconds = 16 if mode == 'FT8' else 8
         self.buffer_size = sample_rate * buffer_seconds
         self.audio_buffer = deque(maxlen=self.buffer_size)
-        self.buffer_overflow_count = 0  # Track overflows
         
         # Waterfall data
         self.waterfall_data = []
@@ -111,30 +107,11 @@ class FT8AudioProcessor:
     
     def add_audio_samples(self, samples: np.ndarray):
         """
-        Add audio samples to buffer with overflow protection
+        Add audio samples to the rolling buffer.
         
         Args:
             samples: Audio samples (mono, float32, -1.0 to 1.0)
         """
-        # Check for buffer overflow
-        current_fill = len(self.audio_buffer) / self.buffer_size
-        
-        if current_fill >= self.BUFFER_OVERFLOW_THRESHOLD:
-            # Remove oldest 10% to prevent overflow
-            cleanup_count = int(self.buffer_size * self.BUFFER_CLEANUP_PERCENT)
-            for _ in range(cleanup_count):
-                try:
-                    self.audio_buffer.popleft()
-                    self.buffer_overflow_count += 1
-                except IndexError:
-                    break
-            
-            if self.buffer_overflow_count % 10 == 0:  # Log every 10th overflow
-                logger.warning(
-                    f"Audio buffer overflow detected ({current_fill:.1%} full). "
-                    f"Dropped oldest samples. Total overflows: {self.buffer_overflow_count}"
-                )
-        
         self.audio_buffer.extend(samples)
     
     def process_audio_chunk(self, audio_chunk: np.ndarray) -> Optional[np.ndarray]:

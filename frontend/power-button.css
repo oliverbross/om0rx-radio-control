@@ -9,37 +9,42 @@
     z-index: 1000;
 }
 
-.power-button {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    border: 2px solid #666;
-    background: linear-gradient(135deg, #333 0%, #1a1a1a 100%);
-    color: #0f0;
-    font-size: 20px;
+.power-button,
+.app-brand-button {
+    min-width: 168px;
+    height: 32px;
+    border-radius: 4px;
+    border: 1px solid #4b5563;
+    background: #202020;
+    color: #dbeafe;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0;
+    text-transform: uppercase;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.3s ease;
+    transition: all 0.15s ease;
     position: relative;
-    box-shadow: 0 0 10px rgba(0, 255, 0, 0.2);
+    box-shadow: none;
 }
 
-.power-button:hover {
-    border-color: #0f0;
-    box-shadow: 0 0 15px rgba(0, 255, 0, 0.4);
-    transform: scale(1.05);
+.power-button:hover,
+.app-brand-button:hover {
+    border-color: #60a5fa;
+    color: #ffffff;
 }
 
-.power-button:active {
-    transform: scale(0.95);
+.power-button:active,
+.app-brand-button:active {
+    transform: translateY(1px);
 }
 
 /* Power Menu - Dropdown */
 .power-menu {
     position: absolute;
-    top: 50px;
+    top: 38px;
     left: 0;
     background: #222;
     border: 1px solid #0f0;

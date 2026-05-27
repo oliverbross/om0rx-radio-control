@@ -1,7 +1,4 @@
-"""
-Test script to verify all FT8 decoder files are present and accessible
-Run this before starting the backend to ensure everything is in place
-"""
+"""Verify the built-in FT8 frontend ships only the supported engine assets."""
 
 from pathlib import Path
 import sys
@@ -12,14 +9,13 @@ def test_ft8_files():
     frontend = Path(__file__).resolve().parents[2] / "frontend"
     
     required_files = {
-        # Core FT8 decoder files
-        "js/ft8-decoder.js": "Main FT8 decoder service",
+        # Core FT8 files
+        "js/ft8-engine.js": "FT8 engine boundary",
         "js/ft8-modal.js": "FT8 modal UI controller",
         
-        # ft8play wrapper files
+        # MIT ft8_lib wrapper files
         "ft8_extra.js": "LDPC matrices and FT8 constants",
         "ft8_ft8lib.js": "ft8_lib WASM wrapper",
-        "mshv_ft8_wrap.js": "MSHV WASM wrapper",
         
         # Support libraries (copied from ft8play)
         "HamGridSquare.js": "Grid square coordinate conversion",
@@ -30,11 +26,15 @@ def test_ft8_files():
         "ft8lib/ft8_wasm.js": "ft8_lib JavaScript loader",
         "ft8lib/ft8_wasm.wasm": "ft8_lib WASM binary (MIT license)",
         "ft8lib/LICENSE": "ft8_lib license file",
-        
-        "mshv/mshv_ft8.js": "MSHV JavaScript loader",
-        "mshv/mshv_ft8.wasm": "MSHV WASM binary (GPLv3 license)",
-        "mshv/COPYING.txt": "MSHV license file",
     }
+
+    retired_files = [
+        "js/ft8-decoder.js",
+        "mshv_ft8_wrap.js",
+        "mshv/mshv_ft8.js",
+        "mshv/mshv_ft8.wasm",
+        "mshv/COPYING.txt",
+    ]
     
     print("=" * 70)
     print("FT8 DECODER FILES VERIFICATION")
@@ -66,24 +66,20 @@ def test_ft8_files():
     print("=" * 70)
     print()
     
-    if all_ok:
-        print("✅ ALL FILES PRESENT - Ready to start backend")
-        print()
-        print("Next steps:")
-        print("  1. Start backend: python -m backend.main")
-        print("  2. Open browser: http://localhost:8080")
-        print("  3. Click FT8 button and check console (F12)")
-        print("  4. You should see:")
-        print("     ✅ ft8_lib WASM module loaded")
-        print("     ✅ MSHV WASM module loaded")
-        print("     ✅ FT8 Decoder fully initialized")
-        return 0
-    else:
+    if not all_ok:
         print("❌ MISSING FILES DETECTED")
         print()
         print("Check frontend/ and restore missing tracked assets from Git.")
         print()
-        return 1
+    else:
+        print("✅ ALL FILES PRESENT - Ready to start backend")
+
+    assert all_ok, "Missing required FT8 decoder frontend files"
+    for retired_file in retired_files:
+        assert not (frontend / retired_file).exists(), f"Retired FT8 asset is still present: {retired_file}"
 
 if __name__ == "__main__":
-    sys.exit(test_ft8_files())
+    try:
+        test_ft8_files()
+    except AssertionError:
+        sys.exit(1)

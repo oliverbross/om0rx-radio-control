@@ -5,6 +5,7 @@ Direct database access for log viewing
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from typing import Optional
+import asyncio
 import logging
 
 from backend.core import get_app_context
@@ -118,7 +119,10 @@ async def get_wavelog_sync_status(request: Request):
         sync_manager = get_app_context(request).wavelog_sync_manager
         
         if sync_manager:
-            status = sync_manager.get_sync_status()
+            status = await asyncio.wait_for(
+                asyncio.to_thread(sync_manager.get_sync_status),
+                timeout=1.5,
+            )
             return status
         else:
             return {
@@ -128,6 +132,15 @@ async def get_wavelog_sync_status(request: Request):
                 "error": "Sync manager not initialized"
             }
             
+    except asyncio.TimeoutError:
+        logger.warning("Wavelog sync status timed out")
+        return {
+            "syncing": False,
+            "last_sync": None,
+            "total_records": 0,
+            "status": "busy",
+            "error": "Sync status timed out"
+        }
     except Exception as e:
         logger.error(f"Error getting sync status: {e}")
         return {

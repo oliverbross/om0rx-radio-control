@@ -42,9 +42,9 @@ def setup_flex_logging():
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
         
-        # Ensure logger is at appropriate level
-        if logger.level == logging.NOTSET or logger.level > logging.DEBUG:
-            logger.setLevel(logging.DEBUG)  # Capture all debug messages
+        log_level = getattr(logging, getattr(config, "LOG_LEVEL", "INFO").upper(), logging.INFO)
+        if logger.level == logging.NOTSET or logger.level < log_level:
+            logger.setLevel(log_level)
         
         print(f'✅ File logging enabled: {log_path}')
         logging.info('='*80)

@@ -50,7 +50,7 @@ class ConnectionManager:
 
         for client in clients:
             try:
-                await client.send_text(message)
+                await asyncio.wait_for(client.send_text(message), timeout=0.5)
             except Exception as e:
                 logger.warning("Failed to send %s WebSocket message: %s", message_type, e)
                 disconnected.append(client)
@@ -112,7 +112,7 @@ def register_websocket_endpoint(app, flex=None, dx_spots_cache=None, ws_clients=
         try:
             # Send initial status
             if flex:
-                levels = flex.get_current_levels(timeout=0.5)
+                levels = await asyncio.to_thread(flex.get_current_levels, timeout=0.5)
                 initial_status = {
                     "frequency": flex.current_freq or levels.get("freq", 14.074),
                     "mode": flex.current_mode or levels.get("mode", "USB"),
@@ -132,11 +132,17 @@ def register_websocket_endpoint(app, flex=None, dx_spots_cache=None, ws_clients=
                     "rx2_enabled": levels.get("rx2", False),
                     "split_enabled": levels.get("split", False),
                 }
-                await websocket.send_text(json.dumps({"type": "status", "data": initial_status}))
+                await asyncio.wait_for(
+                    websocket.send_text(json.dumps({"type": "status", "data": initial_status})),
+                    timeout=0.5,
+                )
 
             # Send initial spots
             if dx_spots_cache:
-                await websocket.send_text(json.dumps({"type": "spots", "data": dx_spots_cache}))
+                await asyncio.wait_for(
+                    websocket.send_text(json.dumps({"type": "spots", "data": dx_spots_cache})),
+                    timeout=0.5,
+                )
 
             # Keep alive
             while True:

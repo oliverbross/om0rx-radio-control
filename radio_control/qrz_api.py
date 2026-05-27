@@ -4,14 +4,21 @@ Handles callsign lookups and profile information
 """
 
 import aiohttp
+import asyncio
+import json
 import logging
 from typing import Optional, Dict, Any
 import xml.etree.ElementTree as ET
 from urllib.parse import urlencode
+from pathlib import Path
+from datetime import datetime, timezone
 from radio_control import config
 from radio_control.utils import generate_callsign_variants
 
 logger = logging.getLogger(__name__)
+
+QRZ_HTTP_TIMEOUT_SEC = 6
+QRZ_PROFILE_CACHE_TTL_SEC = 24 * 60 * 60
 
 
 class QRZClient:
@@ -22,7 +29,57 @@ class QRZClient:
         self.password = config.QRZ_PASSWORD
         self.api_url = "https://xmldata.qrz.com/xml/current/"
         self.session_key = None
+        self.last_session_error = ""
+        self.cache_path = config.DATA_DIR / "qrz_profile_cache.json"
+        self.profile_cache: Dict[str, Dict[str, Any]] = self._load_profile_cache()
         logger.info(f"🔌 QRZ Client initialized for user: {self.username}")
+
+    def _load_profile_cache(self) -> Dict[str, Dict[str, Any]]:
+        try:
+            if not self.cache_path.exists():
+                return {}
+            with self.cache_path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            logger.debug("Could not load QRZ profile cache: %s", exc)
+            return {}
+
+    def _save_profile_cache(self) -> None:
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.cache_path.open("w", encoding="utf-8") as fh:
+                json.dump(self.profile_cache, fh, ensure_ascii=True, indent=2)
+        except Exception as exc:
+            logger.debug("Could not save QRZ profile cache: %s", exc)
+
+    def _cache_entry_for(self, callsign: str) -> Optional[Dict[str, Any]]:
+        key = (callsign or "").strip().upper()
+        entry = self.profile_cache.get(key)
+        if not isinstance(entry, dict):
+            return None
+        timestamp = entry.get("timestamp")
+        profile = entry.get("profile")
+        if not isinstance(timestamp, (int, float)) or not isinstance(profile, dict):
+            return None
+        if datetime.now(timezone.utc).timestamp() - timestamp > QRZ_PROFILE_CACHE_TTL_SEC:
+            return None
+        return profile
+
+    def _store_profile_cache(self, requested: str, resolved: str, profile: Dict[str, Any]) -> None:
+        if not profile.get("success"):
+            return
+        now = datetime.now(timezone.utc).timestamp()
+        profile = {
+            **profile,
+            "cache_timestamp": now,
+            "cache_ttl_sec": QRZ_PROFILE_CACHE_TTL_SEC,
+            "cache_source": "qrz_live",
+        }
+        for key in {requested.strip().upper(), resolved.strip().upper()}:
+            if key:
+                self.profile_cache[key] = {"timestamp": now, "profile": profile}
+        self._save_profile_cache()
         
     async def _get_session_key(self) -> Optional[str]:
         """Authenticate with QRZ and get session key using XML API"""
@@ -40,7 +97,7 @@ class QRZClient:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     url,
-                    timeout=aiohttp.ClientTimeout(total=15)
+                    timeout=aiohttp.ClientTimeout(total=QRZ_HTTP_TIMEOUT_SEC)
                 ) as resp:
                     logger.info(f"📊 QRZ session response status: {resp.status}")
                     
@@ -69,7 +126,8 @@ class QRZClient:
                                     error_elem = session_elem.find("Error")
                                     
                                 if error_elem is not None and error_elem.text:
-                                    logger.error(f"❌ QRZ authentication failed: {error_elem.text}")
+                                    self.last_session_error = error_elem.text.strip()
+                                    logger.error(f"❌ QRZ authentication failed: {self.last_session_error}")
                                     return None
                                 
                                 # Get session key
@@ -100,11 +158,35 @@ class QRZClient:
                         logger.debug(f"Error response: {response_text[:500]}")
                         return None
                         
+        except (asyncio.TimeoutError, TimeoutError):
+            self.last_session_error = "QRZ session request timed out"
+            logger.warning(self.last_session_error)
+            return None
         except Exception as e:
+            self.last_session_error = str(e)
             logger.error(f"❌ QRZ session error: {str(e)}", exc_info=True)
             return None
     
-    async def _lookup_profile_internal(self, callsign: str) -> Dict[str, Any]:
+    def _auth_failure_result(self) -> Dict[str, Any]:
+        message = self.last_session_error or "QRZ authentication failed"
+        return {
+            'success': False,
+            'message': f'QRZ authentication failed: {message}',
+            'error_type': 'auth',
+            'retryable': False,
+        }
+
+    @staticmethod
+    def _is_qrz_not_found(message: str) -> bool:
+        value = str(message or "").lower()
+        return "not found" in value or "not in database" in value
+
+    @staticmethod
+    def _is_qrz_session_error(message: str) -> bool:
+        value = str(message or "").lower()
+        return "timeout" in value or "session" in value or "key" in value
+
+    async def _lookup_profile_internal(self, callsign: str, *, retry_session: bool = True) -> Dict[str, Any]:
         """
         Internal method to perform actual QRZ profile lookup for a single callsign.
         This does NOT implement fallback - that's handled by get_profile_picture.
@@ -117,7 +199,7 @@ class QRZClient:
             
             if not self.session_key:
                 logger.error(f"❌ Failed to obtain QRZ session key")
-                return {'success': False, 'message': 'QRZ authentication failed'}
+                return self._auth_failure_result()
             
             # Build callsign lookup request
             params = {
@@ -131,7 +213,7 @@ class QRZClient:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     url,
-                    timeout=aiohttp.ClientTimeout(total=15)
+                    timeout=aiohttp.ClientTimeout(total=QRZ_HTTP_TIMEOUT_SEC)
                 ) as resp:
                     logger.info(f"📊 QRZ profile response status: {resp.status} for {callsign}")
                     
@@ -160,13 +242,20 @@ class QRZClient:
                                     error_text = error_elem.text
                                     logger.debug(f"QRZ error for {callsign}: {error_text}")
                                     
-                                    # Check if it's a session timeout - need to re-authenticate
-                                    if "timeout" in error_text.lower() or "session" in error_text.lower():
+                                    # Check if it's a session timeout - need to re-authenticate and retry once.
+                                    if retry_session and self._is_qrz_session_error(error_text):
                                         logger.info("🔄 Session expired, re-authenticating...")
                                         self.session_key = None
-                                        await self._get_session_key()
+                                        if await self._get_session_key():
+                                            return await self._lookup_profile_internal(callsign, retry_session=False)
+                                        return self._auth_failure_result()
                                     
-                                    return {'success': False, 'message': error_text}
+                                    return {
+                                        'success': False,
+                                        'message': error_text,
+                                        'error_type': 'not_found' if self._is_qrz_not_found(error_text) else 'qrz_error',
+                                        'retryable': not self._is_qrz_not_found(error_text),
+                                    }
                                 
                                 # Update session key from response if provided
                                 key_elem = session_elem.find("qrz:Key", ns)
@@ -258,7 +347,7 @@ class QRZClient:
                             else:
                                 # No callsign element
                                 logger.debug(f"No Callsign element in response for {callsign}")
-                                return {'success': False, 'message': 'Callsign not found'}
+                                return {'success': False, 'message': 'Callsign not found', 'error_type': 'not_found'}
                         
                         except ET.ParseError as pe:
                             logger.error(f"Failed to parse QRZ profile XML: {pe}")
@@ -268,9 +357,12 @@ class QRZClient:
                         logger.error(f"QRZ profile request failed: HTTP {resp.status}")
                         return {'success': False, 'message': f'QRZ lookup failed: HTTP {resp.status}'}
                         
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning("QRZ profile lookup timed out for %s", callsign)
+            return {'success': False, 'message': 'QRZ lookup timed out', 'error_type': 'timeout', 'retryable': True}
         except Exception as e:
             logger.error(f"❌ QRZ profile lookup error for {callsign}: {str(e)}", exc_info=True)
-            return {'success': False, 'message': str(e)}
+            return {'success': False, 'message': str(e), 'error_type': 'qrz_error', 'retryable': True}
     
     async def lookup(self, callsign: str) -> Dict[str, Any]:
         """
@@ -312,24 +404,41 @@ class QRZClient:
         Returns:
             Dict with success flag and profile data
         """
-        logger.info(f"🔍 Fetching QRZ profile for callsign: {callsign}")
+        callsign_upper = (callsign or "").strip().upper()
+        cached = self._cache_entry_for(callsign_upper)
+        if cached:
+            logger.debug("Using cached QRZ profile for %s", callsign_upper)
+            return {**cached, "cache_source": "qrz_file_cache"}
+
+        logger.info(f"🔍 Fetching QRZ profile for callsign: {callsign_upper}")
         
         # Generate list of callsigns to try (original first, then fallbacks)
-        variants = generate_callsign_variants(callsign)
+        variants = generate_callsign_variants(callsign_upper)
         
+        failures = []
         for variant in variants:
+            cached_variant = self._cache_entry_for(variant)
+            if cached_variant:
+                logger.debug("Using cached QRZ profile for variant %s (requested %s)", variant, callsign_upper)
+                return {**cached_variant, "cache_source": "qrz_file_cache"}
+
             logger.debug(f"  Trying QRZ lookup for variant: {variant}")
             result = await self._lookup_profile_internal(variant)
             
             if result.get('success'):
-                logger.info(f"✅ QRZ lookup succeeded with variant: {variant} (requested: {callsign})")
+                self._store_profile_cache(callsign_upper, variant, result)
+                logger.info(f"✅ QRZ lookup succeeded with variant: {variant} (requested: {callsign_upper})")
                 return result
             else:
+                failures.append(result)
                 logger.debug(f"  QRZ lookup failed for variant {variant}: {result.get('message', 'Unknown error')}")
+                if result.get("error_type") in {"auth", "timeout", "qrz_error"} and not self._is_qrz_not_found(result.get("message", "")):
+                    return result
         
         # All variants failed
         logger.warning(f"❌ QRZ lookup failed for all variants of {callsign}")
-        return {'success': False, 'message': f'Callsign not found (tried: {", ".join(variants)})'}
+        message = f'Callsign not found (tried: {", ".join(variants)})'
+        return {'success': False, 'message': message, 'error_type': 'not_found', 'failures': failures[-3:]}
     
     async def get_contact_history(self, callsign: str, limit: int = 20) -> Dict[str, Any]:
         """

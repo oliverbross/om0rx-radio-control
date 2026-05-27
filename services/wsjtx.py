@@ -11,7 +11,6 @@ from fastapi import HTTPException
 
 # Import required modules
 from radio_control.spot_processor import band_from_khz
-from radio_control.rotor_math import grid_to_latlon, initial_bearing
 from radio_control.qso_outbox import get_qso_outbox
 from radio_control import config
 logger = logging.getLogger(__name__)
@@ -233,54 +232,36 @@ class WSJTXService:
 
             logger.info(f"🎯 Auto-rotating to {call} ({grid})...")
 
-            # Get home station coordinates
-            home_lat = config.ROTOR_HOME_LAT
-            home_lon = config.ROTOR_HOME_LON
+            result = await self.rotor_service.rotor_auto_goto({
+                "callsign": call,
+                "frequency_khz": req.get('frequency_hz') / 1000 if req.get('frequency_hz') else None,
+                "gridsquare": grid,
+                "location_source": "wsjtx_grid",
+                "grid_source": "wsjtx",
+            })
 
-            # Get DX station coordinates from grid
-            try:
-                dx_lat, dx_lon = grid_to_latlon(grid)
-            except Exception as e:
-                logger.error(f"❌ Failed to convert grid {grid}: {e}")
-                return {"success": False, "reason": f"Invalid grid: {grid}"}
-
-            # Calculate bearing
-            bearing = initial_bearing(home_lat, home_lon, dx_lat, dx_lon)
-
-            # Get band from frequency (to check if band-specific override exists)
-            band = None
-            if req.get('frequency_hz'):
-                band = band_from_khz(req['frequency_hz'] / 1000)
-
-            # Check if this band has a specific bearing offset
-            band_offset = 0
-            if band and hasattr(config, 'ROTOR_BANDS') and band in config.ROTOR_BANDS:
-                band_config = config.ROTOR_BANDS[band]
-                if isinstance(band_config, dict):
-                    if not band_config.get("enabled", True):
-                        return {"success": False, "reason": f"Rotator disabled for band {band}"}
-                    band_offset = band_config.get("offset", 0)
-                elif not band_config:
-                    return {"success": False, "reason": f"Rotator disabled for band {band}"}
-
-            adjusted_bearing = (bearing + band_offset) % 360
-
-            # Send command to rotator
-            cmd_result = await self.rotor_service.rotor_goto({"azimuth": int(adjusted_bearing)})
-
-            if cmd_result:
-                logger.info(f"✅ Rotator command sent: {call} on {bearing}° (adjusted: {adjusted_bearing}°)")
+            if result.get("ok"):
+                logger.info(f"✅ Rotator command sent: {call} on {result.get('bearing')}°")
                 return {
                     "success": True,
                     "call": call,
                     "grid": grid,
-                    "bearing": bearing,
-                    "adjusted_bearing": adjusted_bearing,
-                    "band": band
+                    "bearing": result.get("bearing"),
+                    "adjusted_bearing": result.get("bearing"),
+                    "band": result.get("band"),
+                    "source": result.get("source"),
+                    "confidence": result.get("confidence"),
                 }
             else:
                 logger.error(f"❌ Rotator command failed: {call}")
-                return {"success": False, "reason": "Rotator command failed"}
+                return {
+                    "success": False,
+                    "reason": result.get("message") or result.get("error") or "Rotor command failed",
+                    "bearing": result.get("bearing"),
+                    "band": result.get("band"),
+                    "source": result.get("source"),
+                    "confidence": result.get("confidence"),
+                }
 
         except Exception as e:
             logger.error(f"❌ Auto-rotate error: {e}")

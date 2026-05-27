@@ -18,9 +18,9 @@
 #define LOG_LEVEL LOG_INFO
 #include <ft8/debug.h>
 
-const int kMin_score = 10; // Minimum sync score threshold for candidates
-const int kMax_candidates = 140;
-const int kLDPC_iterations = 25;
+const int kMin_score = 7; // Minimum sync score threshold for candidates
+const int kMax_candidates = 200;
+const int kLDPC_iterations = 50;
 
 const int kMax_decoded_messages = 50;
 

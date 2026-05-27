@@ -58,7 +58,16 @@ const websocketMethods = {
                             return s.callsign === newSpot.callsign && 
                                    Math.abs(existingFreqMhz - freqMhz) < 0.001;
                         });
-                        if (!exists) {
+                        if (exists) {
+                            const existingSpot = this.dxSpots.find(s => {
+                                const existingFreqMhz = s.frequency_mhz || parseFloat(s.frequency) / 1000;
+                                return s.callsign === newSpot.callsign &&
+                                       Math.abs(existingFreqMhz - freqMhz) < 0.001;
+                            });
+                            if (existingSpot) {
+                                Object.assign(existingSpot, newSpot);
+                            }
+                        } else {
                             // If filtered search is active, queue the spot instead of showing immediately
                             if (this.hasActiveFilters() && this.isSearchingSpots) {
                                 this.queuedRealtimeSpots.unshift(newSpot);

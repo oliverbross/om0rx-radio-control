@@ -2,15 +2,12 @@
         <div class="control-row" style="flex-wrap: wrap; justify-content: center; position: relative;">
             <!-- Power Button & Title in top left corner -->
             <div class="power-button-container">
-                <button class="power-button" @click="togglePowerMenu" title="Server control: Shutdown or Restart">
-                    ⊙
+                <button class="app-brand-button" @click="togglePowerMenu" title="Server control: Shutdown or Restart">
+                    OM0RX Radio Control
                 </button>
                 <div v-if="showPowerMenu" class="power-menu">
                     <button class="power-menu-item" @click="shutdownServer">🔴 Shutdown</button>
                     <button class="power-menu-item" @click="restartServer">🔄 Restart</button>
-                </div>
-                <div class="utc-clock" style="min-width: 300px;">
-                    OM0RX Flex / Wavelog Control with Spots
                 </div>
             </div>
             
@@ -40,10 +37,10 @@
             <div style="position: absolute; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;">
                 <span class="status-indicator" :class="connected ? 'status-connected' : 'status-disconnected'"></span>
                 <button 
-                    @click="openFT8Modal"
-                    title="FT8/FT4 Digital Mode Interface"
+                    @click="openDigitalWindow"
+                    title="Open digital mode interface"
                     style="padding: 4px 8px; font-size: 12px; background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">
-                    🔊 FT8/DIGI
+                    DIGITAL
                 </button>
                 <button 
                     @click="showSyncModal = true"

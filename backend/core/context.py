@@ -61,4 +61,12 @@ def sync_app_state(app: Any, context: AppContext) -> None:
     app.state.dx_spots_cache = context.dx_spots_cache
     app.state.websocket_clients = context.websocket_clients
     app.state.cluster_client = context.cluster_client
+    app.state.cluster_connected = context.cluster_connected
+    app.state.db_connection = context.db_connection
+    app.state.classifier = context.classifier
+    app.state.cty_resolver = context.cty_resolver
+    app.state.wavelog_client = context.wavelog_client
+    app.state.qrz_client = context.qrz_client
+    app.state.adif_handler = context.adif_handler
     app.state.wavelog_sync_manager = context.wavelog_sync_manager
+    app.state.rotor = context.rotor

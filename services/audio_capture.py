@@ -48,6 +48,7 @@ class AudioCaptureService:
         self.enabled = False
         self.stream = None
         self.callback: Optional[Callable] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         
         # Audio buffer for async processing
         self.audio_queue = asyncio.Queue(maxsize=100)
@@ -103,41 +104,15 @@ class AudioCaptureService:
     def _start_real_capture(self) -> bool:
         """Start real audio capture using sounddevice"""
         try:
+            try:
+                self._loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._loop = None
+
             # Find device
-            device_index = self.config.device_index
-            
-            # Try to parse device_name as index if it's a number string or "index: name" format
-            if self.config.device_name and device_index is None:
-                device_str = str(self.config.device_name).strip()
-                
-                # Handle "default" keyword
-                if device_str.lower() == 'default' or device_str.startswith('default:'):
-                    device_index = None
-                    logger.info(f"Using default audio device")
-                else:
-                    try:
-                        # Try to extract index from "123: Device Name" format
-                        if ':' in device_str:
-                            device_index = int(device_str.split(':')[0].strip())
-                            logger.info(f"Extracted device index {device_index} from '{device_str}'")
-                        else:
-                            # Try to parse as plain integer
-                            device_index = int(device_str)
-                        
-                        logger.info(f"Using audio device index: {device_index}")
-                    except ValueError:
-                        # Search for device by name
-                        search_name = device_str.split(':', 1)[1].strip() if ':' in device_str else device_str
-                        devices = sd.query_devices()
-                        for i, device in enumerate(devices):
-                            if search_name.lower() in device['name'].lower():
-                                device_index = i
-                                logger.info(f"Found audio device: {device['name']} (index {i})")
-                                break
-                        
-                        if device_index is None:
-                            logger.warning(f"Device '{device_str}' not found, using default")
-                            device_index = None
+            device_index = self._resolve_device_index()
+            if device_index is not None:
+                self.config.device_index = device_index
             
             # Audio callback
             def audio_callback(indata, frames, time_info, status):
@@ -146,19 +121,11 @@ class AudioCaptureService:
                 
                 # Convert to mono if needed
                 audio_data = np.array(indata[:, 0]) if indata.shape[1] > 1 else np.array(indata[:, 0])
-                
-                # Queue for async processing
-                try:
-                    self.audio_queue.put_nowait(audio_data)
-                except asyncio.QueueFull:
-                    pass  # Drop samples if queue is full
-                
-                # Call callback if set
-                if self.callback:
-                    try:
-                        self.callback(audio_data)
-                    except Exception as e:
-                        logger.error(f"Error in audio callback: {e}")
+
+                if self._loop and self._loop.is_running():
+                    self._loop.call_soon_threadsafe(self._handle_audio_samples, audio_data)
+                else:
+                    self._handle_audio_samples(audio_data)
             
             # Validate device index
             if device_index is not None:
@@ -191,6 +158,86 @@ class AudioCaptureService:
         except Exception as e:
             logger.error(f"❌ Failed to start real audio capture: {e}", exc_info=True)
             return False
+
+    def _resolve_device_index(self) -> Optional[int]:
+        """Resolve configured input device to a PortAudio device index."""
+        device_index = self.config.device_index
+        if device_index is not None or not self.config.device_name:
+            return device_index
+
+        device_str = str(self.config.device_name).strip()
+        if device_str.lower() == "default" or device_str.lower().startswith("default:"):
+            logger.info("Using default audio input device")
+            return None
+
+        try:
+            if ":" in device_str:
+                return int(device_str.split(":", 1)[0].strip())
+            return int(device_str)
+        except ValueError:
+            pass
+
+        if not AUDIO_AVAILABLE:
+            return None
+
+        devices = sd.query_devices()
+        hostapis = sd.query_hostapis()
+        lowered = device_str.lower()
+
+        if lowered in {"flexradio", "dax", "dax_rx", "dax_rx_1", "flexradio_dax_rx"}:
+            preferred = []
+            fallback = []
+            for i, device in enumerate(devices):
+                name = str(device["name"])
+                name_l = name.lower()
+                if device["max_input_channels"] <= 0:
+                    continue
+                if "dax audio rx 1" in name_l and "reserved" not in name_l:
+                    host = hostapis[device["hostapi"]]["name"].lower()
+                    score = 0
+                    if "wasapi" in host:
+                        score = 0
+                    elif "wdm-ks" in host:
+                        score = 1
+                    elif "directsound" in host:
+                        score = 2
+                    else:
+                        score = 3
+                    preferred.append((score, i, name, host))
+                elif "dax audio rx" in name_l and "reserved" not in name_l:
+                    fallback.append((i, name))
+
+            if preferred:
+                _, index, name, host = sorted(preferred)[0]
+                logger.info("Resolved FlexRadio DAX RX input to [%s] %s (%s)", index, name, host)
+                return index
+            if fallback:
+                index, name = fallback[0]
+                logger.info("Resolved FlexRadio DAX RX fallback input to [%s] %s", index, name)
+                return index
+
+        search_name = device_str.split(":", 1)[1].strip() if ":" in device_str else device_str
+        search_l = search_name.lower()
+        for i, device in enumerate(devices):
+            if device["max_input_channels"] > 0 and search_l in str(device["name"]).lower():
+                logger.info("Found audio input device: [%s] %s", i, device["name"])
+                return i
+
+        logger.warning("Audio input device '%s' not found; using default input", device_str)
+        return None
+
+    def _handle_audio_samples(self, samples: np.ndarray) -> None:
+        """Queue and publish audio samples on the owning event loop."""
+        try:
+            self.audio_queue.put_nowait(samples)
+        except asyncio.QueueFull:
+            pass
+
+        if self.callback:
+            try:
+                self.callback(samples)
+            except Exception as e:
+                logger.error(f"Error in audio callback: {e}")
     
     def _start_simulated_capture(self) -> bool:
         """Start simulated audio capture for testing"""

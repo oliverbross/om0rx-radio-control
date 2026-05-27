@@ -1,11 +1,14 @@
-"""Read worked/confirmed status from the local Wavelog DuckDB mirror."""
+"""Read worked/confirmed status from Wavelog for spot classification."""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
 from typing import Optional
+import time
 
+import pymysql
+from pymysql.cursors import DictCursor
 import duckdb
 
 from radio_control import config
@@ -14,12 +17,15 @@ logger = logging.getLogger(__name__)
 
 
 class DuckDBQSOStatusStore:
-    """Small query layer for spot classification against synced QSOs."""
+    """Small cached query layer for spot classification against Wavelog QSOs."""
 
     def __init__(self, db_path: str | Path | None = None):
         self.db_path = Path(db_path) if db_path else config.DATA_DIR / "qso_log.duckdb"
+        self._use_duckdb = db_path is not None
         self._unavailable_logged = False
         self._loaded_mtime: float | None = None
+        self._loaded_at: float | None = None
+        self._cache_ttl = 300
         self.dxcc_worked: set[int] = set()
         self.dxcc_confirmed: set[int] = set()
         self.dxcc_band_worked: set[tuple[int, str]] = set()
@@ -27,7 +33,9 @@ class DuckDBQSOStatusStore:
         self.dxcc_bandmode_confirmed: set[tuple[int, str, str]] = set()
 
     def available(self) -> bool:
-        return self.db_path.exists()
+        if self._use_duckdb:
+            return self.db_path.exists()
+        return bool(config.DB_HOST and config.DB_NAME and config.DB_USER)
 
     def diagnostics(self) -> dict[str, object]:
         """Return cache health details for classification diagnostics."""
@@ -80,71 +88,120 @@ class DuckDBQSOStatusStore:
         return not band_worked, not mode_worked, bandmode_confirmed
 
     def _ensure_loaded(self) -> bool:
-        if not self.db_path.exists():
+        if not self.available():
             if not self._unavailable_logged:
-                logger.warning("QSO status DuckDB mirror is not available: %s", self.db_path)
+                logger.warning("Wavelog database config is not available for QSO status cache")
                 self._unavailable_logged = True
             return False
 
-        mtime = self.db_path.stat().st_mtime
-        if self._loaded_mtime == mtime:
+        now = time.monotonic()
+        if self._loaded_at is not None and now - self._loaded_at < self._cache_ttl:
             return True
 
         try:
-            conn = duckdb.connect(str(self.db_path), read_only=True)
-            try:
-                rows = conn.execute(
-                    """
-                    SELECT dxcc, band, mode, submode, lotw_qsl_rcvd
-                    FROM qso_records
-                    WHERE dxcc IS NOT NULL
-                    """
-                ).fetchall()
-
-                dxcc_worked: set[int] = set()
-                dxcc_confirmed: set[int] = set()
-                dxcc_band_worked: set[tuple[int, str]] = set()
-                dxcc_mode_worked: set[tuple[int, str]] = set()
-                dxcc_bandmode_confirmed: set[tuple[int, str, str]] = set()
-
-                for dxcc, band, mode, submode, lotw_qsl_rcvd in rows:
-                    dxcc_int = int(dxcc)
-                    band_value = (band or "").strip()
-                    mode_value = (submode or mode or "").strip().upper()
-                    confirmed = str(lotw_qsl_rcvd or "").strip().upper() in {
-                        "Y",
-                        "YES",
-                        "TRUE",
-                        "1",
-                    }
-
-                    dxcc_worked.add(dxcc_int)
-                    if confirmed:
-                        dxcc_confirmed.add(dxcc_int)
-                    if band_value:
-                        dxcc_band_worked.add((dxcc_int, band_value))
-                    if mode_value:
-                        dxcc_mode_worked.add((dxcc_int, mode_value))
-                    if band_value and mode_value and confirmed:
-                        dxcc_bandmode_confirmed.add((dxcc_int, band_value, mode_value))
-
-                self.dxcc_worked = dxcc_worked
-                self.dxcc_confirmed = dxcc_confirmed
-                self.dxcc_band_worked = dxcc_band_worked
-                self.dxcc_mode_worked = dxcc_mode_worked
-                self.dxcc_bandmode_confirmed = dxcc_bandmode_confirmed
-                self._loaded_mtime = mtime
-                logger.info(
-                    "Loaded QSO status sets: dxcc=%d confirmed=%d band=%d mode=%d bandmode_cnf=%d",
-                    len(self.dxcc_worked),
-                    len(self.dxcc_confirmed),
-                    len(self.dxcc_band_worked),
-                    len(self.dxcc_mode_worked),
-                    len(self.dxcc_bandmode_confirmed),
+            if self._use_duckdb:
+                conn = duckdb.connect(str(self.db_path))
+                try:
+                    rows = [
+                        {
+                            "dxcc": dxcc,
+                            "band": band,
+                            "mode": mode,
+                            "submode": submode,
+                            "lotw_qsl_rcvd": lotw_qsl_rcvd,
+                        }
+                        for dxcc, band, mode, submode, lotw_qsl_rcvd in conn.execute(
+                            """
+                            SELECT dxcc, band, mode, submode, lotw_qsl_rcvd
+                            FROM qso_records
+                            WHERE dxcc IS NOT NULL
+                            """
+                        ).fetchall()
+                    ]
+                finally:
+                    conn.close()
+            else:
+                conn = pymysql.connect(
+                    host=config.DB_HOST,
+                    port=config.DB_PORT,
+                    user=config.DB_USER,
+                    password=config.DB_PASS,
+                    database=config.DB_NAME,
+                    charset="utf8mb4",
+                    cursorclass=DictCursor,
+                    connect_timeout=3,
+                    read_timeout=10,
+                    write_timeout=5,
                 )
-                return True
-            finally:
-                conn.close()
+                try:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            """
+                            SELECT COL_DXCC AS dxcc,
+                                   COL_BAND AS band,
+                                   COL_MODE AS mode,
+                                   COL_SUBMODE AS submode,
+                                   COL_LOTW_QSL_RCVD AS lotw_qsl_rcvd
+                            FROM TABLE_HRD_CONTACTS_V01
+                            WHERE station_id = %s
+                              AND COL_DXCC IS NOT NULL
+                            """,
+                            (int(getattr(config, "WAVELOG_STATION_ID", 1)),),
+                        )
+                        rows = cursor.fetchall()
+                finally:
+                    conn.close()
+
+            dxcc_worked: set[int] = set()
+            dxcc_confirmed: set[int] = set()
+            dxcc_band_worked: set[tuple[int, str]] = set()
+            dxcc_mode_worked: set[tuple[int, str]] = set()
+            dxcc_bandmode_confirmed: set[tuple[int, str, str]] = set()
+
+            for row in rows:
+                dxcc_int = int(row.get("dxcc"))
+                band_value = (row.get("band") or "").strip()
+                mode_value = (row.get("submode") or row.get("mode") or "").strip().upper()
+                confirmed = str(row.get("lotw_qsl_rcvd") or "").strip().upper() in {
+                    "Y",
+                    "YES",
+                    "TRUE",
+                    "1",
+                }
+
+                dxcc_worked.add(dxcc_int)
+                if confirmed:
+                    dxcc_confirmed.add(dxcc_int)
+                if band_value:
+                    dxcc_band_worked.add((dxcc_int, band_value))
+                if mode_value:
+                    dxcc_mode_worked.add((dxcc_int, mode_value))
+                if band_value and mode_value and confirmed:
+                    dxcc_bandmode_confirmed.add((dxcc_int, band_value, mode_value))
+
+            self.dxcc_worked = dxcc_worked
+            self.dxcc_confirmed = dxcc_confirmed
+            self.dxcc_band_worked = dxcc_band_worked
+            self.dxcc_mode_worked = dxcc_mode_worked
+            self.dxcc_bandmode_confirmed = dxcc_bandmode_confirmed
+            self._loaded_at = now
+            self._loaded_mtime = now
+            source = "DuckDB" if self._use_duckdb else "Wavelog DB"
+            logger.info(
+                "Loaded QSO status sets from %s: dxcc=%d confirmed=%d band=%d mode=%d bandmode_cnf=%d",
+                source,
+                len(self.dxcc_worked),
+                len(self.dxcc_confirmed),
+                len(self.dxcc_band_worked),
+                len(self.dxcc_mode_worked),
+                len(self.dxcc_bandmode_confirmed),
+            )
+            return True
         except Exception as exc:
-            logger.warning("QSO status DuckDB load failed: %s", exc)
+            if self._loaded_mtime is not None:
+                logger.debug("Keeping existing QSO status cache after DuckDB reload failed: %s", exc)
+                return True
+            if not self._unavailable_logged:
+                logger.warning("QSO status DuckDB load failed: %s", exc)
+                self._unavailable_logged = True
             return False

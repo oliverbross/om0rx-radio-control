@@ -29,7 +29,7 @@ class FT8Validator:
     VALID_MODES = {'FT8', 'FT4'}
     
     # Valid PTT methods
-    VALID_PTT_METHODS = {'CAT', 'RTS', 'DTR', 'None'}
+    VALID_PTT_METHODS = {'CAT', 'VOX'}
     
     # Port range
     MIN_PORT = 1024

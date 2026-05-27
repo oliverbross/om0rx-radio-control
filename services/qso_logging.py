@@ -4,10 +4,17 @@ Extracted from main.py - provides QSO logging endpoints for Wavelog integration,
 QRZ lookups, and recent QSOs retrieval.
 """
 
+import asyncio
+import hashlib
+import json
 import logging
 from typing import Optional, Dict, Any
+from datetime import date, datetime, time, timezone
+from pathlib import Path
+from threading import RLock
 from fastapi import HTTPException, APIRouter
 from pydantic import BaseModel
+import duckdb
 
 # Import required clients and handlers
 from radio_control.wavelog_api import WavelogClient
@@ -15,6 +22,8 @@ from radio_control.qrz_api import QRZClient
 from radio_control.adif_handler import ADIFHandler
 from radio_control.cty_resolvers import CtyDatResolver
 from radio_control.qso_outbox import get_qso_outbox
+from radio_control import config
+from services.wavelog_log import get_wavelog_log_service
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +35,14 @@ wavelog_client: Optional[WavelogClient] = None
 qrz_client: Optional[QRZClient] = None
 adif_handler: Optional[ADIFHandler] = None
 cty_resolver: Optional[CtyDatResolver] = None
+_dedupe_lock = RLock()
+_dedupe_ledger_path = config.LOGS_DIR / "qso_log_dedupe.json"
 
 
 class QSORequest(BaseModel):
     callsign: str
     frequency: float
+    band: Optional[str] = None
     mode: str
     # RST values can be integers (SSB/CW) or strings (FT8/FT4 SNR like "-12", "+15")
     rst_sent: Optional[str] = None
@@ -66,11 +78,211 @@ class QSORequest(BaseModel):
     sat_mode: Optional[str] = None
     freq_rx: Optional[str] = None
     mode_rx: Optional[str] = None
+    qso_key: Optional[str] = None
+
+
+def build_qso_dedupe_key(qso_data: Dict[str, Any]) -> str:
+    """Build a stable logical key used to make QSO logging restart-safe."""
+    callsign = str(qso_data.get("callsign") or qso_data.get("call") or "").strip().upper()
+    own_call = str(qso_data.get("station_callsign") or config.MY_STATION or "").strip().upper()
+    mode = str(qso_data.get("mode") or "").strip().upper()
+    frequency = float(qso_data.get("frequency") or qso_data.get("freq") or 0)
+    band = str(qso_data.get("band") or "").strip().lower()
+    if not band and frequency:
+        try:
+            from radio_control.spot_processor import band_from_khz
+            band = band_from_khz(frequency * 1000).lower()
+        except Exception:
+            band = ""
+
+    timestamp = qso_data.get("date_time") or ""
+    if not timestamp:
+        date_value = str(qso_data.get("date") or "").strip()
+        time_value = str(qso_data.get("time_off") or "").strip()
+        timestamp = f"{date_value}T{time_value}" if date_value and time_value else ""
+    try:
+        dt = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except Exception:
+        dt = datetime.utcnow()
+    # Bucket by five minutes so restart/replay uses the QSO, not the process attempt id.
+    bucket = int(dt.timestamp() // 300)
+
+    payload = {
+        "dx": callsign,
+        "own": own_call,
+        "band": band,
+        "freq": round(frequency, 3),
+        "mode": mode,
+        "bucket": bucket,
+        "rst_sent": str(qso_data.get("rst_sent") or "").strip(),
+        "rst_received": str(qso_data.get("rst_received") or qso_data.get("rst_rcvd") or "").strip(),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "qso:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _load_dedupe_ledger() -> Dict[str, Any]:
+    if not _dedupe_ledger_path.exists():
+        return {}
+    try:
+        data = json.loads(_dedupe_ledger_path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        logger.warning("Unable to read QSO dedupe ledger %s", _dedupe_ledger_path, exc_info=True)
+        return {}
+
+
+def _save_dedupe_ledger(ledger: Dict[str, Any]) -> None:
+    _dedupe_ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = _dedupe_ledger_path.with_suffix(_dedupe_ledger_path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(ledger, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(_dedupe_ledger_path)
+
+
+def _dedupe_entry(qso_key: str) -> Optional[Dict[str, Any]]:
+    with _dedupe_lock:
+        entry = _load_dedupe_ledger().get(qso_key)
+        return entry if isinstance(entry, dict) else None
+
+
+def _record_dedupe_entry(qso_key: str, qso_data: Dict[str, Any], result: Dict[str, Any]) -> None:
+    with _dedupe_lock:
+        ledger = _load_dedupe_ledger()
+        ledger[qso_key] = {
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "callsign": str(qso_data.get("callsign") or "").upper(),
+            "own_call": str(config.MY_STATION or "").upper(),
+            "frequency": qso_data.get("frequency"),
+            "band": qso_data.get("band") or "",
+            "mode": str(qso_data.get("mode") or "").upper(),
+            "date_time": qso_data.get("date_time") or "",
+            "rst_sent": qso_data.get("rst_sent") or "",
+            "rst_received": qso_data.get("rst_received") or "",
+            "wavelog_success": bool((result.get("wavelog") or {}).get("success")),
+            "adif_saved": bool(result.get("adif_saved")),
+            "outbox_queued": bool(result.get("outbox_queued")),
+        }
+        _save_dedupe_ledger(ledger)
 
 
 class RecentQSOsRequest(BaseModel):
     callsign: str
     limit: int = 5
+
+
+def _format_qso_date(value: Any) -> str:
+    if isinstance(value, (datetime, date)):
+        return value.strftime("%Y%m%d")
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10].replace("-", "")
+    return text.replace("-", "")[:8]
+
+
+def _format_qso_time(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%H%M%S")
+    if isinstance(value, time):
+        return value.strftime("%H%M%S")
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if " " in text:
+        text = text.split(" ", 1)[1]
+    return text.replace(":", "")[:6]
+
+
+def _get_recent_qsos_from_duckdb(callsign: str, limit: int) -> list[dict[str, Any]]:
+    db_path = config.DATA_DIR / "qso_log.duckdb"
+    if not db_path.exists():
+        return []
+
+    conn = duckdb.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            """
+            SELECT call, qso_date, time_on, mode, submode, frequency, band,
+                   rst_sent, rst_rcvd, lotw_qsl_rcvd, country, gridsquare, name
+            FROM qso_records
+            WHERE UPPER(call) = UPPER(?)
+            ORDER BY COALESCE(qso_datetime, time_on) DESC
+            LIMIT ?
+            """,
+            [callsign, max(1, min(int(limit or 5), 100))],
+        ).fetchall()
+
+        qsos: list[dict[str, Any]] = []
+        for row in rows:
+            (
+                call,
+                qso_date,
+                time_on,
+                mode,
+                submode,
+                frequency,
+                band,
+                rst_sent,
+                rst_rcvd,
+                lotw_qsl_rcvd,
+                country,
+                gridsquare,
+                name,
+            ) = row
+            qsos.append(
+                {
+                    "call": (call or "").upper(),
+                    "qso_date": _format_qso_date(qso_date),
+                    "time_on": _format_qso_time(time_on),
+                    "mode": (submode or mode or "").upper(),
+                    "frequency": frequency or 0,
+                    "rst_sent": rst_sent or "",
+                    "rst_rcvd": rst_rcvd or "",
+                    "band": band or "",
+                    "lotw_qsl": "Y" if str(lotw_qsl_rcvd or "").strip().upper() in {"Y", "YES", "1", "TRUE"} else "N",
+                    "country": country or "",
+                    "gridsquare": gridsquare or "",
+                    "name": name or "",
+                }
+            )
+        return qsos
+    finally:
+        conn.close()
+
+
+def _get_recent_qsos_from_wavelog_db(callsign: str, limit: int) -> list[dict[str, Any]]:
+    service = get_wavelog_log_service()
+    result = service.search_callsign(callsign, limit=max(1, min(int(limit or 5), 100)))
+    qsos: list[dict[str, Any]] = []
+    for qso in result.get("qsos", []):
+        time_on_raw = str(qso.get("time_on") or "")
+        qso_date = ""
+        time_on = ""
+        if " " in time_on_raw:
+            date_part, time_part = time_on_raw.split(" ", 1)
+            qso_date = _format_qso_date(date_part)
+            time_on = _format_qso_time(time_part)
+        else:
+            qso_date = _format_qso_date(time_on_raw)
+
+        qsos.append(
+            {
+                "call": (qso.get("callsign") or callsign).upper(),
+                "qso_date": qso_date,
+                "time_on": time_on,
+                "mode": (qso.get("submode") or qso.get("mode") or "").upper(),
+                "frequency": qso.get("frequency") or 0,
+                "rst_sent": qso.get("rst_sent") or "",
+                "rst_rcvd": qso.get("rst_rcvd") or "",
+                "band": qso.get("band") or "",
+                "lotw_qsl": "Y" if str(qso.get("lotw_rcvd") or "").strip().upper() == "Y" else "N",
+                "country": qso.get("country") or "",
+                "gridsquare": qso.get("gridsquare") or "",
+                "name": qso.get("name") or "",
+            }
+        )
+    return qsos
 
 
 def init_qso_logging_clients(w_client: WavelogClient, q_client: QRZClient,
@@ -113,7 +325,24 @@ async def log_qso(qso: QSORequest):
 
         # Convert request to dict and preserve RST values as-is
         # They can be strings (FT8 SNR like "-12") or will be converted by wavelog_api
-        qso_dict = qso.dict(exclude_unset=False)  # Include all fields
+        qso_dict = qso.model_dump(exclude_unset=False)  # Include all fields
+        qso_key = qso_dict.get("qso_key") or build_qso_dedupe_key(qso_dict)
+        qso_dict["qso_key"] = qso_key
+
+        existing_entry = _dedupe_entry(qso_key)
+        if existing_entry:
+            logger.info("Skipping duplicate QSO log request for stable key %s (%s)", qso_key, qso.callsign)
+            return {
+                "success": True,
+                "message": "Duplicate QSO log request ignored",
+                "duplicate": True,
+                "qso_key": qso_key,
+                "dedupe": existing_entry,
+                "wavelog": {"success": bool(existing_entry.get("wavelog_success"))},
+                "adif_saved": bool(existing_entry.get("adif_saved")),
+                "outbox_queued": bool(existing_entry.get("outbox_queued")),
+                "outbox": get_qso_outbox().status(),
+            }
 
         # Don't override RST values here - let wavelog_api handle the conversion
         # It will use 599 as default for empty values
@@ -151,14 +380,18 @@ async def log_qso(qso: QSORequest):
             outbox_queued,
         )
 
-        return {
+        response = {
             "success": wavelog_result.get('success', False) or outbox_queued,
             "message": wavelog_result.get('message', 'QSO logged successfully'),
             "wavelog": wavelog_result,
             "adif_saved": adif_saved,
             "outbox_queued": outbox_queued,
             "outbox": get_qso_outbox().status(),
+            "qso_key": qso_key,
         }
+        if wavelog_result.get("success") or adif_saved or outbox_queued:
+            _record_dedupe_entry(qso_key, qso_dict, response)
+        return response
 
     except HTTPException:
         # Re-raise HTTP exceptions as-is
@@ -181,7 +414,7 @@ async def get_qrz_profile(callsign: str):
         if not qrz_client:
             qrz_client = QRZClient()
 
-        result = await qrz_client.get_profile_picture(callsign)
+        result = await asyncio.wait_for(qrz_client.get_profile_picture(callsign), timeout=9)
 
         if result.get('success'):
             logger.info(f"✅ QRZ profile retrieved for {callsign}")
@@ -190,6 +423,9 @@ async def get_qrz_profile(callsign: str):
 
         return result
 
+    except asyncio.TimeoutError:
+        logger.warning("QRZ profile lookup timed out for %s", callsign)
+        return {'success': False, 'message': 'QRZ lookup timed out'}
     except Exception as e:
         logger.error(f"QRZ profile error: {str(e)}")
         return {'success': False, 'message': str(e)}
@@ -204,9 +440,12 @@ async def get_qrz_history(callsign: str, limit: int = 20):
         if not qrz_client:
             qrz_client = QRZClient()
 
-        result = await qrz_client.get_contact_history(callsign, limit)
+        result = await asyncio.wait_for(qrz_client.get_contact_history(callsign, limit), timeout=9)
         return result
 
+    except asyncio.TimeoutError:
+        logger.warning("QRZ history lookup timed out for %s", callsign)
+        return {'success': False, 'data': [], 'message': 'QRZ history lookup timed out'}
     except Exception as e:
         logger.error(f"QRZ history error: {str(e)}")
         return {'success': False, 'data': []}
@@ -232,7 +471,10 @@ async def wavelog_private_lookup(data: dict):
         if not callsign:
             return {'success': False, 'message': 'Callsign required'}
 
-        result = await wavelog_client.private_lookup(callsign, band or None, mode or None)
+        result = await asyncio.wait_for(
+            wavelog_client.private_lookup(callsign, band or None, mode or None),
+            timeout=9,
+        )
 
         # Enrich response with DXCC entity name and geographic data
         if result.get('success') and result.get('data'):
@@ -279,6 +521,9 @@ async def wavelog_private_lookup(data: dict):
 
         return result
 
+    except asyncio.TimeoutError:
+        logger.warning("Wavelog private lookup timed out for %s", data.get('callsign', ''))
+        return {'success': False, 'message': 'Wavelog lookup timed out'}
     except Exception as e:
         logger.error(f"Wavelog private lookup error: {str(e)}")
         return {'success': False, 'message': str(e)}
@@ -315,17 +560,20 @@ async def wavelog_recent_qsos(req: RecentQSOsRequest):
         if not callsign:
             return {'success': False, 'message': 'Callsign required'}
 
-        # Use Wavelog API only - no local fallback
-        if not wavelog_client:
-            wavelog_client = WavelogClient()
+        try:
+            data = await asyncio.wait_for(
+                asyncio.to_thread(_get_recent_qsos_from_wavelog_db, callsign, limit),
+                timeout=3,
+            )
+        except Exception as db_error:
+            logger.debug("Direct Wavelog QSO lookup failed for %s, trying read cache: %s", callsign, db_error)
+            data = await asyncio.wait_for(
+                asyncio.to_thread(_get_recent_qsos_from_duckdb, callsign, limit),
+                timeout=2,
+            )
 
-        logger.debug(f"  Attempting Wavelog API for {callsign}")
-        result = await wavelog_client.get_recent_qsos(callsign, limit)
-
-        if result.get('success') and result.get('data'):
-            data = result['data']
-            logger.info(f"✅ Found {len(data)} recent QSOs for {callsign} from Wavelog API")
-
+        if data:
+            logger.info(f"✅ Found {len(data)} recent QSOs for {callsign}")
             # Validate that all required fields are present
             required_fields = ['call', 'qso_date', 'mode', 'rst_sent', 'rst_rcvd', 'band', 'lotw_qsl']
             for qso in data:
@@ -335,10 +583,12 @@ async def wavelog_recent_qsos(req: RecentQSOsRequest):
 
             return {'success': True, 'data': data}
         else:
-            # No QSOs found in Wavelog - return empty result (still successful API call)
-            logger.debug(f"ℹ️ No recent QSOs found for {callsign} in Wavelog API - returning empty result")
+            logger.debug(f"ℹ️ No recent QSOs found for {callsign} in Wavelog read cache")
             return {'success': True, 'data': []}
 
+    except asyncio.TimeoutError:
+        logger.warning("Recent QSO lookup timed out for %s", req.callsign)
+        return {'success': False, 'message': 'Previous QSO lookup timed out', 'data': []}
     except Exception as e:
         logger.error(f"❌ Recent QSOs error for {req.callsign}: {str(e)}")
         import traceback

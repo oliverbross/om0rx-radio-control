@@ -10,6 +10,29 @@ from typing import Tuple, Optional
 logger = logging.getLogger(__name__)
 
 
+def _coerce_float(value, name: str) -> float:
+    """Return a finite float or raise a clear ValueError."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number, got {value!r}")
+
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    return number
+
+
+def validate_coordinates(lat, lon) -> Tuple[float, float]:
+    """Validate latitude/longitude and return normalized floats."""
+    lat_f = _coerce_float(lat, "Latitude")
+    lon_f = _coerce_float(lon, "Longitude")
+    if not (-90 <= lat_f <= 90):
+        raise ValueError(f"Latitude must be -90 to 90, got {lat_f}")
+    if not (-180 <= lon_f <= 180):
+        raise ValueError(f"Longitude must be -180 to 180, got {lon_f}")
+    return lat_f, lon_f
+
+
 def grid_to_latlon(grid: str) -> Tuple[float, float]:
     """
     Convert Maidenhead grid square to latitude/longitude (center of square).
@@ -25,6 +48,9 @@ def grid_to_latlon(grid: str) -> Tuple[float, float]:
     Raises:
         ValueError: If grid format is invalid
     """
+    if not isinstance(grid, str):
+        raise ValueError(f"Grid must be a string, got {type(grid).__name__}")
+
     g = grid.strip().upper()
     
     # Validate grid format
@@ -35,14 +61,14 @@ def grid_to_latlon(grid: str) -> Tuple[float, float]:
         raise ValueError(f"Grid must have even number of characters: {grid}")
     
     # Validate character types
-    if not g[0:2].isalpha() or not all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' for c in g[0:2]):
-        raise ValueError(f"First two chars must be A-Z: {grid}")
+    if not g[0:2].isalpha() or not all(c in 'ABCDEFGHIJKLMNOPQR' for c in g[0:2]):
+        raise ValueError(f"First two chars must be A-R: {grid}")
     
     # Start at southwest corner of world
     lon = -180.0
     lat = -90.0
     
-    # Field (chars 0-1): A-Z (20° × 10°)
+    # Field (chars 0-1): A-R (20° × 10°)
     lon += (ord(g[0]) - ord('A')) * 20
     lat += (ord(g[1]) - ord('A')) * 10
     
@@ -55,7 +81,7 @@ def grid_to_latlon(grid: str) -> Tuple[float, float]:
     
     # Subsquare (chars 4-5): a-x (2/24° × 1/24°)
     if len(g) >= 6:
-        if not g[4:6].isalpha() or not all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' for c in g[4:6]):
+        if not g[4:6].isalpha() or not all(c in 'ABCDEFGHIJKLMNOPQRSTUVWX' for c in g[4:6]):
             raise ValueError(f"Chars 5-6 must be A-X: {grid}")
         lon += (ord(g[4]) - ord('A')) * (2 / 24)
         lat += (ord(g[5]) - ord('A')) * (1 / 24)
@@ -93,12 +119,13 @@ def latlon_to_grid(lat: float, lon: float, precision: int = 6) -> str:
     Raises:
         ValueError: If coordinates or precision are invalid
     """
-    if not (-90 <= lat <= 90):
-        raise ValueError(f"Latitude must be -90 to 90, got {lat}")
-    if not (-180 <= lon <= 180):
-        raise ValueError(f"Longitude must be -180 to 180, got {lon}")
+    lat, lon = validate_coordinates(lat, lon)
     if precision not in (2, 4, 6, 8):
         raise ValueError(f"Precision must be 2, 4, 6, or 8, got {precision}")
+
+    # Maidenhead cells are half-open at the north/east edges.
+    lat = min(lat, 90 - 1e-12)
+    lon = min(lon, 180 - 1e-12)
     
     # Normalize coordinates
     lat = lat + 90
@@ -148,6 +175,21 @@ def latlon_to_grid(lat: float, lon: float, precision: int = 6) -> str:
     return grid
 
 
+def _spherical_initial_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Robust spherical fallback for edge cases where Vincenty does not converge."""
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_lon = math.radians(lon2 - lon1)
+    y = math.sin(delta_lon) * math.cos(phi2)
+    x = (
+        math.cos(phi1) * math.sin(phi2)
+        - math.sin(phi1) * math.cos(phi2) * math.cos(delta_lon)
+    )
+    if x == 0 and y == 0:
+        return 0.0
+    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+
 def initial_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
     Calculate initial bearing (azimuth) from point 1 to point 2.
@@ -160,6 +202,9 @@ def initial_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     Returns:
         Bearing in degrees (0-360, where 0=N, 90=E, 180=S, 270=W)
     """
+    lat1, lon1 = validate_coordinates(lat1, lon1)
+    lat2, lon2 = validate_coordinates(lat2, lon2)
+
     # WGS-84 ellipsoid parameters
     a = 6378137.0  # Semi-major axis (meters)
     f = 1.0 / 298.257223563  # Flattening
@@ -181,6 +226,7 @@ def initial_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     
     # Iterative calculation (Vincenty's formula)
     lam = L
+    converged = False
     for _ in range(200):  # Max 200 iterations for convergence
         sinlam = math.sin(lam)
         coslam = math.cos(lam)
@@ -217,7 +263,12 @@ def initial_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float
         
         # Check convergence
         if abs(lam - lam_prev) < 1e-12:
+            converged = True
             break
+
+    if not converged:
+        logger.debug("Vincenty bearing did not converge; using spherical fallback")
+        return _spherical_initial_bearing(lat1, lon1, lat2, lon2)
     
     # Calculate initial bearing
     alpha1 = math.atan2(
@@ -301,6 +352,7 @@ def calculate_bearing_for_station(
     
     # Fall back to lat/lon
     if station_lat is not None and station_lon is not None:
+        station_lat, station_lon = validate_coordinates(station_lat, station_lon)
         return initial_bearing(my_lat, my_lon, station_lat, station_lon)
     
     logger.warning("Insufficient data to calculate bearing")

@@ -241,9 +241,14 @@
                         🔄 Searching database for matching spots...
                     </p>
                 </div>
+
+                <div v-if="hasActiveFilters() && filteredSearchWarning"
+                     style="padding: 10px 20px; background-color: #2a2212; border-bottom: 1px solid #f59e0b; color: #fbbf24; font-size: 12px;">
+                    {{ filteredSearchWarning }}. Showing live cached spots until the database is available.
+                </div>
                 
                 <!-- 🆕 EMPTY STATE: Show when search complete with no results -->
-                <div v-if="hasActiveFilters() && !isSearchingSpots && filteredSpots.length === 0" 
+                <div v-if="hasActiveFilters() && !filteredSearchWarning && !isSearchingSpots && filteredSpots.length === 0"
                      style="padding: 30px; text-align: center; color: #888; background-color: #1a1a2e; border-bottom: 1px solid #16a34a;">
                     <p style="margin: 0; font-size: 14px;">❌ No spots match your filters</p>
                     <p style="margin: 5px 0 0 0; font-size: 12px; color: #666;">Try adjusting your search criteria</p>

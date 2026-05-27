@@ -29,6 +29,7 @@ GET_ROUTES = [
     "/api/ft8/decoded",
     "/api/ft8/qsos",
     "/api/ft8/waterfall",
+    "/api/ft8/automation/status",
     "/api/ft8/audio-devices",
     "/api/spots",
     "/api/spots/count",
@@ -84,6 +85,7 @@ POST_ROUTES = [
     "/api/rotor/direction",
     "/api/rotor/config",
     "/api/rotor/bearing",
+    "/api/rotor/resolve",
     "/api/rotor/auto/bearing",
     "/api/rotor/auto/config",
     "/api/rotor/auto/goto",
@@ -100,6 +102,11 @@ POST_ROUTES = [
     "/api/ft8/cq",
     "/api/ft8/reply",
     "/api/ft8/send73",
+    "/api/ft8/decoded/clear",
+    "/api/ft8/automation/settings",
+    "/api/ft8/automation/target",
+    "/api/ft8/automation/next",
+    "/api/ft8/automation/attempt",
     "/api/spots/add-to-radio",
     "/api/spots/filtered-search",
     "/api/qso/log",
@@ -178,6 +185,24 @@ def test_legacy_adif_duckdb_routes_are_retired():
     assert not active, "Retired ADIF/DuckDB routes are still registered:\n" + "\n".join(active)
 
 
+def test_legacy_ft8_tx_routes_are_disabled_by_default(monkeypatch):
+    import backend.api.ft8 as ft8_api
+
+    monkeypatch.setattr(ft8_api.app_config, "FT8_LEGACY_TX_ROUTES_ENABLED", False, raising=False)
+
+    checks = [
+        ("POST", "/api/ft8/transmit", {"json": {"message": "CQ OM0RX JN88"}}),
+        ("POST", "/api/ft8/cq", {}),
+        ("POST", "/api/ft8/reply", {"json": {"their_call": "EA1AA", "report": "R-10"}}),
+        ("POST", "/api/ft8/send73?their_call=EA1AA", {}),
+    ]
+
+    for method, path, kwargs in checks:
+        response = client.request(method, path, **kwargs)
+        assert response.status_code == 410, f"{method} {path} returned {response.status_code}: {response.text}"
+        assert "deprecated and disabled" in response.text
+
+
 def test_safe_frontend_read_contracts():
     solar_api._solar_cache["timestamp"] = time.time()
     solar_api._solar_cache["data"] = {
@@ -199,6 +224,7 @@ def test_safe_frontend_read_contracts():
     assert_response_has_keys("GET", "/api/ft8/decoded", {"messages"})
     assert_response_has_keys("GET", "/api/ft8/qsos", {"qsos"})
     assert_response_has_keys("GET", "/api/ft8/waterfall", {"waterfall"})
+    assert_response_has_keys("GET", "/api/ft8/automation/status", {"settings", "targets", "last_decision"})
     assert_response_has_keys("GET", "/api/ft8/audio-devices", {"input", "output"})
     assert_response_has_keys("GET", "/api/spots", {"spots"})
     assert_response_has_keys("GET", "/api/spots/count", {"count"})

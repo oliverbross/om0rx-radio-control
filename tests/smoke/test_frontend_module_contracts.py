@@ -11,6 +11,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = PROJECT_ROOT / "frontend"
 APP_MAIN = FRONTEND / "js" / "app-main.js"
 INDEX = FRONTEND / "index.html"
+RADIO_CONTROLS = FRONTEND / "js" / "radio-controls.js"
+DX_SPOTS = FRONTEND / "js" / "dx-spots.js"
 
 REQUIRED_MODULES = {
     "js/config-modal.js": "RadioControlConfig",
@@ -54,13 +56,56 @@ def test_app_main_merges_required_modules():
         assert f"...window.{global_name}.methods" in content, f"app-main.js does not merge {global_name}.methods"
 
 
+def test_wavelog_stats_refresh_after_qso_contract():
+    stats = (FRONTEND / "js" / "wavelog-stats.js").read_text(encoding="utf-8")
+    app_main = APP_MAIN.read_text(encoding="utf-8")
+    ft8_modal = (FRONTEND / "js" / "ft8-modal.js").read_text(encoding="utf-8")
+    utils = (FRONTEND / "js" / "utils.js").read_text(encoding="utf-8")
+
+    assert "setupWavelogStatisticsRefresh" in stats
+    assert "60000" in stats
+    assert "scheduleWavelogStatisticsRefresh('QSO logged', [0, 8000, 30000])" in stats
+    assert "clearWavelogLookupCaches" in stats
+    assert "await this.handleQsoLogged(qsoData)" in app_main
+    assert "this.setupWavelogStatisticsRefresh()" in app_main
+    assert "this.cleanupWavelogStatisticsRefresh()" in app_main
+    assert "logged: Boolean(qso?.logged)" in ft8_modal
+    assert "log_status: qso?.log_status || 'unknown'" in ft8_modal
+    assert "!options.force" in utils
+
+
 def test_obvious_frontend_junk_is_not_tracked():
     assert not (FRONTEND / "conosle.log").exists(), "frontend/conosle.log should not exist"
+
+
+def test_rotator_frontend_resolution_contract():
+    radio_controls = RADIO_CONTROLS.read_text(encoding="utf-8")
+    app_main = APP_MAIN.read_text(encoding="utf-8")
+    dx_spots = DX_SPOTS.read_text(encoding="utf-8")
+    controls_template = (FRONTEND / "templates" / "controls-row3.html").read_text(encoding="utf-8")
+
+    assert "buildRotorRequest" in radio_controls
+    assert "resolveRotorTarget" in radio_controls
+    assert "updateBeamingDisplay" in radio_controls
+    assert "fetch('/api/rotor/resolve'" in radio_controls
+    assert "data.source_label" in radio_controls
+    assert "data.confidence" in radio_controls
+
+    for field in ("beamingSourceLabel", "beamingConfidence", "beamingApproximate"):
+        assert field in app_main, f"Missing frontend state field: {field}"
+        assert field in controls_template, f"Missing beaming template field: {field}"
+
+    assert "rotorAutoGoto(spot.callsign" in dx_spots
+    assert "Promise.allSettled" in dx_spots
+    assert "loadQRZProfile({ triggerRotor: true, includeHistory: false })" in dx_spots
+    assert dx_spots.index("rotorAutoGoto(spot.callsign") < dx_spots.index("Promise.allSettled")
 
 
 if __name__ == "__main__":
     test_required_modules_load_before_app_main()
     test_required_modules_expose_expected_globals()
     test_app_main_merges_required_modules()
+    test_wavelog_stats_refresh_after_qso_contract()
     test_obvious_frontend_junk_is_not_tracked()
+    test_rotator_frontend_resolution_contract()
     print("Frontend module contract smoke checks passed")

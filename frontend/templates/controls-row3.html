@@ -34,6 +34,13 @@
                     <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 4px;">
                         <span class="beaming-title">Beaming for:</span>
                         <span class="beaming-callsign" style="margin: 0;">{{ currentBeamingCallsign }}</span>
+                        <span
+                            v-if="beamingSourceLabel"
+                            :class="['beaming-source', beamingConfidence, { approximate: beamingApproximate }]"
+                            :title="beamingSourceLabel"
+                        >
+                            {{ beamingSourceLabel }}
+                        </span>
                     </div>
                     
                     <!-- Short Path Row -->

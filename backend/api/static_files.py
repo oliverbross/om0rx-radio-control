@@ -12,6 +12,13 @@ from radio_control import config
 
 logger = logging.getLogger(__name__)
 
+LEGACY_SINGLE_PAGE_ROUTES = {
+    "radio-control.html",
+    "logging.html",
+    "spots.html",
+    "launcher.html",
+}
+
 
 def setup_static_files(app):
     """
@@ -77,6 +84,11 @@ def register_static_endpoints(app, frontend_path: Path, logs_path: Path):
         if file_path.startswith('api/'):
             raise HTTPException(status_code=404, detail="API endpoint not found")
         
+        if file_path in LEGACY_SINGLE_PAGE_ROUTES:
+            index_file = frontend_path / "index.html"
+            if index_file.exists():
+                return FileResponse(index_file, media_type='text/html')
+
         file = frontend_path / file_path
 
         # Security check: prevent directory traversal

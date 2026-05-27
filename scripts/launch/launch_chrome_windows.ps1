@@ -8,7 +8,7 @@ param(
 
 Write-Host ""
 Write-Host "╔════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║    FlexRadio Multi-Window Launcher    ║" -ForegroundColor Cyan
+Write-Host "║     OM0RX Radio Control Launcher      ║" -ForegroundColor Cyan
 Write-Host "╚════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 
@@ -84,7 +84,7 @@ Write-Host ""
 # Define windows configuration
 $windows = @(
     @{
-        title = "FlexRadio - Radio Control"
+        title = "OM0RX Radio Control"
         url = "$BackendUrl/radio-control.html"
         x = 100
         y = 100
@@ -92,7 +92,7 @@ $windows = @(
         height = 600
     },
     @{
-        title = "FlexRadio - Logging & QRZ"
+        title = "OM0RX Radio Control - Logging & QRZ"
         url = "$BackendUrl/logging.html"
         x = 1150
         y = 100
@@ -100,7 +100,7 @@ $windows = @(
         height = 700
     },
     @{
-        title = "FlexRadio - DX Spots"
+        title = "OM0RX Radio Control - DX Spots"
         url = "$BackendUrl/spots.html"
         x = 150
         y = 750

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-FlexRadio Multi-Window Launcher
-Launches three synchronized windows using pywebview for a native desktop experience
+OM0RX Radio Control launcher.
+
+The current frontend is a single application shell. Older builds launched
+separate radio/logging/spots pages, but those standalone pages were retired.
 """
 
 import sys
@@ -30,59 +32,74 @@ BACKEND_HOST = os.environ.get("BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = int(os.environ.get("BACKEND_PORT", "8080"))
 BACKEND_CONNECT_HOST = "127.0.0.1" if BACKEND_HOST == "0.0.0.0" else BACKEND_HOST
 BASE_URL = f"http://{BACKEND_CONNECT_HOST}:{BACKEND_PORT}"
-WINDOWS_CONFIG = [
-    {
-        "title": "FlexRadio - Radio Control",
-        "url": f"{BASE_URL}/radio-control.html",
-        "width": 1000,
-        "height": 600,
-        "x": 100,
-        "y": 100,
-    },
-    {
-        "title": "FlexRadio - Logging & QRZ",
-        "url": f"{BASE_URL}/logging.html",
-        "width": 1200,
-        "height": 700,
-        "x": 1150,
-        "y": 100,
-    },
-    {
-        "title": "FlexRadio - DX Spots",
-        "url": f"{BASE_URL}/spots.html",
-        "width": 1400,
-        "height": 800,
-        "x": 150,
-        "y": 750,
-    },
-]
+WINDOW_CONFIG = {
+    "title": "OM0RX Radio Control",
+    "url": f"{BASE_URL}/",
+    "width": 1500,
+    "height": 950,
+}
+DIGITAL_WINDOW_CONFIG = {
+    "title": "OM0RX Radio Control - DIGITAL",
+    "url": f"{BASE_URL}/ft8.html",
+    "width": 1260,
+    "height": 860,
+}
+
+
+class DesktopApi:
+    """Small pywebview bridge for opening app-owned secondary windows."""
+
+    def __init__(self):
+        self._digital_window = None
+        self._lock = threading.Lock()
+
+    def open_digital_window(self):
+        """Open or focus the native Digital window without using browser tabs."""
+        with self._lock:
+            try:
+                if self._digital_window:
+                    try:
+                        self._digital_window.restore()
+                        self._digital_window.show()
+                        self._digital_window.evaluate_js("window.focus && window.focus();")
+                        return {"success": True, "reused": True}
+                    except Exception:
+                        self._digital_window = None
+
+                self._digital_window = webview.create_window(
+                    title=DIGITAL_WINDOW_CONFIG["title"],
+                    url=DIGITAL_WINDOW_CONFIG["url"],
+                    width=DIGITAL_WINDOW_CONFIG["width"],
+                    height=DIGITAL_WINDOW_CONFIG["height"],
+                    resizable=True,
+                    focus=True,
+                )
+                print(
+                    f"✅ Created window: {DIGITAL_WINDOW_CONFIG['title']} -> "
+                    f"{DIGITAL_WINDOW_CONFIG['url']}"
+                )
+                return {"success": True, "reused": False}
+            except Exception as exc:
+                print(f"❌ Failed to create Digital window: {exc}")
+                return {"success": False, "error": str(exc)}
 
 
 def launch_windows():
-    """Launch all three windows"""
-    windows = []
-    
-    for config in WINDOWS_CONFIG:
-        try:
-            window = webview.create_window(
-                title=config["title"],
-                url=config["url"],
-                width=config["width"],
-                height=config["height"],
-                resizable=True
-            )
-            windows.append(window)
-            print(f"✅ Created window: {config['title']}")
-        except Exception as e:
-            print(f"❌ Failed to create window '{config['title']}': {e}")
-    
-    if windows:
-        print(f"\n🚀 Launching {len(windows)} synchronized windows...")
-        print("💡 All windows are connected to the same backend and will sync in real-time")
-        print("📝 Tip: You can resize, move, and arrange windows as you like!\n")
+    """Launch the single application window."""
+    try:
+        api = DesktopApi()
+        webview.create_window(
+            title=WINDOW_CONFIG["title"],
+            url=WINDOW_CONFIG["url"],
+            js_api=api,
+            width=WINDOW_CONFIG["width"],
+            height=WINDOW_CONFIG["height"],
+            resizable=True,
+        )
+        print(f"✅ Created window: {WINDOW_CONFIG['title']} -> {WINDOW_CONFIG['url']}")
         webview.start()
-    else:
-        print("❌ No windows could be created")
+    except Exception as e:
+        print(f"❌ Failed to create application window: {e}")
         sys.exit(1)
 
 

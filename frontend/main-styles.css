@@ -507,6 +507,34 @@
             color: #4a9eff;
             font-family: 'Courier New', monospace;
         }
+
+        .beaming-source {
+            max-width: 95px;
+            padding: 2px 5px;
+            border: 1px solid #4a9eff;
+            border-radius: 3px;
+            color: #d8ecff;
+            background: rgba(74, 158, 255, 0.16);
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 1.1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .beaming-source.medium {
+            border-color: #d8b24a;
+            color: #ffe8a8;
+            background: rgba(216, 178, 74, 0.14);
+        }
+
+        .beaming-source.low,
+        .beaming-source.approximate {
+            border-color: #ff8f5f;
+            color: #ffd4c2;
+            background: rgba(255, 143, 95, 0.14);
+        }
         
         .beaming-row {
             display: flex;
@@ -644,6 +672,16 @@
             font-size: 14px;
             font-weight: bold;
             color: #4a9eff;
+        }
+
+        .app-brand-label {
+            color: #dbeafe;
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 0;
+            text-transform: uppercase;
+            white-space: nowrap;
         }
         
         /* Label text */

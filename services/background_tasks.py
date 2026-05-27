@@ -97,11 +97,11 @@ async def poll_radio_status():
                 # Check socket health - reconnect if needed
                 if not flex.sock:
                     logger.warning("⚠️  Radio socket lost - reconnecting...")
-                    flex.connect()
+                    await asyncio.to_thread(flex.connect)
                     consecutive_failures += 1
                 else:
                     # Read status updates from radio
-                    success = flex.refresh_radio_state()
+                    success = await asyncio.to_thread(flex.refresh_radio_state)
                     if not success:
                         consecutive_failures += 1
                     else:
@@ -141,9 +141,10 @@ async def poll_radio_status():
                         flex.sock = None
                         consecutive_failures = 0
 
-            # Fast polling: 250ms for responsive 2-way sync
-            # This ensures we catch changes from SmartSDR in real-time
-            await asyncio.sleep(0.25)
+            # SmartSDR sends subscribed state changes asynchronously. Polling
+            # the socket once per second is enough to drain pending messages
+            # without creating noisy radio/client activity.
+            await asyncio.sleep(1.0)
         except Exception as e:
             logger.error(f"Poll error: {e}")
             consecutive_failures += 1
@@ -218,15 +219,20 @@ async def process_cluster_spot(spot_data: dict):
 
         # Resolve country/DXCC using cty.dat (with DXCC from CSV when available)
         dxcc, entity, cq = None, None, None
-        latitude, longitude = None, None  # === FIX: Add coordinates ===
+        latitude, longitude = None, None
+        location_source = None
+        location_confidence = None
         if cty_resolver:
             # Use lookup() to get info from cty.dat + DXCC from CSV
             info = cty_resolver.lookup(dxcall)
             dxcc = info.get('dxcc')
             entity = info.get('country')
             cq = info.get('cq')
-            latitude = info.get('latitude')  # === FIX: Get latitude ===
-            longitude = info.get('longitude')  # === FIX: Get longitude ===
+            latitude = info.get('latitude')
+            longitude = info.get('longitude')
+            if latitude is not None and longitude is not None:
+                location_source = "cty_exact" if info.get("exact_match") else "cty_prefix"
+                location_confidence = "medium" if info.get("exact_match") else "low"
 
         # ✅ ALWAYS have a country - never "Unknown"
         country = entity.upper() if entity else "UNKNOWN"
@@ -241,8 +247,9 @@ async def process_cluster_spot(spot_data: dict):
             # Call classification using Wavelog API (more reliable than direct DB)
             # These are now async calls using the Wavelog API
             try:
-                call_worked, call_conf = await classifier.call_overall(dxcall)
-                call_new_band, call_new_mode, call_bandmode_conf = await classifier.call_bandmode_flags(dxcall, band, emode)
+                call_worked, call_conf, call_new_band, call_new_mode, call_bandmode_conf = (
+                    await classifier.call_status_flags(dxcall, band, emode)
+                )
 
                 call_status = classify_call_status(
                     call_worked,
@@ -257,18 +264,34 @@ async def process_cluster_spot(spot_data: dict):
             # DXCC classification (using API lookups via private_lookup with callsign context)
             if dxcc is not None:
                 try:
-                    dx_worked, dx_conf = await classifier.dxcc_overall(dxcc, callsign=dxcall)
-                    dx_new_band, dx_new_mode, dx_bandmode_conf = await classifier.dxcc_bandmode_flags(dxcc, band, emode, callsign=dxcall)
-
-                    dxcc_display = classify_dxcc_status(
-                        dx_worked,
-                        dx_conf,
-                        dx_new_band,
-                        dx_new_mode,
-                        dx_bandmode_conf,
+                    dxcc_overall = await classifier.dxcc_overall(
+                        dxcc,
+                        callsign=dxcall,
+                        allow_unconfirmed_fallback=False,
                     )
-                    dxcc_status = dxcc_display.status
-                    tag = dxcc_display.tag
+                    dxcc_bandmode = await classifier.dxcc_bandmode_flags(
+                        dxcc,
+                        band,
+                        emode,
+                        callsign=dxcall,
+                        allow_unconfirmed_fallback=False,
+                    )
+
+                    if dxcc_overall is None or dxcc_bandmode is None:
+                        dxcc_status = "Unknown"
+                        tag = None
+                    else:
+                        dx_worked, dx_conf = dxcc_overall
+                        dx_new_band, dx_new_mode, dx_bandmode_conf = dxcc_bandmode
+                        dxcc_display = classify_dxcc_status(
+                            dx_worked,
+                            dx_conf,
+                            dx_new_band,
+                            dx_new_mode,
+                            dx_bandmode_conf,
+                        )
+                        dxcc_status = dxcc_display.status
+                        tag = dxcc_display.tag
 
                 except Exception as e:
                     logger.warning(f"Error getting DXCC status for DXCC {dxcc}: {e}")
@@ -279,7 +302,7 @@ async def process_cluster_spot(spot_data: dict):
         
         # Log spot to persistent database WITH classifications
         try:
-            result = log_spot(spot_data, call_status, dxcc_status)
+            result = await asyncio.to_thread(log_spot, spot_data, call_status, dxcc_status)
             if not result:
                 logger.error(f"❌ Spot NOT saved to database: {dxcall} on {band}/{emode} - log_spot returned False")
             else:
@@ -299,7 +322,7 @@ async def process_cluster_spot(spot_data: dict):
         # Create spot object
         # IMPORTANT: Store BOTH the original string (for display) and float (for calculations)
         # The string preserves full precision from the cluster
-        gridsquare = None  # === FIX: Convert lat/lon to gridsquare for rotor ===
+        gridsquare = None
         if latitude is not None and longitude is not None:
             try:
                 from radio_control.rotor_math import latlon_to_grid
@@ -317,6 +340,7 @@ async def process_cluster_spot(spot_data: dict):
             'band': band,
             'comment': comment,
             'country': country,
+            'dxcc': dxcc,
             'cq': cq_display,
             'call_status': call_status,
             'dxcc_status': dxcc_status,
@@ -324,9 +348,11 @@ async def process_cluster_spot(spot_data: dict):
             'tag': tag,
             'timestamp': timestamp.timestamp(),
             'time': timestamp.strftime('%H:%M:%S'),
-            'latitude': latitude,  # === FIX: Add latitude from cty.dat ===
-            'longitude': longitude,  # === FIX: Add longitude from cty.dat ===
-            'gridsquare': gridsquare  # === FIX: Add gridsquare converted from lat/lon ===
+            'latitude': latitude,
+            'longitude': longitude,
+            'gridsquare': gridsquare,
+            'location_source': location_source,
+            'location_confidence': location_confidence,
         }
 
         # Add to cache (keep last 200 spots)

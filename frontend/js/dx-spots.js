@@ -28,6 +28,8 @@ const dxSpotsData = {
     filteredSearchResults: [],
     isSearchingSpots: false,
     lastSearchFilter: null,
+    filteredSearchWarning: '',
+    filteredSearchRetryAfter: 0,
     
     // 🆕 Queue for real-time spots arriving during filtered search
     // These are shown after the search completes, preventing filter interruption
@@ -35,7 +37,7 @@ const dxSpotsData = {
     
     // Filter options
     availableBands: ['160m', '80m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m'],
-    availableModes: ['CW', 'SSB', 'FT8', 'FT4', 'RTTY', 'PSK', 'DIGI', 'AM', 'FM', 'JT65', 'SSTV'],
+    availableModes: ['CW', 'SSB', 'FT8', 'FT4', 'FT2', 'RTTY', 'PSK', 'DIGI', 'AM', 'FM', 'JT65', 'SSTV'],
     availableContinents: [
         {id: 'EU', name: 'Europe'},
         {id: 'NA', name: 'N. America'},
@@ -88,37 +90,14 @@ const dxSpotsMethods = {
             
             console.log('Tuning to spot:', freqMhz, 'Mode:', spot.mode, '→', radioMode);
             this.showStatus(`🎯 Tuning to ${spot.callsign} on ${this.formatFrequencyForDisplay(freqMhz)} MHz (${radioMode})...`, 'info');
-            
-            // Tune radio with full precision
-            await this.sendCommand('spots/tune', { frequency: freqMhz, mode: radioMode });
-            
-            // Add spot to SmartSDR panadapter display
-            try {
-                const response = await fetch('/api/spots/add-to-radio', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        callsign: spot.callsign,
-                        frequency: freqMhz,
-                        mode: radioMode,  // Use converted radioMode (USB/LSB for SSB), not original spot.mode
-                        spotter: spot.spotter || 'Cluster',
-                        comment: spot.comment || '',
-                        tag: spot.tag
-                    })
-                });
-                
-                if (response.ok) {
-                    const result = await response.json();
-                    console.log('✨ Spot added to panadapter:', result.message);
-                }
-            } catch (e) {
-                console.warn('Could not add spot to panadapter:', e);
-            }
-            
-            this.showStatus(`✅ Tuned to ${spot.callsign} on ${this.formatFrequencyForDisplay(freqMhz)} MHz`, 'success');
-            
+
             // === CLEAR OLD FORM DATA FIRST ===
             // Make sure all fields from all tabs are cleared before populating with new spot
+            this.suppressCallsignLookup = true;
+            if (this.dxccLookupTimer) {
+                clearTimeout(this.dxccLookupTimer);
+                this.dxccLookupTimer = null;
+            }
             this.clearLoggingForm();
             
             // === POPULATE LOGGING FORM ===
@@ -163,70 +142,141 @@ const dxSpotsMethods = {
                 const wwffMatch = comment.match(/[a-z]{2}ff-\d{4}/i);
                 if (wwffMatch) this.loggingForm.wwff = wwffMatch[0].toUpperCase();
                 
-                // Store full comment in notes
-                this.loggingForm.notes = spot.comment;
+            // Store full comment in notes
+            this.loggingForm.notes = spot.comment;
             }
-            
-            // Load QRZ profile and DXCC status
-            this.loadQRZProfile();
-            this.loadDXCCStatus();
-            
+
+            if (!spot._skipDigitalBroadcast) {
+                this.broadcastDigitalSpotSelection(spot, freqMhz);
+            }
+
+            await this.$nextTick();
+            this.suppressCallsignLookup = false;
+
             // === TRIGGER ROTOR AUTO IF ENABLED ===
             // Convert frequency to kHz for rotor AUTO
             const frequencyKhz = freqMhz * 1000;
             const gridsquare = spot.gridsquare || null;
-            const latitude = spot.latitude || null;
-            const longitude = spot.longitude || null;
+            const latitude = spot.latitude ?? null;
+            const longitude = spot.longitude ?? null;
+            const hasCoords = latitude !== null && latitude !== undefined && longitude !== null && longitude !== undefined;
+            const rotorOptions = {
+                location_source: spot.location_source || (gridsquare || hasCoords ? 'cty_prefix' : null),
+                grid_source: spot.location_source || null,
+                cty_latitude: latitude,
+                cty_longitude: longitude
+            };
             
-            console.log(`🔍 Rotor status: rotorEnabled=${this.rotorEnabled}, rotorAutoEnabled=${this.rotorAutoEnabled}, hasGrid=${!!gridsquare}, hasCoords=${!!(latitude && longitude)}`);
+            console.log(`🔍 Rotor status: rotorEnabled=${this.rotorEnabled}, rotorAutoEnabled=${this.rotorAutoEnabled}, spotGrid=${!!gridsquare}, hasCoords=${hasCoords}`);
             
             if (this.rotorAutoEnabled && this.rotorEnabled) {
-                console.log(`🤖 AUTO rotor triggered for ${spot.callsign} on ${freqMhz} MHz (Grid: ${gridsquare})`);
-                this.rotorAutoGoto(spot.callsign, frequencyKhz, gridsquare, latitude, longitude);
-            } else if (this.rotorEnabled && (gridsquare || (latitude && longitude))) {
+                console.log(`🤖 AUTO rotor triggered for ${spot.callsign} on ${freqMhz} MHz`);
+                this.rotorAutoGoto(spot.callsign, frequencyKhz, gridsquare, latitude, longitude, rotorOptions);
+            } else if (this.rotorEnabled && (gridsquare || hasCoords)) {
                 // Even if AUTO is disabled, calculate and display SP/LP bearings
                 // This allows manual rotor control via SP/LP GO buttons
                 console.log(`📡 Calculating bearing (AUTO disabled): ${spot.callsign} with grid=${gridsquare}`);
                 try {
-                    const response = await fetch('/api/rotor/auto/bearing', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            callsign: spot.callsign,
-                            frequency_khz: frequencyKhz,
-                            gridsquare: gridsquare,
-                            latitude: latitude,
-                            longitude: longitude
-                        })
-                    });
-                    
-                    if (response.ok) {
-                        const data = await response.json();
-                        console.log(`📡 Bearing API response:`, data);
-                        if (data.ok) {
-                            // Update beaming display with bearing info
-                            this.currentBeamingCallsign = spot.callsign;
-                            this.shortPathBearing = data.short_path_bearing || (Math.round(data.bearing * 10) / 10);
-                            this.longPathBearing = data.long_path_bearing || ((this.shortPathBearing + 180) % 360);
-                            this.lastBeamingTime = new Date();
-                            console.log(`✅ Bearing calculated for ${spot.callsign}: SP ${this.shortPathBearing}° / LP ${this.longPathBearing}°`);
-                        } else {
-                            console.warn(`⚠️  Could not calculate bearing: ${data.error || 'unknown error'}`);
-                            this.showStatus(`⚠️ Could not calculate bearing: ${data.error}`, 'warning');
-                        }
+                    const data = await this.resolveRotorTarget(spot.callsign, frequencyKhz, gridsquare, latitude, longitude, rotorOptions);
+                    console.log(`📡 Bearing API response:`, data);
+                    if (data.ok) {
+                        console.log(`✅ Bearing calculated for ${spot.callsign}: SP ${this.shortPathBearing}° / LP ${this.longPathBearing}° (${data.source})`);
                     } else {
-                        console.warn(`⚠️  Bearing API error: ${response.statusText}`);
+                        console.warn(`⚠️  Could not calculate bearing: ${data.error || 'unknown error'}`);
+                        this.showStatus(`⚠️ Could not calculate bearing: ${data.error || data.message}`, 'warning');
                     }
                 } catch (e) {
                     console.error('Could not calculate bearing:', e);
                 }
             } else {
-                console.log(`ℹ️ Rotor data insufficient: rotorEnabled=${this.rotorEnabled}, hasGrid=${!!gridsquare}, hasCoords=${!!(latitude && longitude)}`);
+                console.log(`ℹ️ Rotor data insufficient: rotorEnabled=${this.rotorEnabled}, hasGrid=${!!gridsquare}, hasCoords=${hasCoords}`);
             }
+
+            // Load QRZ/Wavelog/DXCC enrichment after the immediate click path.
+            Promise.allSettled([
+                this.loadQRZProfile({ triggerRotor: true, includeHistory: false }),
+                this.loadDXCCStatus()
+            ]).then(results => {
+                const rejected = results.find(result => result.status === 'rejected');
+                if (rejected) {
+                    console.warn('Spot enrichment completed with an error:', rejected.reason);
+                }
+            });
+
+            // Tune radio with full precision
+            await this.sendCommand('spots/tune', { frequency: freqMhz, mode: radioMode });
+
+            // Add spot to SmartSDR panadapter display
+            try {
+                const response = await fetch('/api/spots/add-to-radio', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        callsign: spot.callsign,
+                        frequency: freqMhz,
+                        mode: radioMode,  // Use converted radioMode (USB/LSB for SSB), not original spot.mode
+                        spotter: spot.spotter || 'Cluster',
+                        comment: spot.comment || '',
+                        tag: spot.tag
+                    })
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log('✨ Spot added to panadapter:', result.message);
+                }
+            } catch (e) {
+                console.warn('Could not add spot to panadapter:', e);
+            }
+
+            this.showStatus(`✅ Tuned to ${spot.callsign} on ${this.formatFrequencyForDisplay(freqMhz)} MHz`, 'success');
             
         } catch (e) {
+            this.suppressCallsignLookup = false;
             console.error('Tune to spot failed:', e);
             this.showStatus(`❌ Failed to tune to spot: ${e.message}`, 'error');
+        }
+    },
+
+    isDigitalSpotMode(spot) {
+        return ['FT8', 'FT4', 'FT2'].includes(String(spot?.mode || '').toUpperCase());
+    },
+
+    broadcastDigitalSpotSelection(spot, freqMhz) {
+        if (!this.isDigitalSpotMode(spot)) {
+            return;
+        }
+        const payload = {
+            callsign: String(spot.callsign || '').toUpperCase(),
+            frequency_mhz: Number(freqMhz || spot.frequency_mhz || (parseFloat(spot.frequency) / 1000) || 0),
+            band: spot.band || '',
+            mode: String(spot.mode || '').toUpperCase(),
+            comment: spot.comment || '',
+            gridsquare: spot.gridsquare || '',
+            latitude: spot.latitude ?? null,
+            longitude: spot.longitude ?? null,
+            country: spot.country || spot.dxcc_name || '',
+            call_status: spot.call_status || '',
+            dxcc_status: spot.dxcc_status || '',
+            audio_offset: spot.audio_offset || null
+        };
+        const event = {
+            type: 'spot-selected',
+            payload,
+            source: 'main-window',
+            timestamp: new Date().toISOString()
+        };
+        try {
+            if (this.digitalModeChannel) {
+                this.digitalModeChannel.postMessage(event);
+            } else if (typeof BroadcastChannel !== 'undefined') {
+                const channel = new BroadcastChannel('om0rx-digital-mode');
+                channel.postMessage(event);
+                channel.close();
+            }
+            localStorage.setItem('om0rx.digital.lastEvent', JSON.stringify(event));
+        } catch (error) {
+            console.warn('Unable to broadcast digital spot selection:', error);
         }
     },
     
@@ -297,6 +347,8 @@ const dxSpotsMethods = {
         this.spotsFilter.workedB4Exclude = false;
         this.filteredSearchResults = [];
         this.lastSearchFilter = null;
+        this.filteredSearchWarning = '';
+        this.filteredSearchRetryAfter = 0;
     },
     
     // === Filtered Search (Database Query) ===
@@ -334,6 +386,7 @@ const dxSpotsMethods = {
             }
             
             this.isSearchingSpots = true;
+            this.filteredSearchWarning = '';
             console.log('🔍 Searching database for spots...', filterCriteria);
             
             const response = await fetch('/api/spots/filtered-search', {
@@ -353,11 +406,16 @@ const dxSpotsMethods = {
                 this.lastSearchFilter = filterCriteria;
                 console.log(`✅ Found ${this.filteredSearchResults.length} matching spots`);
             } else {
-                console.warn('⚠️ Search returned error:', result.error);
+                this.filteredSearchWarning = result.warning || result.error || 'Spots database search is temporarily unavailable';
+                this.filteredSearchRetryAfter = Date.now() + 30000;
+                this.lastSearchFilter = filterCriteria;
+                console.warn('⚠️ Search degraded:', this.filteredSearchWarning);
                 this.filteredSearchResults = [];
             }
         } catch (e) {
             console.error('❌ Error performing filtered search:', e);
+            this.filteredSearchWarning = e.message || 'Spots database search failed';
+            this.filteredSearchRetryAfter = Date.now() + 30000;
             this.filteredSearchResults = [];
         } finally {
             this.isSearchingSpots = false;

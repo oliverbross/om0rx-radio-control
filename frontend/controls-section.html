@@ -1,8 +1,13 @@
         <!-- Row 1: Buttons centered, sliders below, UTC on right -->
         <div class="control-row" style="flex-wrap: wrap; justify-content: center; position: relative;">
-            <!-- Title in top left corner -->
-            <div class="utc-clock" style="position: absolute; left: 8px; top: 8px;">
-                OM0RX Flex / Wavelog Control with Spots
+            <div class="power-button-container">
+                <button class="app-brand-button" @click="togglePowerMenu" title="Server control: Shutdown or Restart">
+                    OM0RX Radio Control
+                </button>
+                <div v-if="showPowerMenu" class="power-menu">
+                    <button class="power-menu-item" @click="shutdownServer">🔴 Shutdown</button>
+                    <button class="power-menu-item" @click="restartServer">🔄 Restart</button>
+                </div>
             </div>
 
             <!-- Centered Button Group -->
@@ -26,11 +31,11 @@
             <div style="position: absolute; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;">
                 <span class="status-indicator" :class="connected ? 'status-connected' : 'status-disconnected'"></span>
                 <button
-                    @click="openFT8Modal"
+                    @click="openDigitalWindow"
                     class="ft8-digi-button"
-                    title="Open FT8/FT4 Digital Mode Interface"
+                    title="Open digital mode interface"
                     style="padding: 4px 12px; font-size: 12px; background: #2a5a8f; color: white; border: 1px solid #4a7aaf; border-radius: 4px; cursor: pointer; font-weight: 600;">
-                    🔊 FT8/DIGI
+                    DIGITAL
                 </button>
                 <button
                     @click="showSyncModal = true"
@@ -163,6 +168,13 @@
                     <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 4px;">
                         <span class="beaming-title">Beaming for:</span>
                         <span class="beaming-callsign" style="margin: 0;">{{ currentBeamingCallsign }}</span>
+                        <span
+                            v-if="beamingSourceLabel"
+                            :class="['beaming-source', beamingConfidence, { approximate: beamingApproximate }]"
+                            :title="beamingSourceLabel"
+                        >
+                            {{ beamingSourceLabel }}
+                        </span>
                     </div>
 
                     <!-- Short Path Row -->

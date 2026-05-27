@@ -5,18 +5,17 @@ Extracted rotator control endpoints from main.py for modularization.
 Includes basic rotator operations, auto-rotation logic, and bearing calculations.
 """
 
-import asyncio
 import logging
+import asyncio
+import time
 from typing import Optional, Dict, Any
 from fastapi import HTTPException
 
 # Import required modules
 from radio_control.rotor_api import RotorController
-from radio_control.rotor_math import (
-    calculate_bearing_for_station, get_band_from_frequency
-)
 from radio_control import config
 from radio_control.settings_store import LEGACY_ROTOR_CONFIG_PATH, load_legacy_json, save_config_updates
+from services.rotator_resolution import resolve_rotor_target
 logger = logging.getLogger(__name__)
 
 
@@ -28,6 +27,9 @@ class RotatorService:
 
     def __init__(self):
         self.rotor: Optional[RotorController] = None
+        self._status_lock = asyncio.Lock()
+        self._status_cache: Optional[Dict[str, Any]] = None
+        self._status_cache_time = 0.0
 
     async def initialize(self):
         """Initialize the rotator service"""
@@ -86,10 +88,14 @@ class RotatorService:
             # Reinitialize rotator
             if req['enabled']:
                 self.rotor = RotorController(req['host'], req['port'], req['protocol'], req['timeout'])
+                self._status_cache = None
+                self._status_cache_time = 0.0
                 logger.info(f"✅ Rotator config updated: {req['host']}:{req['port']} ({req['protocol']})")
                 return {"ok": True, "message": "Rotator configured"}
             else:
                 self.rotor = None
+                self._status_cache = None
+                self._status_cache_time = 0.0
                 logger.info("ℹ️ Rotator disabled")
                 return {"ok": True, "message": "Rotator disabled"}
 
@@ -119,13 +125,25 @@ class RotatorService:
             if not self.rotor:
                 return {"ok": False, "enabled": False, "message": "Rotator not enabled"}
 
-            # Try to get current azimuth
-            try:
-                az_data = await self.rotor.get_azimuth()
-                return {"ok": True, "enabled": True, "azimuth": az_data.get("az")}
-            except:
-                # Rotator might not be responsive, but still return enabled status
-                return {"ok": True, "enabled": True, "azimuth": None}
+            now = time.monotonic()
+            if self._status_cache and now - self._status_cache_time < 2.0:
+                return self._status_cache
+
+            async with self._status_lock:
+                now = time.monotonic()
+                if self._status_cache and now - self._status_cache_time < 2.0:
+                    return self._status_cache
+
+                try:
+                    az_data = await self.rotor.get_azimuth()
+                    status = {"ok": True, "enabled": True, "azimuth": az_data.get("az")}
+                except Exception as exc:
+                    logger.debug("Rotor status query failed: %s", exc)
+                    status = {"ok": True, "enabled": True, "azimuth": None}
+
+                self._status_cache = status
+                self._status_cache_time = time.monotonic()
+                return status
 
         except Exception as e:
             logger.error(f"Rotor status error: {e}")
@@ -138,6 +156,8 @@ class RotatorService:
 
         try:
             result = await self.rotor.goto_azimuth(req['azimuth'])
+            self._status_cache = None
+            self._status_cache_time = 0.0
             return result
         except Exception as e:
             logger.error(f"Rotor GOTO error: {e}")
@@ -150,6 +170,8 @@ class RotatorService:
 
         try:
             result = await self.rotor.goto_direction(req['direction'])
+            self._status_cache = None
+            self._status_cache_time = 0.0
             return result
         except Exception as e:
             logger.error(f"Rotor direction error: {e}")
@@ -252,74 +274,18 @@ class RotatorService:
             # Reload rotor config from JSON to ensure we have latest settings
             self._load_rotor_config()
 
-            # Get home location
-            home_lat = getattr(config, 'ROTOR_HOME_LAT', 48.17)
-            home_lon = getattr(config, 'ROTOR_HOME_LON', 17.08)
-            rotor_bands = getattr(config, 'ROTOR_BANDS', {})
-
-            # Determine band if frequency provided
-            band = None
-            if req.get('frequency_khz'):
-                band = get_band_from_frequency(req['frequency_khz'])
-
-            # Check if band is enabled for rotor
-            band_enabled = True
-            if band and band not in rotor_bands:
-                band_enabled = False
-                logger.warning(f"Band {band} not configured for rotor")
-            elif band and not rotor_bands.get(band, False):
-                band_enabled = False
-                logger.info(f"Rotor disabled for band {band}")
-
-            # Calculate bearing (prefers gridsquare over lat/lon)
-            try:
-                bearing = calculate_bearing_for_station(
-                    home_lat, home_lon,
-                    station_grid=req.get('gridsquare'),
-                    station_lat=req.get('latitude'),
-                    station_lon=req.get('longitude')
-                )
-
-                if bearing is None:
-                    return {
-                        "ok": False,
-                        "bearing": None,
-                        "short_path_bearing": None,
-                        "long_path_bearing": None,
-                        "band": band,
-                        "band_enabled": band_enabled,
-                        "error": "Insufficient data to calculate bearing (no gridsquare or coordinates)"
-                    }
-
-                short_path = round(bearing, 1)
-                long_path = round((bearing + 180) % 360, 1)
-
-                return {
-                    "ok": True,
-                    "bearing": short_path,
-                    "short_path_bearing": short_path,
-                    "long_path_bearing": long_path,
-                    "band": band,
-                    "band_enabled": band_enabled,
-                    "callsign": req.get('callsign'),
-                    "source": "gridsquare" if req.get('gridsquare') else "coordinates"
-                }
-
-            except Exception as calc_error:
-                logger.error(f"Bearing calculation error: {calc_error}")
-                return {
-                    "ok": False,
-                    "bearing": None,
-                    "short_path_bearing": None,
-                    "long_path_bearing": None,
-                    "band": band,
-                    "band_enabled": band_enabled,
-                    "error": str(calc_error)
-                }
+            return self.resolve_rotor_target(req)
 
         except Exception as e:
             logger.error(f"Rotor bearing endpoint error: {e}")
             raise HTTPException(status_code=500, detail=str(e))
+
+    def resolve_rotor_target(self, req: Dict[str, Any]):
+        """Resolve the best target and calculate SP/LP bearings without moving."""
+        home_lat = getattr(config, 'ROTOR_HOME_LAT', 48.17)
+        home_lon = getattr(config, 'ROTOR_HOME_LON', 17.08)
+        rotor_bands = getattr(config, 'ROTOR_BANDS', {})
+        return resolve_rotor_target(req, home_lat, home_lon, rotor_bands)
 
     async def rotor_auto_goto(self, req: Dict[str, Any]):
         """
@@ -340,65 +306,43 @@ class RotatorService:
             if not self.rotor:
                 return {"ok": False, "message": "Rotor not enabled"}
 
-            # Get band and check if rotor enabled for this band
-            band = None
-            if req.get('frequency_khz'):
-                band = get_band_from_frequency(req['frequency_khz'])
+            resolution = self.resolve_rotor_target(req)
+            if not resolution.get("ok"):
+                return resolution
 
-            rotor_bands = getattr(config, 'ROTOR_BANDS', {})
-            if band and not rotor_bands.get(band, False):
-                return {
-                    "ok": False,
-                    "band": band,
-                    "message": f"Rotor not enabled for band {band}"
-                }
+            if not resolution.get("band_enabled", True):
+                resolution["ok"] = False
+                return resolution
 
-            # Calculate bearing
-            home_lat = getattr(config, 'ROTOR_HOME_LAT', 48.17)
-            home_lon = getattr(config, 'ROTOR_HOME_LON', 17.08)
-
-            bearing = calculate_bearing_for_station(
-                home_lat, home_lon,
-                station_grid=req.get('gridsquare'),
-                station_lat=req.get('latitude'),
-                station_lon=req.get('longitude')
-            )
-
-            if bearing is None:
-                return {
-                    "ok": False,
-                    "message": "Cannot calculate bearing (insufficient data)"
-                }
+            if not resolution.get("auto_allowed", False):
+                resolution["ok"] = False
+                return resolution
 
             # Move rotor to bearing
             try:
+                bearing = resolution["bearing"]
                 result = await self.rotor.goto_azimuth(int(round(bearing)))
-                logger.info(f"✅ AUTO rotor: {req.get('callsign')} on {band or 'unknown'} -> {bearing:.1f}°")
+                self._status_cache = None
+                self._status_cache_time = 0.0
+                logger.info(
+                    "✅ AUTO rotor: %s on %s -> %.1f° (%s)",
+                    req.get('callsign') or req.get('call'),
+                    resolution.get("band") or "unknown",
+                    bearing,
+                    resolution.get("source"),
+                )
 
-                # Calculate short path and long path bearings for UI display
-                short_path = round(bearing, 1)
-                long_path = round((bearing + 180) % 360, 1)
-
-                return {
+                resolution.update({
                     "ok": True,
-                    "bearing": short_path,
-                    "short_path_bearing": short_path,
-                    "long_path_bearing": long_path,
-                    "band": band,
-                    "callsign": req.get('callsign'),
-                    "message": f"Rotor moving to {bearing:.1f}°"
-                }
+                    "rotor": result,
+                    "message": f"Rotor moving to {bearing:.1f}° ({resolution.get('source_label')})"
+                })
+                return resolution
             except Exception as rotor_error:
                 logger.error(f"Rotor GOTO during AUTO failed: {rotor_error}")
-                short_path = round(bearing, 1)
-                long_path = round((bearing + 180) % 360, 1)
-                return {
-                    "ok": False,
-                    "bearing": short_path,
-                    "short_path_bearing": short_path,
-                    "long_path_bearing": long_path,
-                    "message": f"Rotor command failed: {rotor_error}"
-                }
+                resolution["ok"] = False
+                resolution["message"] = f"Rotor command failed: {rotor_error}"
+                return resolution
 
         except Exception as e:
             logger.error(f"Rotor AUTO GOTO error: {e}")
@@ -431,82 +375,3 @@ async def shutdown_rotator_service():
     if _rotator_service:
         await _rotator_service.shutdown()
         _rotator_service = None
-
-
-def register_rotator_endpoints(app):
-    """
-    Register rotator-related endpoints with the FastAPI app.
-    This function can be called from main.py to register all rotator endpoints.
-    """
-
-    # === Basic Rotator Operations ===
-
-    @app.post("/api/rotor/config")
-    async def set_rotor_config(req: Dict[str, Any]):
-        """Update rotator configuration"""
-        service = get_rotator_service()
-        return await service.set_rotor_config(req)
-
-    @app.get("/api/rotor/status")
-    async def get_rotor_status():
-        """Get rotator status (enabled and current azimuth if available)"""
-        service = get_rotator_service()
-        return await service.get_rotor_status()
-
-    @app.post("/api/rotor/goto")
-    async def rotor_goto(req: Dict[str, Any]):
-        """Move rotator to specific azimuth"""
-        service = get_rotator_service()
-        return await service.rotor_goto(req)
-
-    @app.post("/api/rotor/direction")
-    async def rotor_direction(req: Dict[str, Any]):
-        """Move rotator to cardinal direction (N/S/E/W)"""
-        service = get_rotator_service()
-        return await service.rotor_direction(req)
-
-    @app.post("/api/rotor/stop")
-    async def rotor_stop():
-        """Stop rotator movement"""
-        service = get_rotator_service()
-        return await service.rotor_stop()
-
-    @app.get("/api/rotor/ping")
-    async def rotor_ping():
-        """Check if rotator is responsive"""
-        service = get_rotator_service()
-        return await service.rotor_ping()
-
-    # === Rotor AUTO Control ===
-
-    @app.post("/api/rotor/auto/config")
-    async def set_rotor_auto_config(req: Dict[str, Any]):
-        """Update rotor AUTO configuration (bands, home location, AUTO mode)"""
-        service = get_rotator_service()
-        return await service.set_rotor_auto_config(req)
-
-    @app.get("/api/rotor/auto/status")
-    async def get_rotor_auto_status():
-        """Get rotor AUTO configuration status"""
-        service = get_rotator_service()
-        return await service.get_rotor_auto_status()
-
-    @app.post("/api/rotor/auto/bearing")
-    async def calculate_rotor_bearing(req: Dict[str, Any]):
-        """
-        Calculate bearing to a station for AUTO rotor control.
-
-        Uses QRZ gridsquare if available, falls back to cty.dat lat/lon.
-        Checks if band is enabled in rotor config.
-        """
-        service = get_rotator_service()
-        return await service.calculate_rotor_bearing(req)
-
-    @app.post("/api/rotor/auto/goto")
-    async def rotor_auto_goto(req: Dict[str, Any]):
-        """
-        AUTO rotor GOTO - Calculate bearing and move rotor if AUTO is enabled and band is valid.
-        This endpoint combines bearing calculation with actual rotor movement.
-        """
-        service = get_rotator_service()
-        return await service.rotor_auto_goto(req)

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request
 import logging
+import asyncio
 
 from backend.core import get_app_context
 
@@ -21,10 +22,8 @@ async def health_check(request: Request):
 @router.get("/api/status")
 async def get_status(request: Request):
     """Get complete radio status"""
-    logger.info("📊 /api/status endpoint called")
     context = get_app_context(request)
     flex = context.flex
-    logger.info(f"🔍 Flex object: {flex}")
     
     # Get cluster status and info
     cluster_client = context.cluster_client
@@ -48,86 +47,29 @@ async def get_status(request: Request):
         except Exception as e:
             logger.debug(f"Could not get cluster info: {e}")
     
-    # If radio not initialized, return disconnected status instead of error
-    if not flex:
-        return {
-            "frequency": 14.074,
-            "mode": "USB",
-            "filter_lo": 100,
-            "filter_hi": 2900,
-            "volume": 50,
-            "drive": 31,
-            "tune_power": 18,
-            "mic_level": 32,
-            "vox_enabled": False,
-            "agc_mode": "med",
-            "agc_threshold": 65,
-            "monitor": 0,
-            "nb_enabled": False,
-            "nr_enabled": False,
-            "anf_enabled": False,
-            "apf_enabled": False,
-            "connected": False,
-            "cluster_connected": cluster_status["connected"],
-            "cluster_info": cluster_status,
-            "message": "Radio not initialized - check connection settings"
-        }
-    
-    try:
-        logger.info("📡 Attempting to get current levels from flex")
-        levels = flex.get_current_levels(timeout=0.5)
-        logger.info(f"✅ Got levels: {levels}")
-        
-        status = {
-            "frequency": flex.current_freq or levels.get("freq", 14.074),
-            "mode": flex.current_mode or levels.get("mode", "USB"),
-            "filter_lo": flex.current_filter_lo or levels.get("filter_lo", 100),
-            "filter_hi": flex.current_filter_hi or levels.get("filter_hi", 2900),
-            "volume": levels.get("audio_level", 50),
-            "drive": flex.current_rfpower or levels.get("rfpower", 31),
-            "tune_power": flex.current_tunepower or levels.get("tunepower", 18),
-            "mic_level": flex.current_miclevel or levels.get("miclevel", 32),
-            "vox_enabled": flex.current_vox_enable or False,
-            "agc_mode": levels.get("agc_mode", "med"),
-            "agc_threshold": levels.get("agc_threshold", 65),
-            "monitor": levels.get("mon", 0),
-            "nb_enabled": levels.get("nb", False),
-            "nr_enabled": levels.get("nr", False),
-            "anf_enabled": levels.get("anf", False),
-            "apf_enabled": levels.get("apf", False),
-            "connected": True,
-            "cluster_connected": cluster_status["connected"],
-            "cluster_info": cluster_status
-        }
-        logger.info(f"✅ /api/status returning: {status}")
-        return status
-    except Exception as e:
-        logger.error(f"❌ Error fetching radio status: {str(e)}", exc_info=True)
-        # Return status with error flag instead of 500 error
-        error_status = {
-            "frequency": 14.074,
-            "mode": "USB",
-            "filter_lo": 100,
-            "filter_hi": 2900,
-            "volume": 50,
-            "drive": 31,
-            "tune_power": 18,
-            "mic_level": 32,
-            "vox_enabled": False,
-            "agc_mode": "med",
-            "agc_threshold": 65,
-            "monitor": 0,
-            "nb_enabled": False,
-            "nr_enabled": False,
-            "anf_enabled": False,
-            "apf_enabled": False,
-            "connected": False,
-            "cluster_connected": cluster_status["connected"],
-            "cluster_info": cluster_status,
-            "message": f"Error fetching radio status: {str(e)}"
-        }
-        logger.info(f"⚠️ /api/status returning error status: {error_status}")
-        return error_status
+    connected = bool(flex and flex.sock)
+    return {
+        "frequency": getattr(flex, "current_freq", None) or 14.074,
+        "mode": getattr(flex, "current_mode", None) or "USB",
+        "filter_lo": getattr(flex, "current_filter_lo", None) or 100,
+        "filter_hi": getattr(flex, "current_filter_hi", None) or 2900,
+        "volume": getattr(flex, "current_volume", None) or 50,
+        "drive": getattr(flex, "current_rfpower", None) or 31,
+        "tune_power": getattr(flex, "current_tunepower", None) or 18,
+        "mic_level": getattr(flex, "current_miclevel", None) or 32,
+        "vox_enabled": getattr(flex, "current_vox_enable", None) or False,
+        "agc_mode": "med",
+        "agc_threshold": 65,
+        "monitor": 0,
+        "nb_enabled": False,
+        "nr_enabled": False,
+        "anf_enabled": False,
+        "apf_enabled": False,
+        "connected": connected,
+        "cluster_connected": cluster_status["connected"],
+        "cluster_info": cluster_status,
+        **({} if flex else {"message": "Radio not initialized - check connection settings"}),
+    }
 
 
 @router.get("/api/sync-status")
@@ -136,7 +78,18 @@ async def get_sync_status(request: Request):
     context = get_app_context(request)
     sync_manager = context.wavelog_sync_manager
     if sync_manager:
-        status = sync_manager.get_sync_status()
+        try:
+            status = await asyncio.wait_for(
+                asyncio.to_thread(sync_manager.get_sync_status),
+                timeout=1.5,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Wavelog sync status timed out")
+            status = {
+                "status": "busy",
+                "last_sync_error": "Sync status timed out",
+                "total_records": 0,
+            }
         return {
             "syncing": False,
             "last_sync": status.get("last_sync"),

@@ -6,6 +6,7 @@ Clean orchestrator that imports and registers all modular components
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 
 # === Core Imports ===
 from backend.core import (
@@ -52,7 +53,6 @@ from radio_control.cluster_client import ClusterClient
 from radio_control.classifier_api import get_classifier_api
 from radio_control.cty_resolvers import CtyDatResolver
 from radio_control.wavelog_duckdb_sync import init_wavelog_sync
-from radio_control.rotor_api import RotorController
 from radio_control.wavelog_api import WavelogClient
 from radio_control.qrz_api import QRZClient
 from radio_control.adif_handler import ADIFHandler
@@ -211,28 +211,6 @@ async def init_classifier():
         return False
 
 
-def init_rotator():
-    """Initialize rotator controller"""
-    try:
-        rotor_enabled = getattr(config, 'ROTOR_ENABLED', False)
-        if rotor_enabled:
-            rotor_host = getattr(config, 'ROTOR_HOST', '192.168.0.198')
-            rotor_port = getattr(config, 'ROTOR_PORT', 4001)
-            rotor_protocol = getattr(config, 'ROTOR_PROTOCOL', 'DCU-1')
-            rotor_timeout = getattr(config, 'ROTOR_TIMEOUT_SEC', 2.5)
-
-            context.rotor = RotorController(rotor_host, rotor_port, rotor_protocol, rotor_timeout)
-            logging.info(f"✅ Rotator initialized: {rotor_host}:{rotor_port} ({rotor_protocol})")
-            sync_runtime_state()
-            return True
-        else:
-            logging.info("ℹ️ Rotator disabled in config")
-            return True
-    except Exception as e:
-        logging.error(f"❌ Rotator initialization failed: {e}")
-        return False
-
-
 def init_wavelog_sync_manager():
     """Initialize the Wavelog→DuckDB read-cache sync manager."""
     try:
@@ -282,7 +260,6 @@ async def initialize_services():
     sync_runtime_state()
 
     init_cluster_client()
-    init_rotator()
     init_wavelog_sync_manager()
     
     # Initialize rotator service (async)
@@ -331,27 +308,25 @@ async def cleanup_services():
             logging.error(f"❌ Error closing FlexRadio: {e}")
 
 
-# === Application Event Handlers ===
+# === Application Lifespan ===
 
-@app.on_event("startup")
-async def on_startup():
-    """Application startup event"""
+@asynccontextmanager
+async def lifespan(_app):
+    """Application startup/shutdown lifecycle."""
     await initialize_services()
+    try:
+        yield
+    finally:
+        await cleanup_services()
 
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    """Application shutdown event"""
-    await cleanup_services()
+app.router.lifespan_context = lifespan
 
 
 # === Main Entry Point ===
 
 if __name__ == "__main__":
     import uvicorn
-
-    # Register all services
-    register_all_services()
 
     # Start the server
     uvicorn.run(

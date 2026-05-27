@@ -7,7 +7,7 @@ import logging
 import asyncio
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,79 @@ class SpotFilterRequest(BaseModel):
     special_tags: Optional[List[str]] = None
 
 
+async def _refresh_uncertain_spot_classifications(
+    app_state: Any,
+    spots: List[Dict[str, Any]],
+    max_rechecks: int = 25,
+) -> None:
+    """Repair stale ATNO/Unknown DXCC status rows before returning cached spots."""
+    classifier = getattr(app_state, "classifier", None)
+    cty_resolver = getattr(app_state, "cty_resolver", None)
+    if not classifier:
+        return
+
+    from radio_control.spot_classification import classify_dxcc_status
+
+    checked = 0
+    for spot in spots:
+        if checked >= max_rechecks:
+            return
+        if spot.get("dxcc_status_source") == "verified":
+            continue
+        if spot.get("dxcc_status") not in {"ATNO", "Unknown", None, ""}:
+            continue
+
+        callsign = (spot.get("callsign") or "").strip().upper()
+        band = spot.get("band")
+        mode = spot.get("mode")
+        if not callsign or not band or not mode:
+            continue
+
+        dxcc = spot.get("dxcc")
+        if dxcc is None and cty_resolver:
+            cty_info = cty_resolver.lookup(callsign)
+            dxcc = cty_info.get("dxcc")
+            if dxcc is not None:
+                spot["dxcc"] = dxcc
+                if not spot.get("country") or spot.get("country") == "UNKNOWN":
+                    spot["country"] = (cty_info.get("country") or "").upper()
+
+        if dxcc is None:
+            continue
+
+        checked += 1
+        dxcc_overall = await classifier.dxcc_overall(
+            dxcc,
+            callsign=callsign,
+            allow_unconfirmed_fallback=False,
+        )
+        dxcc_bandmode = await classifier.dxcc_bandmode_flags(
+            dxcc,
+            band,
+            mode,
+            callsign=callsign,
+            allow_unconfirmed_fallback=False,
+        )
+
+        if dxcc_overall is None or dxcc_bandmode is None:
+            spot["dxcc_status"] = "Unknown"
+            spot["tag"] = None
+            continue
+
+        worked, confirmed = dxcc_overall
+        new_band, new_mode, bandmode_confirmed = dxcc_bandmode
+        display = classify_dxcc_status(
+            worked,
+            confirmed,
+            new_band,
+            new_mode,
+            bandmode_confirmed,
+        )
+        spot["dxcc_status"] = display.status
+        spot["tag"] = display.tag
+        spot["dxcc_status_source"] = "verified"
+
+
 @router.get("/api/spots")
 async def get_spots(
     request: Request,
@@ -42,6 +115,7 @@ async def get_spots(
 ):
     """Get DX spots with optional filtering (from cache only)"""
     dx_spots_cache = getattr(request.app.state, 'dx_spots_cache', [])
+    await _refresh_uncertain_spot_classifications(request.app.state, dx_spots_cache)
     filtered_spots = dx_spots_cache
     
     # Apply filters
@@ -110,9 +184,8 @@ async def explain_spot_classification(
         tag = None
 
         if classifier:
-            call_worked, call_confirmed = await classifier.call_overall(callsign_upper)
-            call_new_band, call_new_mode, call_bandmode_confirmed = (
-                await classifier.call_bandmode_flags(callsign_upper, resolved_band, resolved_mode)
+            call_worked, call_confirmed, call_new_band, call_new_mode, call_bandmode_confirmed = (
+                await classifier.call_status_flags(callsign_upper, resolved_band, resolved_mode)
             )
             call_flags = {
                 "worked": call_worked,
@@ -129,38 +202,52 @@ async def explain_spot_classification(
             )
 
             if dxcc is not None:
-                dxcc_worked, dxcc_confirmed = await classifier.dxcc_overall(
+                dxcc_overall = await classifier.dxcc_overall(
                     dxcc,
                     callsign=callsign_upper,
+                    allow_unconfirmed_fallback=False,
                 )
-                dxcc_new_band, dxcc_new_mode, dxcc_bandmode_confirmed = (
+                dxcc_bandmode = (
                     await classifier.dxcc_bandmode_flags(
                         dxcc,
                         resolved_band,
                         resolved_mode,
                         callsign=callsign_upper,
+                        allow_unconfirmed_fallback=False,
                     )
                 )
-                dxcc_flags = {
-                    "worked": dxcc_worked,
-                    "confirmed": dxcc_confirmed,
-                    "new_band": dxcc_new_band,
-                    "new_mode": dxcc_new_mode,
-                    "bandmode_confirmed": dxcc_bandmode_confirmed,
-                }
-                dxcc_display = classify_dxcc_status(
-                    dxcc_worked,
-                    dxcc_confirmed,
-                    dxcc_new_band,
-                    dxcc_new_mode,
-                    dxcc_bandmode_confirmed,
-                )
-                dxcc_status = dxcc_display.status
-                tag = dxcc_display.tag
+                if dxcc_overall is None or dxcc_bandmode is None:
+                    dxcc_status = "Unknown"
+                    dxcc_flags = {"status_source": "unavailable"}
+                else:
+                    dxcc_worked, dxcc_confirmed = dxcc_overall
+                    dxcc_new_band, dxcc_new_mode, dxcc_bandmode_confirmed = dxcc_bandmode
+                    dxcc_flags = {
+                        "worked": dxcc_worked,
+                        "confirmed": dxcc_confirmed,
+                        "new_band": dxcc_new_band,
+                        "new_mode": dxcc_new_mode,
+                        "bandmode_confirmed": dxcc_bandmode_confirmed,
+                    }
+                    dxcc_display = classify_dxcc_status(
+                        dxcc_worked,
+                        dxcc_confirmed,
+                        dxcc_new_band,
+                        dxcc_new_mode,
+                        dxcc_bandmode_confirmed,
+                    )
+                    dxcc_status = dxcc_display.status
+                    tag = dxcc_display.tag
 
         qso_cache = {}
         if classifier and getattr(classifier, "qso_status_store", None):
-            qso_cache = classifier.qso_status_store.diagnostics()
+            try:
+                qso_cache = await asyncio.wait_for(
+                    asyncio.to_thread(classifier.qso_status_store.diagnostics),
+                    timeout=0.5,
+                )
+            except asyncio.TimeoutError:
+                qso_cache = {"loaded": False, "status": "diagnostics timed out"}
 
         return {
             "ok": True,
@@ -185,8 +272,8 @@ async def explain_spot_classification(
             "sources": {
                 "cty": "data/cty.dat + data/cty.csv",
                 "call_status": "Wavelog private_lookup",
-                "dxcc_worked": "local Wavelog DuckDB read cache",
-                "dxcc_confirmed": "local Wavelog DuckDB read cache",
+                "dxcc_worked": "Wavelog database status cache",
+                "dxcc_confirmed": "Wavelog database status cache",
             },
             "qso_cache": qso_cache,
         }
@@ -229,6 +316,15 @@ async def search_filtered_spots(req: SpotFilterRequest, request: Request):
         return {"ok": True, "spots": spots, "count": len(spots)}
         
     except Exception as e:
+        message = str(e)
+        if "Cannot open file" in message and "spots.duckdb" in message:
+            logger.warning("Filtered spot search unavailable because spots.duckdb is locked: %s", message)
+            return {
+                "ok": False,
+                "spots": [],
+                "count": 0,
+                "warning": "spots database is locked by another process",
+            }
         logger.error(f"Error in filtered search: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
