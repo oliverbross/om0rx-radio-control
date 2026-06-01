@@ -1152,6 +1152,7 @@ function mountVueApp() {
             await this.loadRblCommandStatus();
             await this.loadSpotSourceStats();
             this.setupSpotSourceStatsRefresh();
+            this.setupVisualGlobeRefresh();
             this.loadSpotSourceMuteState();
             this.loadCompactPanelPrefs();
             this.loadRblAlertRules();
@@ -2356,6 +2357,7 @@ function mountVueApp() {
         this.cleanupSolarDataRefresh();
         this.cleanupWavelogStatisticsRefresh();
         this.cleanupSpotSourceStatsRefresh();
+        this.cleanupVisualGlobeRefresh();
         this.closeDigitalModeBridge();
         // Clean up SDC ticker WebSocket connection
         this.cleanupSDCTicker();

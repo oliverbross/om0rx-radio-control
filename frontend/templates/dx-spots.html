@@ -340,6 +340,16 @@
                 <div v-if="viewMode === 'visual'" class="visual-spots-panel">
                     <div class="visual-spots-toolbar">
                         <div class="visual-window-group">
+                            <button @click="setVisualMapMode('globe')"
+                                    :class="['visual-window-btn', { active: visualMapMode === 'globe' }]">
+                                Globe
+                            </button>
+                            <button @click="setVisualMapMode('polar')"
+                                    :class="['visual-window-btn', { active: visualMapMode === 'polar' }]">
+                                Polar
+                            </button>
+                        </div>
+                        <div class="visual-window-group">
                             <button v-for="minutes in visualSpotWindows" :key="minutes"
                                     @click="setVisualSpotWindow(minutes)"
                                     :class="['visual-window-btn', { active: visualSpotWindowMinutes === minutes }]">
@@ -347,18 +357,41 @@
                             </button>
                         </div>
                         <label class="visual-toggle">
-                            <input type="checkbox" v-model="visualSpotLatestOnly">
+                            <input type="checkbox" v-model="visualSpotLatestOnly" @change="queueVisualGlobeDraw">
                             Latest per call
                         </label>
+                        <div v-if="visualMapMode === 'globe'" class="visual-globe-controls">
+                            <select v-model="visualOverlayMode" @change="queueVisualGlobeDraw" class="visual-overlay-select">
+                                <option value="dxcc">DXCC overlay</option>
+                                <option value="cq">CQ zones</option>
+                                <option value="itu">ITU zones</option>
+                            </select>
+                            <button @click="zoomVisualGlobe(1.2)" class="visual-icon-btn" title="Zoom in">+</button>
+                            <button @click="zoomVisualGlobe(0.83)" class="visual-icon-btn" title="Zoom out">-</button>
+                            <button @click="resetVisualGlobeView" class="visual-icon-btn" title="Reset globe">Reset</button>
+                        </div>
                         <span class="visual-stat-pill">{{ getVisualSpotStats().plotted }} plotted</span>
                         <span class="visual-stat-pill">{{ getVisualSpotStats().hidden }} without location</span>
-                        <span class="visual-stat-pill">Radius {{ getVisualMapRadiusKm().toLocaleString() }} km</span>
+                        <span v-if="visualMapMode === 'polar'" class="visual-stat-pill">Radius {{ getVisualMapRadiusKm().toLocaleString() }} km</span>
+                        <span v-if="visualMapMode === 'globe'" class="visual-stat-pill">{{ getVisualOverlaySummary() }}</span>
                         <span class="visual-qth-pill">QTH {{ getVisualHomeGrid() }}</span>
                     </div>
 
                     <div class="visual-map-layout">
                         <div class="visual-map-card">
-                            <svg class="visual-polar-map" viewBox="0 0 520 520" role="img" aria-label="Filtered spots polar map">
+                            <div v-if="visualMapMode === 'globe'" class="visual-globe-wrap">
+                                <canvas ref="visualGlobeCanvas"
+                                        class="visual-globe-canvas"
+                                        @wheel.prevent="onVisualGlobeWheel"
+                                        @mousedown="startVisualGlobeDrag"
+                                        @mousemove="moveVisualGlobeDrag"
+                                        @mouseup="endVisualGlobeDrag"
+                                        @mouseleave="endVisualGlobeDrag"
+                                        @click="focusVisualGlobeClick"></canvas>
+                                <div v-if="visualTopoLoading" class="visual-globe-status">Loading countries...</div>
+                                <div v-if="visualTopoError" class="visual-globe-status error">{{ visualTopoError }}</div>
+                            </div>
+                            <svg v-if="visualMapMode === 'polar'" class="visual-polar-map" viewBox="0 0 520 520" role="img" aria-label="Filtered spots polar map">
                                 <defs>
                                     <radialGradient id="visualMapGlow" cx="50%" cy="50%" r="50%">
                                         <stop offset="0%" stop-color="#20364a" stop-opacity="0.92"></stop>

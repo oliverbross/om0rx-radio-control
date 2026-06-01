@@ -162,15 +162,19 @@ def test_visual_spots_map_contract():
     dx_spots = DX_SPOTS.read_text(encoding="utf-8")
     template = DX_SPOTS_TEMPLATE.read_text(encoding="utf-8")
     styles = (FRONTEND / "main-styles.css").read_text(encoding="utf-8")
+    app_main = APP_MAIN.read_text(encoding="utf-8")
 
     for token in (
         "switchViewMode('visual')",
         "viewMode === 'visual'",
         "visual-spots-panel",
         "visual-polar-map",
+        "visual-globe-canvas",
+        "visualOverlayMode",
         "getVisualSpotItems()",
         "getVisualSpotStats()",
         "getVisualBandColor",
+        "setVisualMapMode('globe')",
         "focusVisualSpot(item.spot)",
     ):
         assert token in template
@@ -178,6 +182,15 @@ def test_visual_spots_map_contract():
     for token in (
         "visualSpotWindowMinutes",
         "visualSpotLatestOnly",
+        "visualMapMode",
+        "visualOverlayMode",
+        "ensureVisualTopoFeatures",
+        "drawVisualGlobe",
+        "projectVisualGlobe",
+        "buildVisualOverlayStats",
+        "getVisualOverlaySummary",
+        "startVisualGlobeDrag",
+        "focusVisualGlobeClick",
         "gridToLatLon",
         "calculateDistanceKm",
         "calculateBearing",
@@ -191,10 +204,15 @@ def test_visual_spots_map_contract():
     for token in (
         ".visual-map-layout",
         ".visual-polar-map",
+        ".visual-globe-canvas",
+        ".visual-globe-controls",
         ".visual-spot-marker",
         ".visual-spot-list",
     ):
         assert token in styles
+
+    assert "this.setupVisualGlobeRefresh()" in app_main
+    assert "this.cleanupVisualGlobeRefresh()" in app_main
 
 
 if __name__ == "__main__":
