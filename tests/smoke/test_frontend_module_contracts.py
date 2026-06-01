@@ -13,6 +13,8 @@ APP_MAIN = FRONTEND / "js" / "app-main.js"
 INDEX = FRONTEND / "index.html"
 RADIO_CONTROLS = FRONTEND / "js" / "radio-controls.js"
 DX_SPOTS = FRONTEND / "js" / "dx-spots.js"
+COMPACT_RADIO_PARTIAL = FRONTEND / "templates" / "partials" / "compact-radio-controls.html"
+SOURCE_MONITOR_PARTIAL = FRONTEND / "templates" / "partials" / "spots-source-monitor.html"
 
 REQUIRED_MODULES = {
     "js/config-modal.js": "RadioControlConfig",
@@ -101,6 +103,60 @@ def test_rotator_frontend_resolution_contract():
     assert dx_spots.index("rotorAutoGoto(spot.callsign") < dx_spots.index("Promise.allSettled")
 
 
+def test_compact_radio_controls_are_shared_and_persistent():
+    row1 = (FRONTEND / "templates" / "controls-row1.html").read_text(encoding="utf-8")
+    legacy_section = (FRONTEND / "controls-section.html").read_text(encoding="utf-8")
+    partial = COMPACT_RADIO_PARTIAL.read_text(encoding="utf-8")
+    radio_controls = RADIO_CONTROLS.read_text(encoding="utf-8")
+    core = (FRONTEND / "js" / "core.js").read_text(encoding="utf-8")
+    app_main = APP_MAIN.read_text(encoding="utf-8")
+
+    include = "<!-- @include templates/partials/compact-radio-controls.html -->"
+    assert include in row1
+    assert include in legacy_section
+    assert row1.count("compact-radio-row") == 0
+    assert legacy_section.count("compact-radio-row") == 0
+
+    for token in (
+        "getRadioLayoutPreset()",
+        "shouldShowCompactRotorControls()",
+        "shouldShowMutedRotorCard()",
+        "shouldShowCompactWinKeyer()",
+        "shouldShowCompactWinKeyerMemories()",
+        "compactLayoutClass()",
+    ):
+        assert token in partial
+
+    for token in (
+        "applyPresetPanelDefaults",
+        "loadCompactPanelPrefs",
+        "saveCompactPanelPrefs",
+        "toggleCompactPanelPref",
+        "om0rx.radio.compactPanelPrefs",
+    ):
+        assert token in radio_controls
+
+    assert "compactPanelPrefs" in core
+    assert "this.loadCompactPanelPrefs()" in app_main
+    assert "RADIO_LAYOUT_PRESET: preset" in radio_controls
+    assert "RADIO_SHOW_DETAILED_CONTROLS: this.configData.RADIO_SHOW_DETAILED_CONTROLS" in radio_controls
+
+
+def test_spot_source_state_contract():
+    dx_spots = DX_SPOTS.read_text(encoding="utf-8")
+    source_monitor = SOURCE_MONITOR_PARTIAL.read_text(encoding="utf-8")
+    styles = (FRONTEND / "main-styles.css").read_text(encoding="utf-8")
+
+    assert "getSourceStateSummaryItems" in dx_spots
+    assert "Cluster hidden" in dx_spots
+    assert "RBL muted" in dx_spots
+    assert "source-state-summary" in source_monitor
+    assert "getSourceStateSummaryItems().length" in source_monitor
+    assert "om0rx.spots.sourceMuted" in dx_spots
+    assert ".source-state-pill" in styles
+    assert ".source-state-warning" in styles
+
+
 if __name__ == "__main__":
     test_required_modules_load_before_app_main()
     test_required_modules_expose_expected_globals()
@@ -108,4 +164,6 @@ if __name__ == "__main__":
     test_wavelog_stats_refresh_after_qso_contract()
     test_obvious_frontend_junk_is_not_tracked()
     test_rotator_frontend_resolution_contract()
+    test_compact_radio_controls_are_shared_and_persistent()
+    test_spot_source_state_contract()
     print("Frontend module contract smoke checks passed")

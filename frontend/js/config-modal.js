@@ -50,6 +50,10 @@ window.RadioControlConfig = {
                 M3: 'QSL TU DE OM0RX',
                 M4: 'MNI TU',
             },
+            RADIO_SHOW_DETAILED_CONTROLS: false,
+            RADIO_LAYOUT_PRESET: 'compact',
+            RBL_COMMAND_PROFILE: 'dxspider',
+            RBL_COMMAND_PROFILES: {},
         },
 
         showConfigModal: false,

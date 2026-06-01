@@ -1,0 +1,96 @@
+<div v-if="hasSpotSourceDiagnostics() || getSourceStateSummaryItems().length > 0" class="source-diagnostics-strip">
+    <div v-if="hasSpotSourceDiagnostics()" class="source-diagnostics-summary">
+        <strong>Sources</strong>
+        <span :class="['source-health-pill', 'source-health-' + getClusterHealth().status]">{{ getClusterHealth().label }}</span>
+        <span>{{ getSpotSourceDiagnostics().visible.total }} shown</span>
+        <span>{{ getSpotSourceDiagnostics().visible.cluster }} cluster</span>
+        <span>{{ getSpotSourceDiagnostics().visible.rbl }} RBL</span>
+        <span>cache {{ getSpotSourceDiagnostics().cache.cluster }}/{{ getSpotSourceDiagnostics().cache.rbl }}</span>
+        <span>last cluster {{ getSpotSourceDiagnostics().lastClusterLabel }}</span>
+        <span>last RBL {{ getSpotSourceDiagnostics().lastRblLabel }}</span>
+        <span v-for="windowStats in getSourceWindowStats()" :key="windowStats.minutes" class="source-window-stat">{{ getSourceWindowLabel(windowStats) }}</span>
+        <small>{{ getSpotSourceDiagnostics().hint }}</small>
+    </div>
+    <div v-if="getSourceTrendItems().length > 0" class="source-trend-mini">
+        <div v-for="item in getSourceTrendItems()" :key="'trend-' + item.minutes" class="source-trend-item" :title="getSourceWindowLabel(item)">
+            <span>{{ item.label }}</span>
+            <div class="source-trend-bar">
+                <i class="source-trend-cluster" :style="{ width: Math.max(2, item.clusterPercent) + '%' }"></i>
+                <i class="source-trend-rbl" :style="{ width: Math.max(2, item.rblPercent) + '%' }"></i>
+            </div>
+        </div>
+    </div>
+    <div class="source-state-summary" v-if="getSourceStateSummaryItems().length > 0">
+        <span
+            v-for="item in getSourceStateSummaryItems()"
+            :key="'source-state-' + item.label"
+            :class="['source-state-pill', 'source-state-' + item.state]">
+            {{ item.label }}
+        </span>
+    </div>
+    <button @click="showOnlyClusterSpots" :class="['rbl-monitor-action', { active: spotsFilter.spotSources.length === 1 && spotsFilter.spotSources[0] === 'cluster' }]">Cluster only</button>
+    <button @click="showOnlyRblSpots" :class="['rbl-monitor-action', { active: spotsFilter.spotSources.length === 1 && spotsFilter.spotSources[0] === 'rbl' }]">RBL only</button>
+    <button @click="showAllSpotSources" :class="['rbl-monitor-action', { active: spotsFilter.spotSources.includes('cluster') && spotsFilter.spotSources.includes('rbl') }]">All sources</button>
+    <button @click="toggleSpotSourceMute('cluster')" :class="['rbl-monitor-action', { active: spotSourceMuted.cluster }]">{{ spotSourceMuted.cluster ? 'Unmute cluster' : 'Mute cluster' }}</button>
+    <button @click="toggleSpotSourceMute('rbl')" :class="['rbl-monitor-action', { active: spotSourceMuted.rbl }]">{{ spotSourceMuted.rbl ? 'Unmute RBL' : 'Mute RBL' }}</button>
+</div>
+
+<div v-if="getRblMonitorStats().total > 0" class="rbl-monitor-strip">
+    <div :class="['rbl-monitor-summary', { stale: getRblMonitorStats().stale }]">
+        <strong>RBL</strong>
+        <span>{{ getRblMonitorStats().total }} live</span>
+        <span>CW {{ getRblMonitorStats().cw }}</span>
+        <span>SSB {{ getRblMonitorStats().ssb }}</span>
+        <span>DIGI {{ getRblMonitorStats().digi }}</span>
+        <span v-if="getRblMonitorStats().bestSnr !== null">best {{ getRblMonitorStats().bestSnr }} dB</span>
+        <span>{{ getRblMonitorStats().lastLabel }} ago</span>
+    </div>
+    <button @click="showOnlyRblSpots" :class="['rbl-monitor-action', { active: spotsFilter.spotSources.length === 1 && spotsFilter.spotSources[0] === 'rbl' }]">RBL only</button>
+    <button @click="showHighConfidenceRblSpots" :class="['rbl-monitor-action', { active: spotsFilter.spotSources.includes('rbl') && Number(spotsFilter.rblMinSnr) >= 8 }]">High confidence</button>
+    <button @click="toggleRblAlertsEnabled" :class="['rbl-monitor-action', { active: rblAlertRules.enabled }]">{{ rblAlertRules.enabled ? 'Alerts on' : 'Alerts off' }}</button>
+    <button @click="toggleRblAlertSettings" :class="['rbl-monitor-action', { active: rblAlertSettingsOpen }]">Rules</button>
+    <button v-for="mode in availableRblModes" :key="'rbl-mode-' + mode" @click="focusRblMode(mode)" :class="['rbl-monitor-action', { active: spotsFilter.rblModes.includes(mode) }]">{{ mode }}</button>
+    <div class="rbl-monitor-bands">
+        <button v-for="item in getRblMonitorBandItems().slice(0, 8)" :key="'rbl-band-' + item.band" @click="focusRblBand(item.band)" :class="['rbl-band-btn', { active: spotsFilter.bands.includes(item.band) && spotsFilter.spotSources.includes('rbl') }]">
+            <strong>{{ item.band }}</strong>
+            <span>{{ item.total }}</span>
+            <small v-if="item.bestSnr !== null">{{ item.bestSnr }} dB</small>
+        </button>
+    </div>
+</div>
+
+<div v-if="rblAlertSettingsOpen" class="rbl-alert-rules">
+    <label><input type="checkbox" v-model="rblAlertRules.newDxcc"> New DXCC</label>
+    <label><input type="checkbox" v-model="rblAlertRules.newBand"> New band</label>
+    <label><input type="checkbox" v-model="rblAlertRules.newCall"> New call</label>
+    <label><input type="checkbox" v-model="rblAlertRules.localHeard"> Decoded locally</label>
+    <label>Score <input type="number" min="0" max="100" step="5" v-model.number="rblAlertRules.minScore"></label>
+    <label>SNR <input type="number" min="-30" max="60" step="1" v-model.number="rblAlertRules.minSnr"></label>
+    <label>Cooldown <input type="number" min="1" max="120" step="1" v-model.number="rblAlertRules.cooldownMinutes"> m</label>
+    <label><input type="checkbox" v-model="rblAlertRules.toast"> Toast</label>
+    <label><input type="checkbox" v-model="rblAlertRules.sound"> Sound</label>
+    <div class="rbl-alert-rule-group">
+        <span>Modes</span>
+        <button v-for="mode in availableRblModes" :key="'alert-mode-' + mode" @click="toggleRblAlertRuleArray('modes', mode)" :class="{ active: rblAlertRules.modes.includes(mode) }">{{ mode }}</button>
+    </div>
+    <div class="rbl-alert-rule-group">
+        <span>Bands</span>
+        <button v-for="band in availableBands" :key="'alert-band-' + band" @click="toggleRblAlertRuleArray('bands', band)" :class="{ active: rblAlertRules.bands.includes(band) }">{{ band }}</button>
+    </div>
+    <button @click="resetRblAlertRules" class="rbl-monitor-action">Reset</button>
+</div>
+
+<div v-if="rblAlerts.length > 0" class="rbl-alert-tray">
+    <div class="rbl-alert-header">
+        <strong>RBL Alerts</strong>
+        <span>{{ rblAlertStatusText() }}</span>
+        <button @click="clearRblAlerts">Clear</button>
+    </div>
+    <button v-for="alert in rblAlerts.slice(0, 6)" :key="alert.id" @click="focusRblAlert(alert)" class="rbl-alert-item">
+        <strong>{{ alert.callsign }}</strong>
+        <span>{{ alert.band }} {{ alert.mode }}</span>
+        <span v-if="alert.snr !== null">{{ alert.snr }} dB</span>
+        <span>Score {{ alert.score }}</span>
+        <small>{{ alert.reasons.join(', ') }}</small>
+    </button>
+</div>

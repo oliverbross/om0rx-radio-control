@@ -20,9 +20,51 @@ const dxSpotsData = {
         callStatuses: [],
         dxccStatuses: [],
         specials: [],
+        spotSources: ['cluster'],
+        rblModes: [],
+        rblMinSnr: '',
+        rblDedupeMinutes: 0,
+        sortBy: 'time',
         workedB4Include: false,
         workedB4Exclude: false,
     },
+    rblControl: {
+        enabled: false,
+        busy: false,
+        lastCommand: '',
+        lastCommands: [],
+        lastCommandResults: [],
+        lastResponse: '',
+        lastResponseAt: null,
+        lastProfile: '',
+        lastProfileLabel: '',
+    },
+    rblProfiles: [],
+    rblProfile: 'dxspider',
+    spotSourceStats: null,
+    spotSourceStatsLoading: false,
+    spotSourceStatsTimer: null,
+    spotSourceMuted: {
+        cluster: false,
+        rbl: false,
+    },
+    rblAlertRules: {
+        enabled: true,
+        newDxcc: true,
+        newBand: true,
+        newCall: false,
+        localHeard: true,
+        minScore: 55,
+        minSnr: 8,
+        modes: [],
+        bands: [],
+        cooldownMinutes: 10,
+        sound: false,
+        toast: true,
+    },
+    rblAlertSettingsOpen: false,
+    rblAlerts: [],
+    rblAlertSeen: {},
     
     // Filtered search from database
     filteredSearchResults: [],
@@ -30,6 +72,10 @@ const dxSpotsData = {
     lastSearchFilter: null,
     filteredSearchWarning: '',
     filteredSearchRetryAfter: 0,
+    selectedSpot: null,
+    selectedSpotExplain: null,
+    spotExplainLoading: false,
+    spotExplainError: '',
     
     // 🆕 Queue for real-time spots arriving during filtered search
     // These are shown after the search completes, preventing filter interruption
@@ -50,6 +96,22 @@ const dxSpotsData = {
     availableCallStatuses: ['New Call', 'New Band', 'New Mode', 'New Band+Mode', 'Worked', 'Confirmed'],
     availableDxccStatuses: ['ATNO', 'C/New Band', 'C/New Mode', 'C/New Band+Mode', 'W/New Band', 'W/New Mode', 'W/New Band+Mode', 'Worked', 'Confirmed', 'Unknown'],
     availableSpecials: ['POTA', 'SOTA', 'IOTA', 'WWFF', 'CASTLE', 'LIGHTHOUSE', 'CONTEST', 'IARU'],
+    availableSpotSources: [
+        { id: 'cluster', name: 'Cluster' },
+        { id: 'rbl', name: 'RBL' },
+    ],
+    availableRblModes: ['CW', 'SSB', 'DIGI'],
+    availableSpotSorts: [
+        { id: 'time', name: 'Newest' },
+        { id: 'score', name: 'Best' },
+    ],
+    availableSpotPresets: [
+        { id: 'dx', name: 'DX hunt' },
+        { id: 'rbl-cw', name: 'RBL CW' },
+        { id: 'digital', name: 'Digital' },
+        { id: 'new-dxcc', name: 'New DXCC' },
+        { id: 'worked', name: 'Worked' },
+    ],
     
     // Dropdown visibility
     openDropdown: null,
@@ -307,6 +369,26 @@ const dxSpotsMethods = {
     setMaxSpots(count) {
         this.maxSpots = count;
     },
+
+    getDefaultSpotFilter() {
+        return {
+            callsign: '',
+            bands: [],
+            modes: [],
+            continents: [],
+            cqs: [],
+            callStatuses: [],
+            dxccStatuses: [],
+            specials: [],
+            spotSources: ['cluster'],
+            rblModes: [],
+            rblMinSnr: '',
+            rblDedupeMinutes: 0,
+            sortBy: 'time',
+            workedB4Include: false,
+            workedB4Exclude: false,
+        };
+    },
     
     // Dropdown management
     toggleDropdown(name) {
@@ -335,20 +417,51 @@ const dxSpotsMethods = {
     
     // Clear all filters
     clearAllFilters() {
-        this.spotsFilter.callsign = '';
-        this.spotsFilter.bands = [];
-        this.spotsFilter.modes = [];
-        this.spotsFilter.continents = [];
-        this.spotsFilter.cqs = [];
-        this.spotsFilter.callStatuses = [];
-        this.spotsFilter.dxccStatuses = [];
-        this.spotsFilter.specials = [];
-        this.spotsFilter.workedB4Include = false;
-        this.spotsFilter.workedB4Exclude = false;
+        Object.assign(this.spotsFilter, this.getDefaultSpotFilter());
         this.filteredSearchResults = [];
         this.lastSearchFilter = null;
         this.filteredSearchWarning = '';
         this.filteredSearchRetryAfter = 0;
+    },
+
+    resetSpotSearchCache() {
+        this.filteredSearchResults = [];
+        this.lastSearchFilter = null;
+        this.filteredSearchWarning = '';
+        this.filteredSearchRetryAfter = 0;
+    },
+
+    applySpotPreset(presetId) {
+        const next = this.getDefaultSpotFilter();
+        switch (presetId) {
+            case 'dx':
+                next.dxccStatuses = ['ATNO', 'C/New Band', 'C/New Mode', 'C/New Band+Mode', 'W/New Band', 'W/New Mode', 'W/New Band+Mode'];
+                next.sortBy = 'score';
+                break;
+            case 'rbl-cw':
+                next.spotSources = ['rbl'];
+                next.rblModes = ['CW'];
+                next.rblMinSnr = 8;
+                next.rblDedupeMinutes = 5;
+                next.sortBy = 'score';
+                break;
+            case 'digital':
+                next.modes = ['FT8', 'FT4', 'FT2'];
+                next.sortBy = 'score';
+                break;
+            case 'new-dxcc':
+                next.dxccStatuses = ['ATNO'];
+                next.sortBy = 'score';
+                break;
+            case 'worked':
+                next.workedB4Include = true;
+                break;
+            default:
+                return;
+        }
+        Object.assign(this.spotsFilter, next);
+        this.resetSpotSearchCache();
+        this.openDropdown = null;
     },
     
     // === Filtered Search (Database Query) ===
@@ -368,6 +481,8 @@ const dxSpotsMethods = {
                 return;
             }
             
+            const rblSourceSelected = this.rblSourceSelected();
+
             // Build filter criteria for API
             const filterCriteria = {
                 limit: this.maxSpots,
@@ -377,6 +492,11 @@ const dxSpotsMethods = {
                 zones_cq: this.spotsFilter.cqs.length > 0 ? this.spotsFilter.cqs : null,
                 continents: this.spotsFilter.continents.length > 0 ? this.spotsFilter.continents : null,
                 special_tags: this.spotsFilter.specials.length > 0 ? this.spotsFilter.specials : null,
+                spot_sources: this.spotsFilter.spotSources.length > 0 ? this.spotsFilter.spotSources : null,
+                rbl_modes: rblSourceSelected && this.spotsFilter.rblModes.length > 0 ? this.spotsFilter.rblModes : null,
+                rbl_min_snr: rblSourceSelected && this.spotsFilter.rblMinSnr !== '' ? Number(this.spotsFilter.rblMinSnr) : null,
+                rbl_dedupe_minutes: rblSourceSelected && Number(this.spotsFilter.rblDedupeMinutes) > 0 ? Number(this.spotsFilter.rblDedupeMinutes) : null,
+                sort_by: this.spotsFilter.sortBy || 'time',
             };
             
             // Check if filter criteria changed
@@ -433,6 +553,12 @@ const dxSpotsMethods = {
     
     hasActiveFilters() {
         /**Check if any filter is currently active*/
+        const sourceFilterActive = this.isSpotSourceFilterActive();
+        const rblFilterActive = this.rblSourceSelected() && (
+            this.spotsFilter.rblModes.length > 0 ||
+            this.spotsFilter.rblMinSnr !== '' ||
+            Number(this.spotsFilter.rblDedupeMinutes) > 0
+        );
         return !!(
             this.spotsFilter.callsign ||
             this.spotsFilter.bands.length > 0 ||
@@ -442,6 +568,8 @@ const dxSpotsMethods = {
             this.spotsFilter.callStatuses.length > 0 ||
             this.spotsFilter.dxccStatuses.length > 0 ||
             this.spotsFilter.specials.length > 0 ||
+            sourceFilterActive ||
+            rblFilterActive ||
             this.spotsFilter.workedB4Include ||
             this.spotsFilter.workedB4Exclude
         );
@@ -490,9 +618,26 @@ const dxSpotsMethods = {
         // Special tags filter (POTA, SOTA, IOTA, WWFF, etc)
         if (this.spotsFilter.specials.length > 0) {
             const hasSpecial = this.spotsFilter.specials.some(special => 
-                spot.special_tags && spot.special_tags.includes(special)
+                (spot.special_tags || spot.special || '').includes(special)
             );
             if (!hasSpecial) {
+                return false;
+            }
+        }
+
+        // Spot source filter
+        if (this.spotsFilter.spotSources.length === 0) {
+            return false;
+        }
+
+        const source = spot.spot_source || 'cluster';
+        if (!this.spotsFilter.spotSources.includes(source)) {
+            return false;
+        }
+
+        // RBL broad-mode filter
+        if (this.rblSourceSelected() && this.spotsFilter.rblModes.length > 0) {
+            if (source === 'rbl' && !this.spotsFilter.rblModes.includes(spot.rbl_mode_group || 'OTHER')) {
                 return false;
             }
         }
@@ -604,11 +749,1136 @@ const dxSpotsMethods = {
                 return this.spotsFilter.dxccStatuses.length > 0;
             case 'special':
                 return this.spotsFilter.specials.length > 0;
+            case 'rbl':
+                return (
+                    this.rblControl.enabled ||
+                    this.isSpotSourceFilterActive() ||
+                    (
+                        this.rblSourceSelected() &&
+                        (
+                            this.spotsFilter.rblModes.length > 0 ||
+                            this.spotsFilter.rblMinSnr !== '' ||
+                            Number(this.spotsFilter.rblDedupeMinutes) > 0
+                        )
+                    )
+                );
+            case 'sort':
+                return this.spotsFilter.sortBy && this.spotsFilter.sortBy !== 'time';
             case 'workedB4':
                 return this.spotsFilter.workedB4Include || this.spotsFilter.workedB4Exclude;
             default:
                 return false;
         }
+    },
+
+    isSpotSourceFilterActive() {
+        const sources = [...new Set(this.spotsFilter.spotSources || [])].sort();
+        return !(sources.length === 1 && sources[0] === 'cluster');
+    },
+
+    rblSourceSelected() {
+        return (this.spotsFilter.spotSources || []).includes('rbl');
+    },
+
+    clearRblSpotFilters() {
+        this.spotsFilter.rblModes = [];
+        this.spotsFilter.rblMinSnr = '';
+        this.spotsFilter.rblDedupeMinutes = 0;
+    },
+
+    toggleSpotSource(sourceId) {
+        this.toggleFilterItem(this.spotsFilter.spotSources, sourceId);
+        if (!this.rblSourceSelected()) {
+            this.clearRblSpotFilters();
+        }
+        this.resetSpotSearchCache();
+    },
+
+    applySourceAndRblFilters(spots) {
+        let filtered = spots || [];
+
+        if (this.spotsFilter.spotSources.length === 0) {
+            return [];
+        }
+
+        filtered = filtered.filter(spot =>
+            this.spotsFilter.spotSources.includes(spot.spot_source || 'cluster')
+        );
+
+        filtered = filtered.filter(spot => {
+            const source = spot.spot_source || 'cluster';
+            return !this.spotSourceMuted[source];
+        });
+
+        if (this.rblSourceSelected() && this.spotsFilter.rblModes.length > 0) {
+            filtered = filtered.filter(spot =>
+                (spot.spot_source || 'cluster') !== 'rbl' ||
+                this.spotsFilter.rblModes.includes(spot.rbl_mode_group || 'OTHER')
+            );
+        }
+
+        return filtered;
+    },
+
+    toggleSpotSourceMute(sourceId) {
+        if (!Object.prototype.hasOwnProperty.call(this.spotSourceMuted, sourceId)) return;
+        this.spotSourceMuted[sourceId] = !this.spotSourceMuted[sourceId];
+        this.saveSpotSourceMuteState();
+    },
+
+    loadSpotSourceMuteState() {
+        try {
+            const raw = localStorage.getItem('om0rx.spots.sourceMuted');
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            this.spotSourceMuted = {
+                cluster: parsed.cluster === true,
+                rbl: parsed.rbl === true,
+            };
+        } catch (error) {
+            console.warn('Could not load source mute state:', error);
+        }
+    },
+
+    saveSpotSourceMuteState() {
+        try {
+            localStorage.setItem('om0rx.spots.sourceMuted', JSON.stringify(this.spotSourceMuted));
+        } catch (error) {
+            console.warn('Could not save source mute state:', error);
+        }
+    },
+
+    getSourceStateSummaryItems() {
+        const sources = this.spotsFilter.spotSources || [];
+        const items = [];
+
+        if (sources.length === 0) {
+            items.push({ label: 'No sources selected', state: 'warning' });
+        } else if (sources.includes('cluster') && sources.includes('rbl')) {
+            items.push({ label: 'All sources', state: 'normal' });
+        } else if (sources.includes('cluster')) {
+            items.push({ label: 'Cluster only', state: 'normal' });
+        } else if (sources.includes('rbl')) {
+            items.push({ label: 'RBL only', state: 'rbl' });
+        }
+
+        if (!sources.includes('cluster')) {
+            items.push({ label: 'Cluster hidden', state: 'muted' });
+        }
+        if (!sources.includes('rbl')) {
+            items.push({ label: 'RBL hidden', state: 'muted' });
+        }
+        if (this.spotSourceMuted.cluster) {
+            items.push({ label: 'Cluster muted', state: 'warning' });
+        }
+        if (this.spotSourceMuted.rbl) {
+            items.push({ label: 'RBL muted', state: 'warning' });
+        }
+
+        return items;
+    },
+
+    getActiveSpotFilterChips() {
+        const chips = [];
+        const pushArray = (type, values, label) => {
+            values.forEach(value => chips.push({ type, value, label: `${label}: ${value}` }));
+        };
+
+        if (this.spotsFilter.callsign) {
+            chips.push({ type: 'callsign', value: this.spotsFilter.callsign, label: `Call: ${this.spotsFilter.callsign}` });
+        }
+        pushArray('band', this.spotsFilter.bands, 'Band');
+        pushArray('mode', this.spotsFilter.modes, 'Mode');
+        pushArray('continent', this.spotsFilter.continents, 'Continent');
+        pushArray('cq', this.spotsFilter.cqs, 'CQ');
+        pushArray('callStatus', this.spotsFilter.callStatuses, 'Call');
+        pushArray('dxccStatus', this.spotsFilter.dxccStatuses, 'DXCC');
+        pushArray('special', this.spotsFilter.specials, 'Special');
+        if (this.isSpotSourceFilterActive()) {
+            pushArray('source', this.spotsFilter.spotSources, 'Source');
+        }
+        if (this.rblSourceSelected()) {
+            pushArray('rblMode', this.spotsFilter.rblModes, 'RBL');
+            if (this.spotsFilter.rblMinSnr !== '') {
+                chips.push({ type: 'rblMinSnr', value: this.spotsFilter.rblMinSnr, label: `RBL ≥ ${this.spotsFilter.rblMinSnr} dB` });
+            }
+            if (Number(this.spotsFilter.rblDedupeMinutes) > 0) {
+                chips.push({ type: 'rblDedupeMinutes', value: this.spotsFilter.rblDedupeMinutes, label: `Dedupe ${this.spotsFilter.rblDedupeMinutes}m` });
+            }
+        }
+        if (this.spotsFilter.sortBy === 'score') {
+            chips.push({ type: 'sortBy', value: 'score', label: 'Sort: Best' });
+        }
+        if (this.spotsFilter.workedB4Include) {
+            chips.push({ type: 'workedB4Include', value: true, label: 'Worked only' });
+        }
+        if (this.spotsFilter.workedB4Exclude) {
+            chips.push({ type: 'workedB4Exclude', value: true, label: 'Not worked' });
+        }
+        return chips;
+    },
+
+    removeSpotFilterChip(chip) {
+        const removeFrom = (array, value) => {
+            const index = array.indexOf(value);
+            if (index !== -1) array.splice(index, 1);
+        };
+
+        switch (chip.type) {
+            case 'callsign':
+                this.spotsFilter.callsign = '';
+                break;
+            case 'band':
+                removeFrom(this.spotsFilter.bands, chip.value);
+                break;
+            case 'mode':
+                removeFrom(this.spotsFilter.modes, chip.value);
+                break;
+            case 'continent':
+                removeFrom(this.spotsFilter.continents, chip.value);
+                break;
+            case 'cq':
+                removeFrom(this.spotsFilter.cqs, chip.value);
+                break;
+            case 'callStatus':
+                removeFrom(this.spotsFilter.callStatuses, chip.value);
+                break;
+            case 'dxccStatus':
+                removeFrom(this.spotsFilter.dxccStatuses, chip.value);
+                break;
+            case 'special':
+                removeFrom(this.spotsFilter.specials, chip.value);
+                break;
+            case 'source':
+                removeFrom(this.spotsFilter.spotSources, chip.value);
+                if (!this.rblSourceSelected()) {
+                    this.clearRblSpotFilters();
+                }
+                break;
+            case 'rblMode':
+                removeFrom(this.spotsFilter.rblModes, chip.value);
+                break;
+            case 'rblMinSnr':
+                this.spotsFilter.rblMinSnr = '';
+                break;
+            case 'rblDedupeMinutes':
+                this.spotsFilter.rblDedupeMinutes = 0;
+                break;
+            case 'sortBy':
+                this.spotsFilter.sortBy = 'time';
+                break;
+            case 'workedB4Include':
+                this.spotsFilter.workedB4Include = false;
+                break;
+            case 'workedB4Exclude':
+                this.spotsFilter.workedB4Exclude = false;
+                break;
+        }
+    },
+
+    getBandActivityItems() {
+        const counts = new Map();
+        const source = this.filteredSpots || [];
+        source.forEach(spot => {
+            const band = spot.band || 'Unknown';
+            if (!counts.has(band)) {
+                counts.set(band, { band, total: 0, rbl: 0, cluster: 0, hot: 0, topScore: 0 });
+            }
+            const item = counts.get(band);
+            const score = this.getSpotScore(spot);
+            item.total += 1;
+            item.topScore = Math.max(item.topScore, score);
+            if (score >= 55) item.hot += 1;
+            if ((spot.spot_source || 'cluster') === 'rbl') item.rbl += 1;
+            else item.cluster += 1;
+        });
+
+        return this.availableBands
+            .map(band => counts.get(band) || { band, total: 0, rbl: 0, cluster: 0, hot: 0, topScore: 0 })
+            .filter(item => item.total > 0);
+    },
+
+    buildSpotSourceStats(spots) {
+        const stats = {
+            total: 0,
+            cluster: 0,
+            rbl: 0,
+            other: 0,
+            lastCluster: 0,
+            lastRbl: 0,
+            lastAny: 0,
+            modes: {},
+        };
+
+        (spots || []).forEach(spot => {
+            const source = spot.spot_source || 'cluster';
+            const timestamp = this.getSpotTimestamp(spot);
+            stats.total += 1;
+            stats.lastAny = Math.max(stats.lastAny, timestamp);
+            if (source === 'rbl') {
+                stats.rbl += 1;
+                stats.lastRbl = Math.max(stats.lastRbl, timestamp);
+                const group = String(spot.rbl_mode_group || 'OTHER').toUpperCase();
+                stats.modes[group] = (stats.modes[group] || 0) + 1;
+            } else if (source === 'cluster') {
+                stats.cluster += 1;
+                stats.lastCluster = Math.max(stats.lastCluster, timestamp);
+            } else {
+                stats.other += 1;
+            }
+        });
+
+        return stats;
+    },
+
+    formatSourceAge(timestamp) {
+        const numeric = Number(timestamp || 0);
+        if (!numeric) return 'none';
+        const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000 - numeric));
+        if (ageSeconds < 60) return `${ageSeconds}s ago`;
+        if (ageSeconds < 3600) return `${Math.floor(ageSeconds / 60)}m ago`;
+        return `${Math.floor(ageSeconds / 3600)}h ago`;
+    },
+
+    getSpotSourceDiagnostics() {
+        const cache = this.buildSpotSourceStats(this.dxSpots || []);
+        const visible = this.buildSpotSourceStats(this.filteredSpots || []);
+        const serverStats = this.spotSourceStats || null;
+        const live = serverStats && serverStats.live ? serverStats.live : cache;
+        const windows = serverStats && Array.isArray(serverStats.windows) ? serverStats.windows : [];
+        const selectedSources = this.spotsFilter.spotSources || [];
+        const rblSelected = selectedSources.includes('rbl');
+        const clusterSelected = selectedSources.includes('cluster');
+        const muted = this.spotSourceMuted || {};
+        const hiddenRbl = Math.max(0, cache.rbl - visible.rbl);
+        const hiddenCluster = Math.max(0, cache.cluster - visible.cluster);
+
+        let hint = 'Showing selected sources';
+        if (!clusterSelected && !rblSelected) {
+            hint = 'No source selected';
+        } else if (muted.cluster && muted.rbl) {
+            hint = 'All sources muted';
+        } else if (muted.rbl) {
+            hint = 'RBL muted';
+        } else if (muted.cluster) {
+            hint = 'Cluster muted';
+        } else if (cache.rbl > 0 && !rblSelected) {
+            hint = `${cache.rbl} RBL ${cache.rbl === 1 ? 'spot is' : 'spots are'} hidden`;
+        } else if (cache.cluster > 0 && !clusterSelected) {
+            hint = `${cache.cluster} cluster ${cache.cluster === 1 ? 'spot is' : 'spots are'} hidden`;
+        } else if (visible.total === 0 && cache.total > 0) {
+            hint = 'Current filters hide all cached spots';
+        }
+
+        return {
+            cache,
+            visible,
+            live,
+            windows,
+            selectedSources,
+            hiddenRbl,
+            hiddenCluster,
+            muted,
+            hint,
+            lastClusterLabel: this.formatSourceAge(live.last_cluster || live.lastCluster || cache.lastCluster),
+            lastRblLabel: this.formatSourceAge(live.last_rbl || live.lastRbl || cache.lastRbl),
+            lastAnyLabel: this.formatSourceAge(live.last_any || live.lastAny || cache.lastAny),
+        };
+    },
+
+    getSourceWindowStats() {
+        const diagnostics = this.getSpotSourceDiagnostics();
+        return diagnostics.windows || [];
+    },
+
+    hasSpotSourceDiagnostics() {
+        const diagnostics = this.getSpotSourceDiagnostics();
+        return (
+            diagnostics.cache.total > 0 ||
+            diagnostics.live.total > 0 ||
+            (diagnostics.windows || []).some(windowStats => windowStats.total > 0)
+        );
+    },
+
+    getSourceWindowLabel(windowStats) {
+        if (!windowStats) return '';
+        return `${windowStats.label || windowStats.minutes + 'm'} ${windowStats.cluster || 0}C/${windowStats.rbl || 0}R`;
+    },
+
+    getSourceTrendItems() {
+        const maxTotal = Math.max(1, ...this.getSourceWindowStats().map(item => Number(item.total || 0)));
+        return this.getSourceWindowStats().map(item => ({
+            ...item,
+            clusterPercent: Math.round(((item.cluster || 0) / maxTotal) * 100),
+            rblPercent: Math.round(((item.rbl || 0) / maxTotal) * 100),
+        }));
+    },
+
+    getClusterHealth() {
+        const diagnostics = this.getSpotSourceDiagnostics();
+        const lastCluster = diagnostics.live.last_cluster || diagnostics.live.lastCluster || diagnostics.cache.lastCluster || 0;
+        const oneHour = diagnostics.windows.find(item => Number(item.minutes) === 60);
+        const ageSeconds = lastCluster ? Math.max(0, Math.floor(Date.now() / 1000 - lastCluster)) : null;
+        let status = 'off';
+        let label = 'Cluster none';
+        if (ageSeconds !== null) {
+            if (ageSeconds <= 300) {
+                status = 'ok';
+            } else if (ageSeconds <= 1800) {
+                status = 'warn';
+            } else {
+                status = 'stale';
+            }
+            label = `Cluster ${this.formatSourceAge(lastCluster)}`;
+        } else if (oneHour && oneHour.cluster > 0) {
+            status = 'stale';
+            label = `Cluster ${oneHour.cluster}/1h`;
+        }
+        return {
+            status,
+            label,
+            lastCluster,
+            lastClusterLabel: this.formatSourceAge(lastCluster),
+            hourCount: oneHour ? oneHour.cluster || 0 : 0,
+        };
+    },
+
+    getSpotSourceCounterText() {
+        const diagnostics = this.getSpotSourceDiagnostics();
+        const visible = diagnostics.visible;
+        const cache = diagnostics.cache;
+        const live = diagnostics.live;
+        if (visible.total === 0) {
+            if (cache.total === 0 && live.total > 0) {
+                return `0 shown · live ${live.cluster || 0} cluster / ${live.rbl || 0} RBL`;
+            }
+            if (cache.total === 0) return '0 spots';
+            return `0 shown · cache ${cache.cluster} cluster / ${cache.rbl} RBL`;
+        }
+        const shownParts = [];
+        if (visible.cluster > 0) shownParts.push(`${visible.cluster} cluster`);
+        if (visible.rbl > 0) shownParts.push(`${visible.rbl} RBL`);
+        if (visible.other > 0) shownParts.push(`${visible.other} other`);
+        const shownText = shownParts.join(' / ');
+        if (cache.total === visible.total) {
+            return `${visible.total} spots (${shownText})`;
+        }
+        return `${visible.total} shown (${shownText}) · cache ${cache.cluster} cluster / ${cache.rbl} RBL`;
+    },
+
+    async loadSpotSourceStats() {
+        if (this.spotSourceStatsLoading) return;
+        this.spotSourceStatsLoading = true;
+        try {
+            const response = await fetch('/api/spots/source-stats');
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.detail || data.error || `HTTP ${response.status}`);
+            }
+            this.spotSourceStats = data;
+        } catch (error) {
+            console.warn('Could not load spot source stats:', error);
+        } finally {
+            this.spotSourceStatsLoading = false;
+        }
+    },
+
+    setupSpotSourceStatsRefresh() {
+        this.cleanupSpotSourceStatsRefresh();
+        this.spotSourceStatsTimer = setInterval(() => {
+            this.loadSpotSourceStats();
+        }, 30000);
+    },
+
+    cleanupSpotSourceStatsRefresh() {
+        if (this.spotSourceStatsTimer) {
+            clearInterval(this.spotSourceStatsTimer);
+            this.spotSourceStatsTimer = null;
+        }
+    },
+
+    getRblCommandStatusText() {
+        if (this.rblControl.busy) return 'Sending command...';
+        if (this.rblControl.lastCommand) return this.rblControl.lastCommand;
+        return 'No RBL command sent in this session';
+    },
+
+    getSelectedRblProfile() {
+        return (this.rblProfiles || []).find(profile => profile.id === this.rblProfile) || null;
+    },
+
+    getRblProfileCommandPreview() {
+        const profile = this.getSelectedRblProfile();
+        if (!profile) {
+            return {
+                name: this.rblProfile || 'RBL',
+                enable: '',
+                disable: '',
+                modes: [],
+                selected: [],
+            };
+        }
+
+        const modes = profile.modes || {};
+        const selectedModes = this.spotsFilter.rblModes.length > 0 ? this.spotsFilter.rblModes : this.availableRblModes;
+        const selected = selectedModes
+            .map(mode => ({ mode, command: modes[mode] || modes[String(mode).toLowerCase()] || '' }))
+            .filter(item => item.command);
+
+        return {
+            name: profile.name || profile.id,
+            enable: profile.enable || '',
+            disable: profile.disable || '',
+            modes: Object.entries(modes).map(([mode, command]) => ({ mode: String(mode).toUpperCase(), command })),
+            selected,
+            modeNote: profile.mode_note || '',
+            supportsModeCommands: Boolean(profile.supports_mode_commands || selected.length > 0),
+        };
+    },
+
+    applyRblCommandTelemetry(data) {
+        if (!data) return;
+        if (typeof data.enabled === 'boolean') {
+            this.rblControl.enabled = data.enabled;
+        }
+        this.rblControl.lastProfile = data.profile || this.rblControl.lastProfile || '';
+        this.rblControl.lastProfileLabel = data.profile_label || this.rblControl.lastProfileLabel || '';
+        this.rblControl.lastCommands = data.commands || this.rblControl.lastCommands || [];
+        this.rblControl.lastCommand = this.rblControl.lastCommands.join(', ');
+        this.rblControl.lastCommandResults = data.command_results || this.rblControl.lastCommandResults || [];
+
+        const telemetry = data.telemetry || {};
+        this.rblControl.lastResponse = telemetry.last_response || telemetry.last_line || this.rblControl.lastResponse || '';
+        this.rblControl.lastResponseAt = telemetry.last_line_at || this.rblControl.lastResponseAt || null;
+    },
+
+    applyBandActivityFilter(band) {
+        this.spotsFilter.bands = [band];
+    },
+
+    async setRblEnabled(enabled) {
+        if (this.rblControl.busy) return;
+        this.rblControl.busy = true;
+        try {
+            const response = await fetch('/api/cluster/rbl', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    enabled,
+                    modes: this.spotsFilter.rblModes.length > 0 ? this.spotsFilter.rblModes : null,
+                    profile: this.rblProfile || null,
+                }),
+            });
+            const data = await response.json();
+            this.applyRblCommandTelemetry(data);
+            if (data.success) {
+                this.rblControl.enabled = enabled;
+                this.showStatus(enabled ? 'RBL spots enabled' : 'RBL spots disabled', 'success');
+            } else {
+                this.showStatus(`RBL command failed: ${data.message}`, 'error');
+            }
+        } catch (error) {
+            this.showStatus(`RBL command failed: ${error.message}`, 'error');
+        } finally {
+            this.rblControl.busy = false;
+        }
+    },
+
+    async loadRblCommandStatus() {
+        try {
+            const response = await fetch('/api/cluster/rbl/status');
+            const data = await response.json();
+            if (!response.ok || !data.ok) {
+                return;
+            }
+            this.applyRblCommandTelemetry(data);
+        } catch (error) {
+            console.warn('Could not load RBL command status:', error);
+        }
+    },
+
+    async loadRblProfiles() {
+        try {
+            const response = await fetch('/api/cluster/rbl/profiles');
+            const data = await response.json();
+            if (!response.ok || !data.ok) {
+                throw new Error(data.detail || data.error || 'Could not load RBL profiles');
+            }
+            this.rblProfiles = data.profiles || [];
+            this.rblProfile = data.default_profile || this.rblProfile || 'dxspider';
+        } catch (error) {
+            console.warn('Could not load RBL profiles:', error);
+            this.rblProfiles = [];
+        }
+    },
+
+    showOnlyRblSpots() {
+        this.spotsFilter.spotSources = ['rbl'];
+        this.resetSpotSearchCache();
+    },
+
+    showOnlyClusterSpots() {
+        this.spotsFilter.spotSources = ['cluster'];
+        this.clearRblSpotFilters();
+        this.resetSpotSearchCache();
+    },
+
+    showAllSpotSources() {
+        this.spotsFilter.spotSources = ['cluster', 'rbl'];
+        this.clearRblSpotFilters();
+        this.resetSpotSearchCache();
+    },
+
+    getDefaultRblAlertRules() {
+        return {
+            enabled: true,
+            newDxcc: true,
+            newBand: true,
+            newCall: false,
+            localHeard: true,
+            minScore: 55,
+            minSnr: 8,
+            modes: [],
+            bands: [],
+            cooldownMinutes: 10,
+            sound: false,
+            toast: true,
+        };
+    },
+
+    loadRblAlertRules() {
+        try {
+            const serverRules = this.configData && this.configData.RBL_ALERT_RULES;
+            if (serverRules && typeof serverRules === 'object') {
+                this.rblAlertRules = { ...this.getDefaultRblAlertRules(), ...serverRules };
+                return;
+            }
+
+            const raw = localStorage.getItem('om0rx.spots.rblAlertRules');
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            this.rblAlertRules = { ...this.getDefaultRblAlertRules(), ...parsed };
+        } catch (error) {
+            console.warn('Could not load RBL alert rules:', error);
+            this.rblAlertRules = this.getDefaultRblAlertRules();
+        }
+    },
+
+    async saveRblAlertRules() {
+        try {
+            localStorage.setItem('om0rx.spots.rblAlertRules', JSON.stringify(this.rblAlertRules));
+            if (this.configData) {
+                this.configData.RBL_ALERT_RULES = { ...this.rblAlertRules };
+            }
+            fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ config: { RBL_ALERT_RULES: this.rblAlertRules } }),
+            }).then(async response => {
+                if (!response.ok) {
+                    const text = await response.text();
+                    throw new Error(text || `HTTP ${response.status}`);
+                }
+                return response.json();
+            }).then(data => {
+                if (data && data.success === false) {
+                    throw new Error(data.error || 'RBL alert settings were rejected');
+                }
+            }).catch(error => {
+                console.warn('Could not save RBL alert rules to backend:', error);
+            });
+        } catch (error) {
+            console.warn('Could not save RBL alert rules:', error);
+        }
+    },
+
+    resetRblAlertRules() {
+        this.rblAlertRules = this.getDefaultRblAlertRules();
+        this.saveRblAlertRules();
+    },
+
+    toggleRblAlertsEnabled() {
+        this.rblAlertRules.enabled = !this.rblAlertRules.enabled;
+        this.saveRblAlertRules();
+        this.evaluateRblAlertsForVisibleSpots();
+    },
+
+    toggleRblAlertSettings() {
+        this.rblAlertSettingsOpen = !this.rblAlertSettingsOpen;
+    },
+
+    toggleRblAlertRuleArray(field, value) {
+        if (!Array.isArray(this.rblAlertRules[field])) {
+            this.rblAlertRules[field] = [];
+        }
+        const index = this.rblAlertRules[field].indexOf(value);
+        if (index === -1) this.rblAlertRules[field].push(value);
+        else this.rblAlertRules[field].splice(index, 1);
+        this.saveRblAlertRules();
+    },
+
+    rblAlertStatusText() {
+        if (!this.rblAlertRules.enabled) return 'Alerts off';
+        const parts = [];
+        if (this.rblAlertRules.newDxcc) parts.push('DXCC');
+        if (this.rblAlertRules.newBand) parts.push('band');
+        if (this.rblAlertRules.newCall) parts.push('call');
+        if (this.rblAlertRules.localHeard) parts.push('heard');
+        if (Number(this.rblAlertRules.minScore) > 0) parts.push(`score ${this.rblAlertRules.minScore}+`);
+        if (this.rblAlertRules.minSnr !== '' && this.rblAlertRules.minSnr !== null) parts.push(`${this.rblAlertRules.minSnr}+ dB`);
+        return parts.length ? parts.join(' / ') : 'All RBL';
+    },
+
+    getRblAlertReasons(spot) {
+        if (!spot || (spot.spot_source || 'cluster') !== 'rbl') return [];
+        const rules = this.rblAlertRules || this.getDefaultRblAlertRules();
+        if (!rules.enabled) return [];
+
+        const mode = String(spot.rbl_mode_group || 'OTHER').toUpperCase();
+        if (Array.isArray(rules.modes) && rules.modes.length > 0 && !rules.modes.includes(mode)) {
+            return [];
+        }
+
+        const band = spot.band || '';
+        if (Array.isArray(rules.bands) && rules.bands.length > 0 && !rules.bands.includes(band)) {
+            return [];
+        }
+
+        const reasons = [];
+        const dxccStatus = String(spot.dxcc_status || spot.tag || '').toUpperCase();
+        const callStatus = String(spot.call_status || '').toUpperCase();
+        const score = this.getSpotScore(spot);
+        const snr = this.getRblSnr(spot);
+
+        if (rules.newDxcc && (dxccStatus.includes('ATNO') || dxccStatus.includes('NEW'))) {
+            reasons.push(spot.dxcc_status || spot.tag || 'New DXCC');
+        }
+        if (rules.newBand && callStatus.includes('NEW BAND')) {
+            reasons.push('New band');
+        }
+        if (rules.newCall && callStatus.includes('NEW CALL')) {
+            reasons.push('New call');
+        }
+        if (rules.localHeard && spot.local_heard) {
+            reasons.push('Decoded locally');
+        }
+        if (Number(rules.minScore) > 0 && score >= Number(rules.minScore)) {
+            reasons.push(`Score ${score}`);
+        }
+        if (rules.minSnr !== '' && rules.minSnr !== null && snr !== null && !Number.isNaN(snr) && snr >= Number(rules.minSnr)) {
+            reasons.push(`${snr} dB`);
+        }
+
+        return [...new Set(reasons)];
+    },
+
+    isRblAlertSpot(spot) {
+        return !!(spot && (spot._rbl_alert || this.getRblAlertReasons(spot).length > 0));
+    },
+
+    getRblAlertKey(spot) {
+        return [
+            String(spot.callsign || '').toUpperCase(),
+            spot.band || '',
+            spot.rbl_mode_group || spot.mode || '',
+        ].join('|');
+    },
+
+    evaluateRblSpotAlert(spot) {
+        const reasons = this.getRblAlertReasons(spot);
+        if (reasons.length === 0) {
+            if (spot) {
+                spot._rbl_alert = false;
+                spot._rbl_alert_reasons = [];
+            }
+            return false;
+        }
+
+        spot._rbl_alert = true;
+        spot._rbl_alert_reasons = reasons;
+
+        const key = this.getRblAlertKey(spot);
+        const now = Date.now();
+        const cooldownMs = Math.max(1, Number(this.rblAlertRules.cooldownMinutes || 10)) * 60 * 1000;
+        if (this.rblAlertSeen[key] && now - this.rblAlertSeen[key] < cooldownMs) {
+            return true;
+        }
+
+        this.rblAlertSeen[key] = now;
+        const alert = {
+            id: `${key}|${now}`,
+            timestamp: Math.floor(now / 1000),
+            callsign: spot.callsign || '',
+            band: spot.band || '',
+            mode: spot.rbl_mode_group || spot.mode || '',
+            frequency: spot.frequency_mhz || parseFloat(spot.frequency || 0) / 1000,
+            country: spot.country || '',
+            score: this.getSpotScore(spot),
+            snr: this.getRblSnr(spot),
+            reasons,
+            spot,
+        };
+        this.rblAlerts.unshift(alert);
+        this.rblAlerts = this.rblAlerts.slice(0, 30);
+
+        if (this.rblAlertRules.toast) {
+            this.showStatus(`RBL alert: ${alert.callsign} ${alert.band} ${reasons.join(', ')}`, 'warning');
+        }
+        if (this.rblAlertRules.sound) {
+            this.playRblAlertSound();
+        }
+        return true;
+    },
+
+    evaluateRblAlertsForVisibleSpots() {
+        (this.dxSpots || []).forEach(spot => {
+            if ((spot.spot_source || 'cluster') === 'rbl') {
+                const reasons = this.getRblAlertReasons(spot);
+                spot._rbl_alert = reasons.length > 0;
+                spot._rbl_alert_reasons = reasons;
+            }
+        });
+    },
+
+    playRblAlertSound() {
+        try {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContext) return;
+            const context = new AudioContext();
+            const oscillator = context.createOscillator();
+            const gain = context.createGain();
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(880, context.currentTime);
+            oscillator.frequency.setValueAtTime(1320, context.currentTime + 0.08);
+            gain.gain.setValueAtTime(0.0001, context.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.08, context.currentTime + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.22);
+            oscillator.connect(gain);
+            gain.connect(context.destination);
+            oscillator.start();
+            oscillator.stop(context.currentTime + 0.24);
+            setTimeout(() => context.close(), 400);
+        } catch (error) {
+            console.warn('RBL alert sound failed:', error);
+        }
+    },
+
+    clearRblAlerts() {
+        this.rblAlerts = [];
+    },
+
+    focusRblAlert(alert) {
+        if (!alert) return;
+        this.spotsFilter.spotSources = ['rbl'];
+        this.spotsFilter.callsign = alert.callsign || '';
+        this.spotsFilter.bands = alert.band ? [alert.band] : [];
+        this.spotsFilter.sortBy = 'score';
+        if (alert.spot) {
+            this.showSpotDetails(alert.spot);
+        }
+    },
+
+    getSpotTimestamp(spot) {
+        return Number(spot.aggregate_last_timestamp || spot.timestamp || 0);
+    },
+
+    getRblLiveSpots() {
+        return (this.dxSpots || []).filter(spot => (spot.spot_source || 'cluster') === 'rbl');
+    },
+
+    getRblMonitorStats() {
+        const spots = this.getRblLiveSpots();
+        const stats = {
+            total: spots.length,
+            cw: 0,
+            ssb: 0,
+            digi: 0,
+            other: 0,
+            hot: 0,
+            bestSnr: null,
+            topScore: 0,
+            lastTimestamp: 0,
+            stale: true,
+            lastLabel: 'no RBL',
+        };
+
+        spots.forEach(spot => {
+            const group = String(spot.rbl_mode_group || 'OTHER').toUpperCase();
+            if (group === 'CW') stats.cw += 1;
+            else if (group === 'SSB') stats.ssb += 1;
+            else if (group === 'DIGI') stats.digi += 1;
+            else stats.other += 1;
+
+            const snr = this.getRblSnr(spot);
+            if (snr !== null && !Number.isNaN(snr)) {
+                stats.bestSnr = stats.bestSnr === null ? snr : Math.max(stats.bestSnr, snr);
+            }
+
+            const score = this.getSpotScore(spot);
+            stats.topScore = Math.max(stats.topScore, score);
+            if (score >= 55) stats.hot += 1;
+            stats.lastTimestamp = Math.max(stats.lastTimestamp, this.getSpotTimestamp(spot));
+        });
+
+        if (stats.lastTimestamp) {
+            const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000 - stats.lastTimestamp));
+            stats.stale = ageSeconds > 300;
+            stats.lastLabel = this.formatRblAge(ageSeconds);
+        }
+
+        return stats;
+    },
+
+    getRblMonitorBandItems() {
+        const counts = new Map();
+        this.getRblLiveSpots().forEach(spot => {
+            const band = spot.band || 'Unknown';
+            if (!counts.has(band)) {
+                counts.set(band, { band, total: 0, cw: 0, ssb: 0, digi: 0, bestSnr: null, topScore: 0 });
+            }
+            const item = counts.get(band);
+            const group = String(spot.rbl_mode_group || 'OTHER').toUpperCase();
+            item.total += 1;
+            if (group === 'CW') item.cw += 1;
+            else if (group === 'SSB') item.ssb += 1;
+            else if (group === 'DIGI') item.digi += 1;
+            const snr = this.getRblSnr(spot);
+            if (snr !== null && !Number.isNaN(snr)) {
+                item.bestSnr = item.bestSnr === null ? snr : Math.max(item.bestSnr, snr);
+            }
+            item.topScore = Math.max(item.topScore, this.getSpotScore(spot));
+        });
+
+        return this.availableBands
+            .map(band => counts.get(band))
+            .filter(Boolean)
+            .sort((a, b) => b.total - a.total || b.topScore - a.topScore);
+    },
+
+    formatRblAge(ageSeconds) {
+        if (ageSeconds < 60) return `${ageSeconds}s`;
+        if (ageSeconds < 3600) return `${Math.floor(ageSeconds / 60)}m`;
+        return `${Math.floor(ageSeconds / 3600)}h`;
+    },
+
+    focusRblMode(mode) {
+        this.spotsFilter.spotSources = ['rbl'];
+        this.spotsFilter.rblModes = [mode];
+        this.spotsFilter.sortBy = 'score';
+        this.openDropdown = null;
+    },
+
+    focusRblBand(band) {
+        this.spotsFilter.spotSources = ['rbl'];
+        this.spotsFilter.bands = [band];
+        this.spotsFilter.sortBy = 'score';
+    },
+
+    showHighConfidenceRblSpots() {
+        this.spotsFilter.spotSources = ['rbl'];
+        this.spotsFilter.rblMinSnr = 8;
+        this.spotsFilter.rblDedupeMinutes = 5;
+        this.spotsFilter.sortBy = 'score';
+    },
+
+    getRblSnr(spot) {
+        if (spot.rbl_snr !== null && spot.rbl_snr !== undefined && spot.rbl_snr !== '') {
+            return Number(spot.rbl_snr);
+        }
+        const match = String(spot.comment || '').match(/(^|[^A-Z0-9])([+-]?\d{1,2}(?:\.\d+)?)\s*dB\b/i);
+        return match ? Number(match[2]) : null;
+    },
+
+    getSpotIdentityKey(spot) {
+        if (spot.aggregate_key) return spot.aggregate_key;
+        const source = spot.spot_source || 'cluster';
+        const callsign = String(spot.callsign || '').toUpperCase();
+        const band = String(spot.band || '').toUpperCase();
+        const mode = String(spot.mode || '').toUpperCase();
+        if (source === 'rbl') {
+            return `rbl:${callsign}:${band}:${mode}`;
+        }
+        const freqMhz = spot.frequency_mhz || parseFloat(spot.frequency || 0) / 1000;
+        return `cluster:${callsign}:${Number(freqMhz || 0).toFixed(3)}`;
+    },
+
+    findExistingSpotIndex(spot, spots) {
+        const key = this.getSpotIdentityKey(spot);
+        return (spots || []).findIndex(existing => this.getSpotIdentityKey(existing) === key);
+    },
+
+    mergeSpotAggregate(existingSpot, incomingSpot) {
+        const currentCount = Number(existingSpot.aggregate_count || 1);
+        const incomingCount = Number(incomingSpot.aggregate_count || 1);
+        const existingSpotters = Array.isArray(existingSpot.aggregate_spotters)
+            ? existingSpot.aggregate_spotters
+            : [existingSpot.spotter].filter(Boolean);
+        const incomingSpotters = Array.isArray(incomingSpot.aggregate_spotters)
+            ? incomingSpot.aggregate_spotters
+            : [incomingSpot.spotter].filter(Boolean);
+        const spotters = [...new Set([...existingSpotters, ...incomingSpotters])];
+        const bestSnrValues = [
+            existingSpot.aggregate_best_snr,
+            incomingSpot.aggregate_best_snr,
+            this.getRblSnr(existingSpot),
+            this.getRblSnr(incomingSpot),
+        ].filter(value => value !== null && value !== undefined && value !== '');
+
+        return {
+            ...existingSpot,
+            ...incomingSpot,
+            aggregate_key: incomingSpot.aggregate_key || existingSpot.aggregate_key || this.getSpotIdentityKey(incomingSpot),
+            aggregate_count: Math.max(currentCount + 1, incomingCount),
+            aggregate_spotters: spotters,
+            aggregate_spotter_count: spotters.length,
+            aggregate_first_timestamp: Math.min(
+                Number(existingSpot.aggregate_first_timestamp || existingSpot.timestamp || 0),
+                Number(incomingSpot.aggregate_first_timestamp || incomingSpot.timestamp || 0)
+            ),
+            aggregate_last_timestamp: Math.max(
+                Number(existingSpot.aggregate_last_timestamp || existingSpot.timestamp || 0),
+                Number(incomingSpot.aggregate_last_timestamp || incomingSpot.timestamp || 0)
+            ),
+            aggregate_best_snr: bestSnrValues.length > 0 ? Math.max(...bestSnrValues.map(Number)) : null,
+        };
+    },
+
+    getSpotSeenLabel(spot) {
+        const count = Number(spot.aggregate_count || 1);
+        return count > 1 ? `seen x${count}` : '';
+    },
+
+    getSpotterSummary(spot) {
+        const count = Number(spot.aggregate_spotter_count || 0);
+        if (count > 1) return `${count} spotters`;
+        return spot.spotter || '-';
+    },
+
+    getBestSnrLabel(spot) {
+        const best = spot.aggregate_best_snr;
+        if (best === null || best === undefined || best === '') return '';
+        return `best ${Number(best).toFixed(0)} dB`;
+    },
+
+    getLastSeenLabel(spot) {
+        const timestamp = this.getSpotTimestamp(spot);
+        if (!timestamp) return '';
+        const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
+        if (ageSeconds < 60) return `${ageSeconds}s ago`;
+        if (ageSeconds < 3600) return `${Math.floor(ageSeconds / 60)}m ago`;
+        return `${Math.floor(ageSeconds / 3600)}h ago`;
+    },
+
+    filterRblNoise(spots) {
+        let filtered = spots || [];
+        if (!this.rblSourceSelected()) {
+            return filtered;
+        }
+
+        const minSnr = this.spotsFilter.rblMinSnr !== '' ? Number(this.spotsFilter.rblMinSnr) : null;
+        if (minSnr !== null && !Number.isNaN(minSnr)) {
+            filtered = filtered.filter(spot => {
+                if ((spot.spot_source || 'cluster') !== 'rbl') return true;
+                const snr = this.getRblSnr(spot);
+                return snr !== null && snr >= minSnr;
+            });
+        }
+
+        const dedupeMinutes = Number(this.spotsFilter.rblDedupeMinutes);
+        if (dedupeMinutes > 0) {
+            const seen = new Map();
+            const windowSeconds = dedupeMinutes * 60;
+            filtered = filtered.filter(spot => {
+                if ((spot.spot_source || 'cluster') !== 'rbl') return true;
+                const key = `${spot.callsign || ''}|${spot.band || ''}|${spot.mode || ''}`;
+                const timestamp = Number(spot.timestamp || 0);
+                const previous = seen.get(key);
+                if (previous !== undefined && Math.abs(previous - timestamp) <= windowSeconds) {
+                    return false;
+                }
+                seen.set(key, timestamp);
+                return true;
+            });
+        }
+
+        return filtered;
+    },
+
+    sortVisibleSpots(spots) {
+        const sorted = [...(spots || [])];
+        if (this.spotsFilter.sortBy === 'score') {
+            sorted.sort((a, b) =>
+                (Number(b.spot_score || 0) - Number(a.spot_score || 0)) ||
+                (Number(b.timestamp || 0) - Number(a.timestamp || 0))
+            );
+        }
+        return sorted;
+    },
+
+    getSpotScore(spot) {
+        return Number(spot.spot_score || 0);
+    },
+
+    getSpotScoreLabel(spot) {
+        const score = this.getSpotScore(spot);
+        if (score >= 80) return 'Hot';
+        if (score >= 55) return 'Good';
+        if (score >= 30) return 'Watch';
+        return 'Low';
+    },
+
+    getSpotScoreStyle(spot) {
+        const score = this.getSpotScore(spot);
+        if (score >= 80) return 'background: #7f1d1d; color: #fecaca;';
+        if (score >= 55) return 'background: #854d0e; color: #fde68a;';
+        if (score >= 30) return 'background: #064e3b; color: #a7f3d0;';
+        return 'background: #374151; color: #d1d5db;';
+    },
+
+    getSpotScoreReasons(spot) {
+        if (Array.isArray(spot.spot_score_reasons)) return spot.spot_score_reasons;
+        if (typeof spot.spot_score_reasons === 'string') {
+            return spot.spot_score_reasons.split(',').map(item => item.trim()).filter(Boolean);
+        }
+        return [];
+    },
+
+    async showSpotDetails(spot, event) {
+        if (event) event.stopPropagation();
+        this.selectedSpot = spot;
+        this.selectedSpotExplain = null;
+        this.spotExplainError = '';
+        this.spotExplainLoading = true;
+
+        try {
+            const frequencyKhz = spot.frequency_mhz
+                ? Number(spot.frequency_mhz) * 1000
+                : Number(spot.frequency || 0);
+            const params = new URLSearchParams({
+                band: spot.band || '',
+                mode: spot.mode || '',
+                comment: spot.comment || '',
+            });
+            if (frequencyKhz > 0) params.set('frequency_khz', String(frequencyKhz));
+            const response = await fetch(`/api/spots/explain/${encodeURIComponent(spot.callsign || '')}?${params.toString()}`);
+            const data = await response.json();
+            if (!response.ok || !data.ok) {
+                throw new Error(data.detail || data.error || 'Spot explanation failed');
+            }
+            this.selectedSpotExplain = data;
+        } catch (error) {
+            console.error('Spot explanation failed:', error);
+            this.spotExplainError = error.message || 'Spot explanation failed';
+        } finally {
+            this.spotExplainLoading = false;
+        }
+    },
+
+    closeSpotDetails() {
+        this.selectedSpot = null;
+        this.selectedSpotExplain = null;
+        this.spotExplainError = '';
+        this.spotExplainLoading = false;
     },
     
     // === Worked QSO Lookup (matches by CALL + BAND + MODE) ===
@@ -731,6 +2001,7 @@ const dxSpotsComputed = {
             // Apply local-only filters: worked b4 and DXCC status
             // (Other filters like band, mode, zones, continents, callsign, special_tags are already applied by database)
             let filtered = this.filteredSearchResults;
+            filtered = this.applySourceAndRblFilters(filtered);
             
             // DXCC Status filter (not available in database query)
             // Note: database results have 'tag' field if DXCC status was computed
@@ -757,6 +2028,8 @@ const dxSpotsComputed = {
                 });
             }
             
+            filtered = this.filterRblNoise(filtered);
+            filtered = this.sortVisibleSpots(filtered);
             return filtered.slice(0, this.maxSpots);
         }
         
@@ -824,6 +2097,8 @@ const dxSpotsComputed = {
                 );
             });
         }
+
+        filtered = this.applySourceAndRblFilters(filtered);
         
         // Worked b4 filter
         if (this.spotsFilter.workedB4Include || this.spotsFilter.workedB4Exclude) {
@@ -844,6 +2119,8 @@ const dxSpotsComputed = {
             });
         }
         
+        filtered = this.filterRblNoise(filtered);
+        filtered = this.sortVisibleSpots(filtered);
         return filtered.slice(0, this.maxSpots);
     }
 };

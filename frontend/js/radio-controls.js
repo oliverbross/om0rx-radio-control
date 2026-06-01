@@ -20,6 +20,142 @@ const radioControlMethods = {
         const tolerance = bandFreq * 0.05;
         return Math.abs(freq - bandFreq) < tolerance;
     },
+
+    getActiveBandLabel() {
+        return this.bands.find(band => this.isActiveBand(band)) || '';
+    },
+
+    getActiveBandKey() {
+        const band = this.getActiveBandLabel();
+        return band ? band.toLowerCase() : '';
+    },
+
+    isRotorEnabledForCurrentBand() {
+        if (!this.rotorEnabled) return false;
+        const bandKey = this.getActiveBandKey();
+        if (!bandKey) return false;
+        return this.rotorBands && this.rotorBands[bandKey] === true;
+    },
+
+    getRotorBandStatusText() {
+        if (!this.rotorEnabled) return 'Rotor off';
+        const band = this.getActiveBandLabel();
+        if (!band) return 'Rotor band';
+        return this.isRotorEnabledForCurrentBand() ? `Rotor ${band}` : `Rotor hidden ${band}`;
+    },
+
+    getRadioLayoutPreset() {
+        return this.configData.RADIO_LAYOUT_PRESET || 'compact';
+    },
+
+    isRadioLayoutPreset(preset) {
+        return this.getRadioLayoutPreset() === preset;
+    },
+
+    shouldShowCompactStepControl() {
+        return !this.isRadioLayoutPreset('contest');
+    },
+
+    shouldShowCompactAgcControl() {
+        return !this.isRadioLayoutPreset('digital');
+    },
+
+    shouldShowCompactDigitalButton() {
+        return this.isRadioLayoutPreset('compact') || this.isRadioLayoutPreset('digital') || this.isRadioLayoutPreset('full');
+    },
+
+    shouldShowCompactRotorControls() {
+        if (!this.isRotorEnabledForCurrentBand()) return false;
+        return this.getRadioLayoutPreset() !== 'digital';
+    },
+
+    shouldShowMutedRotorCard() {
+        if (!this.rotorEnabled || this.isRotorEnabledForCurrentBand()) return false;
+        if (this.getRadioLayoutPreset() === 'digital') return false;
+        return this.compactPanelPrefs.showMutedRotor !== false;
+    },
+
+    shouldShowCompactWinKeyer() {
+        if (!this.winKeyerEnabled) return false;
+        if (this.getRadioLayoutPreset() === 'digital') return false;
+        return this.compactPanelPrefs.showWinKeyer !== false;
+    },
+
+    shouldShowCompactWinKeyerMemories() {
+        if (!this.shouldShowCompactWinKeyer()) return false;
+        if (this.getRadioLayoutPreset() === 'compact') {
+            return this.compactPanelPrefs.showWinKeyerMemories === true;
+        }
+        return this.compactPanelPrefs.showWinKeyerMemories !== false;
+    },
+
+    shouldShowCompactStatusCard() {
+        return this.compactPanelPrefs.showStatus !== false;
+    },
+
+    compactLayoutClass() {
+        return `compact-layout-${this.getRadioLayoutPreset()}`;
+    },
+
+    applyPresetPanelDefaults(preset) {
+        if (!this.compactPanelPrefs) return;
+        if (preset === 'digital') {
+            this.compactPanelPrefs.showMutedRotor = false;
+            this.compactPanelPrefs.showWinKeyer = false;
+            this.compactPanelPrefs.showWinKeyerMemories = false;
+        } else if (preset === 'contest') {
+            this.compactPanelPrefs.showMutedRotor = true;
+            this.compactPanelPrefs.showWinKeyer = true;
+            this.compactPanelPrefs.showWinKeyerMemories = true;
+            this.compactPanelPrefs.showStatus = true;
+        } else if (preset === 'compact') {
+            this.compactPanelPrefs.showMutedRotor = true;
+            this.compactPanelPrefs.showWinKeyer = true;
+        } else if (preset === 'full') {
+            this.compactPanelPrefs.showMutedRotor = true;
+            this.compactPanelPrefs.showWinKeyer = true;
+            this.compactPanelPrefs.showWinKeyerMemories = true;
+            this.compactPanelPrefs.showStatus = true;
+        }
+        this.saveCompactPanelPrefs();
+    },
+
+    loadCompactPanelPrefs() {
+        try {
+            const raw = localStorage.getItem('om0rx.radio.compactPanelPrefs');
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            this.compactPanelPrefs = {
+                showMutedRotor: parsed.showMutedRotor !== false,
+                showWinKeyer: parsed.showWinKeyer !== false,
+                showWinKeyerMemories: parsed.showWinKeyerMemories !== false,
+                showStatus: parsed.showStatus !== false,
+            };
+        } catch (error) {
+            console.warn('Could not load compact radio panel preferences:', error);
+        }
+    },
+
+    saveCompactPanelPrefs() {
+        try {
+            localStorage.setItem('om0rx.radio.compactPanelPrefs', JSON.stringify(this.compactPanelPrefs));
+        } catch (error) {
+            console.warn('Could not save compact radio panel preferences:', error);
+        }
+    },
+
+    toggleCompactPanelPref(prefKey) {
+        if (!Object.prototype.hasOwnProperty.call(this.compactPanelPrefs, prefKey)) return;
+        this.compactPanelPrefs[prefKey] = !this.compactPanelPrefs[prefKey];
+        this.saveCompactPanelPrefs();
+    },
+
+    async handleBandSelect(event) {
+        const band = event.target.value;
+        if (band) {
+            await this.setBand(band);
+        }
+    },
     
     // === Mode Controls ===
     
@@ -27,12 +163,81 @@ const radioControlMethods = {
         console.log('Setting mode:', mode);
         await this.sendCommand('mode', { mode });
     },
+
+    async handleModeSelect(event) {
+        const mode = event.target.value;
+        if (mode) {
+            await this.setMode(mode);
+        }
+    },
     
     // === Filter Controls ===
     
     async setFilter(lo, hi) {
         console.log('Setting filter:', lo, hi);
         await this.sendCommand('filter', { filter_lo: lo, filter_hi: hi });
+    },
+
+    getActiveFilterValue() {
+        const active = this.currentFilters.find(filter => this.isActiveFilter(filter));
+        return active ? `${active.lo}:${active.hi}` : '';
+    },
+
+    async handleFilterSelect(event) {
+        const value = event.target.value;
+        if (!value) return;
+        const [lo, hi] = value.split(':').map(Number);
+        if (Number.isFinite(lo) && Number.isFinite(hi)) {
+            await this.setFilter(lo, hi);
+        }
+    },
+
+    formatFilterWidth() {
+        const lo = Number(this.radioStatus.filter_lo || 0);
+        const hi = Number(this.radioStatus.filter_hi || 0);
+        const width = Math.abs(hi - lo);
+        if (!width) return 'Filter';
+        return width >= 1000 ? `${(width / 1000).toFixed(width % 1000 === 0 ? 0 : 1)}K` : `${width}`;
+    },
+
+    async toggleDetailedRadioControls() {
+        this.configData.RADIO_SHOW_DETAILED_CONTROLS = !this.configData.RADIO_SHOW_DETAILED_CONTROLS;
+        this.configData.RADIO_LAYOUT_PRESET = this.configData.RADIO_SHOW_DETAILED_CONTROLS ? 'full' : 'compact';
+        try {
+            await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    config: {
+                        RADIO_SHOW_DETAILED_CONTROLS: this.configData.RADIO_SHOW_DETAILED_CONTROLS,
+                        RADIO_LAYOUT_PRESET: this.configData.RADIO_LAYOUT_PRESET,
+                    },
+                }),
+            });
+        } catch (error) {
+            console.warn('Could not save radio control layout preference:', error);
+        }
+    },
+
+    async setRadioLayoutPreset(event) {
+        const preset = event.target.value || 'compact';
+        this.configData.RADIO_LAYOUT_PRESET = preset;
+        this.configData.RADIO_SHOW_DETAILED_CONTROLS = preset === 'full';
+        this.applyPresetPanelDefaults(preset);
+        try {
+            await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    config: {
+                        RADIO_LAYOUT_PRESET: preset,
+                        RADIO_SHOW_DETAILED_CONTROLS: this.configData.RADIO_SHOW_DETAILED_CONTROLS,
+                    },
+                }),
+            });
+        } catch (error) {
+            console.warn('Could not save radio layout preset:', error);
+        }
     },
     
     isActiveFilter(filter) {

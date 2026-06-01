@@ -1,0 +1,105 @@
+<div :class="['compact-radio-row', compactLayoutClass()]">
+    <div class="compact-radio-left">
+        <button class="compact-config-btn" @click="showConfigDialog">⚙️ Config</button>
+        <button @click="toggleDetailedRadioControls" :class="['compact-config-btn', { active: configData.RADIO_SHOW_DETAILED_CONTROLS }]">
+            {{ configData.RADIO_SHOW_DETAILED_CONTROLS ? 'Compact' : 'Controls' }}
+        </button>
+        <select class="compact-radio-select" :value="getRadioLayoutPreset()" @change="setRadioLayoutPreset">
+            <option value="compact">Compact</option>
+            <option value="contest">Contest</option>
+            <option value="digital">Digital</option>
+            <option value="full">Full</option>
+        </select>
+    </div>
+    <div class="compact-radio-center">
+        <div class="freq-display compact-frequency"
+             tabindex="0"
+             @keydown="handleFrequencyKeydown"
+             @wheel.passive="handleFrequencyWheel"
+             title="Use arrow keys or mouse wheel to tune (Step: {{ currentStep }})">
+            {{ formattedFrequency }}
+        </div>
+        <select class="compact-radio-select" :value="getActiveBandLabel()" @change="handleBandSelect">
+            <option value="">Band</option>
+            <option v-for="band in bands" :key="'compact-band-' + band" :value="band">{{ band }}</option>
+        </select>
+        <select class="compact-radio-select" :value="radioStatus.mode" @change="handleModeSelect">
+            <option v-for="mode in modes" :key="'compact-mode-' + mode" :value="mode">{{ mode }}</option>
+        </select>
+        <select class="compact-radio-select wide" :value="getActiveFilterValue()" @change="handleFilterSelect">
+            <option value="">{{ formatFilterWidth() }}</option>
+            <option v-for="filter in currentFilters" :key="'compact-filter-' + filter.label" :value="filter.lo + ':' + filter.hi">{{ filter.label }}</option>
+        </select>
+        <select v-if="shouldShowCompactStepControl()" v-model="currentStepIndex" @change="setTuningStep" class="compact-radio-select">
+            <option v-for="(step, index) in (stepsByMode[radioStatus.mode] || stepsByMode['USB'])" :key="'compact-step-' + index" :value="index">{{ step }}</option>
+        </select>
+        <select v-if="shouldShowCompactAgcControl()" :value="radioStatus.agc_mode || 'med'" @change="setAGC($event.target.value)" class="compact-radio-select">
+            <option value="off">AGC Off</option>
+            <option value="slow">AGC Slow</option>
+            <option value="med">AGC Med</option>
+            <option value="fast">AGC Fast</option>
+        </select>
+    </div>
+    <div class="compact-radio-right">
+        <button v-if="shouldShowCompactDigitalButton()" @click="openDigitalWindow" class="ft8-digi-button">DIGITAL</button>
+        <span class="utc-clock">{{ currentTime }} UTC</span>
+    </div>
+</div>
+
+<div :class="['compact-operator-strip', compactLayoutClass()]">
+    <div v-if="shouldShowCompactRotorControls()" class="compact-tool-card compact-rotor-card">
+        <strong>{{ getRotorBandStatusText() }}</strong>
+        <div class="compact-tool-row">
+            <span>Az</span>
+            <input type="text" v-model.number="rotorAzimuth" @input="validateAzimuth" @keydown.enter="rotorGoto" class="rotor-az-input compact-az-input" placeholder="0">
+            <button @click="rotorGoto" class="compact-tool-btn">GO</button>
+            <button @click="rotorAutoPending ? cancelRotorAuto() : toggleRotorAuto()" :class="['compact-tool-btn', { active: rotorAutoEnabled, pending: rotorAutoPending }]">
+                {{ rotorAutoPending ? 'Cancel' : 'AUTO' }}
+            </button>
+        </div>
+        <div class="compact-tool-row">
+            <select v-model="rotorPreset" @change="handleDirectorToggle" class="compact-radio-select wide">
+                <option value="">Director</option>
+                <option value="shortpath">QSO SP</option>
+                <option value="longpath">QSO LP</option>
+            </select>
+            <button @click="rotorDirection('N')" class="compact-tool-btn">N</button>
+            <button @click="rotorDirection('S')" class="compact-tool-btn">S</button>
+            <button @click="rotorDirection('E')" class="compact-tool-btn">E</button>
+            <button @click="rotorDirection('W')" class="compact-tool-btn">W</button>
+        </div>
+    </div>
+    <div v-else-if="shouldShowMutedRotorCard()" class="compact-tool-card compact-muted-card">
+        <strong>{{ getRotorBandStatusText() }}</strong>
+        <span>enabled bands only</span>
+        <button @click="toggleCompactPanelPref('showMutedRotor')" class="compact-tool-btn">Hide</button>
+    </div>
+
+    <div v-if="shouldShowCompactWinKeyer()" class="compact-tool-card compact-winkeyer-card">
+        <strong>WinKeyer</strong>
+        <div class="compact-tool-row">
+            <button @click="winkeyer.isConnected ? winKeyerDisconnect() : winKeyerConnect()" class="compact-tool-btn">
+                {{ winkeyer.isConnected ? 'Disconnect' : 'Connect' }}
+            </button>
+            <span :class="['compact-status-dot', { ok: winkeyer.isConnected }]"></span>
+            <span>{{ winkeyer.currentWpm }} WPM</span>
+            <button @click="toggleCompactPanelPref('showWinKeyerMemories')" :class="['compact-tool-btn', { active: shouldShowCompactWinKeyerMemories() }]">Mem</button>
+            <button @click="toggleCompactPanelPref('showWinKeyer')" class="compact-tool-btn">Hide</button>
+        </div>
+        <div v-if="shouldShowCompactWinKeyerMemories()" class="compact-tool-row">
+            <button @click="winKeyerSendMacro('M1')" class="compact-tool-btn">M1</button>
+            <button @click="winKeyerSendMacro('M2')" class="compact-tool-btn">M2</button>
+            <button @click="winKeyerSendMacro('M3')" class="compact-tool-btn">M3</button>
+            <button @click="winKeyerSendMacro('M4')" class="compact-tool-btn">M4</button>
+        </div>
+    </div>
+
+    <div v-if="shouldShowCompactStatusCard()" class="compact-status-card">
+        <span :class="['compact-status-dot', { ok: connected }]"></span>
+        <span>Radio {{ formattedFrequency }} {{ radioStatus.mode }}</span>
+        <span>Cluster {{ clusterStatus.connected ? 'online' : 'offline' }}</span>
+        <span>RBL {{ rblControl.enabled ? 'on' : 'off' }}</span>
+        <span v-if="getRadioLayoutPreset() !== 'digital'">{{ getRotorBandStatusText() }}</span>
+        <button @click="toggleCompactPanelPref('showStatus')" class="compact-tool-btn">Hide</button>
+    </div>
+</div>

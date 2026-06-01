@@ -73,9 +73,9 @@ class FT8AudioProcessor:
         self.sample_rate = sample_rate
         self.fft_size = self.DEFAULT_FFT_SIZE
         
-        # Keep slightly more than one receive slot so the decoder can take an
-        # exact 15-second FT8 window without the deque dropping under length.
-        buffer_seconds = 16 if mode == 'FT8' else 8
+        # Keep enough history to decode the previous slot even when the decode
+        # loop wakes late in the current slot.
+        buffer_seconds = 32 if mode == 'FT8' else 16
         self.buffer_size = sample_rate * buffer_seconds
         self.audio_buffer = deque(maxlen=self.buffer_size)
         

@@ -77,6 +77,16 @@ def status_is_worked(status: Any) -> bool:
     return normalise_status(status).lower() in {"worked", "confirmed"}
 
 
+def status_has_prior_call_work(status: Any) -> bool:
+    return normalise_status(status).lower() in {
+        "worked",
+        "confirmed",
+        "new band",
+        "new mode",
+        "new band+mode",
+    }
+
+
 def _message_dict(message: Any) -> dict[str, Any]:
     if hasattr(message, "to_dict"):
         return dict(message.to_dict())
@@ -364,10 +374,27 @@ class DigitalAutomationController:
         score = score_payload(payload)
         call_status = normalise_status(payload.get("call_status") or payload.get("callStatus"))
         dxcc_status = normalise_status(payload.get("dxcc_status") or payload.get("dxccStatus"))
-        if self.settings.avoid_logged and score <= 0 and status_is_worked(call_status) and status_is_worked(dxcc_status):
+        source = str(payload.get("source") or "decoded")
+        message = str(payload.get("message") or "")
+        if source == "decoded" and message and not _is_auto_call_start_message(message):
             self.last_decision = {
                 "decision": "skip",
-                "reason": "already-worked-and-confirmed",
+                "reason": "not-auto-call-start-message",
+                "call": call,
+                "band": band,
+                "mode": mode,
+                "message": message,
+            }
+            return None
+        if self.settings.avoid_logged and status_has_prior_call_work(call_status):
+            target = self.targets.get(key)
+            if target and target.state not in {"selected", "calling"}:
+                target.state = "skipped"
+                target.reason = "already-worked-call"
+                target.updated_at = utc_now()
+            self.last_decision = {
+                "decision": "skip",
+                "reason": "already-worked-call",
                 "call": call,
                 "band": band,
                 "mode": mode,
@@ -381,8 +408,9 @@ class DigitalAutomationController:
         if not target:
             target = DigitalTarget(key=key, call=call, band=band, mode=mode)
             self.targets[key] = target
-        target.source = str(payload.get("source") or target.source or "decoded")
-        target.message = str(payload.get("message") or target.message or "")
+        target.source = source or target.source or "decoded"
+        if message:
+            target.message = message
         target.grid = str(payload.get("grid") or payload.get("gridsquare") or target.grid or "").upper()
         target.country = str(payload.get("country") or payload.get("dxcc_name") or target.country or "")
         target.call_status = call_status
@@ -414,11 +442,29 @@ class DigitalAutomationController:
         }
         return target
 
-    def next_target(self, now: Optional[datetime] = None) -> Optional[DigitalTarget]:
+    def next_target(
+        self,
+        now: Optional[datetime] = None,
+        *,
+        cq_only: bool = False,
+        auto_call_start_only: bool = False,
+    ) -> Optional[DigitalTarget]:
         now = now or utc_now()
         candidates = []
         for target in self.targets.values():
             if target.state in {"done", "skipped"}:
+                continue
+            if self.settings.avoid_logged and status_has_prior_call_work(target.call_status):
+                target.state = "skipped"
+                target.reason = "already-worked-call"
+                target.updated_at = now
+                continue
+            if auto_call_start_only and target.source != "spot" and not _is_auto_call_start_message(target.message):
+                target.state = "skipped"
+                target.reason = "not-auto-call-start-message"
+                target.updated_at = now
+                continue
+            if cq_only and not _is_cq_message(target.message):
                 continue
             if target.is_backed_off(now):
                 continue
@@ -577,6 +623,7 @@ class DigitalAutomationController:
                 for target in self.targets.values()
                 if target.state not in {"done", "skipped"}
                 and not target.is_backed_off(now)
+                and not (self.settings.avoid_logged and status_has_prior_call_work(target.call_status))
                 and (target.heard or not self.settings.require_heard_before_call)
                 and (target.score > 0 or not self.settings.avoid_logged)
             ),
@@ -624,6 +671,16 @@ def _float(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return parsed
+
+
+def _is_cq_message(message: Any) -> bool:
+    tokens = _message_tokens(str(message or ""))
+    return bool(tokens and tokens[0] in {"CQ", "QRZ"})
+
+
+def _is_auto_call_start_message(message: Any) -> bool:
+    """Return true only for messages that may start a new Auto Call QSO."""
+    return _is_cq_message(message)
 
 
 def score_payload(payload: Mapping[str, Any]) -> int:

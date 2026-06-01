@@ -37,6 +37,39 @@
     // ⚡ CRITICAL FIX: Load all templates in parallel
     console.log(`⚡ Loading ${totalToLoad} templates in PARALLEL...`);
     
+    const partialCache = new Map();
+
+    function resolveTemplateIncludes(html) {
+        const includePattern = /<!--\s*@include\s+([^>]+?)\s*-->/g;
+        const includes = [...html.matchAll(includePattern)];
+        if (includes.length === 0) {
+            return Promise.resolve(html);
+        }
+
+        return Promise.all(includes.map(match => {
+            const partialPath = match[1].trim();
+            if (partialCache.has(partialPath)) {
+                return partialCache.get(partialPath);
+            }
+            const promise = fetch(partialPath)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status} loading ${partialPath}`);
+                    }
+                    return response.text();
+                })
+                .then(partialHtml => partialHtml.trim());
+            partialCache.set(partialPath, promise);
+            return promise;
+        })).then(partials => {
+            let resolved = html;
+            includes.forEach((match, index) => {
+                resolved = resolved.replace(match[0], partials[index]);
+            });
+            return resolveTemplateIncludes(resolved);
+        });
+    }
+
     templateSchedule.forEach(({ file: templatePath, target: targetId, label: templateName, order }) => {
         fetch(templatePath)
             .then(response => {
@@ -45,6 +78,7 @@
                 }
                 return response.text();
             })
+            .then(html => resolveTemplateIncludes(html))
             .then(html => {
                 loadedTemplates.set(order, { html: html.trim(), targetId, templateName, templatePath });
                 loadedCount++;

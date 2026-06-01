@@ -8,17 +8,11 @@ import numpy as np
 import logging
 from typing import Optional, Callable
 from dataclasses import dataclass
+from services.sounddevice_loader import get_sounddevice, sounddevice_unavailable_reason
 
 logger = logging.getLogger(__name__)
 
-# Try to import sounddevice for real audio capture
-try:
-    import sounddevice as sd
-    AUDIO_AVAILABLE = True
-    logger.info("sounddevice library available for audio capture")
-except ImportError:
-    AUDIO_AVAILABLE = False
-    logger.warning("sounddevice not available - using simulated audio")
+AUDIO_AVAILABLE = False
 
 
 @dataclass
@@ -76,9 +70,10 @@ class AudioCaptureService:
             return True
         
         try:
-            if AUDIO_AVAILABLE:
+            if get_sounddevice() is not None:
                 return self._start_real_capture()
             else:
+                logger.warning("%s - using simulated audio", sounddevice_unavailable_reason())
                 return self._start_simulated_capture()
         except Exception as e:
             logger.error(f"Failed to start audio capture: {e}", exc_info=True)
@@ -91,7 +86,8 @@ class AudioCaptureService:
         
         self.enabled = False
         
-        if self.stream is not None and AUDIO_AVAILABLE:
+        sd = get_sounddevice()
+        if self.stream is not None and sd is not None:
             try:
                 self.stream.stop()
                 self.stream.close()
@@ -104,6 +100,11 @@ class AudioCaptureService:
     def _start_real_capture(self) -> bool:
         """Start real audio capture using sounddevice"""
         try:
+            sd = get_sounddevice()
+            if sd is None:
+                logger.warning("%s - using simulated audio", sounddevice_unavailable_reason())
+                return self._start_simulated_capture()
+
             try:
                 self._loop = asyncio.get_running_loop()
             except RuntimeError:
@@ -177,7 +178,8 @@ class AudioCaptureService:
         except ValueError:
             pass
 
-        if not AUDIO_AVAILABLE:
+        sd = get_sounddevice()
+        if sd is None:
             return None
 
         devices = sd.query_devices()
@@ -292,7 +294,8 @@ class AudioCaptureService:
         Returns:
             List of device info dicts
         """
-        if not AUDIO_AVAILABLE:
+        sd = get_sounddevice()
+        if sd is None:
             return []
         
         try:

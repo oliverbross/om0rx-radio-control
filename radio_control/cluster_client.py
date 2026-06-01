@@ -31,6 +31,10 @@ class ClusterClient:
         self.writer: Optional[asyncio.StreamWriter] = None
         self.on_spot_callback: Optional[Callable] = None
         self.recent_spots = deque(maxlen=5000)  # Deduplication
+        self.recent_lines = deque(maxlen=20)
+        self.command_history = deque(maxlen=20)
+        self.last_line = ""
+        self.last_line_at = None
         
     def set_spot_callback(self, callback: Callable):
         """Set callback function to be called when a spot is received"""
@@ -105,7 +109,20 @@ class ClusterClient:
             'active_name': f"{self.host} (Primary)",
             'host': self.host,
             'port': self.port,
+            'last_line': self.last_line,
+            'last_line_at': self.last_line_at,
+            'recent_lines': list(self.recent_lines),
+            'command_history': list(self.command_history),
         }
+
+    def record_command_sent(self, command: str, success: bool, message: str = ""):
+        """Remember cluster commands sent through the API for operator feedback."""
+        self.command_history.appendleft({
+            "command": command,
+            "success": bool(success),
+            "message": message,
+            "timestamp": datetime.now(UTC).isoformat(),
+        })
     
     async def read_loop(self):
         """Main read loop - parses spots and calls callback"""
@@ -126,10 +143,17 @@ class ClusterClient:
                 text = line.decode(errors='ignore').strip()
                 if not text:
                     continue
+                now_iso = datetime.now(UTC).isoformat()
+                self.last_line = text
+                self.last_line_at = now_iso
                 
                 # Parse DX spot
                 match = DX_RE.match(text)
                 if not match:
+                    self.recent_lines.appendleft({
+                        "text": text,
+                        "timestamp": now_iso,
+                    })
                     continue
                 
                 # Extract spot data
@@ -428,6 +452,10 @@ class ClusterManager:
                 'host': active_host,
                 'port': active_port
             } if self.active_client else None,
+            'last_line': getattr(self.active_client, 'last_line', '') if self.active_client else '',
+            'last_line_at': getattr(self.active_client, 'last_line_at', None) if self.active_client else None,
+            'recent_lines': list(getattr(self.active_client, 'recent_lines', [])) if self.active_client else [],
+            'command_history': list(getattr(self.active_client, 'command_history', [])) if self.active_client else [],
             'clusters': [
                 {
                     'name': info['config'].get('name', f"Cluster {i+1}"),

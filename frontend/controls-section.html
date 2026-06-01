@@ -11,7 +11,7 @@
             </div>
 
             <!-- Centered Button Group -->
-            <div style="display: flex; gap: 4px; align-items: center; justify-content: center; width: 100%;">
+            <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="display: flex; gap: 4px; align-items: center; justify-content: center; width: 100%;">
                 <button>⚡</button>
                 <button :class="radioStatus.rx2_enabled ? 'active' : ''" @click="toggleRX2">RX2</button>
 
@@ -28,7 +28,7 @@
             </div>
 
             <!-- UTC Clock & Sync Status - Absolute positioned to right -->
-            <div style="position: absolute; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;">
+            <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="position: absolute; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;">
                 <span class="status-indicator" :class="connected ? 'status-connected' : 'status-disconnected'"></span>
                 <button
                     @click="openDigitalWindow"
@@ -55,7 +55,7 @@
             </div>
 
             <!-- Sliders Row - Below buttons, centered and compact -->
-            <div style="display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 8px;">
+            <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 8px;">
                 <div class="slider-group">
                     <span class="slider-label">Volume</span>
                     <input type="range" v-model.number="controls.volume" @input="setVolume" min="0" max="100">
@@ -94,8 +94,24 @@
             </div>
         </div>
 
+        <div class="service-health-strip" v-if="serviceHealth && serviceHealth.services && serviceHealth.services.length">
+            <button
+                v-for="service in serviceHealth.services"
+                :key="service.id"
+                type="button"
+                :class="['service-health-pill', `service-health-${service.status || 'unknown'}`, { 'service-health-actionable': service.action }]"
+                :title="serviceHealthPillTitle(service)"
+                @click="handleServiceHealthClick(service)">
+                <span class="service-health-dot"></span>
+                <span class="service-health-label">{{ service.label }}</span>
+                <span class="service-health-value" v-if="service.value">{{ service.value }}</span>
+            </button>
+        </div>
+
+        <!-- @include templates/partials/compact-radio-controls.html -->
+
         <!-- Row 2: Bands on left, Modes/Filters on right in 2-line layout -->
-        <div class="control-row" style="flex-wrap: wrap; align-items: flex-start;">
+        <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" class="control-row" style="flex-wrap: wrap; align-items: flex-start;">
             <!-- Band buttons on LEFT -->
             <div class="control-group" style="flex: 0 0 auto;">
                 <button v-for="band in bands"
@@ -133,9 +149,9 @@
         </div>
 
         <!-- Row 3: Rotator, Frequency/Band/Mode in center, RIT/XIT on right -->
-        <div class="control-row" style="justify-content: center; position: relative;">
+        <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" class="control-row" style="justify-content: center; position: relative;">
             <!-- Rotator & Beaming Controls - left aligned (flex container) -->
-            <div style="display: flex; gap: 12px; align-items: flex-start; position: absolute; left: 8px;" v-if="rotorEnabled">
+            <div style="display: flex; gap: 12px; align-items: flex-start; position: absolute; left: 8px;" v-if="isRotorEnabledForCurrentBand()">
                 <!-- Rotator Controls -->
                 <div class="rotor-control">
                     <!-- Azimuth control -->
@@ -235,7 +251,7 @@
                     </div>
 
                     <!-- DSP Buttons directly under frequency -->
-                    <div style="display: flex; gap: 8px; justify-content: center; width: 100%;">
+                    <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="display: flex; gap: 8px; justify-content: center; width: 100%;">
                         <button @click="toggleDSP('nb')" :class="['dsp-button', { active: radioStatus.nb_enabled }]">NB</button>
                         <button @click="toggleDSP('nr')" :class="['dsp-button', { active: radioStatus.nr_enabled }]">NR</button>
                         <button @click="toggleDSP('anf')" :class="['dsp-button', { active: radioStatus.anf_enabled }]">ANF</button>
@@ -247,7 +263,7 @@
                 <div style="display: flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center;">
 
                     <!-- DSP Level Sliders (shown when DSP is active and slider toggled) -->
-                    <div v-if="showDSPSlider.nb || showDSPSlider.nr || showDSPSlider.anf || showDSPSlider.apf"
+                    <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS && (showDSPSlider.nb || showDSPSlider.nr || showDSPSlider.anf || showDSPSlider.apf)"
                           style="display: flex; gap: 12px; padding: 4px; background: rgba(0,0,0,0.3); border-radius: 4px;">
                         <div v-if="showDSPSlider.nb" class="slider-group" style="min-width: 100px;">
                             <span class="slider-label" style="font-size: 9px;">NB</span>
@@ -274,7 +290,7 @@
             </div>
 
             <!-- RIT/XIT and Step/AGC dropdowns - right aligned -->
-            <div class="control-group" style="gap: 12px; position: absolute; right: 8px;">
+            <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" class="control-group" style="gap: 12px; position: absolute; right: 8px;">
                 <!-- RIT/XIT Controls (2 lines) -->
                 <div style="display: flex; flex-direction: column; gap: 4px;">
                     <div class="rit-xit-control">

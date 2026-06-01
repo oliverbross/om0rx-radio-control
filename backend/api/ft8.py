@@ -16,6 +16,7 @@ from radio_control.settings_store import (
 )
 
 from services.ft8_service import get_ft8_service, init_ft8_service
+from services.sounddevice_loader import get_sounddevice, sounddevice_unavailable_reason
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +44,6 @@ def _raise_legacy_tx_disabled(route: str) -> None:
             "attempt state machine."
         ),
     )
-
-# Try to import sounddevice for audio device enumeration
-try:
-    import sounddevice as sd
-    AUDIO_AVAILABLE = True
-except ImportError:
-    logger.warning("sounddevice not installed - audio device enumeration unavailable")
-    AUDIO_AVAILABLE = False
-
 
 # === Request/Response Models ===
 
@@ -159,6 +151,7 @@ async def _enrich_automation_target(target: dict[str, Any], request: Request) ->
     try:
         from radio_control.spot_processor import band_from_khz
         from radio_control.spot_classification import classify_call_status, classify_dxcc_status
+        from services.digital_status import call_status_from_recent_qsos
 
         frequency_value = enriched.get("frequency_khz") or enriched.get("frequency") or enriched.get("frequency_mhz") or 0
         try:
@@ -197,6 +190,9 @@ async def _enrich_automation_target(target: dict[str, Any], request: Request) ->
             call_new_mode,
             call_bandmode_confirmed,
         )
+        recent_call_status = await call_status_from_recent_qsos(callsign, band, mode)
+        if recent_call_status:
+            enriched["call_status"] = recent_call_status
 
         dxcc = enriched.get("dxcc") or cty_info.get("dxcc")
         if dxcc is not None:
@@ -241,6 +237,7 @@ class TransmitRequest(BaseModel):
     watchdog_enabled: Optional[bool] = True
     auto_cq: Optional[bool] = False
     auto_call: Optional[bool] = False
+    cq_only: Optional[bool] = False
     auto_cq_limit: Optional[int] = None
     auto_call_limit: Optional[int] = None
     replace: Optional[bool] = False
@@ -263,6 +260,7 @@ class TxControlRequest(BaseModel):
     watchdog_enabled: Optional[bool] = True
     auto_cq: Optional[bool] = False
     auto_call: Optional[bool] = False
+    cq_only: Optional[bool] = False
     auto_cq_limit: Optional[int] = 5
     auto_call_limit: Optional[int] = 5
     immediate: Optional[bool] = False
@@ -530,7 +528,7 @@ async def engage_automation_target(engage_request: AutomationEngageRequest, requ
             "stage": "calling",
             "next_tx_message": message,
             "scheduled_slot_utc": (stats.get("pending_tx_intent") or {}).get("scheduled_slot_utc"),
-            "will_tx_now": bool(stats.get("slot_is_tx") and stats.get("cycle_position", 99) <= (1.0 if stats.get("mode") == "FT8" else 0.4)),
+            "will_tx_now": bool(stats.get("slot_is_tx") and stats.get("cycle_position", 99) <= (7.0 if stats.get("mode") == "FT8" else 3.5)),
             "reason": service.tx_status,
             "stats": stats,
             "automation": service.automation_controller.status(),
@@ -580,6 +578,7 @@ async def enable_tx(request: TxControlRequest):
             watchdog_enabled=request.watchdog_enabled,
             auto_cq=request.auto_cq,
             auto_call=request.auto_call,
+            cq_only=request.cq_only,
             auto_cq_limit=request.auto_cq_limit,
             auto_call_limit=request.auto_call_limit,
             special_activity=request.specialActivity,
@@ -605,6 +604,18 @@ async def halt_tx():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/tx/clear-qso")
+async def clear_current_qso():
+    """Clear the active backend QSO attempt and pending TX without scheduling replacement work."""
+    try:
+        service = get_ft8_service()
+        service.clear_current_qso()
+        return {"status": "cleared", "stats": service.get_stats()}
+    except Exception as e:
+        logger.error("Error clearing FT8 QSO: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/tx/manual")
 async def manual_tx(request: ManualTxRequest):
     """Queue a manual TX-button override through the backend QSO owner."""
@@ -626,7 +637,6 @@ async def abort_current_attempt():
     try:
         service = get_ft8_service()
         service.abort_current_attempt()
-        asyncio.create_task(service.transmit_queued_now_if_possible(force_current_slot=True))
         return {"status": "aborted", "stats": service.get_stats()}
     except Exception as e:
         logger.error("Error aborting current FT8 attempt: %s", e, exc_info=True)
@@ -837,8 +847,9 @@ async def ft8_websocket(websocket: WebSocket):
 @router.get("/audio-devices")
 async def get_audio_devices():
     """Get available audio input/output devices"""
-    if not AUDIO_AVAILABLE:
-        return {"input": [], "output": [], "error": "sounddevice not installed"}
+    sd = get_sounddevice()
+    if sd is None:
+        return {"input": [], "output": [], "error": sounddevice_unavailable_reason()}
     
     try:
         devices = sd.query_devices()

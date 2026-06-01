@@ -1,10 +1,11 @@
 """Race/state tests for backend-owned DIGITAL FT8/FT4 automation."""
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import _bootstrap  # noqa: F401
+import numpy as np
 
 from services.ft8_service import FT8Service, QSOSession, QSOState
 
@@ -93,6 +94,37 @@ def test_directed_report_before_tx_replaces_stale_locator_with_report_reply():
     assert "EA1AA OM0RX JN88" not in service.tx_queue
 
 
+def test_directed_report_preempts_stale_locator_already_transmitting():
+    service = service_with_tx()
+    asyncio.run(service.engage_target({"callsign": "RA9LL", "grid": "MO27", "mode": "FT8"}, source="manual_double_click"))
+    qso = service.active_qsos["RA9LL"]
+    qso.tx_count = 1
+    service.tx_queue.clear()
+    service.active_tx_message = "RA9LL OM0RX JN88"
+    service.current_tx_message = "RA9LL OM0RX JN88"
+    service.tx_in_progress = True
+
+    asyncio.run(service._auto_sequence_handler(Decode("OM0RX RA9LL -11", snr=18, freq=2691)))
+
+    assert service.tx_engine.aborted is True
+    assert service._restart_tx_after_abort is True
+    assert service.active_tx_message == "RA9LL OM0RX R+18"
+    assert service.tx_queue == ["RA9LL OM0RX R+18"]
+    assert service.active_qsos["RA9LL"].state == QSOState.SENDING_REPORT
+
+
+def test_repeated_plain_report_does_not_rewrite_queued_roger_report():
+    service = service_with_tx()
+    asyncio.run(service.engage_target({"callsign": "RA9LL", "grid": "MO27", "mode": "FT8"}, source="manual_double_click"))
+    asyncio.run(service._auto_sequence_handler(Decode("OM0RX RA9LL -11", snr=18, freq=2691)))
+    service.tx_queue.clear()
+
+    asyncio.run(service._auto_sequence_handler(Decode("OM0RX RA9LL -11", snr=8, freq=2691)))
+
+    assert service.active_qsos["RA9LL"].my_report == "+18"
+    assert service.tx_queue == ["RA9LL OM0RX R+18"]
+
+
 def test_auto_call_collects_candidates_but_does_not_steal_manual_qso():
     service = service_with_tx()
     asyncio.run(service.engage_target({"callsign": "EA1AA", "grid": "IN83", "mode": "FT8"}, source="manual_double_click"))
@@ -102,6 +134,8 @@ def test_auto_call_collects_candidates_but_does_not_steal_manual_qso():
         "callsign": "K3ZK",
         "band": "40m",
         "mode": "FT8",
+        "message": "CQ K3ZK FN20",
+        "source": "decoded",
         "heard": True,
         "dxcc_status": "ATNO",
     })
@@ -124,6 +158,8 @@ def test_auto_call_backend_engages_candidate_without_browser_tx_queue():
         "callsign": "K3ZK",
         "band": "40m",
         "mode": "FT8",
+        "message": "CQ K3ZK FN20",
+        "source": "decoded",
         "heard": True,
         "dxcc_status": "ATNO",
     })
@@ -135,7 +171,7 @@ def test_auto_call_backend_engages_candidate_without_browser_tx_queue():
     assert service.tx_queue == ["K3ZK OM0RX JN88"]
 
 
-def test_stop_tx_aborts_current_attempt_but_later_reply_can_reengage_when_automation_armed():
+def test_stop_tx_aborts_current_attempt_and_requires_rearm_before_reengage():
     service = service_with_tx()
     service.auto_call_enabled = True
     asyncio.run(service.engage_target({"callsign": "EA1AA", "grid": "IN83", "mode": "FT8"}, source="manual_double_click"))
@@ -146,13 +182,14 @@ def test_stop_tx_aborts_current_attempt_but_later_reply_can_reengage_when_automa
     assert service.active_qsos == {}
     assert service.active_attempt_id is None
     assert service.tx_queue == []
-    assert service.tx_enabled is True
-    assert service.auto_sequence is True
+    assert service.tx_enabled is False
+    assert service.auto_sequence is False
+    assert service.tx_inhibit_reason == "user_abort"
 
     asyncio.run(service._auto_sequence_handler(Decode("OM0RX EA1AA -01", snr=9, freq=1706)))
 
-    assert list(service.active_qsos) == ["EA1AA"]
-    assert service.tx_queue == ["EA1AA OM0RX R+09"]
+    assert service.active_qsos == {}
+    assert service.tx_queue == []
 
 
 def test_abort_invalidates_all_pending_tx_for_attempt():
@@ -174,18 +211,34 @@ def test_late_slot_cutoff_is_mode_specific_for_ft8_and_ft4():
     ft8 = service_with_tx("FT8")
     ft8.tx_enabled = True
     asyncio.run(ft8.queue_tx_message("EA1AA OM0RX JN88"))
-    ft8._live_cycle_state = lambda: (15.0, 2.0, 123, True)
+    ft8._live_cycle_state = lambda: (15.0, 4.2, 123, True)
 
-    assert asyncio.run(ft8.transmit_queued_now_if_possible(force_current_slot=True)) is False
-    assert ft8.tx_queue == ["EA1AA OM0RX JN88"]
+    assert asyncio.run(ft8.transmit_queued_now_if_possible(force_current_slot=True)) is True
+    assert ft8.tx_queue == []
+
+    ft8_late = service_with_tx("FT8")
+    ft8_late.tx_enabled = True
+    asyncio.run(ft8_late.queue_tx_message("EA1AA OM0RX JN88"))
+    ft8_late._live_cycle_state = lambda: (15.0, 7.5, 123, True)
+
+    assert asyncio.run(ft8_late.transmit_queued_now_if_possible(force_current_slot=True)) is False
+    assert ft8_late.tx_queue == ["EA1AA OM0RX JN88"]
 
     ft4 = service_with_tx("FT4")
     ft4.tx_enabled = True
     asyncio.run(ft4.queue_tx_message("EA1AA OM0RX JN88"))
-    ft4._live_cycle_state = lambda: (7.5, 0.5, 123, True)
+    ft4._live_cycle_state = lambda: (7.5, 2.0, 123, True)
 
-    assert asyncio.run(ft4.transmit_queued_now_if_possible(force_current_slot=True)) is False
-    assert ft4.tx_queue == ["EA1AA OM0RX JN88"]
+    assert asyncio.run(ft4.transmit_queued_now_if_possible(force_current_slot=True)) is True
+    assert ft4.tx_queue == []
+
+    ft4_late = service_with_tx("FT4")
+    ft4_late.tx_enabled = True
+    asyncio.run(ft4_late.queue_tx_message("EA1AA OM0RX JN88"))
+    ft4_late._live_cycle_state = lambda: (7.5, 4.0, 123, True)
+
+    assert asyncio.run(ft4_late.transmit_queued_now_if_possible(force_current_slot=True)) is False
+    assert ft4_late.tx_queue == ["EA1AA OM0RX JN88"]
 
 
 def test_duplicate_rr73_or_73_completion_does_not_log_twice():
@@ -238,6 +291,82 @@ def test_backend_logging_is_idempotent_for_one_attempt():
 
     assert calls == [qso.attempt_id]
     assert service.stats["qso_completed"] == 1
+
+
+def test_manual_watchdog_expiry_clears_attempt_and_disarms_tx():
+    service = service_with_tx()
+    now = datetime(2026, 5, 27, 12, 0, tzinfo=timezone.utc)
+    service._now = lambda: now
+    service.watchdog_cycles["FT8"] = 1
+    asyncio.run(service.engage_target({"callsign": "EA1AA", "grid": "IN83", "mode": "FT8"}, source="manual_double_click"))
+    service.tx_watchdog_started_at = now - timedelta(seconds=61)
+
+    assert service._expire_watchdog_if_due() is True
+    assert service.tx_enabled is False
+    assert service.active_attempt_id is None
+    assert service.active_qsos == {}
+    assert service.tx_queue == []
+    assert service.pending_tx_intent is None
+    assert service.last_cancel_abort_reason == "watchdog-expired"
+
+
+def test_transmitted_rr73_completes_qso_and_does_not_repeat_final_message():
+    service = service_with_tx()
+    calls = []
+
+    async def fake_log(qso):
+        calls.append(qso.their_call)
+        qso.logged = True
+        qso.log_status = "logged"
+
+    service.enabled = True
+    service._log_completed_qso = fake_log
+    qso = QSOSession("EA1AA", "OM0RX", "JN88", state=QSOState.SENDING_RRR, frequency=21.074)
+    service.active_qsos[qso.their_call] = qso
+    service.active_attempt_id = qso.attempt_id
+    service.tx_enabled = True
+    service.auto_sequence = True
+    service.active_tx_message = "EA1AA OM0RX RR73"
+    service.tx_queue.append("EA1AA OM0RX RR73")
+
+    asyncio.run(service.transmit_message("EA1AA OM0RX RR73", attempt_id=qso.attempt_id))
+
+    assert calls == ["EA1AA"]
+    assert service.stats["qso_completed"] == 1
+    assert service.active_qsos == {}
+    assert service.active_attempt_id is None
+    assert service.active_tx_message is None
+    assert service.tx_queue == []
+    assert service.tx_watchdog_started_at is None
+
+
+def test_backend_log_completed_qso_uses_started_at_timestamp(monkeypatch):
+    import services.qso_logging as qlog
+
+    captured = {}
+
+    async def fake_log_qso(qso_request):
+        captured["date_time"] = qso_request.date_time
+        captured["callsign"] = qso_request.callsign
+        return {"success": True, "message": "ok"}
+
+    monkeypatch.setattr(qlog, "log_qso", fake_log_qso)
+
+    service = service_with_tx()
+    qso = QSOSession(
+        "EA1AA",
+        "OM0RX",
+        "JN88",
+        state=QSOState.COMPLETE,
+        frequency=21.074,
+        started_at=datetime(2026, 5, 27, 12, 34, 56, tzinfo=timezone.utc),
+    )
+
+    asyncio.run(service._log_completed_qso(qso))
+
+    assert qso.log_status == "logged"
+    assert captured["callsign"] == "EA1AA"
+    assert captured["date_time"].startswith("2026-05-27T12:34:56")
 
 
 def test_backend_logging_dedupe_survives_restart(monkeypatch, tmp_path):
@@ -328,10 +457,79 @@ def test_ft4_uses_same_backend_engage_path_with_ft4_timing():
 def test_ft4_manual_tx_uses_mode_specific_cutoff():
     service = service_with_tx("FT4")
     asyncio.run(service.engage_target({"callsign": "EA1AA", "grid": "IN83", "mode": "FT4"}, source="manual_double_click"))
-    service._live_cycle_state = lambda: (7.5, 0.5, 123, True)
+    service._live_cycle_state = lambda: (7.5, 2.0, 123, True)
 
-    assert asyncio.run(service.transmit_queued_now_if_possible(force_current_slot=True)) is False
-    assert service.tx_queue == ["EA1AA OM0RX JN88"]
+    assert asyncio.run(service.transmit_queued_now_if_possible(force_current_slot=True)) is True
+    assert service.tx_queue == []
+
+    late = service_with_tx("FT4")
+    asyncio.run(late.engage_target({"callsign": "EA1AA", "grid": "IN83", "mode": "FT4"}, source="manual_double_click"))
+    late._live_cycle_state = lambda: (7.5, 4.0, 123, True)
+
+    assert asyncio.run(late.transmit_queued_now_if_possible(force_current_slot=True)) is False
+    assert late.tx_queue == ["EA1AA OM0RX JN88"]
+
+
+def test_timing_loop_does_not_miss_usable_tx_slot_after_half_second():
+    service = service_with_tx("FT8")
+
+    assert service._should_handle_cycle(100, 6.8, True) is True
+    assert service._should_handle_cycle(100, 7.2, True) is False
+
+    service.last_tx_slot = 100
+    assert service._should_handle_cycle(100, 1.0, True) is False
+
+    ft4 = service_with_tx("FT4")
+    assert ft4._should_handle_cycle(101, 3.4, True) is True
+    assert ft4._should_handle_cycle(101, 3.6, True) is False
+
+
+def test_settings_enabled_without_auto_call_does_not_select_or_queue_candidate():
+    service = service_with_tx()
+    service.tx_enabled = True
+    service.automation_controller.apply_operator_settings({"automation": {"enabled": True, "allowedModes": {"FT8": True}}})
+    service.automation_controller.ingest_target({
+        "callsign": "K3ZK",
+        "band": "40m",
+        "mode": "FT8",
+        "message": "CQ K3ZK FN21",
+        "heard": True,
+        "dxcc_status": "ATNO",
+    })
+
+    asyncio.run(service._automation_tick())
+
+    assert service.active_attempt_id is None
+    assert service.tx_queue == []
+    assert service.automation_status == "standby"
+
+
+def test_decode_uses_previous_slot_window_even_when_loop_wakes_late():
+    service = service_with_tx()
+    service._now = lambda: datetime(2026, 5, 27, 12, 0, 10, tzinfo=timezone.utc)
+    calls = []
+
+    class Decoder:
+        status = type("Status", (), {"available": True})()
+
+        def decode_window(self, samples, *, sample_rate, window_start, mode):
+            calls.append((samples.copy(), sample_rate, window_start, mode))
+            return []
+
+    service.rx_decoder = Decoder()
+    audio = np.arange(service.decoder_sample_rate * 32, dtype=np.float32)
+
+    asyncio.run(service._attempt_decode(audio))
+    asyncio.run(service._attempt_decode(audio))
+
+    assert len(calls) == 1
+    samples, sample_rate, window_start, mode = calls[0]
+    assert len(samples) == service.decoder_sample_rate * 15
+    assert sample_rate == service.decoder_sample_rate
+    assert mode == "FT8"
+    assert window_start == datetime(2026, 5, 27, 11, 59, 45, tzinfo=timezone.utc)
+    assert samples[0] == audio[-(service.decoder_sample_rate * 25)]
+    assert samples[-1] == audio[-(service.decoder_sample_rate * 10) - 1]
 
 
 def test_clear_decoded_history_does_not_clear_active_qso_attempt():

@@ -396,7 +396,7 @@ def test_stale_locator_does_not_replace_report_after_reply():
     assert "ignored stale locator" in service.tx_status
 
 
-def test_halt_keeps_auto_sequence_for_active_qso_late_reply():
+def test_halt_is_hard_stop_for_active_qso_late_reply():
     from services.ft8_service import FT8Service, QSOSession, QSOState
 
     service = FT8Service(mycall="OM0RX", mygrid="JN88")
@@ -412,11 +412,12 @@ def test_halt_keeps_auto_sequence_for_active_qso_late_reply():
     service.halt_tx()
 
     assert service.tx_enabled is False
-    assert service.auto_sequence is True
-    assert "EA1AA" in service.active_qsos
+    assert service.auto_sequence is False
+    assert service.tx_inhibit_reason == "user_abort"
+    assert service.active_qsos == {}
 
 
-def test_abort_current_attempt_keeps_automation_armed_and_backs_off_target():
+def test_abort_current_attempt_hard_stops_and_backs_off_target():
     from services.ft8_service import FT8Service
 
     class FakeTxEngine:
@@ -438,8 +439,8 @@ def test_abort_current_attempt_keeps_automation_armed_and_backs_off_target():
         "band": "30m",
         "mode": "FT8",
         "message": "CQ EA1AA IN83",
-        "call_status": "New Band",
-        "dxcc_status": "Confirmed",
+        "call_status": "ATNO",
+        "dxcc_status": "ATNO",
         "heard": True,
     })
     service.automation_controller.active_target_key = target.key
@@ -449,9 +450,9 @@ def test_abort_current_attempt_keeps_automation_armed_and_backs_off_target():
     service.abort_current_attempt()
 
     assert fake.aborted is True
-    assert service.tx_enabled is True
-    assert service.auto_sequence is True
-    assert service.auto_call_enabled is True
+    assert service.tx_enabled is False
+    assert service.auto_sequence is False
+    assert service.tx_inhibit_reason == "user_abort"
     assert service.tx_queue == []
     assert service.active_tx_message is None
     assert target.state == "backoff"
@@ -535,8 +536,8 @@ def test_watchdog_moves_auto_call_to_next_target_instead_of_halting_automation()
         "band": "30m",
         "mode": "FT8",
         "message": "CQ EA1AA IN83",
-        "call_status": "New Band",
-        "dxcc_status": "Confirmed",
+        "call_status": "ATNO",
+        "dxcc_status": "ATNO",
         "heard": True,
     })
     service.automation_controller.active_target_key = target.key
@@ -548,7 +549,7 @@ def test_watchdog_moves_auto_call_to_next_target_instead_of_halting_automation()
     assert service.auto_call_enabled is True
     assert service.active_tx_message is None
     assert target.state == "backoff"
-    assert "next target" in service.tx_status
+    assert "target backed off" in service.tx_status
 
 
 def test_ft4_service_uses_ft4_slot_duration():
@@ -619,6 +620,16 @@ def test_selected_cq_station_primes_reply_message_for_enable_tx():
     assert "activeAttemptId" in modal
     assert "digitalState" in modal
     assert "pendingTxIntent" in modal
+    assert "lastLogSyncKey" in modal
+    assert "ft8SyncActiveQsoToMainLog" in modal
+    assert "ft8SyncSelectedTxStage" in modal
+    assert "status.pending_message" in modal
+    assert "decodedRefreshInFlight" in modal
+    assert "backendDecodedCount > Number(this.ft8.lastDecodedFetchCount || 0)" in modal
+    assert "last_cancel_abort_reason" in modal
+    assert "'active-target'" in modal
+    assert "this.ft8BroadcastDigitalEvent('decoded-selected', logPayload)" in modal
+    assert "this.applyDigitalSelectionToLog(logPayload, 'decoded-selected')" in modal
     assert "automationDecisions" in modal
     assert "ft8MaybeAdvanceActiveQso" not in modal
     assert "this.ft8.txEvenFirst = !stationWasEven;" in modal
@@ -649,7 +660,7 @@ def test_selected_cq_station_primes_reply_message_for_enable_tx():
     assert "return !isTx && this.ft8PassesDisplayFilters(message);" in modal
     assert "this.ft8ClearQsoTarget({ haltTx: false, keepStatus: true });" in modal
     assert "/api/ft8/tx/abort-current" in modal
-    assert "Current call aborted; automation continues" in modal
+    assert "TX stopped; re-arm TX to transmit again" in modal
     assert "Auto Call stopped" in modal
     assert "Number(status.active_qsos || 0) === 0" in modal
     assert "if (this.ft8HasActiveQsoAttempt())" in modal
@@ -664,7 +675,7 @@ def test_selected_cq_station_primes_reply_message_for_enable_tx():
     assert "self.tx_queue.clear()" in read_text("services/ft8_service.py")
     assert "max_duration_seconds" in read_text("services/ft8_tx.py")
     assert "_trim_trailing_silence" in read_text("services/ft8_tx.py")
-    assert "max_safe_late_start = 1.0" in read_text("services/ft8_service.py")
+    assert "def _max_safe_late_start_seconds" in read_text("services/ft8_service.py")
     assert "protocol-safe" in read_text("services/ft8_service.py")
     assert "force_current_slot=True" in read_text("backend/api/ft8.py")
     assert "'tx_in_progress': self.tx_in_progress" in read_text("services/ft8_service.py")

@@ -119,6 +119,9 @@ def band_from_khz(khz: float) -> str:
 # Mode detection constants
 FT8 = {1840.0, 3573.0, 5357.0, 7074.0, 10136.0, 14074.0, 18100.0, 21074.0, 24915.0, 28074.0, 50313.0}
 FT4 = {3575.0, 7047.5, 10140.0, 14080.0, 18104.0, 21140.0, 24919.0, 28180.0}
+FT2 = {50320.0}
+DIGITAL_MODES = {"FT8", "FT4", "FT2", "RTTY", "PSK", "DIGI", "JT65", "JT9", "OLIVIA", "MFSK", "HELL", "SSTV"}
+PHONE_MODES = {"SSB", "AM", "FM"}
 
 PHONE_SEG = [("10m",28300.0,29700.0),("12m",24940.0,24990.0),("15m",21200.0,21450.0),
              ("17m",18110.0,18168.0),("20m",14150.0,14350.0),("40m",7090.0,7300.0),
@@ -144,6 +147,7 @@ def infer_mode(comment: str, band: str, khz: float) -> str:
     # comment-based first
     if "FT8" in c: return "FT8"
     if "FT4" in c: return "FT4"
+    if "FT2" in c: return "FT2"
     if "RTTY" in c: return "RTTY"
     if "OLIVIA" in c: return "OLIVIA"
     if "PSK" in c: return "PSK"
@@ -159,6 +163,7 @@ def infer_mode(comment: str, band: str, khz: float) -> str:
     # frequency heuristics
     if near_any(khz, FT8): return "FT8"
     if near_any(khz, FT4): return "FT4"
+    if near_any(khz, FT2): return "FT2"
     if in_seg(band, khz, PHONE_SEG): return "SSB"
     if in_seg(band, khz, CW_SEG): return "CW"
     # CW edge fallback
@@ -168,6 +173,28 @@ def infer_mode(comment: str, band: str, khz: float) -> str:
             cw_edge = hi; break
     if cw_edge is not None and khz <= cw_edge: return "CW"
     return "SSB"
+
+
+def rbl_mode_group(mode: str) -> str:
+    """Map a spot mode to the broad RBL filter group."""
+    normalized = (mode or "").upper()
+    if normalized == "CW":
+        return "CW"
+    if normalized in PHONE_MODES:
+        return "SSB"
+    if normalized in DIGITAL_MODES:
+        return "DIGI"
+    return "OTHER"
+
+
+def classify_spot_source(spotter: str, comment: str, mode: str) -> tuple[str, str]:
+    """Return source type and broad RBL mode group for a cluster spot."""
+    spotter_text = (spotter or "").upper()
+    comment_text = (comment or "").upper()
+    is_rbl = spotter_text.endswith("-#") or bool(
+        re.search(r"\b(?:RBL|RBN|SKIMMER)\b", comment_text)
+    )
+    return ("rbl" if is_rbl else "cluster", rbl_mode_group(mode) if is_rbl else "")
 
 
 def extract_special(comment: str) -> str:

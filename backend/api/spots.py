@@ -28,6 +28,68 @@ class SpotFilterRequest(BaseModel):
     zones_cq: Optional[List[int]] = None
     continents: Optional[List[str]] = None
     special_tags: Optional[List[str]] = None
+    spot_sources: Optional[List[str]] = None
+    rbl_modes: Optional[List[str]] = None
+    rbl_min_snr: Optional[float] = None
+    rbl_dedupe_minutes: Optional[int] = None
+    sort_by: str = "time"
+
+
+class SpotMaintenanceRepairRequest(BaseModel):
+    limit: Optional[int] = None
+    dry_run: bool = True
+    vacuum: bool = False
+
+
+def _spot_timestamp_seconds(spot: Dict[str, Any]) -> float:
+    timestamp = spot.get("timestamp") or spot.get("created_at") or spot.get("received_at")
+    if isinstance(timestamp, (int, float)):
+        return float(timestamp)
+    if isinstance(timestamp, str):
+        try:
+            from datetime import datetime
+
+            parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            return parsed.timestamp()
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _build_live_source_stats(spots: List[Dict[str, Any]]) -> Dict[str, Any]:
+    stats: Dict[str, Any] = {
+        "total": 0,
+        "cluster": 0,
+        "rbl": 0,
+        "other": 0,
+        "modes": {},
+        "rbl_modes": {},
+        "last_any": 0,
+        "last_cluster": 0,
+        "last_rbl": 0,
+    }
+
+    for spot in spots or []:
+        source = (spot.get("spot_source") or "cluster").lower()
+        mode = (spot.get("mode") or "UNKNOWN").upper()
+        rbl_group = (spot.get("rbl_mode_group") or "OTHER").upper()
+        timestamp = _spot_timestamp_seconds(spot)
+
+        stats["total"] += 1
+        stats["last_any"] = max(stats["last_any"], timestamp)
+        stats["modes"][mode] = stats["modes"].get(mode, 0) + 1
+
+        if source == "rbl":
+            stats["rbl"] += 1
+            stats["last_rbl"] = max(stats["last_rbl"], timestamp)
+            stats["rbl_modes"][rbl_group] = stats["rbl_modes"].get(rbl_group, 0) + 1
+        elif source == "cluster":
+            stats["cluster"] += 1
+            stats["last_cluster"] = max(stats["last_cluster"], timestamp)
+        else:
+            stats["other"] += 1
+
+    return stats
 
 
 async def _refresh_uncertain_spot_classifications(
@@ -142,6 +204,19 @@ async def get_spots(
     if special:
         specials = set(special.split(','))
         filtered_spots = [s for s in filtered_spots if s.get('special') in specials or ('(none)' in specials and not s.get('special'))]
+
+    try:
+        from radio_control.spot_intelligence import enrich_spot_intelligence
+        from radio_control.local_heard import correlate_local_heard
+        from services.ft8_service import get_ft8_service
+        from radio_control import config as app_config
+
+        decoded_messages = get_ft8_service().get_decoded_messages(limit=100)
+        for spot in filtered_spots:
+            correlate_local_heard(spot, decoded_messages, mycall=getattr(app_config, "MY_STATION", ""))
+            enrich_spot_intelligence(spot)
+    except Exception:
+        logger.debug("Could not enrich cached spots with intelligence fields", exc_info=True)
     
     return {"spots": filtered_spots}
 
@@ -159,6 +234,7 @@ async def explain_spot_classification(
     try:
         from radio_control.spot_processor import band_from_khz, infer_mode
         from radio_control.spot_classification import classify_call_status, classify_dxcc_status
+        from services.digital_status import call_status_from_recent_qsos
 
         callsign_upper = callsign.strip().upper()
         if not callsign_upper:
@@ -200,6 +276,9 @@ async def explain_spot_classification(
                 call_new_mode,
                 call_bandmode_confirmed,
             )
+            recent_call_status = await call_status_from_recent_qsos(callsign_upper, resolved_band, resolved_mode)
+            if recent_call_status:
+                call_status = recent_call_status
 
             if dxcc is not None:
                 dxcc_overall = await classifier.dxcc_overall(
@@ -309,8 +388,27 @@ async def search_filtered_spots(req: SpotFilterRequest, request: Request):
             modes=req.modes,
             zones_cq=req.zones_cq,
             continents=req.continents,
-            special_tags_filter=req.special_tags
+            special_tags_filter=req.special_tags,
+            spot_sources=req.spot_sources,
+            rbl_mode_groups=req.rbl_modes,
+            rbl_min_snr=req.rbl_min_snr,
+            rbl_dedupe_minutes=req.rbl_dedupe_minutes,
+            sort_by=req.sort_by,
         )
+        try:
+            from radio_control.local_heard import correlate_local_heard
+            from radio_control.spot_intelligence import enrich_spot_intelligence
+            from services.ft8_service import get_ft8_service
+            from radio_control import config as app_config
+
+            decoded_messages = get_ft8_service().get_decoded_messages(limit=100)
+            for spot in spots:
+                correlate_local_heard(spot, decoded_messages, mycall=getattr(app_config, "MY_STATION", ""))
+                enrich_spot_intelligence(spot)
+            if req.sort_by == "score":
+                spots.sort(key=lambda spot: (spot.get("spot_score", 0), spot.get("timestamp", 0)), reverse=True)
+        except Exception:
+            logger.debug("Could not correlate filtered spots with local decodes", exc_info=True)
         
         logger.debug(f"✓ Filtered search returned {len(spots)} spots (using pre-computed classifications from database)")
         return {"ok": True, "spots": spots, "count": len(spots)}
@@ -326,6 +424,29 @@ async def search_filtered_spots(req: SpotFilterRequest, request: Request):
                 "warning": "spots database is locked by another process",
             }
         logger.error(f"Error in filtered search: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/spots/maintenance/repair")
+async def repair_spot_metadata(req: SpotMaintenanceRepairRequest):
+    """Recompute stored spot mode/source/RBL/special/country metadata."""
+    try:
+        from radio_control.spots_logger import get_spots_logger
+
+        spots_logger = get_spots_logger()
+        result = await asyncio.to_thread(
+            spots_logger.repair_spot_metadata,
+            limit=req.limit,
+            dry_run=req.dry_run,
+            vacuum=req.vacuum,
+        )
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("error", "repair failed"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Spot metadata repair error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -377,6 +498,40 @@ async def get_spots_count(request: Request):
     except Exception as e:
         logger.error(f"Error getting spot count: {e}")
         return {"count": 0}
+
+
+@router.get("/api/spots/source-stats")
+async def get_spots_source_stats(request: Request):
+    """Get live cache and persisted recent source counts for cluster/RBL monitoring."""
+    live_stats = _build_live_source_stats(getattr(request.app.state, "dx_spots_cache", []))
+    try:
+        from radio_control.spots_logger import get_spots_logger
+
+        spots_logger = get_spots_logger()
+        persisted = spots_logger.get_source_stats([5, 15, 60])
+        if not persisted.get("ok"):
+            return {
+                "ok": False,
+                "live": live_stats,
+                "all_time": persisted.get("all_time", {}),
+                "windows": persisted.get("windows", []),
+                "error": persisted.get("error", "source stats unavailable"),
+            }
+        return {
+            "ok": True,
+            "live": live_stats,
+            "all_time": persisted.get("all_time", {}),
+            "windows": persisted.get("windows", []),
+        }
+    except Exception as e:
+        logger.error("Error getting source stats: %s", e, exc_info=True)
+        return {
+            "ok": False,
+            "live": live_stats,
+            "all_time": {},
+            "windows": [],
+            "error": str(e),
+        }
 
 
 @router.get("/api/spots/stats/band")

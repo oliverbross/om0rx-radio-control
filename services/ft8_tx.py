@@ -23,15 +23,9 @@ from typing import Any, Optional
 
 import numpy as np
 from scipy import signal
+from services.sounddevice_loader import get_sounddevice, sounddevice_unavailable_reason
 
 logger = logging.getLogger(__name__)
-
-try:
-    import sounddevice as sd
-    AUDIO_OUTPUT_AVAILABLE = True
-except ImportError:
-    sd = None
-    AUDIO_OUTPUT_AVAILABLE = False
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -105,25 +99,25 @@ class FT8TxEngine:
             return FT8TxStatus(
                 available=False,
                 encoder="vendor.ft8_lib.gen_ft8",
-                audio_output=AUDIO_OUTPUT_AVAILABLE,
+                audio_output=get_sounddevice() is not None,
                 ptt_methods=SUPPORTED_PTT_METHODS,
                 reason=f"FT8/FT4 generator is not built: {GEN_FT8_PATH}",
-            )
-        if not AUDIO_OUTPUT_AVAILABLE:
-            return FT8TxStatus(
-                available=False,
-                encoder="vendor.ft8_lib.gen_ft8",
-                audio_output=False,
-                ptt_methods=SUPPORTED_PTT_METHODS,
-                reason="sounddevice is not installed, so DAX TX audio cannot be opened",
             )
         if self.ptt_method not in SUPPORTED_PTT_METHODS:
             return FT8TxStatus(
                 available=False,
                 encoder="vendor.ft8_lib.gen_ft8",
-                audio_output=True,
+                audio_output=get_sounddevice() is not None,
                 ptt_methods=SUPPORTED_PTT_METHODS,
                 reason=f"Unsupported built-in digital PTT method: {self.ptt_method}",
+            )
+        if get_sounddevice() is None:
+            return FT8TxStatus(
+                available=False,
+                encoder="vendor.ft8_lib.gen_ft8",
+                audio_output=False,
+                ptt_methods=SUPPORTED_PTT_METHODS,
+                reason=f"{sounddevice_unavailable_reason()}, so DAX TX audio cannot be opened",
             )
         return FT8TxStatus(
             available=True,
@@ -216,6 +210,7 @@ class FT8TxEngine:
     def abort(self) -> None:
         """Stop any active digital audio playback and release CAT PTT."""
         self._abort_event.set()
+        sd = get_sounddevice()
         if sd is not None:
             try:
                 sd.stop()
@@ -318,8 +313,9 @@ class FT8TxEngine:
         return output[:end]
 
     def _play_samples(self, samples: np.ndarray) -> None:
+        sd = get_sounddevice()
         if sd is None:
-            raise RuntimeError("sounddevice is not available")
+            raise RuntimeError(sounddevice_unavailable_reason())
         candidates = self._resolve_output_device_indexes()
         last_error: Optional[Exception] = None
         for device_index in candidates:
@@ -384,6 +380,7 @@ class FT8TxEngine:
                 self._ptt_on = False
 
     def _resolve_output_device_indexes(self) -> list[Optional[int]]:
+        sd = get_sounddevice()
         if sd is None:
             return [None]
         device_str = str(self.audio_output or "").strip()

@@ -14,6 +14,7 @@ from radio_control.spot_classification import (
     classify_dxcc_status,
     dxcc_confirmation_from_lookup,
 )
+from services.digital_status import call_status_from_recent_qsos
 
 
 def test_cty_csv_prefix_tokens_do_not_misclassify_u_prefix():
@@ -132,6 +133,26 @@ def test_classifier_does_not_invent_atno_when_worked_cache_unavailable():
             allow_unconfirmed_fallback=False,
         )
     ) is None
+
+
+def test_digital_status_recent_qso_overrides_false_new_band(monkeypatch):
+    import services.qso_logging as qlog
+
+    def fake_wavelog_db(callsign, limit):
+        return [
+            {
+                "call": callsign,
+                "band": "20m",
+                "mode": "FT8",
+                "lotw_qsl": "N",
+            }
+        ]
+
+    monkeypatch.setattr(qlog, "_get_recent_qsos_from_wavelog_db", fake_wavelog_db)
+
+    assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "20m", "FT8")) == "Worked"
+    assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "20m", "SSB")) == "New Mode"
+    assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "15m", "FT8")) == "New Band"
 
 
 if __name__ == "__main__":

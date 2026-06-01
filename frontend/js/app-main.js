@@ -81,6 +81,9 @@ function mountVueApp() {
             digitalModeChannel: null,
             rotorStatusLoading: false,
             syncStatusLoading: false,
+            serviceHealth: null,
+            serviceHealthLoading: false,
+            serviceHealthTimer: null,
             
             // Additional Information modal
             showAdditionalInfoModal: false,
@@ -519,6 +522,14 @@ function mountVueApp() {
                 console.log(`🔄 maxSpots changed to ${this.maxSpots}, refetching...`);
                 this.performFilteredSearch();
             }
+        },
+
+        rblAlertRules: {
+            handler() {
+                this.saveRblAlertRules();
+                this.evaluateRblAlertsForVisibleSpots();
+            },
+            deep: true
         },
 
         // Watch for spots changes (removed solar overlays)
@@ -1137,6 +1148,14 @@ function mountVueApp() {
             
             // Load configuration first
             await this.loadConfig();
+            await this.loadRblProfiles();
+            await this.loadRblCommandStatus();
+            await this.loadSpotSourceStats();
+            this.setupSpotSourceStatsRefresh();
+            this.loadSpotSourceMuteState();
+            this.loadCompactPanelPrefs();
+            this.loadRblAlertRules();
+            await this.loadServiceHealth();
             
             // Initialize Country Modal
             if (window.CountryModal) {
@@ -1228,6 +1247,10 @@ function mountVueApp() {
             setInterval(() => {
                 this.loadQsoOutboxStatus();
             }, 30000);
+
+            this.serviceHealthTimer = setInterval(() => {
+                this.loadServiceHealth();
+            }, 15000);
             
             // Close dropdowns when clicking outside
             document.addEventListener('click', (e) => {
@@ -1486,9 +1509,18 @@ function mountVueApp() {
                 callStatuses: [],
                 dxccStatuses: [],
                 specials: [],
+                spotSources: ['cluster'],
+                rblModes: [],
+                rblMinSnr: '',
+                rblDedupeMinutes: 0,
+                sortBy: 'time',
                 workedB4Include: false,
                 workedB4Exclude: false,
             };
+            this.filteredSearchResults = [];
+            this.lastSearchFilter = null;
+            this.filteredSearchWarning = '';
+            this.filteredSearchRetryAfter = 0;
         },
         
         // === Logging Form Methods ===
@@ -2189,6 +2221,60 @@ function mountVueApp() {
                 this.qsoOutboxLoading = false;
             }
         },
+
+        async loadServiceHealth() {
+            if (this.serviceHealthLoading) return;
+            this.serviceHealthLoading = true;
+            try {
+                this.serviceHealth = await this.fetchJsonWithTimeout('/api/service-health', {}, 1800);
+            } catch (error) {
+                console.error('Error fetching service health:', error);
+            } finally {
+                this.serviceHealthLoading = false;
+            }
+        },
+
+        serviceHealthPillTitle(service) {
+            if (!service) return '';
+            const parts = [service.label, service.value, service.detail].filter(Boolean);
+            return parts.join(' - ');
+        },
+
+        async handleServiceHealthClick(service) {
+            if (!service || !service.action) return;
+
+            if (service.action === 'cluster-reconnect') {
+                await this.reconnectCluster();
+                setTimeout(() => this.loadServiceHealth(), 1500);
+                return;
+            }
+
+            if (service.action === 'outbox-retry') {
+                await this.retryQsoOutbox();
+                await this.loadServiceHealth();
+                return;
+            }
+
+            if (service.action === 'digital') {
+                this.openDigitalWindow();
+                return;
+            }
+
+            if (service.action === 'sync') {
+                this.showSyncModal = true;
+                return;
+            }
+
+            if (service.action === 'config') {
+                this.showConfigDialog();
+                return;
+            }
+
+            if (service.action === 'rotor-refresh') {
+                await this.loadRotorStatus();
+                await this.loadServiceHealth();
+            }
+        },
         
         formatBytes(bytes) {
             if (bytes === 0) return '0 B';
@@ -2263,8 +2349,13 @@ function mountVueApp() {
     },
     
     beforeUnmount() {
+        if (this.serviceHealthTimer) {
+            clearInterval(this.serviceHealthTimer);
+            this.serviceHealthTimer = null;
+        }
         this.cleanupSolarDataRefresh();
         this.cleanupWavelogStatisticsRefresh();
+        this.cleanupSpotSourceStatsRefresh();
         this.closeDigitalModeBridge();
         // Clean up SDC ticker WebSocket connection
         this.cleanupSDCTicker();

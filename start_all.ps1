@@ -42,6 +42,7 @@ $LauncherStderrLog = Join-Path $LogDir "start_all-launcher.err.log"
 $EnableReload = $Reload.IsPresent -or $AppEnv -eq "development" -or $env:UVICORN_RELOAD -in @("1", "true", "yes", "on")
 $BackendProbeHost = if ($BackendHost -eq "0.0.0.0") { "127.0.0.1" } else { $BackendHost }
 $BackendUrl = "http://${BackendProbeHost}:$BackendPort"
+$BackendReadyMaxAttempts = 90
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 
@@ -197,10 +198,9 @@ function Start-BackendProcess {
 
 function Wait-BackendReady {
     Write-Host "⏳ Waiting for backend to be ready..." -ForegroundColor Yellow
-    $maxAttempts = 90
     $attempt = 0
 
-    while ($attempt -lt $maxAttempts) {
+    while ($attempt -lt $BackendReadyMaxAttempts) {
         try {
             Invoke-WebRequest -UseBasicParsing -Uri "$BackendUrl/api/health" -TimeoutSec 3 | Out-Null
             Write-Host "✅ Backend is ready!" -ForegroundColor Green
@@ -210,7 +210,7 @@ function Wait-BackendReady {
             Start-Sleep -Seconds 1
             $attempt++
             if ($attempt % 5 -eq 0) {
-                Write-Host "   Still waiting... ($attempt/$maxAttempts)" -ForegroundColor Gray
+                Write-Host "   Still waiting... ($attempt/$BackendReadyMaxAttempts)" -ForegroundColor Gray
             }
         }
     }
@@ -247,7 +247,7 @@ try {
     $backendProcess = Start-BackendProcess
 
     if (-not (Wait-BackendReady)) {
-        Write-Host "❌ Backend failed to start after $maxAttempts seconds" -ForegroundColor Red
+        Write-Host "❌ Backend failed to start after $BackendReadyMaxAttempts seconds" -ForegroundColor Red
         Write-Host "Check the application logs for configuration or dependency errors." -ForegroundColor Red
         exit 1
     }

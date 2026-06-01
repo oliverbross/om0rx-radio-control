@@ -38,6 +38,9 @@ def band_from_khz(khz: float) -> str:
 # Known frequencies
 FT8_FREQS = {1840.0, 3573.0, 5357.0, 7074.0, 10136.0, 14074.0, 18100.0, 21074.0, 24915.0, 28074.0, 50313.0}
 FT4_FREQS = {3575.0, 7047.5, 10140.0, 14080.0, 18104.0, 21140.0, 24919.0, 28180.0}
+FT2_FREQS = {50320.0}
+DIGITAL_MODES = {"FT8", "FT4", "FT2", "RTTY", "PSK", "DIGI", "JT65", "JT9", "OLIVIA", "MFSK", "HELL", "SSTV"}
+PHONE_MODES = {"SSB", "AM", "FM"}
 
 PHONE_SEGMENTS = [
     ("10m", 28300.0, 29700.0), ("12m", 24940.0, 24990.0), ("15m", 21200.0, 21450.0),
@@ -66,6 +69,7 @@ def infer_mode(comment: str, band: str, khz: float) -> str:
     # Comment-based detection first
     if "FT8" in c: return "FT8"
     if "FT4" in c: return "FT4"
+    if "FT2" in c: return "FT2"
     if "RTTY" in c: return "RTTY"
     if "OLIVIA" in c: return "OLIVIA"
     if "PSK" in c: return "PSK"
@@ -82,6 +86,7 @@ def infer_mode(comment: str, band: str, khz: float) -> str:
     # Frequency heuristics
     if near_any(khz, FT8_FREQS): return "FT8"
     if near_any(khz, FT4_FREQS): return "FT4"
+    if near_any(khz, FT2_FREQS): return "FT2"
     if in_segment(band, khz, PHONE_SEGMENTS): return "SSB"
     if in_segment(band, khz, CW_SEGMENTS): return "CW"
     
@@ -96,6 +101,28 @@ def infer_mode(comment: str, band: str, khz: float) -> str:
         return "CW"
     
     return "SSB"
+
+
+def rbl_mode_group(mode: str) -> str:
+    """Map a spot mode to the broad RBL filter group."""
+    normalized = (mode or "").upper()
+    if normalized == "CW":
+        return "CW"
+    if normalized in PHONE_MODES:
+        return "SSB"
+    if normalized in DIGITAL_MODES:
+        return "DIGI"
+    return "OTHER"
+
+
+def classify_spot_source(spotter: str, comment: str, mode: str) -> tuple[str, str]:
+    """Return source type and broad RBL mode group for a cluster spot."""
+    spotter_text = (spotter or "").upper()
+    comment_text = (comment or "").upper()
+    is_rbl = spotter_text.endswith("-#") or bool(
+        re.search(r"\b(?:RBL|RBN|SKIMMER)\b", comment_text)
+    )
+    return ("rbl" if is_rbl else "cluster", rbl_mode_group(mode) if is_rbl else "")
 
 def extract_special(comment: str) -> str:
     """Extract special tags from comment (POTA, SOTA, IOTA, etc.)

@@ -43,7 +43,17 @@ def test_controller_filters_disabled_modes_and_logged_duplicates():
         "dxcc_status": "Confirmed",
         "heard": True,
     }) is None
-    assert controller.last_decision["reason"] == "already-worked-and-confirmed"
+    assert controller.last_decision["reason"] == "already-worked-call"
+
+    assert controller.ingest_target({
+        "callsign": "K2ABC",
+        "band": "10m",
+        "mode": "FT8",
+        "call_status": "New Band",
+        "dxcc_status": "Confirmed",
+        "heard": True,
+    }) is None
+    assert controller.last_decision["reason"] == "already-worked-call"
 
 
 def test_controller_requires_heard_spot_before_calling():
@@ -84,6 +94,49 @@ def test_controller_requires_heard_spot_before_calling():
     assert selected is not None
     assert selected.call == "DX1DX"
     assert selected.reason == "new-dxcc"
+
+
+def test_controller_rejects_non_cq_decodes_as_auto_call_starters():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({"automation": {"avoidLogged": True}})
+
+    target = controller.ingest_target({
+        "message": "OK1HEH F1ICS R-07",
+        "callsign": "OK1HEH",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": 12,
+        "call_status": "ATNO",
+        "dxcc_status": "ATNO",
+    })
+
+    assert target is None
+    assert controller.last_decision["reason"] == "not-auto-call-start-message"
+
+
+def test_selection_rechecks_worked_before_status_for_existing_target():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({"automation": {"avoidLogged": True}})
+    target = controller.ingest_target({
+        "message": "CQ EA1EQ IN83",
+        "callsign": "EA1EQ",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": 12,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+    assert target is not None
+
+    target.call_status = "New Band"
+
+    assert controller.next_target(auto_call_start_only=True) is None
+    assert target.state == "skipped"
+    assert target.reason == "already-worked-call"
 
 
 def test_controller_records_attempts_and_backoff():

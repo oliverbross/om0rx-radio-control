@@ -1,5 +1,5 @@
         <!-- Row 2: Bands on left, Modes/Filters on right in 2-line layout -->
-        <div class="control-row" style="flex-wrap: wrap; align-items: flex-start;">
+        <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" class="control-row" style="flex-wrap: wrap; align-items: flex-start;">
             <!-- Band buttons on LEFT -->
             <div class="control-group" style="flex: 0 0 auto;">
                 <button v-for="band in bands" 

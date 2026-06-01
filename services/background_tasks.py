@@ -10,7 +10,16 @@ from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 # Import required modules
-from radio_control.spot_processor import band_from_khz, infer_mode, extract_special, clean_comment
+from radio_control.spot_processor import (
+    band_from_khz,
+    infer_mode,
+    extract_special,
+    clean_comment,
+    classify_spot_source,
+)
+from radio_control.spot_intelligence import enrich_spot_intelligence
+from radio_control.spot_aggregation import upsert_live_spot
+from radio_control.local_heard import correlate_local_heard
 from radio_control.spots_logger import log_spot
 from radio_control.spot_classification import classify_call_status, classify_dxcc_status
 
@@ -216,6 +225,9 @@ async def process_cluster_spot(spot_data: dict):
         # Determine band and mode
         band = band_from_khz(freq_khz)
         emode = infer_mode(comment, band, freq_khz)
+        spot_source, rbl_group = classify_spot_source(spotter, comment, emode)
+        spot_data["spot_source"] = spot_source
+        spot_data["rbl_mode_group"] = rbl_group
 
         # Resolve country/DXCC using cty.dat (with DXCC from CSV when available)
         dxcc, entity, cq = None, None, None
@@ -337,6 +349,8 @@ async def process_cluster_spot(spot_data: dict):
             'spotter': spotter,
             'spotter_continent': spotter_continent,  # Spotter's continent for filtering
             'mode': emode,
+            'spot_source': spot_source,
+            'rbl_mode_group': rbl_group,
             'band': band,
             'comment': comment,
             'country': country,
@@ -354,11 +368,26 @@ async def process_cluster_spot(spot_data: dict):
             'location_source': location_source,
             'location_confidence': location_confidence,
         }
+        try:
+            from services.ft8_service import get_ft8_service
+            from radio_control import config
 
-        # Add to cache (keep last 200 spots)
-        dx_spots_cache.insert(0, spot)
-        if len(dx_spots_cache) > 200:
-            dx_spots_cache.pop()
+            decoded_messages = get_ft8_service().get_decoded_messages(limit=100)
+            correlate_local_heard(spot, decoded_messages, mycall=getattr(config, "MY_STATION", ""))
+        except Exception as e:
+            logger.debug("Could not correlate spot with local decodes: %s", e)
+        enrich_spot_intelligence(spot)
+
+        # Add to cache (keep last 200 visible rows, aggregating repeated RBL spots)
+        spot, was_merged = upsert_live_spot(dx_spots_cache, spot, max_len=200)
+        if was_merged:
+            logger.debug(
+                "Aggregated repeated spot: %s %s/%s seen x%s",
+                spot.get("callsign"),
+                spot.get("band"),
+                spot.get("mode"),
+                spot.get("aggregate_count"),
+            )
 
         # Broadcast to connected clients
         await service.broadcast_spots([spot])

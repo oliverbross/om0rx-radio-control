@@ -220,6 +220,12 @@ const coreData = {
     // UI State
     configDialogVisible: false,
     showSyncModal: false,
+    compactPanelPrefs: {
+        showMutedRotor: true,
+        showWinKeyer: true,
+        showWinKeyerMemories: true,
+        showStatus: true,
+    },
     
     // Sync status
     syncStatus: {

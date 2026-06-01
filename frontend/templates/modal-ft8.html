@@ -419,12 +419,13 @@
                     </div>
                 </div>
 
-                <div class="ft8-debug-strip" v-if="ft8.automationDecisions && ft8.automationDecisions.length">
+                <div class="ft8-debug-strip">
                     <span class="ft8-debug-label">Automation</span>
+                    <strong class="ft8-operator-state">{{ ft8OperatorStatusLabel() }}</strong>
                     <span>State: {{ ft8.digitalState }}</span>
                     <span v-if="ft8.activeAttemptId">Attempt: {{ ft8.activeAttemptId.slice(0, 8) }}</span>
                     <span v-if="ft8.pendingTxIntent">Next: {{ ft8.pendingTxIntent.message }} @ {{ ft8.pendingTxIntent.scheduled_slot_utc || 'next slot' }}</span>
-                    <span>{{ ft8.automationDecisions[ft8.automationDecisions.length - 1].event }}: {{ ft8.automationDecisions[ft8.automationDecisions.length - 1].reason }}</span>
+                    <span v-if="ft8.automationDecisions && ft8.automationDecisions.length">{{ ft8.automationDecisions[ft8.automationDecisions.length - 1].event }}: {{ ft8.automationDecisions[ft8.automationDecisions.length - 1].reason }}</span>
                 </div>
 
                 <div class="ft8-rx-control-deck">

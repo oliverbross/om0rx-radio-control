@@ -223,9 +223,37 @@
                 </div>
                 
                 <!-- Spots View: Stats and Actions -->
-                <span v-if="viewMode === 'spots'" style="font-size: 10px; color: #888; margin-left: auto;">{{ filteredSpots.length }} spots</span>
-                <a v-if="viewMode === 'spots'" href="spots-database.html" target="_blank" class="spots-db-link">📊 Spots DB</a>
-                <button v-if="viewMode === 'spots'" @click="clearAllFilters" class="clear-all-btn">🗑️ Clear All</button>
+                <div v-if="viewMode === 'spots'" class="spots-actions-bar">
+                <span class="spots-source-counter">{{ getSpotSourceCounterText() }}</span>
+                <div class="filter-dropdown">
+                    <button @click="toggleDropdown('presets')" class="filter-btn">
+                        Presets ▼
+                    </button>
+                    <div v-if="openDropdown === 'presets'" class="dropdown-menu">
+                        <div class="dropdown-list">
+                            <button v-for="preset in availableSpotPresets" :key="preset.id" @click="applySpotPreset(preset.id)" class="spot-preset-btn">
+                                {{ preset.name }}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="filter-dropdown">
+                    <button @click="toggleDropdown('sort')" :class="['filter-btn', { active: isFilterActive('sort') }]">
+                        Sort: {{ availableSpotSorts.find(s => s.id === spotsFilter.sortBy)?.name || 'Newest' }} ▼
+                    </button>
+                    <div v-if="openDropdown === 'sort'" class="dropdown-menu">
+                        <div class="dropdown-list">
+                            <label v-for="sort in availableSpotSorts" :key="sort.id">
+                                <input type="radio" name="spotSort" :value="sort.id" v-model="spotsFilter.sortBy">
+                                {{ sort.name }}
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <!-- @include templates/partials/spots-rbl-dropdown.html -->
+                <a href="spots-database.html" target="_blank" class="spots-db-link">📊 Spots DB</a>
+                <button @click="clearAllFilters" class="clear-all-btn">🗑️ Clear All</button>
+                </div>
                 
                 <!-- Log View: Stats -->
                 <span v-if="viewMode === 'log'" style="font-size: 10px; color: #888; margin-left: auto;">
@@ -235,6 +263,23 @@
             
             <!-- SPOTS VIEW -->
             <div v-if="viewMode === 'spots'" class="view-wrapper">
+                <div v-if="getActiveSpotFilterChips().length > 0" class="spot-filter-chips">
+                    <button v-for="chip in getActiveSpotFilterChips()" :key="chip.type + ':' + chip.value" @click="removeSpotFilterChip(chip)" class="spot-filter-chip">
+                        {{ chip.label }} ×
+                    </button>
+                </div>
+
+                <div v-if="getBandActivityItems().length > 0" class="band-activity-strip">
+                    <button v-for="item in getBandActivityItems()" :key="item.band" @click="applyBandActivityFilter(item.band)" :class="['band-activity-btn', { active: spotsFilter.bands.includes(item.band) }]">
+                        <strong>{{ item.band }}</strong>
+                        <span>{{ item.total }}</span>
+                        <small v-if="item.hot">best {{ item.topScore }}</small>
+                        <small v-if="item.rbl">RBL {{ item.rbl }}</small>
+                    </button>
+                </div>
+
+                <!-- @include templates/partials/spots-source-monitor.html -->
+
                 <!-- 🆕 LOADING STATE: Show while searching with filters active and no results yet -->
                 <div v-if="hasActiveFilters() && isSearchingSpots && filteredSearchResults.length === 0" class="loading-indicator" style="padding: 15px 20px; background-color: #1a1a2e; border-bottom: 1px solid #16a34a; text-align: center;">
                     <p style="margin: 0; color: #fbbf24; font-weight: bold; font-size: 14px;">
@@ -253,13 +298,47 @@
                     <p style="margin: 0; font-size: 14px;">❌ No spots match your filters</p>
                     <p style="margin: 5px 0 0 0; font-size: 12px; color: #666;">Try adjusting your search criteria</p>
                 </div>
+
+                <div v-if="selectedSpot" style="display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr); gap: 10px; padding: 10px 14px; background: #20242a; border-bottom: 1px solid #3f4652;">
+                    <div>
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                            <strong style="font-size: 15px; color: #10b981;">{{ selectedSpot.callsign }}</strong>
+                            <span :style="getSpotScoreStyle(selectedSpot)" style="font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 4px;">{{ getSpotScoreLabel(selectedSpot) }} {{ getSpotScore(selectedSpot) }}</span>
+                            <span v-if="selectedSpot.spot_source === 'rbl'" style="font-size: 11px; color: #fbbf24;">RBL {{ selectedSpot.rbl_mode_group }} <span v-if="getRblSnr(selectedSpot) !== null">{{ getRblSnr(selectedSpot) }} dB</span></span>
+                            <button @click="closeSpotDetails" style="margin-left: auto;">×</button>
+                        </div>
+                        <div style="font-size: 12px; color: #cbd5e1;">
+                            {{ selectedSpot.band }} {{ formatSpotFreq(selectedSpot.frequency_mhz || parseFloat(selectedSpot.frequency) / 1000) }} · {{ selectedSpot.mode }} · {{ selectedSpot.country || '-' }} · CQ {{ selectedSpot.cq || '-' }}
+                        </div>
+                        <div style="font-size: 12px; color: #94a3b8; margin-top: 4px;">{{ selectedSpot.comment || '' }}</div>
+                        <div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
+                            <span v-for="reason in getSpotScoreReasons(selectedSpot)" :key="reason" style="font-size: 11px; color: #d1d5db; background: #303742; padding: 2px 6px; border-radius: 3px;">{{ reason }}</span>
+                            <span v-if="selectedSpot.local_heard" style="font-size: 11px; color: #bbf7d0; background: #14532d; padding: 2px 6px; border-radius: 3px;">decoded locally</span>
+                        </div>
+                    </div>
+                    <div style="font-size: 12px; color: #cbd5e1;">
+                        <div v-if="spotExplainLoading" style="color: #fbbf24;">Loading classification...</div>
+                        <div v-else-if="spotExplainError" style="color: #f87171;">{{ spotExplainError }}</div>
+                        <div v-else-if="selectedSpotExplain" style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px;">
+                            <div>Call: <strong>{{ selectedSpotExplain.call.status }}</strong></div>
+                            <div>DXCC: <strong>{{ selectedSpotExplain.dxcc.status }}</strong></div>
+                            <div>Entity: <strong>{{ selectedSpotExplain.cty.country || '-' }}</strong></div>
+                            <div>ADIF: <strong>{{ selectedSpotExplain.dxcc.adif || '-' }}</strong></div>
+                            <div>Band: <strong>{{ selectedSpotExplain.inputs.band || '-' }}</strong></div>
+                            <div>Mode: <strong>{{ selectedSpotExplain.inputs.mode || '-' }}</strong></div>
+                        </div>
+                        <button @click.stop="tuneToSpot(selectedSpot)" style="margin-top: 8px;">🎯 Tune</button>
+                    </div>
+                </div>
                 
                 <!-- Enhanced Spots Table -->
                 <div class="spots-scroll">
                 <table class="spots-table">
                     <thead>
                         <tr>
+                            <th></th>
                             <th>Time</th>
+                            <th>Score</th>
                             <th>Band</th>
                             <th>Frequency</th>
                             <th>Callsign</th>
@@ -275,17 +354,29 @@
                         </tr>
                     </thead>
                     <tbody>
-                        <tr v-for="spot in filteredSpots" :key="spot.id" 
-                            :class="['spot-row', getSpotRowClass(spot), { 'spot-worked-today': isWorkedToday(spot.callsign, spot.band, spot.mode) }]" 
+                        <tr v-for="spot in filteredSpots" :key="spot.aggregate_key || spot.id || (spot.callsign + ':' + spot.frequency)"
+                            :class="['spot-row', getSpotRowClass(spot), { 'spot-worked-today': isWorkedToday(spot.callsign, spot.band, spot.mode), 'spot-rbl-alert': isRblAlertSpot(spot) }]"
                             @click="tuneToSpot(spot)">
+                            <td style="font-size: 12px;"><button @click.stop="showSpotDetails(spot, $event)" title="Spot details">ⓘ</button></td>
                             <td style="font-size: 13px;">{{ formatSpotTime(spot.timestamp) }}</td>
+                            <td style="font-size: 12px;"><span :style="getSpotScoreStyle(spot)" style="font-weight: 700; padding: 2px 6px; border-radius: 4px;">{{ getSpotScore(spot) }}</span></td>
                             <td style="font-size: 13px; font-weight: bold;">{{ spot.band }}</td>
                             <td style="font-size: 13px; font-family: monospace; color: #4a9eff;">{{ formatSpotFreq(spot.frequency_mhz || parseFloat(spot.frequency) / 1000) }}</td>
                             <td style="font-size: 13px; font-weight: bold; color: #10b981;">{{ spot.callsign }}</td>
-                            <td style="font-size: 13px;">{{ spot.mode }}</td>
-                            <td style="font-size: 13px; color: #ccc;">{{ spot.country || '-' }}</td>
+                            <td style="font-size: 13px;">
+                                {{ spot.mode }}
+                                <span v-if="spot.local_heard" title="Decoded locally" style="display: block; color: #22c55e; font-size: 10px; font-weight: 700;">HEARD <span v-if="spot.local_heard_snr !== null && spot.local_heard_snr !== undefined">{{ spot.local_heard_snr }} dB</span></span>
+                            </td>
+                            <td style="font-size: 13px; color: #ccc;">
+                                <span v-if="spot.spot_source === 'rbl'" title="RBL spot" style="color: #fbbf24; font-weight: 700;">RBL</span>
+                                {{ spot.country || '-' }}
+                            </td>
                             <td style="font-size: 13px; text-align: center;">{{ spot.cq || '-' }}</td>
-                            <td style="font-size: 13px; color: #ccc;">{{ spot.spotter || '-' }}</td>
+                            <td style="font-size: 13px; color: #ccc;">
+                                {{ getSpotterSummary(spot) }}
+                                <span v-if="getSpotSeenLabel(spot)" style="display: block; color: #fbbf24; font-size: 10px;">{{ getSpotSeenLabel(spot) }} · {{ getLastSeenLabel(spot) }}</span>
+                                <span v-if="getBestSnrLabel(spot)" style="display: block; color: #93c5fd; font-size: 10px;">{{ getBestSnrLabel(spot) }}</span>
+                            </td>
                             <td :style="getCallStatusStyle(spot.call_status)">{{ spot.call_status || '-' }}</td>
                             <td :style="getDxccStatusStyle(spot.dxcc_status)">{{ spot.dxcc_status || '-' }}</td>
                             <td style="font-size: 12px; padding: 4px;">
@@ -300,7 +391,7 @@
                             <td style="font-size: 13px; color: #aaa;">{{ spot.comment }}</td>
                         </tr>
                         <tr v-if="filteredSpots.length === 0">
-                            <td colspan="13" style="text-align: center; padding: 20px; color: #666;">
+                            <td colspan="15" style="text-align: center; padding: 20px; color: #666;">
                                 <div v-if="!clusterConnected" style="color: #ff6666; font-weight: bold; margin-bottom: 10px;">
                                     ❌ DX Cluster is DISCONNECTED - No spots will be received
                                 </div>

@@ -4,12 +4,19 @@ Stores all spot details for statistical analysis and persistence across app relo
 """
 import os
 import logging
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 import duckdb
 
-from radio_control.spot_processor import band_from_khz, infer_mode, extract_special, clean_comment
+from radio_control.spot_processor import (
+    band_from_khz,
+    infer_mode,
+    extract_special,
+    clean_comment,
+    classify_spot_source,
+)
+from radio_control.spot_intelligence import enrich_spot_intelligence, extract_rbl_snr
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +123,8 @@ class SpotsLogger:
                     -- Derived fields (processed)
                     band VARCHAR NOT NULL,
                     mode VARCHAR NOT NULL,
+                    spot_source VARCHAR DEFAULT 'cluster',
+                    rbl_mode_group VARCHAR,
                     
                     -- Country/Zone information
                     country VARCHAR,
@@ -139,6 +148,9 @@ class SpotsLogger:
                     CHECK (length(spotter) > 0)
                 )
             """)
+
+            self.conn.execute("ALTER TABLE spots ADD COLUMN IF NOT EXISTS spot_source VARCHAR DEFAULT 'cluster'")
+            self.conn.execute("ALTER TABLE spots ADD COLUMN IF NOT EXISTS rbl_mode_group VARCHAR")
             
             # ⚡ CRITICAL FIX: Don't create indexes during init - defer to background task
             # This was blocking app startup for several seconds!
@@ -161,6 +173,8 @@ class SpotsLogger:
             ("idx_spot_date", "spots(date_utc)"),
             ("idx_spot_band", "spots(band)"),
             ("idx_spot_mode", "spots(mode)"),
+            ("idx_spot_source", "spots(spot_source)"),
+            ("idx_spot_rbl_mode_group", "spots(rbl_mode_group)"),
             ("idx_spot_callsign", "spots(callsign)"),
             ("idx_spot_spotter", "spots(spotter)"),
             ("idx_spot_country", "spots(country)"),
@@ -221,6 +235,10 @@ class SpotsLogger:
             # Derive fields
             band = band_from_khz(freq_khz)
             mode = infer_mode(comment, band, freq_khz)
+            spot_source = spot_data.get("spot_source")
+            rbl_group = spot_data.get("rbl_mode_group")
+            if not spot_source:
+                spot_source, rbl_group = classify_spot_source(spotter, comment, mode)
             special_tags = extract_special(comment)
             
             # Get country and zone information
@@ -239,13 +257,14 @@ class SpotsLogger:
                 INSERT INTO spots (
                     received_at, date_utc, time_utc,
                     frequency_khz, callsign, spotter, comment,
-                    band, mode, country, zone_cq, zone_itu, continent,
+                    band, mode, spot_source, rbl_mode_group,
+                    country, zone_cq, zone_itu, continent,
                     special_tags, call_status, dxcc_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 received_at, date_utc, time_utc,
                 freq_khz, dxcall, spotter, comment,
-                band, mode, country, zone_cq, zone_itu, continent,
+                band, mode, spot_source, rbl_group, country, zone_cq, zone_itu, continent,
                 special_tags if special_tags else None,
                 call_status, dxcc_status
             ])
@@ -289,6 +308,103 @@ class SpotsLogger:
         except Exception as e:
             logger.error(f"Error getting spot count: {e}")
             return 0
+
+    def repair_spot_metadata(self, limit: Optional[int] = None, dry_run: bool = False, vacuum: bool = False) -> Dict[str, Any]:
+        """Recompute derived spot metadata for existing rows after parser/classifier changes."""
+        try:
+            query = """
+                SELECT rowid, frequency_khz, callsign, spotter, comment
+                FROM spots
+                ORDER BY received_at DESC
+            """
+            params = []
+            if limit and limit > 0:
+                query += " LIMIT ?"
+                params.append(limit)
+
+            rows = self.conn.execute(query, params).fetchall()
+            scanned = len(rows)
+            updated = 0
+            rbl_count = 0
+            ft2_count = 0
+            changed_examples = []
+
+            for rowid, frequency_khz, callsign, spotter, comment in rows:
+                clean = clean_comment(comment or "")
+                band = band_from_khz(float(frequency_khz))
+                mode = infer_mode(clean, band, float(frequency_khz))
+                spot_source, rbl_group = classify_spot_source(spotter or "", clean, mode)
+                special_tags = extract_special(clean) or None
+                country_info = get_country_and_zone(callsign or "")
+                country = country_info.get('country') if country_info else None
+                zone_cq = country_info.get('cq_zone') if country_info else None
+                zone_itu = country_info.get('itu_zone') if country_info else None
+                continent = country_info.get('continent') if country_info else None
+
+                if spot_source == "rbl":
+                    rbl_count += 1
+                if mode == "FT2":
+                    ft2_count += 1
+
+                if len(changed_examples) < 5:
+                    changed_examples.append({
+                        "callsign": callsign,
+                        "band": band,
+                        "mode": mode,
+                        "spot_source": spot_source,
+                        "rbl_mode_group": rbl_group,
+                    })
+
+                if not dry_run:
+                    self.conn.execute(
+                        """
+                        UPDATE spots
+                        SET comment = ?,
+                            band = ?,
+                            mode = ?,
+                            spot_source = ?,
+                            rbl_mode_group = ?,
+                            special_tags = ?,
+                            country = ?,
+                            zone_cq = ?,
+                            zone_itu = ?,
+                            continent = ?
+                        WHERE rowid = ?
+                        """,
+                        [
+                            clean,
+                            band,
+                            mode,
+                            spot_source,
+                            rbl_group,
+                            special_tags,
+                            country,
+                            zone_cq,
+                            zone_itu,
+                            continent,
+                            rowid,
+                        ],
+                    )
+                    updated += 1
+
+            if not dry_run:
+                self.conn.commit()
+                self.conn.execute("CHECKPOINT")
+                if vacuum:
+                    self.conn.execute("VACUUM")
+
+            return {
+                "ok": True,
+                "dry_run": dry_run,
+                "scanned": scanned,
+                "updated": 0 if dry_run else updated,
+                "rbl_rows": rbl_count,
+                "ft2_rows": ft2_count,
+                "examples": changed_examples,
+            }
+        except Exception as e:
+            logger.error("Error repairing spot metadata: %s", e, exc_info=True)
+            return {"ok": False, "error": str(e), "dry_run": dry_run}
     
     def get_stats_by_band(self, date_filter: Optional[str] = None) -> List[Dict]:
         """Get spot statistics grouped by band"""
@@ -397,6 +513,8 @@ class SpotsLogger:
                 SELECT 
                     CAST(received_at AS VARCHAR) as received_at, CAST(date_utc AS VARCHAR) as date_utc, CAST(time_utc AS VARCHAR) as time_utc,
                     frequency_khz, band, mode,
+                    COALESCE(spot_source, 'cluster') as spot_source,
+                    COALESCE(rbl_mode_group, '') as rbl_mode_group,
                     callsign, spotter, country, zone_cq as cq,
                     comment, special_tags
                 FROM spots
@@ -406,6 +524,7 @@ class SpotsLogger:
             
             result = self.conn.execute(query, [limit]).fetchall()
             columns = ['received_at', 'date_utc', 'time_utc', 'frequency_khz', 'band', 'mode',
+                      'spot_source', 'rbl_mode_group',
                       'callsign', 'spotter', 'country', 'cq', 'comment', 'special_tags']
             
             return [dict(zip(columns, row)) for row in result]
@@ -473,6 +592,11 @@ class SpotsLogger:
         zones_cq: Optional[List[int]] = None,
         continents: Optional[List[str]] = None,
         special_tags_filter: Optional[List[str]] = None,
+        spot_sources: Optional[List[str]] = None,
+        rbl_mode_groups: Optional[List[str]] = None,
+        rbl_min_snr: Optional[float] = None,
+        rbl_dedupe_minutes: Optional[int] = None,
+        sort_by: str = "time",
     ) -> List[Dict]:
         """
         Query spots from database with comprehensive filtering
@@ -517,6 +641,22 @@ class SpotsLogger:
                 placeholders = ','.join(['?' for _ in modes])
                 where_clauses.append(f"mode IN ({placeholders})")
                 params.extend(modes)
+
+            # Spot source filter
+            if spot_sources and len(spot_sources) > 0:
+                normalized_sources = [str(source).lower() for source in spot_sources]
+                placeholders = ','.join(['?' for _ in normalized_sources])
+                where_clauses.append(f"COALESCE(spot_source, 'cluster') IN ({placeholders})")
+                params.extend(normalized_sources)
+
+            # RBL broad-mode filter
+            if rbl_mode_groups and len(rbl_mode_groups) > 0:
+                normalized_groups = [str(group).upper() for group in rbl_mode_groups]
+                placeholders = ','.join(['?' for _ in normalized_groups])
+                where_clauses.append(
+                    f"(COALESCE(spot_source, 'cluster') <> 'rbl' OR rbl_mode_group IN ({placeholders}))"
+                )
+                params.extend(normalized_groups)
             
             # CQ Zone filter
             if zones_cq and len(zones_cq) > 0:
@@ -551,6 +691,8 @@ class SpotsLogger:
                     frequency_khz / 1000.0 as frequency_mhz,
                     CAST(frequency_khz AS VARCHAR) as frequency,
                     band, mode,
+                    COALESCE(spot_source, 'cluster') as spot_source,
+                    COALESCE(rbl_mode_group, '') as rbl_mode_group,
                     callsign, spotter, country, zone_cq as cq, zone_itu,
                     continent, special_tags, comment,
                     call_status, dxcc_status
@@ -560,9 +702,13 @@ class SpotsLogger:
                 LIMIT ?
             """
             
-            params.append(limit)
+            query_limit = limit
+            if rbl_min_snr is not None or rbl_dedupe_minutes or sort_by == "score":
+                query_limit = max(limit * 5, limit + 50)
+            params.append(query_limit)
             result = self.conn.execute(query, params).fetchall()
             columns = ['timestamp', 'time', 'frequency_mhz', 'frequency', 'band', 'mode',
+                      'spot_source', 'rbl_mode_group',
                       'callsign', 'spotter', 'country', 'cq', 'zone_itu',
                       'continent', 'special_tags', 'comment', 'call_status', 'dxcc_status']
             
@@ -578,14 +724,142 @@ class SpotsLogger:
                     spot['call_status'] = '-'
                 if not spot.get('dxcc_status'):
                     spot['dxcc_status'] = '-'
+                enrich_spot_intelligence(spot)
                 spots.append(spot)
+
+            if rbl_min_snr is not None:
+                snr_filtered = []
+                for spot in spots:
+                    if spot.get("spot_source") != "rbl":
+                        snr_filtered.append(spot)
+                        continue
+                    snr = spot.get("rbl_snr")
+                    if snr is None:
+                        snr = extract_rbl_snr(spot.get("comment"))
+                    if snr is not None and float(snr) >= rbl_min_snr:
+                        snr_filtered.append(spot)
+                spots = snr_filtered
+
+            if rbl_dedupe_minutes and rbl_dedupe_minutes > 0:
+                deduped = []
+                latest_by_key: Dict[tuple, float] = {}
+                window_seconds = rbl_dedupe_minutes * 60
+                for spot in spots:
+                    if spot.get("spot_source") != "rbl":
+                        deduped.append(spot)
+                        continue
+                    key = (spot.get("callsign"), spot.get("band"), spot.get("mode"))
+                    timestamp = float(spot.get("timestamp") or 0)
+                    previous = latest_by_key.get(key)
+                    if previous is not None and abs(previous - timestamp) <= window_seconds:
+                        continue
+                    latest_by_key[key] = timestamp
+                    deduped.append(spot)
+                spots = deduped
+
+            if sort_by == "score":
+                spots.sort(key=lambda spot: (spot.get("spot_score", 0), spot.get("timestamp", 0)), reverse=True)
             
             logger.debug(f"✓ Filtered query returned {len(spots)} spots with filters: callsign={callsign}, bands={bands}, modes={modes}")
-            return spots
+            return spots[:limit]
             
         except Exception as e:
             logger.error(f"Error querying filtered spots: {e}", exc_info=True)
             return []
+
+    def get_source_stats(self, windows_minutes: Optional[List[int]] = None) -> Dict[str, Any]:
+        """Return recent spot source counts from persisted DuckDB rows."""
+        windows = windows_minutes or [5, 15, 60]
+        try:
+            if not self._indexes_created:
+                self._create_indexes()
+
+            totals_row = self.conn.execute(
+                """
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN COALESCE(spot_source, 'cluster') = 'cluster' THEN 1 ELSE 0 END) as cluster,
+                    SUM(CASE WHEN COALESCE(spot_source, 'cluster') = 'rbl' THEN 1 ELSE 0 END) as rbl,
+                    MAX(EXTRACT(EPOCH FROM received_at)) as last_any,
+                    MAX(CASE WHEN COALESCE(spot_source, 'cluster') = 'cluster' THEN EXTRACT(EPOCH FROM received_at) ELSE NULL END) as last_cluster,
+                    MAX(CASE WHEN COALESCE(spot_source, 'cluster') = 'rbl' THEN EXTRACT(EPOCH FROM received_at) ELSE NULL END) as last_rbl
+                FROM spots
+                """
+            ).fetchone()
+
+            all_time = {
+                "total": int(totals_row[0] or 0) if totals_row else 0,
+                "cluster": int(totals_row[1] or 0) if totals_row else 0,
+                "rbl": int(totals_row[2] or 0) if totals_row else 0,
+                "other": 0,
+                "last_any": float(totals_row[3] or 0) if totals_row else 0,
+                "last_cluster": float(totals_row[4] or 0) if totals_row else 0,
+                "last_rbl": float(totals_row[5] or 0) if totals_row else 0,
+            }
+            all_time["other"] = max(0, all_time["total"] - all_time["cluster"] - all_time["rbl"])
+
+            window_stats = []
+            for minutes in windows:
+                cutoff = datetime.now(UTC) - timedelta(minutes=minutes)
+                rows = self.conn.execute(
+                    """
+                    SELECT
+                        LOWER(COALESCE(spot_source, 'cluster')) as source,
+                        UPPER(COALESCE(rbl_mode_group, '')) as rbl_mode_group,
+                        UPPER(COALESCE(mode, '')) as mode,
+                        COUNT(*) as total,
+                        MAX(EXTRACT(EPOCH FROM received_at)) as last_seen
+                    FROM spots
+                    WHERE received_at >= ?
+                    GROUP BY source, rbl_mode_group, mode
+                    """,
+                    [cutoff],
+                ).fetchall()
+
+                stats = {
+                    "minutes": minutes,
+                    "label": f"{minutes}m" if minutes < 60 else f"{minutes // 60}h",
+                    "total": 0,
+                    "cluster": 0,
+                    "rbl": 0,
+                    "other": 0,
+                    "modes": {},
+                    "rbl_modes": {},
+                    "last_any": 0,
+                    "last_cluster": 0,
+                    "last_rbl": 0,
+                }
+                for source, rbl_group, mode, count, last_seen in rows:
+                    source_key = source or "cluster"
+                    mode_key = mode or "UNKNOWN"
+                    group_key = rbl_group or "OTHER"
+                    count_int = int(count or 0)
+                    last_seen_float = float(last_seen or 0)
+
+                    stats["total"] += count_int
+                    stats["last_any"] = max(stats["last_any"], last_seen_float)
+                    stats["modes"][mode_key] = stats["modes"].get(mode_key, 0) + count_int
+
+                    if source_key == "cluster":
+                        stats["cluster"] += count_int
+                        stats["last_cluster"] = max(stats["last_cluster"], last_seen_float)
+                    elif source_key == "rbl":
+                        stats["rbl"] += count_int
+                        stats["last_rbl"] = max(stats["last_rbl"], last_seen_float)
+                        stats["rbl_modes"][group_key] = stats["rbl_modes"].get(group_key, 0) + count_int
+                    else:
+                        stats["other"] += count_int
+
+                window_stats.append(stats)
+
+            return {
+                "ok": True,
+                "all_time": all_time,
+                "windows": window_stats,
+            }
+        except Exception as e:
+            logger.error("Error getting source stats: %s", e, exc_info=True)
+            return {"ok": False, "error": str(e), "all_time": {}, "windows": []}
     
     def export_csv(self, output_path: str, date_filter: Optional[str] = None):
         """Export spots to CSV file"""

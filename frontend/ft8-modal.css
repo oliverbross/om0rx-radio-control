@@ -395,6 +395,13 @@ select:disabled {
     color: #ffffff;
 }
 
+.ft8-decode-row.active-target {
+    outline: 2px solid #ffffff;
+    background: #ef4444;
+    color: #ffffff;
+    font-weight: 800;
+}
+
 .ft8-decode-row.reply {
     background: #facc15;
     color: #111827;
@@ -453,15 +460,24 @@ select:disabled {
 }
 
 .ft8-operator-strip {
+    flex: 0 0 auto;
     min-height: 38px;
     padding: 5px 7px;
     background: #222222;
     border: 1px solid #444;
     border-radius: 5px;
     flex-wrap: wrap;
+    align-content: flex-start;
+    row-gap: 6px;
+    overflow: visible;
+}
+
+.ft8-operator-strip > * {
+    flex: 0 0 auto;
 }
 
 .ft8-debug-strip {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -479,6 +495,16 @@ select:disabled {
 
 .ft8-debug-strip span {
     min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ft8-operator-state {
+    flex: 1 1 340px;
+    min-width: 240px;
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 800;
     overflow: hidden;
     text-overflow: ellipsis;
 }
@@ -532,10 +558,13 @@ select:disabled {
 }
 
 .ft8-rx-control-deck {
+    flex: 0 0 auto;
     background: #202020;
     border: 1px solid #444;
     border-radius: 7px;
     padding: 0 8px 8px;
+    min-width: 0;
+    overflow: visible;
 }
 
 .ft8-rx-tabs {
@@ -543,6 +572,16 @@ select:disabled {
     flex-wrap: wrap;
     gap: 3px;
     padding-top: 6px;
+    row-gap: 6px;
+    align-items: flex-start;
+}
+
+.ft8-rx-tabs button {
+    flex: 0 0 auto;
+    min-width: 64px;
+    min-height: 32px;
+    white-space: nowrap;
+    line-height: 1.1;
 }
 
 .ft8-message-builder {
@@ -599,7 +638,8 @@ select:disabled {
 }
 
 .ft8-wsjtz-panel.others {
-    grid-template-columns: minmax(260px, 1fr) minmax(220px, max-content) minmax(220px, max-content);
+    grid-template-columns: minmax(260px, 1fr) minmax(190px, 240px) minmax(190px, 260px);
+    align-items: start;
 }
 
 .ft8-filter-group,
@@ -763,6 +803,7 @@ select:disabled {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    flex: 0 0 auto;
 }
 
 .ft8-watchdog-meter {
@@ -1006,5 +1047,18 @@ body[data-ft8-standalone="true"] .ft8-modal {
 
     .ft8-engine-strip {
         margin-left: 0;
+    }
+
+    .ft8-wsjtz-panel.others,
+    .ft8-wsjtz-panel.filtering,
+    .ft8-wsjtz-panel.alerts {
+        grid-template-columns: 1fr;
+    }
+
+    .ft8-automation-box,
+    .ft8-automation-options {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        align-items: start;
     }
 }

@@ -52,6 +52,17 @@ function Test-CommandAvailable {
 
 Push-Location $ProjectRoot
 try {
+    $maintenanceSettingsDir = Join-Path ([System.IO.Path]::GetTempPath()) "om0rx-radio-control-maintenance"
+    New-Item -ItemType Directory -Force -Path $maintenanceSettingsDir | Out-Null
+    $maintenanceAppSettings = Join-Path $maintenanceSettingsDir "app_settings.json"
+    $maintenanceLocalSecrets = Join-Path $maintenanceSettingsDir "local_secrets.json"
+    Copy-Item -LiteralPath (Join-Path $ProjectRoot "settings\app_settings.json") -Destination $maintenanceAppSettings -Force
+    if (Test-Path -LiteralPath (Join-Path $ProjectRoot "settings\local_secrets.json")) {
+        Copy-Item -LiteralPath (Join-Path $ProjectRoot "settings\local_secrets.json") -Destination $maintenanceLocalSecrets -Force
+    }
+    $env:OM0RX_APP_SETTINGS_PATH = $maintenanceAppSettings
+    $env:OM0RX_LOCAL_SECRETS_PATH = $maintenanceLocalSecrets
+
     Invoke-CheckStep "Python syntax compile" {
         @'
 import compileall
@@ -209,7 +220,7 @@ print("no duplicate routes")
             return
         }
 
-        & rg -n "(?i)Wave-Flex-Spots|waave-flex-spots|wave-flex-spots|wave-flex|waave-flex|waveflex|c:\\Projects\\wave|documentation\\FEATURE_NAME|/documentation" . -g "*.*" -g "!docs/archive/**" -g "!vendor/**" -g "!node_modules/**" -g "!.git/**" -g "!scripts/maintenance/check_project.ps1"
+        & rg -n "(?i)Wave-Flex-Spots|waave-flex-spots|wave-flex-spots|wave-flex|waave-flex|waveflex|c:\\Projects\\wave|documentation\\FEATURE_NAME|/documentation" . -g "*.*" -g "!data/**" -g "!logs/**" -g "!docs/archive/**" -g "!vendor/**" -g "!node_modules/**" -g "!om0rx_radio_control.egg-info/**" -g "!__pycache__/**" -g "!**/__pycache__/**" -g "!.pytest_cache/**" -g "!.git/**" -g "!scripts/maintenance/check_project.ps1"
         if ($LASTEXITCODE -eq 0) {
             throw "Old project references were found"
         }

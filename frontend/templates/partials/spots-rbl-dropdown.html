@@ -1,0 +1,64 @@
+<div v-if="viewMode === 'spots'" class="filter-dropdown">
+    <button @click="toggleDropdown('rbl')" :class="['filter-btn', { active: isFilterActive('rbl') }]">
+        RBL ▼
+    </button>
+    <div v-if="openDropdown === 'rbl'" class="dropdown-menu rbl-dropdown-menu">
+        <div class="dropdown-list">
+            <label v-if="rblProfiles.length > 0" class="rbl-profile-control">
+                Profile
+                <select v-model="rblProfile" class="rbl-profile-select">
+                    <option v-for="profile in rblProfiles" :key="profile.id" :value="profile.id">{{ profile.name }}</option>
+                </select>
+            </label>
+            <label>
+                <input type="checkbox" :checked="rblControl.enabled" @change="setRblEnabled($event.target.checked)" :disabled="rblControl.busy">
+                Cluster RBL feed
+            </label>
+            <label v-for="source in availableSpotSources" :key="source.id">
+                <input type="checkbox" :checked="spotsFilter.spotSources.includes(source.id)" @change="toggleSpotSource(source.id)">
+                Show {{ source.name }}
+            </label>
+        </div>
+        <div class="dropdown-list rbl-dropdown-section">
+            <label v-for="mode in availableRblModes" :key="mode">
+                <input type="checkbox" :checked="spotsFilter.rblModes.includes(mode)" @change="toggleFilterItem(spotsFilter.rblModes, mode)">
+                RBL {{ mode }}
+            </label>
+        </div>
+        <div class="dropdown-list rbl-dropdown-section">
+            <label class="rbl-number-control">
+                Min dB
+                <input type="number" min="-30" max="60" step="1" v-model="spotsFilter.rblMinSnr">
+            </label>
+            <label class="rbl-number-control">
+                Dedupe min
+                <input type="number" min="0" max="120" step="1" v-model.number="spotsFilter.rblDedupeMinutes">
+            </label>
+        </div>
+        <div class="dropdown-list rbl-dropdown-section">
+            <label><input type="checkbox" v-model="rblAlertRules.enabled"> Enable RBL alerts</label>
+            <label><input type="checkbox" v-model="rblAlertRules.newDxcc"> Alert new DXCC</label>
+            <label><input type="checkbox" v-model="rblAlertRules.newBand"> Alert new band</label>
+            <label><input type="checkbox" v-model="rblAlertRules.localHeard"> Alert locally decoded</label>
+            <label class="rbl-number-control">Alert score <input type="number" min="0" max="100" step="5" v-model.number="rblAlertRules.minScore"></label>
+            <label class="rbl-number-control">Alert dB <input type="number" min="-30" max="60" step="1" v-model.number="rblAlertRules.minSnr"></label>
+        </div>
+        <div class="rbl-command-feedback">
+            <div><strong>{{ rblControl.lastProfileLabel || rblProfile }}</strong></div>
+            <div class="rbl-command-line" :title="getRblProfileCommandPreview().enable || 'No enable command configured'">On: {{ getRblProfileCommandPreview().enable || 'not configured' }}</div>
+            <div class="rbl-command-line" :title="getRblProfileCommandPreview().disable || 'No disable command configured'">Off: {{ getRblProfileCommandPreview().disable || 'not configured' }}</div>
+            <div v-if="getRblProfileCommandPreview().selected.length > 0" class="rbl-command-preview-list">
+                <span v-for="item in getRblProfileCommandPreview().selected" :key="item.mode" :title="item.command">{{ item.mode }} {{ item.command }}</span>
+            </div>
+            <div v-else class="rbl-command-line">Modes: UI filter only</div>
+            <div v-if="getRblProfileCommandPreview().modeNote" class="rbl-command-note">{{ getRblProfileCommandPreview().modeNote }}</div>
+            <div class="rbl-command-line" :title="getRblCommandStatusText()">Cmd: {{ getRblCommandStatusText() }}</div>
+            <div class="rbl-command-line" :title="rblControl.lastResponse || 'No cluster response captured'">Last: {{ rblControl.lastResponse || 'No cluster response captured' }}</div>
+        </div>
+        <div class="dropdown-footer">
+            <button @click="showOnlyRblSpots">RBL only</button>
+            <button @click="showOnlyClusterSpots">Normal only</button>
+            <button @click="showAllSpotSources">All</button>
+        </div>
+    </div>
+</div>

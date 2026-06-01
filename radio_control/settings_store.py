@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
 
@@ -19,8 +20,8 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SETTINGS_DIR = PROJECT_ROOT / "settings"
-APP_SETTINGS_PATH = SETTINGS_DIR / "app_settings.json"
-LOCAL_SECRETS_PATH = SETTINGS_DIR / "local_secrets.json"
+APP_SETTINGS_PATH = Path(os.environ.get("OM0RX_APP_SETTINGS_PATH", SETTINGS_DIR / "app_settings.json"))
+LOCAL_SECRETS_PATH = Path(os.environ.get("OM0RX_LOCAL_SECRETS_PATH", SETTINGS_DIR / "local_secrets.json"))
 LEGACY_ROTOR_CONFIG_PATH = SETTINGS_DIR / "rotor_config.json"
 LEGACY_FT8_CONFIG_PATH = PROJECT_ROOT / "logs" / "ft8_config.json"
 
@@ -82,6 +83,11 @@ ALLOWED_CONFIG_KEYS = {
     "QRZ_ENABLED",
     "QRZ_PASSWORD",
     "QRZ_USERNAME",
+    "RADIO_SHOW_DETAILED_CONTROLS",
+    "RADIO_LAYOUT_PRESET",
+    "RBL_COMMAND_PROFILE",
+    "RBL_COMMAND_PROFILES",
+    "RBL_ALERT_RULES",
     "ROTOR_AUTO_DELAY_SEC",
     "ROTOR_AUTO_ENABLED",
     "ROTOR_BANDS",
@@ -136,7 +142,7 @@ def _read_json(path: Path) -> Dict[str, Any]:
 
 
 def _write_json(path: Path, data: Dict[str, Any]) -> None:
-    SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2, sort_keys=True)
         handle.write("\n")

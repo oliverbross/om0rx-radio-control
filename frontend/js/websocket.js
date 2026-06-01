@@ -51,23 +51,17 @@ const websocketMethods = {
                     );
                     
                     newSpots.forEach(newSpot => {
-                        // Check if spot already exists (by callsign and frequency_mhz)
-                        const freqMhz = newSpot.frequency_mhz || parseFloat(newSpot.frequency) / 1000;
-                        const exists = this.dxSpots.some(s => {
-                            const existingFreqMhz = s.frequency_mhz || parseFloat(s.frequency) / 1000;
-                            return s.callsign === newSpot.callsign && 
-                                   Math.abs(existingFreqMhz - freqMhz) < 0.001;
-                        });
-                        if (exists) {
-                            const existingSpot = this.dxSpots.find(s => {
-                                const existingFreqMhz = s.frequency_mhz || parseFloat(s.frequency) / 1000;
-                                return s.callsign === newSpot.callsign &&
-                                       Math.abs(existingFreqMhz - freqMhz) < 0.001;
-                            });
-                            if (existingSpot) {
-                                Object.assign(existingSpot, newSpot);
+                        const existingIndex = this.findExistingSpotIndex(newSpot, this.dxSpots);
+                        if (existingIndex !== -1) {
+                            const existingSpot = this.dxSpots[existingIndex];
+                            Object.assign(existingSpot, this.mergeSpotAggregate(existingSpot, newSpot));
+                            this.evaluateRblSpotAlert(existingSpot);
+                            if (existingIndex !== 0) {
+                                this.dxSpots.splice(existingIndex, 1);
+                                this.dxSpots.unshift(existingSpot);
                             }
                         } else {
+                            this.evaluateRblSpotAlert(newSpot);
                             // If filtered search is active, queue the spot instead of showing immediately
                             if (this.hasActiveFilters() && this.isSearchingSpots) {
                                 this.queuedRealtimeSpots.unshift(newSpot);
@@ -79,7 +73,15 @@ const websocketMethods = {
                                 // This ensures new real-time spots appear even when filters are active with search results
                                 if (this.hasActiveFilters() && this.filteredSearchResults.length > 0 && !this.isSearchingSpots) {
                                     if (this.matchesCurrentFilters(newSpot)) {
-                                        this.filteredSearchResults.unshift(newSpot);
+                                        const filteredIndex = this.findExistingSpotIndex(newSpot, this.filteredSearchResults);
+                                        if (filteredIndex !== -1) {
+                                            Object.assign(
+                                                this.filteredSearchResults[filteredIndex],
+                                                this.mergeSpotAggregate(this.filteredSearchResults[filteredIndex], newSpot)
+                                            );
+                                        } else {
+                                            this.filteredSearchResults.unshift(newSpot);
+                                        }
                                         log('debug', 'spots', `Added to filtered results: ${newSpot.callsign} ${newSpot.frequency} kHz`);
                                     }
                                 }

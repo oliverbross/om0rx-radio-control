@@ -17,7 +17,7 @@
             </div>
             
             <!-- Centered Button Group -->
-            <div style="display: flex; gap: 4px; align-items: center; justify-content: center; width: 100%;">
+            <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="display: flex; gap: 4px; align-items: center; justify-content: center; width: 100%;">
                 <button>⚡</button>
                 <button :class="radioStatus.rx2_enabled ? 'active' : ''" @click="toggleRX2">RX2</button>
                 
@@ -34,7 +34,7 @@
             </div>
             
             <!-- UTC Clock & Sync Status - Absolute positioned to right -->
-            <div style="position: absolute; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;">
+            <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="position: absolute; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;">
                 <span class="status-indicator" :class="connected ? 'status-connected' : 'status-disconnected'"></span>
                 <button 
                     @click="openDigitalWindow"
@@ -60,7 +60,7 @@
             </div>
             
             <!-- Sliders Row - Below buttons, centered and compact -->
-            <div style="display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 8px;">
+            <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 8px;">
                 <div class="slider-group">
                     <span class="slider-label">Volume</span>
                     <input type="range" v-model.number="controls.volume" @input="setVolume" min="0" max="100">
@@ -98,3 +98,19 @@
                 </div>
             </div>
         </div>
+
+        <div class="service-health-strip" v-if="serviceHealth && serviceHealth.services && serviceHealth.services.length">
+            <button
+                v-for="service in serviceHealth.services"
+                :key="service.id"
+                type="button"
+                :class="['service-health-pill', `service-health-${service.status || 'unknown'}`, { 'service-health-actionable': service.action }]"
+                :title="serviceHealthPillTitle(service)"
+                @click="handleServiceHealthClick(service)">
+                <span class="service-health-dot"></span>
+                <span class="service-health-label">{{ service.label }}</span>
+                <span class="service-health-value" v-if="service.value">{{ service.value }}</span>
+            </button>
+        </div>
+
+        <!-- @include templates/partials/compact-radio-controls.html -->

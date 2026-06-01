@@ -1,7 +1,7 @@
         <!-- Row 3: Rotator, Frequency/Band/Mode in center, Cluster Status/Step/AGC on right -->
-        <div class="control-row" style="justify-content: space-between;">
+        <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" class="control-row" style="justify-content: space-between;">
             <!-- Rotator & Beaming Controls - left aligned (flex container) -->
-            <div style="display: flex; gap: 12px; align-items: flex-start; flex: 0 0 auto;" v-if="rotorEnabled">
+            <div style="display: flex; gap: 12px; align-items: flex-start; flex: 0 0 auto;" v-if="isRotorEnabledForCurrentBand()">
                 <!-- Rotator Controls -->
                 <div class="rotor-control">
                     <!-- Azimuth control -->
@@ -80,7 +80,7 @@
                     </div>
                     
                     <!-- DSP Buttons directly under frequency -->
-                    <div style="display: flex; gap: 8px; justify-content: center; width: 100%;">
+                    <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="display: flex; gap: 8px; justify-content: center; width: 100%;">
                         <button @click="toggleDSP('nb')" :class="['dsp-button', { active: radioStatus.nb_enabled }]">NB</button>
                         <button @click="toggleDSP('nr')" :class="['dsp-button', { active: radioStatus.nr_enabled }]">NR</button>
                         <button @click="toggleDSP('anf')" :class="['dsp-button', { active: radioStatus.anf_enabled }]">ANF</button>
@@ -92,7 +92,7 @@
                 <div style="display: flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center;">
                     
                     <!-- DSP Level Sliders (shown when DSP is active and slider toggled) -->
-                    <div v-if="showDSPSlider.nb || showDSPSlider.nr || showDSPSlider.anf || showDSPSlider.apf" 
+                    <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS && (showDSPSlider.nb || showDSPSlider.nr || showDSPSlider.anf || showDSPSlider.apf)"
                          style="display: flex; gap: 12px; padding: 4px; background: rgba(0,0,0,0.3); border-radius: 4px;">
                         <div v-if="showDSPSlider.nb" class="slider-group" style="min-width: 100px;">
                             <span class="slider-label" style="font-size: 9px;">NB</span>
@@ -119,7 +119,7 @@
             </div>
                 
                 <!-- WinKeyer Widget - Right side of frequency -->
-                <div class="winkeyer-widget" v-if="winKeyerEnabled && radioStatus.mode === 'CW'" style="display: flex; flex-direction: column; gap: 6px; align-items: center;">
+                <div class="winkeyer-widget" v-if="winKeyerEnabled" style="display: flex; flex-direction: column; gap: 6px; align-items: center;">
                     <div style="display: flex; gap: 4px; align-items: center;">
                         <button @click="winkeyer.isConnected ? winKeyerDisconnect() : winKeyerConnect()" :disabled="false" class="winkeyer-btn" style="padding: 4px 8px; font-size: 12px;">
                             🔌 {{ winkeyer.isConnected ? '❌ Disconnect' : 'Connect' }}
@@ -143,7 +143,7 @@
             </div>
             
             <!-- Right side: Cluster Status + Step/AGC controls -->
-            <div style="display: flex; gap: 8px; align-items: flex-start; flex: 0 0 auto;">
+            <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="display: flex; gap: 8px; align-items: flex-start; flex: 0 0 auto;">
                 <!-- Cluster Status Panel (matching rotor styling) -->
                 <div class="cluster-control">
                     <!-- Line 1: Cluster name + Status indicator -->

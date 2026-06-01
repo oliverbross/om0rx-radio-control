@@ -40,6 +40,9 @@ GET_ROUTES = [
     "/api/spots/stats/mode",
     "/api/spots/stats/country",
     "/api/spots/special",
+    "/api/spots/source-stats",
+    "/api/cluster/rbl/status",
+    "/api/cluster/rbl/profiles",
     "/api/country/data",
     "/api/country/by-name/{name}",
     "/api/qrz/profile/{callsign:path}",
@@ -90,6 +93,7 @@ POST_ROUTES = [
     "/api/rotor/auto/config",
     "/api/rotor/auto/goto",
     "/api/cluster/command",
+    "/api/cluster/rbl",
     "/api/cluster/reconnect",
     "/api/shutdown",
     "/api/restart",
@@ -234,6 +238,9 @@ def test_safe_frontend_read_contracts():
     assert_response_has_keys("GET", "/api/spots/stats/mode", {"ok", "data", "date_filter"})
     assert_response_has_keys("GET", "/api/spots/stats/country?limit=5", {"ok", "data", "limit", "date_filter"})
     assert_response_has_keys("GET", "/api/spots/special?limit=5", {"ok", "data", "count"})
+    assert_response_has_keys("GET", "/api/spots/source-stats", {"ok", "live", "all_time", "windows"})
+    assert_response_has_keys("GET", "/api/cluster/rbl/status", {"ok", "enabled", "profile", "telemetry"})
+    assert_response_has_keys("GET", "/api/cluster/rbl/profiles", {"ok", "default_profile", "profiles"})
     assert_response_has_keys("GET", "/api/qso/outbox/status", {"success", "outbox"})
     assert_response_has_keys("GET", "/api/solar", {"source", "indices", "hf_conditions"})
 
@@ -250,6 +257,12 @@ def test_safe_frontend_post_contracts():
         "/api/cluster/command",
         {"success", "message"},
         json={"command": "sh/dx"},
+    )
+    assert_response_has_keys(
+        "POST",
+        "/api/cluster/rbl",
+        {"success", "message", "profile", "telemetry"},
+        json={"enabled": True, "modes": ["CW"], "profile": "dxspider"},
     )
     assert_response_has_keys(
         "POST",

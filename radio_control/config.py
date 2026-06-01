@@ -72,6 +72,23 @@ def _cfg_list(name, default):
     return default
 
 
+def _cfg_dict(name, default):
+    value = _cfg_value(name, default)
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return default
+        import json
+
+        parsed = json.loads(stripped)
+        if not isinstance(parsed, dict):
+            raise ValueError(f"{name} must be a JSON object")
+        return parsed
+    return default
+
+
 BACKEND_HOST = _cfg_value("BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = _cfg_int("BACKEND_PORT", 8080)
 CORS_ALLOWED_ORIGINS = _cfg_list(
@@ -93,6 +110,27 @@ CLUSTER_HOST = _cfg_value("CLUSTER_HOST", "localhost")
 CLUSTER_PORT = _cfg_int("CLUSTER_PORT", 7373)
 CLUSTER_USER = _cfg_value("CLUSTER_USER", "N0CALL")
 CLUSTER_PASS = _cfg_value("CLUSTER_PASS", "")
+RBL_ENABLE_COMMAND = _cfg_value("RBL_ENABLE_COMMAND", "set/skimmer")
+RBL_DISABLE_COMMAND = _cfg_value("RBL_DISABLE_COMMAND", "unset/skimmer")
+RBL_MODE_COMMANDS = _cfg_dict("RBL_MODE_COMMANDS", {})
+RBL_COMMAND_PROFILE = _cfg_value("RBL_COMMAND_PROFILE", "dxspider")
+RBL_COMMAND_PROFILES = _cfg_dict("RBL_COMMAND_PROFILES", {})
+RADIO_SHOW_DETAILED_CONTROLS = _cfg_bool("RADIO_SHOW_DETAILED_CONTROLS", False)
+RADIO_LAYOUT_PRESET = _cfg_value("RADIO_LAYOUT_PRESET", "compact")
+RBL_ALERT_RULES = _cfg_dict("RBL_ALERT_RULES", {
+    "enabled": True,
+    "newDxcc": True,
+    "newBand": True,
+    "newCall": False,
+    "localHeard": True,
+    "minScore": 55,
+    "minSnr": 8,
+    "modes": [],
+    "bands": [],
+    "cooldownMinutes": 10,
+    "sound": False,
+    "toast": True,
+})
 LOGIN_SCRIPT  = []
 
 SDR_UDP_HOST = _cfg_value("SDR_UDP_HOST", "127.0.0.1")

@@ -151,7 +151,13 @@ class FT8Service:
         self.watchdog_cycles = {"FT8": 2, "FT4": 2}
         self.tx_watchdog_started_at: Optional[datetime] = None
         self.tx_watchdog_counter = 0
+        self.tx_inhibit_reason: Optional[str] = None
+        self.last_cancel_abort_reason: Optional[str] = None
+        self.auto_engage_paused_until: Optional[datetime] = None
+        self.auto_call_cq_only = False
         self.active_tx_message: Optional[str] = None
+        self.current_tx_message: Optional[str] = None
+        self._restart_tx_after_abort = False
         self.last_tx_slot = None
         self.tx_status = "idle"
         self.automation_status = "idle"
@@ -267,12 +273,162 @@ class FT8Service:
             self.automation_decisions = self.automation_decisions[-100:]
         logger.info("DIGITAL decision: %s", entry)
 
+    def _now(self) -> datetime:
+        return datetime.now(timezone.utc)
+
     def _attempt_is_current(self, attempt_id: Optional[str]) -> bool:
         if not attempt_id:
             return True
         if not self.active_attempt_id:
             return False
         return attempt_id == self.active_attempt_id
+
+    def _max_safe_late_start_seconds(self, mode: Optional[str] = None) -> float:
+        return 7.0 if normalise_decode_mode(mode or self.mode) == "FT8" else 3.5
+
+    def _should_handle_cycle(self, cycle_number: int, cycle_position: float, is_tx_cycle: bool) -> bool:
+        if self.last_tx_slot == cycle_number:
+            return False
+        if is_tx_cycle:
+            return cycle_position <= self._max_safe_late_start_seconds()
+        return cycle_position < 0.5
+
+    def _tx_message_priority(self, message: str) -> int:
+        parts = self._message_tokens(str(message or "").upper())
+        if len(parts) < 3:
+            return 0
+        last_token = parts[-1]
+        if last_token == "73":
+            return 4
+        if last_token in {"RR73", "RRR"}:
+            return 3
+        if SIGNAL_REPORT_RE.match(last_token):
+            return 2
+        if GRID_RE.match(last_token):
+            return 1
+        return 0
+
+    def _maybe_preempt_stale_tx(self, qso: Optional[QSOSession], next_message: str) -> None:
+        if not self.tx_in_progress or qso is None:
+            return
+        current_message = self.current_tx_message or self.active_tx_message
+        if not current_message or current_message == next_message:
+            return
+        current_qso = self._active_qso_for_tx_message(current_message)
+        if current_qso is not qso:
+            return
+        if self._tx_message_priority(next_message) <= self._tx_message_priority(current_message):
+            return
+        self._restart_tx_after_abort = True
+        self.tx_engine.abort()
+        self.tx_status = f"switching TX to {next_message}"
+        self._record_decision(
+            "tx-preempted",
+            "directed-reply-advanced-qso",
+            current_message=current_message,
+            next_message=next_message,
+            attempt_id=qso.attempt_id,
+        )
+
+    def _schedule_preempted_tx_restart(self) -> None:
+        if not self._restart_tx_after_abort:
+            return
+        self._restart_tx_after_abort = False
+        if self.enabled and self.tx_enabled and self.tx_queue:
+            asyncio.create_task(self.transmit_queued_now_if_possible(force_current_slot=True))
+
+    def _watchdog_limit_seconds(self) -> int:
+        mode = normalise_decode_mode(self.mode)
+        return int(self.watchdog_cycles.get(mode, 0) or 0) * 60
+
+    def _watchdog_is_active(self) -> bool:
+        return bool(
+            self.watchdog_enabled
+            and self._watchdog_limit_seconds() > 0
+            and self.tx_watchdog_started_at
+            and self.active_attempt_id
+        )
+
+    def _start_attempt_watchdog(self) -> None:
+        if self.watchdog_enabled and self._watchdog_limit_seconds() > 0 and self.tx_watchdog_started_at is None:
+            self.tx_watchdog_started_at = self._now()
+
+    def _expire_watchdog_if_due(self) -> bool:
+        if not self._watchdog_is_active():
+            return False
+        assert self.tx_watchdog_started_at is not None
+        if (self._now() - self.tx_watchdog_started_at).total_seconds() < self._watchdog_limit_seconds():
+            return False
+        keep_automation_armed = bool(self.auto_call_enabled and self.automation_controller.active_target_key)
+        self._cancel_current_attempt(
+            reason="watchdog-expired",
+            backoff_active_target=True,
+            disable_tx=not keep_automation_armed,
+            pause_auto_engage=not keep_automation_armed,
+            clear_inhibit=False,
+        )
+        self.tx_status = "watchdog expired; attempt aborted and target backed off"
+        return True
+
+    def _active_target_retry_count(self) -> int:
+        active_key = self.automation_controller.active_target_key
+        target = self.automation_controller.targets.get(active_key) if active_key else None
+        if target:
+            return int(target.attempts or 0)
+        qso = next(iter(self.active_qsos.values()), None)
+        return int(qso.tx_count or 0) if qso else 0
+
+    def _backoff_targets_debug(self) -> list[dict[str, Any]]:
+        now = self._now()
+        backed_off = []
+        for target in self.automation_controller.targets.values():
+            if target.is_backed_off(now):
+                backed_off.append({
+                    "key": target.key,
+                    "call": target.call,
+                    "backoff_until": target.backoff_until.isoformat() if target.backoff_until else None,
+                    "reason": target.reason,
+                    "attempts": target.attempts,
+                })
+        return backed_off
+
+    def _cancel_current_attempt(
+        self,
+        *,
+        reason: str,
+        backoff_active_target: bool,
+        disable_tx: bool,
+        pause_auto_engage: bool,
+        clear_inhibit: bool = False,
+        inhibit_reason: Optional[str] = None,
+    ) -> None:
+        self.last_cancel_abort_reason = reason
+        self.tx_engine.abort()
+        self.tx_queue.clear()
+        self.tx_message_attempt_ids.clear()
+        self.active_tx_message = None
+        self.current_tx_message = None
+        self._restart_tx_after_abort = False
+        self.pending_tx_intent = None
+        for qso in self.active_qsos.values():
+            qso.status = "aborted"
+        self.active_qsos.clear()
+        self.active_attempt_id = None
+        self.tx_watchdog_started_at = None
+        if backoff_active_target:
+            self.automation_controller.abandon_active_target(reason=reason)
+        else:
+            self.automation_controller.active_target_key = None
+        if pause_auto_engage:
+            self.auto_engage_paused_until = self._now() + timedelta(seconds=max(1.0, self._cycle_duration_seconds()))
+        if clear_inhibit:
+            self.tx_inhibit_reason = None
+        if inhibit_reason:
+            self.tx_inhibit_reason = inhibit_reason
+        if disable_tx:
+            self.tx_enabled = False
+            self.auto_sequence = False
+        self._record_decision("attempt-cancelled", reason)
 
     def _cycle_duration_seconds(self) -> float:
         """Return the timing slot duration for the active digital mode."""
@@ -281,7 +437,7 @@ class FT8Service:
     def _live_cycle_state(self) -> tuple[float, float, int, bool]:
         """Return live slot timing and whether the current slot is ours to TX."""
         cycle_duration = self._cycle_duration_seconds()
-        now = datetime.now(timezone.utc)
+        now = self._now()
         cycle_position = now.timestamp() % cycle_duration if cycle_duration else 0.0
         cycle_number = int(now.timestamp() // cycle_duration) if cycle_duration else 0
         is_even_cycle = (cycle_number % 2) == 0
@@ -364,8 +520,10 @@ class FT8Service:
                 self.slot_is_tx = bool(slot_is_tx)
                 self.is_tx_cycle = bool(slot_is_tx and self.tx_enabled)
                 
-                # Handle cycle transition
-                if cycle_position < 0.5 and self.last_tx_slot != cycle_number:
+                # Handle cycle transition. TX remains useful for a few seconds
+                # after slot start; do not miss the whole slot if the loop
+                # wakes slightly late.
+                if self._should_handle_cycle(cycle_number, cycle_position, self.is_tx_cycle):
                     self.last_tx_slot = cycle_number
                     try:
                         if self.is_tx_cycle:
@@ -446,9 +604,24 @@ class FT8Service:
 
     async def _automation_tick(self):
         settings = self.automation_controller.settings
-        if not (settings.enabled or settings.spot_hunt_enabled or self.auto_call_enabled):
+        if not (settings.spot_hunt_enabled or self.auto_call_enabled):
             self.automation_status = "standby"
             return
+        if self.tx_inhibit_reason:
+            self.automation_status = f"tx-inhibited: {self.tx_inhibit_reason}"
+            self._record_decision("automation-skip", "tx-inhibited", tx_inhibit_reason=self.tx_inhibit_reason)
+            return
+        if self.auto_engage_paused_until and self.auto_engage_paused_until > self._now():
+            self.automation_status = "auto-engage-paused"
+            self._record_decision(
+                "automation-skip",
+                "auto-engage-paused-after-cancel",
+                paused_until=self.auto_engage_paused_until.isoformat(),
+            )
+            return
+        self.auto_engage_paused_until = None
+        if self._expire_watchdog_if_due():
+            self._record_decision("attempt-expired", "watchdog-expired-before-automation-selection")
         if self.active_qsos:
             self.automation_status = "qso-active"
             self._record_decision("automation-skip", "active-qso-owned-by-backend", attempt_id=self.active_attempt_id)
@@ -458,7 +631,10 @@ class FT8Service:
             self._record_decision("automation-skip", "tx-queue-or-message-pending", active_message=self.active_tx_message)
             return
 
-        target = self.automation_controller.next_target()
+        target = self.automation_controller.next_target(
+            cq_only=self.auto_call_cq_only,
+            auto_call_start_only=self.auto_call_enabled,
+        )
         if not target:
             self.automation_status = "no-eligible-targets"
             self._record_decision("automation-skip", "no-eligible-targets")
@@ -469,7 +645,6 @@ class FT8Service:
         if not self.tx_enabled:
             self.tx_enabled = True
             self.auto_sequence = True
-            self.tx_watchdog_started_at = datetime.now(timezone.utc)
         if not self.auto_call_enabled:
             self.automation_status = f"selected {target.call}; Auto Call disabled"
             self._record_decision("candidate-selected", "auto-call-disabled", call=target.call)
@@ -534,11 +709,9 @@ class FT8Service:
             return None
 
         try:
-            now = datetime.now(timezone.utc)
+            now = self._now()
             cycle_duration = self._cycle_duration_seconds()
             within_slot = now.timestamp() % cycle_duration
-            if within_slot > 2.0:
-                return None
             current_cycle = int(now.timestamp() // cycle_duration)
             previous_cycle = current_cycle - 1
             previous_was_even = (previous_cycle % 2) == 0
@@ -554,13 +727,19 @@ class FT8Service:
 
             loop = asyncio.get_running_loop()
             window_samples = decode_window_samples(self.mode)
-            if len(audio_buffer) < window_samples:
+            end_offset = int(max(0.0, within_slot) * self.decoder_sample_rate)
+            end_index = len(audio_buffer) - end_offset if end_offset > 0 else len(audio_buffer)
+            start_index = end_index - window_samples
+            if start_index < 0 or end_index > len(audio_buffer):
+                return None
+            decode_samples = audio_buffer[start_index:end_index]
+            if len(decode_samples) < window_samples:
                 return None
 
             messages = await loop.run_in_executor(
                 None,
                 lambda: self.rx_decoder.decode_window(
-                    audio_buffer[-window_samples:],
+                    decode_samples,
                     sample_rate=self.decoder_sample_rate,
                     window_start=slot_start,
                     mode=self.mode,
@@ -643,12 +822,15 @@ class FT8Service:
             not self.active_qsos
             and not self.tx_queue
             and not self.active_tx_message
-            and (self.auto_call_enabled or self.automation_controller.settings.enabled)
+            and (self.auto_call_enabled or self.automation_controller.settings.spot_hunt_enabled)
         ):
             await self._automation_tick()
     
     async def _auto_sequence_handler(self, message):
         """Handle auto-sequencing logic"""
+        if self.tx_inhibit_reason:
+            self._record_decision("decode-ignored", "tx-inhibited", tx_inhibit_reason=self.tx_inhibit_reason)
+            return
         msg_text = message.message.strip().upper()
         if self.active_tx_message and msg_text == self.active_tx_message.strip().upper():
             return
@@ -699,7 +881,7 @@ class FT8Service:
             self._record_decision("decode-ignored", "stale-attempt-reply", call=qso.their_call, attempt_id=qso.attempt_id, active_attempt_id=self.active_attempt_id)
             return
 
-        now = datetime.now(timezone.utc)
+        now = self._now()
         qso.last_rx_time = now
         qso.rx_count += 1
         qso.status = "waiting_for_reply"
@@ -738,12 +920,19 @@ class FT8Service:
             self._apply_hound_reply_frequency(message)
             qso.their_report = last_token.lstrip("R")
             if last_token.startswith("R"):
+                if qso.state in {QSOState.SENDING_73, QSOState.COMPLETE}:
+                    self._record_decision("decode-ignored", "roger-report-after-final-state", call=qso.their_call, attempt_id=qso.attempt_id, report=last_token)
+                    return
                 qso.state = QSOState.SENDING_RRR
                 qso.status = "tx_pending"
                 self._record_decision("qso-advanced", "roger-report-received-send-rr73", call=qso.their_call, attempt_id=qso.attempt_id, report=last_token)
                 await self._queue_qso_message(qso, f"{qso.their_call} {qso.my_call} RR73")
             else:
-                qso.my_report = self._signal_report_from_decode(message)
+                if qso.state in {QSOState.SENDING_RRR, QSOState.SENDING_73, QSOState.COMPLETE}:
+                    self._record_decision("decode-ignored", "plain-report-after-advanced-state", call=qso.their_call, attempt_id=qso.attempt_id, report=last_token)
+                    return
+                if not qso.my_report:
+                    qso.my_report = self._signal_report_from_decode(message)
                 qso.state = QSOState.SENDING_REPORT
                 qso.status = "tx_pending"
                 self._record_decision("qso-advanced", "report-received-send-roger-report", call=qso.their_call, attempt_id=qso.attempt_id, report=last_token, next_report=qso.my_report)
@@ -835,11 +1024,12 @@ class FT8Service:
         cycle_duration, cycle_position, cycle_number, slot_is_tx = self._live_cycle_state()
         if not cycle_duration:
             return None
-        now = datetime.now(timezone.utc)
-        seconds_until = 0.0 if slot_is_tx and cycle_position <= 1.0 else cycle_duration - cycle_position
+        now = self._now()
+        max_safe_late_start = self._max_safe_late_start_seconds()
+        seconds_until = 0.0 if slot_is_tx and cycle_position <= max_safe_late_start else cycle_duration - cycle_position
         if not slot_is_tx:
             seconds_until = cycle_duration - cycle_position
-        elif cycle_position > 1.0:
+        elif cycle_position > max_safe_late_start:
             seconds_until = cycle_duration - cycle_position + cycle_duration
         slot_start = now + timedelta(seconds=seconds_until)
         return datetime.fromtimestamp(
@@ -886,6 +1076,9 @@ class FT8Service:
             self.active_tx_message = None
             self.active_qsos.clear()
 
+        if not source.startswith("auto"):
+            self.tx_inhibit_reason = None
+            self.auto_engage_paused_until = None
         self.enable_tx()
         self.auto_sequence = True
         qso = QSOSession(
@@ -899,6 +1092,8 @@ class FT8Service:
         )
         self.active_qsos[call] = qso
         self.active_attempt_id = qso.attempt_id
+        self.tx_watchdog_started_at = None
+        self._start_attempt_watchdog()
         message = f"{call} {self.mycall} {self.mygrid[:4]}".strip()
         await self.queue_tx_message(message, automation="auto_call" if source == "auto_call" else None, attempt_id=qso.attempt_id)
         self.pending_tx_intent = {
@@ -940,8 +1135,6 @@ class FT8Service:
             self.active_qsos[their_call] = qso
             self.active_attempt_id = qso.attempt_id
 
-        qso.last_tx_time = datetime.now(timezone.utc)
-        qso.tx_count += 1
         last_token = parts[-1]
         if last_token in {"73", "RR73"}:
             qso.state = QSOState.SENDING_73
@@ -1019,10 +1212,10 @@ class FT8Service:
             self.active_tx_message = None
             self.tx_queue.clear()
             self.tx_message_attempt_ids.clear()
+        self.tx_watchdog_started_at = None
         if not self._automation_should_keep_tx_armed():
             self.tx_enabled = False
             self.auto_sequence = False
-            self.tx_watchdog_started_at = None
             self.tx_status = "QSO complete; TX disabled"
 
     async def _log_completed_qso(self, qso: QSOSession) -> None:
@@ -1046,7 +1239,7 @@ class FT8Service:
                 band = band_from_khz(frequency * 1000)
             except Exception:
                 band = ""
-            qso_time = (qso.start_time or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+            qso_time = (qso.started_at or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
             qso_payload = {
                 "callsign": qso.their_call,
                 "frequency": frequency,
@@ -1089,7 +1282,6 @@ class FT8Service:
         return bool(
             self.auto_call_enabled
             or self.auto_cq_enabled
-            or settings.enabled
             or settings.spot_hunt_enabled
         )
     
@@ -1103,6 +1295,17 @@ class FT8Service:
             self.auto_cq_remaining -= 1
 
         if self.tx_enabled and not self.tx_queue and self.active_tx_message:
+            active_qso = self._active_qso_for_tx_message(self.active_tx_message)
+            max_attempts = max(1, int(self.automation_controller.settings.max_attempts_per_target or 1))
+            if active_qso and self.auto_call_enabled and active_qso.tx_count >= max_attempts and active_qso.rx_count == 0:
+                self._cancel_current_attempt(
+                    reason="max-call-attempts-expired",
+                    backoff_active_target=True,
+                    disable_tx=False,
+                    pause_auto_engage=False,
+                )
+                self.tx_status = f"max call attempts reached; backed off {active_qso.their_call}"
+                return
             self.tx_queue.append(self.active_tx_message)
 
         if len(self.tx_queue) > 0:
@@ -1121,13 +1324,15 @@ class FT8Service:
                 await self.transmit_message(message, max_duration_seconds=max_duration, attempt_id=attempt_id)
             except Exception as exc:
                 if "aborted" in str(exc).lower():
-                    self.tx_status = "halted"
+                    self.tx_status = "switching TX message" if self._restart_tx_after_abort else "halted"
                 else:
                     self.tx_status = f"TX failed: {exc}"
-                self.tx_enabled = False
+                if not self._restart_tx_after_abort:
+                    self.tx_enabled = False
                 logger.error("Digital TX failed; TX halted: %s", exc, exc_info=True)
             finally:
                 self.tx_in_progress = False
+                self._schedule_preempted_tx_restart()
     
     async def _handle_rx_cycle(self):
         """Handle RX cycle"""
@@ -1154,27 +1359,27 @@ class FT8Service:
         mode = normalise_decode_mode(self.mode)
         limit = int(self.watchdog_cycles.get(mode, 2) or 0)
         active_qso = self._active_qso_for_tx_message(message)
-        now = datetime.now(timezone.utc)
-        if self.watchdog_enabled and limit > 0 and self.tx_watchdog_started_at:
-            elapsed = (now - self.tx_watchdog_started_at).total_seconds()
+        if self._expire_watchdog_if_due():
+            return
+        if active_qso is not None:
+            self._start_attempt_watchdog()
+        elif self.watchdog_enabled and limit > 0 and self.tx_watchdog_started_at:
+            elapsed = (self._now() - self.tx_watchdog_started_at).total_seconds()
             if elapsed >= limit * 60:
-                if active_qso is not None:
-                    self.tx_watchdog_started_at = now
-                    self.tx_status = f"watchdog refreshed; active QSO with {active_qso.their_call}"
-                elif self.auto_call_enabled or self.automation_controller.settings.enabled:
-                    self.abort_current_attempt()
-                    self.tx_status = f"watchdog moved to next target after {limit} min {mode}"
+                if self.auto_call_enabled and self.automation_controller.active_target_key:
+                    self._cancel_current_attempt(
+                        reason="watchdog-expired",
+                        backoff_active_target=True,
+                        disable_tx=False,
+                        pause_auto_engage=False,
+                    )
+                    self.tx_status = "watchdog expired; attempt aborted and target backed off"
                     return
-                else:
-                    self.tx_enabled = False
-                    self.tx_status = f"watchdog halted after {limit} min {mode}"
-                    logger.warning(self.tx_status)
-                    return
-        elif self.watchdog_enabled and limit > 0:
-            self.tx_watchdog_started_at = now
-
-        if active_qso is not None and self.watchdog_enabled and limit > 0:
-            self.tx_watchdog_started_at = now
+                self.tx_enabled = False
+                self.tx_watchdog_started_at = None
+                self.tx_status = f"watchdog halted after {limit} min {mode}"
+                logger.warning(self.tx_status)
+                return
 
         if not self.tx_enabled:
             if active_qso is not None and self.tx_capability_enabled:
@@ -1195,16 +1400,21 @@ class FT8Service:
             active_qso.status = "tx_active"
         flex = get_radio_instance()
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: self.tx_engine.transmit(
-                message,
-                mode=mode,
-                audio_frequency=self.tx_audio_frequency,
-                flex=flex,
-                max_duration_seconds=max_duration_seconds,
-            ),
-        )
+        self.current_tx_message = message
+        try:
+            result = await loop.run_in_executor(
+                None,
+                lambda: self.tx_engine.transmit(
+                    message,
+                    mode=mode,
+                    audio_frequency=self.tx_audio_frequency,
+                    flex=flex,
+                    max_duration_seconds=max_duration_seconds,
+                ),
+            )
+        finally:
+            if self.current_tx_message == message:
+                self.current_tx_message = None
         if not self.tx_enabled:
             self.tx_status = "halted"
             return
@@ -1215,6 +1425,8 @@ class FT8Service:
         self.stats['transmitted_count'] += 1
         self.tx_status = f"sent {result.message}"
         if active_qso:
+            active_qso.last_tx_time = self._now()
+            active_qso.tx_count += 1
             active_qso.status = "waiting_for_reply"
 
         if self.on_tx_message:
@@ -1244,7 +1456,7 @@ class FT8Service:
             return False
 
         mode = normalise_decode_mode(self.mode)
-        max_safe_late_start = 1.0 if mode == "FT8" else 0.4
+        max_safe_late_start = self._max_safe_late_start_seconds(mode)
         if cycle_position > max_safe_late_start:
             self.tx_status = f"queued for next TX slot; {cycle_position:.1f}s after slot start is too late"
             self._record_decision("tx-scheduled", "safe-start-deadline-missed", mode=mode, cycle_position=cycle_position, max_safe_late_start=max_safe_late_start, pending=self.pending_tx_intent)
@@ -1269,24 +1481,26 @@ class FT8Service:
             return True
         except Exception as exc:
             if "aborted" in str(exc).lower():
-                self.tx_status = "halted"
+                self.tx_status = "switching TX message" if self._restart_tx_after_abort else "halted"
             else:
                 self.tx_status = f"TX failed: {exc}"
-            self.tx_enabled = False
+            if not self._restart_tx_after_abort:
+                self.tx_enabled = False
             logger.error("Immediate digital TX failed; TX halted: %s", exc, exc_info=True)
             return False
         finally:
             self.tx_in_progress = False
+            self._schedule_preempted_tx_restart()
 
     async def _complete_qso_after_final_tx(self, message: str, attempt_id: Optional[str] = None) -> None:
         parts = self._message_tokens(str(message or "").upper())
-        if len(parts) < 3 or parts[-1] != "73":
+        if len(parts) < 3 or parts[-1] not in {"73", "RR73"}:
             return
         their_call = self._extract_counterparty_call(" ".join(parts), parts)
         if not their_call:
             return
         qso = self.active_qsos.get(their_call)
-        if qso and qso.state == QSOState.SENDING_73 and self._attempt_is_current(attempt_id or qso.attempt_id):
+        if qso and qso.state in {QSOState.SENDING_73, QSOState.SENDING_RRR} and self._attempt_is_current(attempt_id or qso.attempt_id):
             qso.state = QSOState.COMPLETE
             await self._complete_qso(qso)
 
@@ -1316,8 +1530,11 @@ class FT8Service:
             # message replace the required report/ack message for that QSO.
             self.tx_status = f"ignored stale locator message for active QSO with {qso.their_call}"
             return
+        self._maybe_preempt_stale_tx(qso, message)
         self.active_tx_message = message
         self._seed_qso_from_tx_message(message)
+        if qso is not None:
+            self._start_attempt_watchdog()
         if message not in self.tx_queue:
             self.tx_queue.append(message)
             self.tx_message_attempt_ids[message] = attempt_id
@@ -1362,55 +1579,43 @@ class FT8Service:
     def enable_tx(self) -> None:
         if not self.tx_capability_enabled:
             raise RuntimeError(self.tx_engine.status.reason)
+        self.tx_inhibit_reason = None
+        self.auto_engage_paused_until = None
         self.tx_enabled = True
         self.auto_sequence = True
         self.tx_watchdog_counter = 0
-        self.tx_watchdog_started_at = datetime.now(timezone.utc)
         self.tx_status = "enabled"
 
     def halt_tx(self) -> None:
-        self.tx_enabled = False
-        self.auto_sequence = bool(self.active_qsos)
-        self.auto_cq_enabled = False
-        self.auto_call_enabled = False
-        self.tx_queue.clear()
-        self.tx_message_attempt_ids.clear()
-        self.active_tx_message = None
-        self.pending_tx_intent = None
-        self.tx_watchdog_started_at = None
-        self.tx_engine.abort()
+        self._cancel_current_attempt(
+            reason="halt-tx",
+            backoff_active_target=True,
+            disable_tx=True,
+            pause_auto_engage=True,
+            inhibit_reason="user_abort",
+        )
         self.tx_status = "halted"
 
-    def abort_current_attempt(self) -> None:
-        """Abort only the current digital call attempt and keep automation armed."""
-        automation_was_active = bool(
-            self.auto_call_enabled
-            or self.automation_controller.settings.enabled
-            or self.automation_controller.settings.spot_hunt_enabled
+    def clear_current_qso(self) -> None:
+        """Clear the active QSO attempt without turning Auto Call into Auto CQ."""
+        self._cancel_current_attempt(
+            reason="clear-qso",
+            backoff_active_target=True,
+            disable_tx=False,
+            pause_auto_engage=True,
         )
-        self.tx_engine.abort()
-        self.tx_queue.clear()
-        self.tx_message_attempt_ids.clear()
-        self.active_tx_message = None
-        self.pending_tx_intent = None
-        for qso in self.active_qsos.values():
-            qso.status = "aborted"
-        self.active_qsos.clear()
-        self.active_attempt_id = None
-        self.automation_controller.abandon_active_target(reason="operator-aborted")
-        if automation_was_active:
-            self.tx_enabled = True
-            self.auto_sequence = True
-            self.auto_call_enabled = True
-            self.tx_watchdog_started_at = datetime.now(timezone.utc)
-            self.tx_status = "current attempt aborted; automation armed"
-            self._record_decision("attempt-aborted", "operator-aborted-automation-continues")
-        else:
-            self.tx_enabled = False
-            self.auto_sequence = False
-            self.tx_watchdog_started_at = None
-            self.tx_status = "current attempt aborted"
-            self._record_decision("attempt-aborted", "operator-aborted")
+        self.tx_status = "QSO cleared"
+
+    def abort_current_attempt(self) -> None:
+        """Hard safety stop for the current digital attempt and TX path."""
+        self._cancel_current_attempt(
+            reason="operator-aborted",
+            backoff_active_target=True,
+            disable_tx=True,
+            pause_auto_engage=True,
+            inhibit_reason="user_abort",
+        )
+        self.tx_status = "current attempt aborted; TX inhibited until re-armed"
 
     def extend_watchdog(self) -> Dict[str, Any]:
         mode = normalise_decode_mode(self.mode)
@@ -1418,11 +1623,11 @@ class FT8Service:
         if not self.watchdog_enabled or seconds <= 0:
             self.tx_status = "watchdog extension ignored; watchdog disabled"
             return {"extended": False, "seconds": 0, "stats": self.get_stats()}
+        if not self._watchdog_is_active():
+            self.tx_status = "watchdog extension ignored; no active QSO attempt"
+            return {"extended": False, "seconds": 0, "stats": self.get_stats()}
 
-        now = datetime.now(timezone.utc)
-        if self.tx_watchdog_started_at is None:
-            self.tx_watchdog_started_at = now
-        self.tx_watchdog_started_at -= timedelta(seconds=seconds)
+        self.tx_watchdog_started_at += timedelta(seconds=seconds)
         minutes = max(1, seconds // 60)
         self.tx_status = f"watchdog extended by {minutes} min {mode}"
         return {"extended": True, "seconds": seconds, "stats": self.get_stats()}
@@ -1437,6 +1642,7 @@ class FT8Service:
         watchdog_enabled: Optional[bool] = None,
         auto_cq: Optional[bool] = None,
         auto_call: Optional[bool] = None,
+        cq_only: Optional[bool] = None,
         auto_cq_limit: Optional[int] = None,
         auto_call_limit: Optional[int] = None,
         special_activity: Optional[Dict[str, Any]] = None,
@@ -1458,6 +1664,8 @@ class FT8Service:
             self.auto_cq_enabled = bool(auto_cq)
         if auto_call is not None:
             self.auto_call_enabled = bool(auto_call)
+        if cq_only is not None:
+            self.auto_call_cq_only = bool(cq_only)
         if auto_cq_limit is not None:
             self.auto_cq_limit = max(0, min(99, int(auto_cq_limit)))
             self.auto_cq_remaining = self.auto_cq_limit
@@ -1627,10 +1835,11 @@ class FT8Service:
             uptime = int((now - self.started_at).total_seconds())
 
         mode = normalise_decode_mode(self.mode)
-        watchdog_limit_seconds = int(self.watchdog_cycles.get(mode, 0) or 0) * 60
+        watchdog_limit_seconds = self._watchdog_limit_seconds()
         watchdog_elapsed = 0
         watchdog_remaining = 0
-        if self.tx_enabled and self.tx_watchdog_started_at and watchdog_limit_seconds > 0:
+        watchdog_active = self._watchdog_is_active()
+        if watchdog_active and self.tx_watchdog_started_at and watchdog_limit_seconds > 0:
             watchdog_elapsed = max(0, int((now - self.tx_watchdog_started_at).total_seconds()))
             watchdog_remaining = max(0, watchdog_limit_seconds - watchdog_elapsed)
 
@@ -1666,9 +1875,16 @@ class FT8Service:
             'mode': self.mode,
             'enabled': self.enabled,
             'tx_enabled': self.tx_enabled,
+            'tx_armed': self.tx_enabled,
+            'tx_inhibit': self.tx_inhibit_reason,
+            'tx_inhibit_reason': self.tx_inhibit_reason,
             'auto_sequence': self.auto_sequence,
+            'auto_call_enabled': self.auto_call_enabled,
+            'auto_cq_enabled': self.auto_cq_enabled,
+            'auto_call_cq_only': self.auto_call_cq_only,
             'active_qsos': len(self.active_qsos),
             'active_attempt_id': self.active_attempt_id,
+            'active_target': active_qso.their_call if active_qso else None,
             'active_qso': active_qso.to_dict() if active_qso else None,
             'digital_state': active_state,
             'tx_queue_length': len(self.tx_queue),
@@ -1691,10 +1907,17 @@ class FT8Service:
             'watchdog_cycles': self.watchdog_cycles,
             'watchdog_counter': self.tx_watchdog_counter,
             'watchdog_limit_seconds': watchdog_limit_seconds,
+            'watchdog_started_at': self.tx_watchdog_started_at.isoformat() if self.tx_watchdog_started_at else None,
+            'watchdog_active': watchdog_active,
             'watchdog_elapsed_seconds': watchdog_elapsed,
             'watchdog_remaining_seconds': watchdog_remaining,
             'active_tx_message': self.active_tx_message,
+            'pending_message': (self.pending_tx_intent or {}).get("message") or self.active_tx_message,
             'pending_tx_intent': self.pending_tx_intent,
+            'target_retry_count': self._active_target_retry_count(),
+            'target_backoff_list': self._backoff_targets_debug(),
+            'last_auto_call_decision_reason': (self.automation_decisions[-1]["reason"] if self.automation_decisions else None),
+            'last_cancel_abort_reason': self.last_cancel_abort_reason,
             'auto_cq_remaining': self.auto_cq_remaining,
             'auto_call_remaining': self.auto_call_remaining,
             'special_activity': self.special_activity,
