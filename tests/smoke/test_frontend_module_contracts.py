@@ -15,6 +15,7 @@ RADIO_CONTROLS = FRONTEND / "js" / "radio-controls.js"
 DX_SPOTS = FRONTEND / "js" / "dx-spots.js"
 COMPACT_RADIO_PARTIAL = FRONTEND / "templates" / "partials" / "compact-radio-controls.html"
 SOURCE_MONITOR_PARTIAL = FRONTEND / "templates" / "partials" / "spots-source-monitor.html"
+DX_SPOTS_TEMPLATE = FRONTEND / "templates" / "dx-spots.html"
 
 REQUIRED_MODULES = {
     "js/config-modal.js": "RadioControlConfig",
@@ -157,6 +158,45 @@ def test_spot_source_state_contract():
     assert ".source-state-warning" in styles
 
 
+def test_visual_spots_map_contract():
+    dx_spots = DX_SPOTS.read_text(encoding="utf-8")
+    template = DX_SPOTS_TEMPLATE.read_text(encoding="utf-8")
+    styles = (FRONTEND / "main-styles.css").read_text(encoding="utf-8")
+
+    for token in (
+        "switchViewMode('visual')",
+        "viewMode === 'visual'",
+        "visual-spots-panel",
+        "visual-polar-map",
+        "getVisualSpotItems()",
+        "getVisualSpotStats()",
+        "getVisualBandColor",
+        "focusVisualSpot(item.spot)",
+    ):
+        assert token in template
+
+    for token in (
+        "visualSpotWindowMinutes",
+        "visualSpotLatestOnly",
+        "gridToLatLon",
+        "calculateDistanceKm",
+        "calculateBearing",
+        "getVisualSourceSpots",
+        "getVisualSpotItems",
+        "getVisualMapRadiusKm",
+        "getVisualHomeGrid",
+    ):
+        assert token in dx_spots
+
+    for token in (
+        ".visual-map-layout",
+        ".visual-polar-map",
+        ".visual-spot-marker",
+        ".visual-spot-list",
+    ):
+        assert token in styles
+
+
 if __name__ == "__main__":
     test_required_modules_load_before_app_main()
     test_required_modules_expose_expected_globals()
@@ -166,4 +206,5 @@ if __name__ == "__main__":
     test_rotator_frontend_resolution_contract()
     test_compact_radio_controls_are_shared_and_persistent()
     test_spot_source_state_contract()
+    test_visual_spots_map_contract()
     print("Frontend module contract smoke checks passed")

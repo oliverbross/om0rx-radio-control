@@ -76,6 +76,9 @@ const dxSpotsData = {
     selectedSpotExplain: null,
     spotExplainLoading: false,
     spotExplainError: '',
+    visualSpotWindowMinutes: 60,
+    visualSpotWindows: [5, 15, 30, 60],
+    visualSpotLatestOnly: true,
     
     // 🆕 Queue for real-time spots arriving during filtered search
     // These are shown after the search completes, preventing filter interruption
@@ -1959,6 +1962,232 @@ const dxSpotsMethods = {
         return false;
     },
     
+    setVisualSpotWindow(minutes) {
+        this.visualSpotWindowMinutes = Number(minutes) || 60;
+    },
+
+    getVisualHomeGrid() {
+        const configured = (
+            this.rotorHomeGrid ||
+            (this.configData && (this.configData.ROTOR_HOME_GRID || this.configData.FT8_MYGRID)) ||
+            (this.ft8 && (this.ft8.mygrid || (this.ft8.config && this.ft8.config.mygrid))) ||
+            'JN88'
+        );
+        return String(configured || 'JN88').toUpperCase().trim();
+    },
+
+    gridToLatLon(grid) {
+        const value = String(grid || '').toUpperCase().trim();
+        if (!/^([A-R]{2}[0-9]{2}|[A-R]{2}[0-9]{2}[A-X]{2}|[A-R]{2}[0-9]{2}[A-X]{2}[0-9]{2})$/.test(value)) {
+            return null;
+        }
+
+        let lon = (value.charCodeAt(0) - 65) * 20 - 180;
+        let lat = (value.charCodeAt(1) - 65) * 10 - 90;
+        lon += Number(value[2]) * 2;
+        lat += Number(value[3]) * 1;
+
+        let lonSize = 2;
+        let latSize = 1;
+        if (value.length >= 6) {
+            lon += (value.charCodeAt(4) - 65) * (5 / 60);
+            lat += (value.charCodeAt(5) - 65) * (2.5 / 60);
+            lonSize = 5 / 60;
+            latSize = 2.5 / 60;
+        }
+        if (value.length >= 8 && /^[0-9]{2}$/.test(value.slice(6, 8))) {
+            lon += Number(value[6]) * (5 / 600);
+            lat += Number(value[7]) * (2.5 / 600);
+            lonSize = 5 / 600;
+            latSize = 2.5 / 600;
+        }
+
+        return {
+            lat: lat + latSize / 2,
+            lon: lon + lonSize / 2,
+        };
+    },
+
+    getVisualHomeLocation() {
+        return this.gridToLatLon(this.getVisualHomeGrid()) || { lat: 48.2, lon: 17.1 };
+    },
+
+    getSpotLocation(spot) {
+        if (!spot) return null;
+        const latValue = spot.latitude ?? spot.lat ?? spot.dxcc_lat;
+        const lonValue = spot.longitude ?? spot.lon ?? spot.lng ?? spot.dxcc_long;
+        const lat = Number(latValue);
+        const lon = Number(lonValue);
+        if (Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
+            return { lat, lon };
+        }
+
+        const grid = spot.gridsquare || spot.grid || spot.grid_square || spot.locator || spot.dx_grid;
+        return this.gridToLatLon(grid);
+    },
+
+    toRadians(value) {
+        return (Number(value) * Math.PI) / 180;
+    },
+
+    calculateDistanceKm(fromLat, fromLon, toLat, toLon) {
+        const radiusKm = 6371;
+        const dLat = this.toRadians(toLat - fromLat);
+        const dLon = this.toRadians(toLon - fromLon);
+        const lat1 = this.toRadians(fromLat);
+        const lat2 = this.toRadians(toLat);
+        const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+        return radiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    },
+
+    calculateBearing(fromLat, fromLon, toLat, toLon) {
+        const lat1 = this.toRadians(fromLat);
+        const lat2 = this.toRadians(toLat);
+        const dLon = this.toRadians(toLon - fromLon);
+        const y = Math.sin(dLon) * Math.cos(lat2);
+        const x = Math.cos(lat1) * Math.sin(lat2) -
+            Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+        return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    },
+
+    getVisualSourceSpots() {
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const windowSeconds = Number(this.visualSpotWindowMinutes || 60) * 60;
+        let spots = (this.filteredSpots || []).filter(spot => {
+            const timestamp = this.getSpotTimestamp(spot);
+            if (!timestamp) return true;
+            return nowSeconds - timestamp <= windowSeconds;
+        });
+
+        if (this.visualSpotLatestOnly) {
+            const latestByCall = new Map();
+            spots.forEach(spot => {
+                const key = String(spot.callsign || '').toUpperCase();
+                const current = latestByCall.get(key);
+                if (!current || this.getSpotTimestamp(spot) > this.getSpotTimestamp(current)) {
+                    latestByCall.set(key, spot);
+                }
+            });
+            spots = [...latestByCall.values()];
+        }
+
+        return spots;
+    },
+
+    getVisualRawSpotItems() {
+        const home = this.getVisualHomeLocation();
+        return this.getVisualSourceSpots()
+            .map(spot => {
+                const location = this.getSpotLocation(spot);
+                if (!location) return null;
+                const distanceKm = this.calculateDistanceKm(home.lat, home.lon, location.lat, location.lon);
+                const bearing = this.calculateBearing(home.lat, home.lon, location.lat, location.lon);
+                return {
+                    key: this.getSpotIdentityKey(spot),
+                    spot,
+                    location,
+                    distanceKm,
+                    bearing,
+                };
+            })
+            .filter(Boolean)
+            .sort((a, b) => this.getSpotScore(b.spot) - this.getSpotScore(a.spot) || b.distanceKm - a.distanceKm);
+    },
+
+    getVisualMapRadiusKm() {
+        const maxDistance = Math.max(0, ...this.getVisualRawSpotItems().map(item => item.distanceKm));
+        const targets = [1000, 2000, 3500, 5000, 7500, 10000, 15000, 20000];
+        return targets.find(radius => radius >= maxDistance) || 20000;
+    },
+
+    getVisualSpotItems() {
+        const radiusKm = this.getVisualMapRadiusKm();
+        const center = 260;
+        const maxRadius = 240;
+        return this.getVisualRawSpotItems().slice(0, 160).map(item => {
+            const angle = this.toRadians(item.bearing);
+            const radius = Math.min(maxRadius, Math.max(10, (item.distanceKm / radiusKm) * maxRadius));
+            const score = this.getSpotScore(item.spot);
+            return {
+                ...item,
+                x: center + Math.sin(angle) * radius,
+                y: center - Math.cos(angle) * radius,
+                labelX: center + Math.sin(angle) * (radius + 11),
+                labelY: center - Math.cos(angle) * (radius + 11),
+                radius: score >= 80 ? 6.5 : score >= 55 ? 5.4 : 4.2,
+                lineOpacity: score >= 55 ? 0.48 : 0.22,
+            };
+        });
+    },
+
+    getVisualSpotLabelItems() {
+        return this.getVisualSpotItems()
+            .filter(item => this.isVisualSpotSelected(item.spot) || this.getSpotScore(item.spot) >= 80 || item.spot.local_heard)
+            .slice(0, 18);
+    },
+
+    getVisualSpotStats() {
+        const source = this.getVisualSourceSpots();
+        const plotted = this.getVisualRawSpotItems();
+        const rbl = plotted.filter(item => (item.spot.spot_source || 'cluster') === 'rbl').length;
+        const cluster = plotted.length - rbl;
+        return {
+            total: source.length,
+            plotted: plotted.length,
+            hidden: Math.max(0, source.length - plotted.length),
+            rbl,
+            cluster,
+        };
+    },
+
+    getVisualBandColor(band) {
+        const colors = {
+            '160m': '#8b5cf6',
+            '80m': '#38bdf8',
+            '60m': '#22c55e',
+            '40m': '#84cc16',
+            '30m': '#eab308',
+            '20m': '#ef4444',
+            '17m': '#f97316',
+            '15m': '#ec4899',
+            '12m': '#14b8a6',
+            '10m': '#f59e0b',
+            '6m': '#a855f7',
+        };
+        return colors[band] || '#cbd5e1';
+    },
+
+    getVisualLegendBands() {
+        return [...new Set(this.getVisualSpotItems().map(item => item.spot.band || 'Unknown'))]
+            .sort((a, b) => this.availableBands.indexOf(a) - this.availableBands.indexOf(b));
+    },
+
+    getVisualSpotClass(spot) {
+        const classes = [];
+        if ((spot.spot_source || 'cluster') === 'rbl') classes.push('rbl');
+        if (spot.local_heard) classes.push('heard');
+        if (this.getSpotScore(spot) >= 80) classes.push('hot');
+        if (this.getSpotScore(spot) >= 55) classes.push('good');
+        if (spot.dxcc_status === 'Confirmed' || spot.call_status === 'Confirmed') classes.push('confirmed');
+        return classes.join(' ');
+    },
+
+    getVisualSpotTitle(item) {
+        if (!item) return '';
+        const spot = item.spot || {};
+        const source = (spot.spot_source || 'cluster') === 'rbl' ? 'RBL' : 'Cluster';
+        return `${spot.callsign || '-'} ${spot.band || ''} ${spot.mode || ''} · ${Math.round(item.distanceKm).toLocaleString()} km · ${Math.round(item.bearing)}° · ${source}`;
+    },
+
+    focusVisualSpot(spot) {
+        this.showSpotDetails(spot);
+    },
+
+    isVisualSpotSelected(spot) {
+        return Boolean(this.selectedSpot && spot && this.getSpotIdentityKey(this.selectedSpot) === this.getSpotIdentityKey(spot));
+    },
+
     // Get band from frequency
     getBandFromFrequency(freqMhz) {
         // Ensure frequency is a number (handle object/string cases)

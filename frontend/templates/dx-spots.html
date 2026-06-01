@@ -8,6 +8,11 @@
                         :class="['view-mode-btn', { active: viewMode === 'spots' }]">
                         🎯 Filters
                     </button>
+                    <button
+                        @click="switchViewMode('visual')"
+                        :class="['view-mode-btn', { active: viewMode === 'visual' }]">
+                        🗺️ Map
+                    </button>
                     <button 
                         @click="switchViewMode('log')" 
                         :class="['view-mode-btn', { active: viewMode === 'log' }]">
@@ -16,7 +21,7 @@
                 </div>
                 
                 <!-- Spots View: Filters Label -->
-                <span v-if="viewMode === 'spots'" style="font-weight: bold; font-size: 14px; margin-left: 10px;">Filter Options:</span>
+                <span v-if="viewMode === 'spots' || viewMode === 'visual'" style="font-weight: bold; font-size: 14px; margin-left: 10px;">Filter Options:</span>
                 
                 <!-- Log View: Controls -->
                 <div v-if="viewMode === 'log'" class="log-controls">
@@ -48,7 +53,7 @@
                 </div>
                 
                 <!-- Spots View: Filter Buttons Row -->
-                <div v-if="viewMode === 'spots'" class="filter-bar">
+                <div v-if="viewMode === 'spots' || viewMode === 'visual'" class="filter-bar">
                     <!-- Spot Count (FIRST FILTER) -->
                     <div class="filter-dropdown">
                         <button @click="toggleDropdown('spotCount')" class="filter-btn">
@@ -223,7 +228,7 @@
                 </div>
                 
                 <!-- Spots View: Stats and Actions -->
-                <div v-if="viewMode === 'spots'" class="spots-actions-bar">
+                <div v-if="viewMode === 'spots' || viewMode === 'visual'" class="spots-actions-bar">
                 <span class="spots-source-counter">{{ getSpotSourceCounterText() }}</span>
                 <div class="filter-dropdown">
                     <button @click="toggleDropdown('presets')" class="filter-btn">
@@ -262,7 +267,7 @@
             </div>
             
             <!-- SPOTS VIEW -->
-            <div v-if="viewMode === 'spots'" class="view-wrapper">
+            <div v-if="viewMode === 'spots' || viewMode === 'visual'" class="view-wrapper">
                 <div v-if="getActiveSpotFilterChips().length > 0" class="spot-filter-chips">
                     <button v-for="chip in getActiveSpotFilterChips()" :key="chip.type + ':' + chip.value" @click="removeSpotFilterChip(chip)" class="spot-filter-chip">
                         {{ chip.label }} ×
@@ -331,8 +336,116 @@
                     </div>
                 </div>
                 
+                <!-- Visual Spots Map -->
+                <div v-if="viewMode === 'visual'" class="visual-spots-panel">
+                    <div class="visual-spots-toolbar">
+                        <div class="visual-window-group">
+                            <button v-for="minutes in visualSpotWindows" :key="minutes"
+                                    @click="setVisualSpotWindow(minutes)"
+                                    :class="['visual-window-btn', { active: visualSpotWindowMinutes === minutes }]">
+                                {{ minutes < 60 ? minutes + 'm' : (minutes / 60) + 'h' }}
+                            </button>
+                        </div>
+                        <label class="visual-toggle">
+                            <input type="checkbox" v-model="visualSpotLatestOnly">
+                            Latest per call
+                        </label>
+                        <span class="visual-stat-pill">{{ getVisualSpotStats().plotted }} plotted</span>
+                        <span class="visual-stat-pill">{{ getVisualSpotStats().hidden }} without location</span>
+                        <span class="visual-stat-pill">Radius {{ getVisualMapRadiusKm().toLocaleString() }} km</span>
+                        <span class="visual-qth-pill">QTH {{ getVisualHomeGrid() }}</span>
+                    </div>
+
+                    <div class="visual-map-layout">
+                        <div class="visual-map-card">
+                            <svg class="visual-polar-map" viewBox="0 0 520 520" role="img" aria-label="Filtered spots polar map">
+                                <defs>
+                                    <radialGradient id="visualMapGlow" cx="50%" cy="50%" r="50%">
+                                        <stop offset="0%" stop-color="#20364a" stop-opacity="0.92"></stop>
+                                        <stop offset="100%" stop-color="#0b1219" stop-opacity="1"></stop>
+                                    </radialGradient>
+                                </defs>
+                                <rect x="0" y="0" width="520" height="520" rx="8" fill="url(#visualMapGlow)"></rect>
+                                <g class="visual-grid">
+                                    <circle cx="260" cy="260" r="64"></circle>
+                                    <circle cx="260" cy="260" r="128"></circle>
+                                    <circle cx="260" cy="260" r="192"></circle>
+                                    <circle cx="260" cy="260" r="240"></circle>
+                                    <line x1="260" y1="20" x2="260" y2="500"></line>
+                                    <line x1="20" y1="260" x2="500" y2="260"></line>
+                                    <line x1="90" y1="90" x2="430" y2="430"></line>
+                                    <line x1="430" y1="90" x2="90" y2="430"></line>
+                                </g>
+                                <g class="visual-azimuth-labels">
+                                    <text x="260" y="18" text-anchor="middle">0°</text>
+                                    <text x="500" y="264" text-anchor="end">90°</text>
+                                    <text x="260" y="508" text-anchor="middle">180°</text>
+                                    <text x="20" y="264" text-anchor="start">270°</text>
+                                </g>
+                                <g class="visual-range-labels">
+                                    <text x="325" y="253">{{ Math.round(getVisualMapRadiusKm() * 0.25).toLocaleString() }} km</text>
+                                    <text x="389" y="253">{{ Math.round(getVisualMapRadiusKm() * 0.50).toLocaleString() }} km</text>
+                                    <text x="453" y="253">{{ Math.round(getVisualMapRadiusKm() * 0.75).toLocaleString() }} km</text>
+                                </g>
+                                <g class="visual-spot-vectors">
+                                    <line v-for="item in getVisualSpotItems()"
+                                          :key="'line-' + item.key"
+                                          x1="260" y1="260"
+                                          :x2="item.x" :y2="item.y"
+                                          :class="['visual-spot-line', getVisualSpotClass(item.spot)]"
+                                          :style="{ stroke: getVisualBandColor(item.spot.band), opacity: item.lineOpacity }"></line>
+                                </g>
+                                <g class="visual-spot-markers">
+                                    <circle v-for="item in getVisualSpotItems()"
+                                            :key="'marker-' + item.key"
+                                            :cx="item.x" :cy="item.y" :r="item.radius"
+                                            :class="['visual-spot-marker', getVisualSpotClass(item.spot), { selected: isVisualSpotSelected(item.spot) }]"
+                                            :style="{ fill: getVisualBandColor(item.spot.band) }"
+                                            @click.stop="focusVisualSpot(item.spot)">
+                                        <title>{{ getVisualSpotTitle(item) }}</title>
+                                    </circle>
+                                    <text v-for="item in getVisualSpotLabelItems()"
+                                          :key="'label-' + item.key"
+                                          :x="item.labelX" :y="item.labelY"
+                                          class="visual-spot-label"
+                                          @click.stop="focusVisualSpot(item.spot)">
+                                        {{ item.spot.callsign }}
+                                    </text>
+                                </g>
+                                <g class="visual-home-marker">
+                                    <circle cx="260" cy="260" r="7"></circle>
+                                    <text x="260" y="281" text-anchor="middle">OM0RX</text>
+                                </g>
+                            </svg>
+                        </div>
+
+                        <div class="visual-side-panel">
+                            <div class="visual-legend">
+                                <span v-for="band in getVisualLegendBands()" :key="band">
+                                    <i :style="{ backgroundColor: getVisualBandColor(band) }"></i>{{ band }}
+                                </span>
+                            </div>
+                            <div class="visual-spot-list">
+                                <button v-for="item in getVisualSpotItems().slice(0, 24)"
+                                        :key="'list-' + item.key"
+                                        @click="focusVisualSpot(item.spot)"
+                                        :class="['visual-spot-item', { selected: isVisualSpotSelected(item.spot) }]">
+                                    <span class="visual-spot-call">{{ item.spot.callsign }}</span>
+                                    <span class="visual-spot-meta">{{ item.spot.band }} {{ item.spot.mode }}</span>
+                                    <span class="visual-spot-distance">{{ Math.round(item.distanceKm).toLocaleString() }} km · {{ Math.round(item.bearing) }}°</span>
+                                    <span class="visual-spot-source" :class="{ rbl: item.spot.spot_source === 'rbl' }">{{ item.spot.spot_source === 'rbl' ? 'RBL' : 'Cluster' }}</span>
+                                    <span class="visual-spot-score" :style="getSpotScoreStyle(item.spot)">{{ getSpotScore(item.spot) }}</span>
+                                </button>
+                            </div>
+                            <div v-if="getVisualSpotItems().length === 0" class="visual-empty-state">
+                                No mapped spots in the current filters. Spots need grid or latitude/longitude data to appear here.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Enhanced Spots Table -->
-                <div class="spots-scroll">
+                <div v-if="viewMode === 'spots'" class="spots-scroll">
                 <table class="spots-table">
                     <thead>
                         <tr>

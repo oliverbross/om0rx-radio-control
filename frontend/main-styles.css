@@ -1309,6 +1309,7 @@
                 justify-content: flex-start;
                 margin-left: 0;
             }
+
         }
         
         /* Dropdown Menus */
@@ -1512,6 +1513,327 @@
             font-size: 10px;
             color: #a7f3d0;
             line-height: 1.1;
+        }
+
+        .visual-spots-panel {
+            padding: 10px 14px 14px;
+            background: #11161d;
+            border-bottom: 1px solid #26313d;
+        }
+
+        .visual-spots-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+
+        .visual-window-group {
+            display: flex;
+            gap: 4px;
+            padding: 3px;
+            background: #1f2933;
+            border: 1px solid #344256;
+            border-radius: 4px;
+        }
+
+        .visual-window-btn {
+            min-width: 36px;
+            padding: 4px 7px;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 3px;
+            color: #cbd5e1;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .visual-window-btn:hover,
+        .visual-window-btn.active {
+            background: #2563eb;
+            border-color: #60a5fa;
+            color: #fff;
+        }
+
+        .visual-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            min-height: 26px;
+            padding: 3px 8px;
+            background: #1f2933;
+            border: 1px solid #344256;
+            border-radius: 4px;
+            color: #dbeafe;
+            font-size: 11px;
+            white-space: nowrap;
+        }
+
+        .visual-stat-pill,
+        .visual-qth-pill {
+            display: inline-flex;
+            align-items: center;
+            min-height: 26px;
+            padding: 3px 8px;
+            background: #1b2430;
+            border: 1px solid #334155;
+            border-radius: 4px;
+            color: #cbd5e1;
+            font-size: 11px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .visual-qth-pill {
+            color: #bbf7d0;
+            border-color: #267647;
+            background: #10251a;
+        }
+
+        .visual-map-layout {
+            display: grid;
+            grid-template-columns: minmax(360px, 1fr) minmax(270px, 360px);
+            gap: 12px;
+            align-items: stretch;
+        }
+
+        .visual-map-card {
+            min-width: 0;
+        }
+
+        .visual-polar-map {
+            width: 100%;
+            max-height: min(68vh, 640px);
+            min-height: 420px;
+            background: #0b1219;
+            border: 1px solid #2d3b4b;
+            border-radius: 8px;
+            display: block;
+        }
+
+        .visual-grid circle,
+        .visual-grid line {
+            fill: none;
+            stroke: #3d4d5e;
+            stroke-width: 1;
+            vector-effect: non-scaling-stroke;
+        }
+
+        .visual-azimuth-labels text,
+        .visual-range-labels text {
+            fill: #8ea4ba;
+            font-size: 11px;
+            font-weight: 700;
+            pointer-events: none;
+        }
+
+        .visual-range-labels text {
+            fill: #6f8498;
+            font-size: 9px;
+        }
+
+        .visual-spot-line {
+            stroke-width: 1.2;
+            vector-effect: non-scaling-stroke;
+            pointer-events: none;
+        }
+
+        .visual-spot-line.rbl {
+            stroke-dasharray: 4 3;
+        }
+
+        .visual-spot-marker {
+            stroke: #071018;
+            stroke-width: 2;
+            cursor: pointer;
+            opacity: 0.88;
+            vector-effect: non-scaling-stroke;
+        }
+
+        .visual-spot-marker:hover,
+        .visual-spot-marker.selected {
+            stroke: #f8fafc;
+            stroke-width: 3;
+            opacity: 1;
+        }
+
+        .visual-spot-marker.rbl {
+            stroke: #fbbf24;
+        }
+
+        .visual-spot-marker.heard {
+            stroke: #22c55e;
+        }
+
+        .visual-spot-marker.confirmed {
+            opacity: 0.58;
+        }
+
+        .visual-spot-label {
+            fill: #e5e7eb;
+            font-size: 10px;
+            font-weight: 800;
+            paint-order: stroke;
+            stroke: #071018;
+            stroke-width: 3px;
+            cursor: pointer;
+        }
+
+        .visual-home-marker circle {
+            fill: #f8fafc;
+            stroke: #22c55e;
+            stroke-width: 3;
+        }
+
+        .visual-home-marker text {
+            fill: #bbf7d0;
+            font-size: 10px;
+            font-weight: 800;
+        }
+
+        .visual-side-panel {
+            display: grid;
+            grid-template-rows: auto 1fr;
+            gap: 8px;
+            min-width: 0;
+            min-height: 420px;
+        }
+
+        .visual-legend {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+            padding: 8px;
+            background: #17202a;
+            border: 1px solid #2d3b4b;
+            border-radius: 6px;
+        }
+
+        .visual-legend span {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            color: #d1d5db;
+            font-size: 10px;
+            font-weight: 800;
+        }
+
+        .visual-legend i {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            border: 1px solid rgba(255, 255, 255, 0.35);
+        }
+
+        .visual-spot-list {
+            display: grid;
+            align-content: start;
+            gap: 5px;
+            overflow-y: auto;
+            padding-right: 2px;
+        }
+
+        .visual-spot-item {
+            display: grid;
+            grid-template-columns: minmax(68px, 1fr) auto auto;
+            gap: 2px 7px;
+            align-items: center;
+            padding: 7px 8px;
+            background: #1d2630;
+            border: 1px solid #334155;
+            border-radius: 5px;
+            color: #dbeafe;
+            text-align: left;
+            cursor: pointer;
+        }
+
+        .visual-spot-item:hover,
+        .visual-spot-item.selected {
+            background: #12345c;
+            border-color: #60a5fa;
+        }
+
+        .visual-spot-call {
+            color: #10b981;
+            font-size: 12px;
+            font-weight: 900;
+        }
+
+        .visual-spot-meta,
+        .visual-spot-distance,
+        .visual-spot-source {
+            color: #cbd5e1;
+            font-size: 10px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .visual-spot-distance {
+            grid-column: 1 / 3;
+            color: #93c5fd;
+        }
+
+        .visual-spot-source.rbl {
+            color: #fbbf24;
+        }
+
+        .visual-spot-score {
+            grid-row: 1 / 3;
+            grid-column: 3;
+            justify-self: end;
+            min-width: 28px;
+            padding: 2px 5px;
+            border-radius: 4px;
+            text-align: center;
+            font-size: 11px;
+            font-weight: 900;
+        }
+
+        .visual-empty-state {
+            padding: 18px;
+            background: #1d2630;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            color: #94a3b8;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+
+        @media (max-width: 1240px) {
+            .visual-map-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .visual-side-panel {
+                min-height: 0;
+            }
+
+            .visual-spot-list {
+                max-height: 260px;
+            }
+        }
+
+        @media (max-width: 680px) {
+            .visual-spots-panel {
+                padding: 8px;
+            }
+
+            .visual-polar-map {
+                min-height: 310px;
+            }
+
+            .visual-map-layout {
+                grid-template-columns: minmax(0, 1fr);
+            }
+
+            .visual-stat-pill,
+            .visual-qth-pill,
+            .visual-toggle {
+                font-size: 10px;
+            }
         }
 
         .spots-source-counter {
