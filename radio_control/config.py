@@ -131,6 +131,7 @@ RBL_ALERT_RULES = _cfg_dict("RBL_ALERT_RULES", {
     "sound": False,
     "toast": True,
 })
+ACTIVITY_INTELLIGENCE = _cfg_dict("ACTIVITY_INTELLIGENCE", {})
 LOGIN_SCRIPT  = []
 
 SDR_UDP_HOST = _cfg_value("SDR_UDP_HOST", "127.0.0.1")

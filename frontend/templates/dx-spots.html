@@ -21,7 +21,7 @@
                 </div>
                 
                 <!-- Spots View: Filters Label -->
-                <span v-if="viewMode === 'spots' || viewMode === 'visual'" style="font-weight: bold; font-size: 14px; margin-left: 10px;">Filter Options:</span>
+                <span v-if="viewMode === 'spots' || viewMode === 'visual'" class="filter-options-label" style="font-weight: bold; font-size: 14px; margin-left: 10px;">Filter Options:</span>
                 
                 <!-- Log View: Controls -->
                 <div v-if="viewMode === 'log'" class="log-controls">
@@ -285,6 +285,115 @@
 
                 <!-- @include templates/partials/spots-source-monitor.html -->
 
+                <div class="activity-intelligence-panel" v-if="activityIntelligence && !activityPanelCollapsed">
+                    <div class="activity-panel-header">
+                        <div>
+                            <strong>Activity Intelligence</strong>
+                            <span>{{ getActivitySourceStatusText() }}</span>
+                        </div>
+                        <div class="activity-panel-actions">
+                            <span>{{ getActivityRbnSummaryText() }}</span>
+                            <button @click="refreshActivityIntelligence" :disabled="activityIntelligenceLoading" title="Refresh activity sources">Refresh</button>
+                            <button @click="activityPanelCollapsed = true" title="Hide Activity Intelligence">Hide</button>
+                        </div>
+                    </div>
+                    <div v-if="getActivityContestBanner()" class="activity-contest-banner">
+                        <strong>{{ getActivityContestBanner().label }}</strong>
+                        <span v-if="getActivityContestBanner().exchange">{{ getActivityContestBanner().exchange }}</span>
+                        <button v-if="activityIntelligence.contestContext?.selectedContestId" @click="setActivityContestContext(null)">Clear</button>
+                    </div>
+                    <div class="activity-panel-grid">
+                        <section>
+                            <h4>DXpeditions</h4>
+                            <button v-for="item in getActivityDxpeditions()" :key="item.id" class="activity-mini-row" @click="spotsFilter.callsign = item.callsign">
+                                <strong>{{ item.callsign }}</strong>
+                                <span>{{ item.dxcc_entity || item.status }}</span>
+                                <small>{{ formatActivityTime(item.start_date_utc) }}</small>
+                            </button>
+                            <div v-if="getActivityDxpeditions().length === 0" class="activity-empty">No cached DXpeditions</div>
+                        </section>
+                        <section>
+                            <h4>Portable</h4>
+                            <button v-for="item in getActivityPortableActivations()" :key="item.id" class="activity-mini-row" @click="spotsFilter.callsign = item.activator_call">
+                                <strong>{{ item.activator_call }}</strong>
+                                <span>{{ (item.references || []).join(', ') }}</span>
+                                <small>{{ item.program }} {{ item.mode || '' }}</small>
+                            </button>
+                            <div class="activity-reference-search">
+                                <input v-model="activityReferenceQuery" @keyup.enter="lookupActivityReference" placeholder="Reference lookup">
+                                <button @click="lookupActivityReference" :disabled="activityReferenceLoading">Find</button>
+                            </div>
+                            <div v-if="activityReferenceResults.length" class="activity-reference-results">
+                                <span v-for="ref in activityReferenceResults.slice(0, 4)" :key="ref.program + ref.reference">{{ ref.program }} {{ ref.reference }} {{ ref.name || '' }}</span>
+                            </div>
+                        </section>
+                        <section>
+                            <h4>Contests</h4>
+                            <button v-for="item in getActivityCurrentContests()" :key="'current-' + item.id" class="activity-mini-row" @click="setActivityContestContext(item.id)">
+                                <strong>Now</strong>
+                                <span>{{ item.name }}</span>
+                                <small>{{ (item.modes || []).join('/') || 'All modes' }}</small>
+                            </button>
+                            <button v-for="item in getActivityUpcomingContests()" :key="'upcoming-' + item.id" class="activity-mini-row" @click="setActivityContestContext(item.id)">
+                                <strong>Next</strong>
+                                <span>{{ item.name }}</span>
+                                <small>{{ formatActivityTime(item.start_utc) }}</small>
+                            </button>
+                            <div v-if="getActivityCurrentContests().length === 0 && getActivityUpcomingContests().length === 0" class="activity-empty">No cached contests</div>
+                        </section>
+                        <section>
+                            <h4>Propagation / RBN</h4>
+                            <div class="activity-weather-row" v-if="activityIntelligence.spaceWeather">
+                                <strong>Kp {{ activityIntelligence.spaceWeather.kp ?? '-' }}</strong>
+                                <span>{{ formatActivityTime(activityIntelligence.spaceWeather.timestamp_utc) }}</span>
+                            </div>
+                            <div class="activity-weather-row">
+                                <strong>{{ activityIntelligence.rbn?.bestBand || '-' }}</strong>
+                                <span>best band from own-call RBN</span>
+                            </div>
+                            <div v-if="getActivityRbnNoReportWarning()" class="activity-rbn-warning">
+                                {{ getActivityRbnNoReportWarning() }}
+                            </div>
+                            <div v-if="getActivityRbnBandRows().length" class="activity-rbn-bars">
+                                <div v-for="row in getActivityRbnBandRows()" :key="'rbn-band-' + row.band" class="activity-rbn-bar-row">
+                                    <span>{{ row.band }}</span>
+                                    <div><i :style="{ width: getActivityRbnBarWidth(row.reports) + '%' }"></i></div>
+                                    <strong>{{ row.reports }}</strong>
+                                    <small v-if="row.maxSnrDb !== null && row.maxSnrDb !== undefined">{{ row.maxSnrDb }} dB</small>
+                                </div>
+                            </div>
+                            <div v-if="getActivityRbnHeadingRows().length" class="activity-rbn-heading-grid">
+                                <span v-for="row in getActivityRbnHeadingRows()" :key="'rbn-heading-' + row.sector" :title="`${row.reports} reports${row.medianSnrDb !== null && row.medianSnrDb !== undefined ? ', median ' + row.medianSnrDb + ' dB' : ''}`">
+                                    {{ row.sector }} {{ row.reports }}
+                                </span>
+                            </div>
+                            <div v-if="getActivityRbnAntennaRows().length" class="activity-rbn-antenna">
+                                <span v-for="row in getActivityRbnAntennaRows()" :key="'rbn-ant-' + row.label">
+                                    {{ row.label }} · {{ row.reports }} · {{ row.bestBand || '-' }}
+                                </span>
+                            </div>
+                            <div v-if="getActivityRbnHeatmapRows().length" class="activity-rbn-heatmap">
+                                <span v-for="cell in getActivityRbnHeatmapRows()" :key="cell.bucketUtc + cell.band" :title="`${cell.band} ${formatActivityTime(cell.bucketUtc)}: ${cell.reports} reports`" :style="{ opacity: getActivityRbnHeatmapOpacity(cell.reports) }">
+                                    {{ cell.band }}
+                                </span>
+                            </div>
+                        </section>
+                    </div>
+                    <div v-if="getActivitySourceRows().length" class="activity-source-strip">
+                        <div v-for="source in getActivitySourceRows()" :key="'source-' + source.sourceId" :class="['activity-source-row', { error: source.last_error, fresh: source.last_success_at_utc && !source.last_error }]">
+                            <strong>{{ source.label || source.sourceId }}</strong>
+                            <span>{{ source.last_error || (source.last_success_at_utc ? 'ok' : 'pending') }}</span>
+                            <small>last {{ formatActivityTime(source.last_success_at_utc) }}</small>
+                            <small>next {{ formatActivityTime(source.next_allowed_at_utc) }}</small>
+                            <a v-if="source.url" :href="source.url" target="_blank" rel="noopener">source</a>
+                        </div>
+                    </div>
+                </div>
+                <div v-else-if="activityPanelCollapsed" class="activity-intelligence-compact">
+                    <button @click="activityPanelCollapsed = false">Show Activity Intelligence</button>
+                    <span>{{ getActivitySourceStatusText() }}</span>
+                </div>
+
                 <!-- 🆕 LOADING STATE: Show while searching with filters active and no results yet -->
                 <div v-if="hasActiveFilters() && isSearchingSpots && filteredSearchResults.length === 0" class="loading-indicator" style="padding: 15px 20px; background-color: #1a1a2e; border-bottom: 1px solid #16a34a; text-align: center;">
                     <p style="margin: 0; color: #fbbf24; font-weight: bold; font-size: 14px;">
@@ -320,6 +429,14 @@
                             <span v-for="reason in getSpotScoreReasons(selectedSpot)" :key="reason" style="font-size: 11px; color: #d1d5db; background: #303742; padding: 2px 6px; border-radius: 3px;">{{ reason }}</span>
                             <span v-if="selectedSpot.local_heard" style="font-size: 11px; color: #bbf7d0; background: #14532d; padding: 2px 6px; border-radius: 3px;">decoded locally</span>
                         </div>
+                        <div v-if="selectedSpotActivityDetail" class="spot-activity-detail">
+                            <span v-for="tag in selectedSpotActivityDetail.tags" :key="tag.type + tag.label" :class="['activity-tag-badge', getActivityTagClass(tag)]">{{ tag.label }}</span>
+                            <div v-if="selectedSpotActivityDetail.propagation" class="spot-activity-prop">
+                                <strong>{{ selectedSpotActivityDetail.propagation.label }}</strong>
+                                <span>{{ selectedSpotActivityDetail.propagation.score }}/100</span>
+                                <small>{{ (selectedSpotActivityDetail.propagation.reasons || []).join(', ') }}</small>
+                            </div>
+                        </div>
                     </div>
                     <div style="font-size: 12px; color: #cbd5e1;">
                         <div v-if="spotExplainLoading" style="color: #fbbf24;">Loading classification...</div>
@@ -331,6 +448,25 @@
                             <div>ADIF: <strong>{{ selectedSpotExplain.dxcc.adif || '-' }}</strong></div>
                             <div>Band: <strong>{{ selectedSpotExplain.inputs.band || '-' }}</strong></div>
                             <div>Mode: <strong>{{ selectedSpotExplain.inputs.mode || '-' }}</strong></div>
+                        </div>
+                        <div v-if="selectedSpotActivityLoading" style="color: #fbbf24; margin-top: 8px;">Loading activity detail...</div>
+                        <div v-else-if="selectedSpotActivityDetail && selectedSpotActivityDetail.dxpedition" class="activity-dx-detail">
+                            <div style="font-weight: 800; color: #bfdbfe; margin: 8px 0 5px 0;">
+                                {{ selectedSpotActivityDetail.dxpedition.callsign }} {{ selectedSpotActivityDetail.dxpedition.dxcc_entity || '' }}
+                            </div>
+                            <div style="color: #94a3b8; font-size: 11px; margin-bottom: 6px;">
+                                {{ selectedSpotActivityDetail.dxpedition.status }} · {{ formatActivityTime(selectedSpotActivityDetail.dxpedition.start_date_utc) }} - {{ formatActivityTime(selectedSpotActivityDetail.dxpedition.end_date_utc) }}
+                            </div>
+                            <div v-if="selectedSpotActivityDetail.workedMatrix && selectedSpotActivityDetail.workedMatrix.length" class="activity-worked-matrix">
+                                <div class="activity-matrix-header"></div>
+                                <div v-for="mode in selectedSpotActivityDetail.matrixModes" :key="'mode-' + mode" class="activity-matrix-head">{{ mode }}</div>
+                                <template v-for="row in selectedSpotActivityDetail.workedMatrix" :key="row.band">
+                                    <div class="activity-matrix-band">{{ row.band }}</div>
+                                    <div v-for="cell in row.modes" :key="row.band + cell.mode" :class="['activity-matrix-cell', getActivityMatrixCellClass(cell)]" :title="cell.status">
+                                        {{ cell.status === 'Confirmed' ? 'C' : cell.status === 'Worked' ? 'W' : cell.status === 'Needed' ? 'N' : cell.status === 'Needed slot' ? 'S' : '-' }}
+                                    </div>
+                                </template>
+                            </div>
                         </div>
                         <button @click.stop="tuneToSpot(selectedSpot)" style="margin-top: 8px;">🎯 Tune</button>
                     </div>
@@ -452,7 +588,7 @@
                                 <div v-if="visualZoneOverlayError" class="visual-globe-status error">{{ visualZoneOverlayError }}</div>
                                 <div v-if="visualAdmin1Loading" class="visual-globe-status">Loading state/province overlay...</div>
                                 <div v-if="visualAdmin1Error" class="visual-globe-status error">{{ visualAdmin1Error }}</div>
-                                <div v-if="visualFallbackLoading && getVisualSpotItems().length === 0" class="visual-globe-status">Loading recent spot map...</div>
+                                <div v-if="isVisualMapResolving() && getVisualSpotItems().length === 0" class="visual-globe-status">{{ getVisualMapResolvingText() }}</div>
                             </div>
                             <svg v-if="visualMapMode === 'polar'" class="visual-polar-map" viewBox="0 0 520 520" role="img" aria-label="Filtered spots polar map">
                                 <defs>
@@ -552,7 +688,7 @@
                                     <span class="visual-spot-score" :style="getSpotScoreStyle(item.spot)">{{ getSpotScore(item.spot) }}</span>
                                 </button>
                             </div>
-                            <div v-if="getVisualSpotItems().length === 0 && !visualFallbackLoading" class="visual-empty-state">
+                            <div v-if="getVisualSpotItems().length === 0 && !isVisualMapResolving()" class="visual-empty-state">
                                 No mapped spots in the current filters. The visual map can use grid, latitude/longitude, or CTY prefix location data.
                             </div>
                         </div>
@@ -613,6 +749,17 @@
                                       :class="['special-badge', `special-${special.toLowerCase()}`]"
                                       style="display: inline-block; margin-right: 4px; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: bold;">
                                     {{ special }}
+                                </span>
+                                <span v-for="tag in getSpotActivityTags(spot).slice(0, 3)"
+                                      :key="tag.type + tag.label"
+                                      :class="['activity-tag-badge', getActivityTagClass(tag)]"
+                                      :title="tag.source_id">
+                                    {{ tag.label }}
+                                </span>
+                                <span v-if="getSpotPropagationLabel(spot)"
+                                      class="activity-tag-badge activity-tag-propagation"
+                                      :title="(spot.propagation?.reasons || []).join(', ')">
+                                    {{ getSpotPropagationLabel(spot) }}
                                 </span>
                             </td>
                             <td style="font-size: 12px; color: #10b981; font-weight: 500;">{{ getWorkedDate(spot.callsign, spot.band, spot.mode) }}</td>

@@ -249,6 +249,8 @@ def test_visual_spots_map_contract():
         "getVisualSpotItems",
         "getVisualMapRadiusKm",
         "getVisualHomeGrid",
+        "isVisualMapResolving",
+        "getVisualMapResolvingText",
         "isVisualMapStandalone",
         "buildVisualMapWindowUrl",
         "openVisualMapWindow",

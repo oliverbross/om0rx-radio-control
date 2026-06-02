@@ -34,6 +34,110 @@ $EnableReload = $Reload.IsPresent -or $AppEnv -eq "development" -or $env:UVICORN
 $BackendProbeHost = if ($BackendHost -eq "0.0.0.0") { "127.0.0.1" } else { $BackendHost }
 $BackendUrl = "http://${BackendProbeHost}:$BackendPort"
 
+function Get-ProtectedProcessIds {
+    $protectedIds = @([int]$PID)
+    $current = Get-CimInstance Win32_Process -Filter "ProcessId = $PID" -ErrorAction SilentlyContinue
+
+    while ($current -and $current.ParentProcessId) {
+        $parentId = [int]$current.ParentProcessId
+        if ($parentId -le 0 -or $protectedIds -contains $parentId) {
+            break
+        }
+
+        $protectedIds += $parentId
+        $current = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
+    }
+
+    return $protectedIds
+}
+
+function Test-ProtectedProcessId {
+    param([int]$ProcessId)
+
+    return (Get-ProtectedProcessIds) -contains $ProcessId
+}
+
+function Stop-ProcessTree {
+    param([int]$ProcessId)
+
+    if ($ProcessId -le 0 -or (Test-ProtectedProcessId -ProcessId $ProcessId)) {
+        return
+    }
+
+    $children = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.ParentProcessId -eq $ProcessId })
+
+    foreach ($child in $children) {
+        Stop-ProcessTree -ProcessId $child.ProcessId
+    }
+
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+}
+
+function Stop-ProcessId {
+    param(
+        [int]$ProcessId,
+        [string]$Reason
+    )
+
+    if ($ProcessId -le 0 -or (Test-ProtectedProcessId -ProcessId $ProcessId)) {
+        return
+    }
+
+    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $process) {
+        return
+    }
+
+    Write-Host "🧹 Stopping stale process $ProcessId ($($process.ProcessName)): $Reason" -ForegroundColor Yellow
+    Stop-ProcessTree -ProcessId $ProcessId
+}
+
+function Stop-ProcessesOnPort {
+    param([int]$Port)
+
+    $owners = @(Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique)
+
+    foreach ($owner in $owners) {
+        Stop-ProcessId -ProcessId $owner -Reason "port $Port is already in use"
+    }
+}
+
+function Stop-KnownRuntimePorts {
+    $ports = @($BackendPort, 8080, 8081, 8091, 12166, 2237) | Select-Object -Unique
+    foreach ($port in $ports) {
+        Stop-ProcessesOnPort -Port $port
+    }
+}
+
+function Stop-ProjectProcesses {
+    $patterns = @("start_services_only.ps1", "backend.main:app", "sdc-bridge-server.js")
+    $protectedProcessIds = @(Get-ProtectedProcessIds)
+
+    $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+            $commandLine = $_.CommandLine
+            $protectedProcessIds -notcontains [int]$_.ProcessId -and
+            $commandLine -and
+            (
+                ($commandLine -match [regex]::Escape($ProjectRoot) -and ($patterns | Where-Object { $commandLine -like "*$_*" })) -or
+                $commandLine -like "*backend.main:app*"
+            )
+        }
+
+    foreach ($process in $processes) {
+        Stop-ProcessId -ProcessId $process.ProcessId -Reason "previous project process"
+    }
+}
+
+function Stop-StaleRuntime {
+    Write-Host "🧹 Cleaning stale local runtime processes..." -ForegroundColor Yellow
+    Stop-KnownRuntimePorts
+    Stop-ProjectProcesses
+    Start-Sleep -Seconds 2
+}
+
 function Stop-StartedProcess {
     param(
         [System.Diagnostics.Process]$Process,
@@ -55,7 +159,7 @@ function Stop-StartedProcess {
         # Fall back to forced termination below.
     }
 
-    Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+    Stop-ProcessTree -ProcessId $Process.Id
     Write-Host "✅ $Name stopped" -ForegroundColor Green
 }
 
@@ -135,6 +239,7 @@ $backendProcess = $null
 
 try {
     Clear-LifecycleRequest
+    Stop-StaleRuntime
 
     $bridgeProcess = Start-BridgeProcess
     $backendProcess = Start-BackendProcess
@@ -194,6 +299,8 @@ finally {
     Write-Host "🛑 Stopping managed processes..." -ForegroundColor Yellow
     Stop-StartedProcess -Process $backendProcess -Name "Backend"
     Stop-StartedProcess -Process $bridgeProcess -Name "Bridge"
+    Stop-KnownRuntimePorts
+    Stop-ProjectProcesses
     Clear-LifecycleRequest
     Write-Host "✅ All managed processes stopped" -ForegroundColor Green
 }

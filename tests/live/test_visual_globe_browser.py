@@ -23,6 +23,7 @@ import _bootstrap  # noqa: F401
 BASE_URL = os.environ.get("OM0RX_LIVE_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
 TIMEOUT_MS = int(os.environ.get("OM0RX_VISUAL_BROWSER_TIMEOUT_MS", "60000"))
 STATE_POLL_MS = 1000
+HTTP_PROBE_TIMEOUT = int(os.environ.get("OM0RX_VISUAL_HTTP_PROBE_TIMEOUT", "15"))
 
 PLOTTED_RE = re.compile(r"(\d+)\s+plotted", re.IGNORECASE)
 PATHS_RE = re.compile(r"(\d+)\s+paths", re.IGNORECASE)
@@ -41,7 +42,13 @@ VISUAL_STATE_SCRIPT = """
     .replace(/\\s+/g, ' ').trim() || '',
   emptyVisible: Array.from(document.querySelectorAll('.visual-empty-state'))
     .some((el) => el.offsetParent !== null),
+  resolvingVisible: Array.from(document.querySelectorAll('.visual-globe-status'))
+    .some((el) => el.offsetParent !== null && /spot map|spot locations/i.test(el.textContent)),
   canvasCount: document.querySelectorAll('canvas.visual-globe-canvas').length,
+  dockButtons: Array.from(document.querySelectorAll('button'))
+    .filter((el) => el.textContent.trim() === 'Dock').length,
+  undockButtons: Array.from(document.querySelectorAll('button'))
+    .filter((el) => el.textContent.trim() === 'Undock').length,
   zoomLabel: document.querySelector('.visual-zoom-pill')?.textContent.trim() || ''
 })
 """
@@ -49,13 +56,16 @@ VISUAL_STATE_SCRIPT = """
 
 def get_json(path: str) -> dict[str, Any]:
     request = urllib.request.Request(f"{BASE_URL}{path}", method="GET")
-    with urllib.request.urlopen(request, timeout=5) as response:
+    with urllib.request.urlopen(request, timeout=HTTP_PROBE_TIMEOUT) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
 def require_live_app() -> None:
     try:
-        with urllib.request.urlopen(f"{BASE_URL}/", timeout=5) as response:
+        with urllib.request.urlopen(
+            f"{BASE_URL}/api/spots/live-cache?limit=1",
+            timeout=HTTP_PROBE_TIMEOUT,
+        ) as response:
             if response.status >= 400:
                 pytest.skip(f"Live app at {BASE_URL} returned HTTP {response.status}")
     except (OSError, urllib.error.URLError) as exc:
@@ -64,19 +74,18 @@ def require_live_app() -> None:
 
 def recent_source_counts() -> dict[str, int]:
     try:
-        data = get_json("/api/spots/source-stats")
+        data = get_json("/api/spots/live-cache?limit=250")
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        pytest.skip(f"Cannot read live source stats from {BASE_URL}: {exc}")
+        pytest.skip(f"Cannot read live spot cache from {BASE_URL}: {exc}")
 
-    windows = data.get("windows") or []
-    one_hour = next((item for item in windows if item.get("minutes") == 60), None)
-    if one_hour is None:
-        live = data.get("live") or {}
-        one_hour = {
-            "total": live.get("total", 0),
-            "cluster": live.get("cluster", 0),
-            "rbl": live.get("rbl", 0),
-        }
+    one_hour = {"total": 0, "cluster": 0, "rbl": 0}
+    for spot in data.get("spots") or []:
+        source = str(spot.get("spot_source") or "cluster").lower()
+        one_hour["total"] += 1
+        if source == "rbl":
+            one_hour["rbl"] += 1
+        elif source == "cluster":
+            one_hour["cluster"] += 1
 
     return {
         "total": int(one_hour.get("total") or 0),
@@ -101,6 +110,7 @@ def parse_visual_state(state: dict[str, Any]) -> dict[str, int | float | str | b
         "rbl": int(source_match.group(2)) if source_match else 0,
         "zoom": float(zoom_match.group(1)) if zoom_match else 1.0,
         "empty": bool(state.get("emptyVisible")),
+        "resolving": bool(state.get("resolvingVisible")),
         "canvas_count": int(state.get("canvasCount") or 0),
     }
 
@@ -155,6 +165,7 @@ def assert_source_mode(state: dict[str, Any], *, cluster: bool, rbl: bool) -> No
 def assert_no_browser_errors(console_errors: list[str], page_errors: list[str]) -> None:
     benign_console_fragments = (
         "Error fetching service health: AbortError",
+        "WebSocket connection to 'ws://127.0.0.1:8091/' failed",
     )
     actionable_console_errors = [
         message
@@ -205,7 +216,11 @@ def test_visual_globe_source_modes_and_deep_zoom() -> None:
             )
             page.on("pageerror", lambda exc: page_errors.append(str(exc)))
 
-            page.goto(f"{BASE_URL}/?v=visual-browser-smoke", wait_until="domcontentloaded")
+            page.goto(
+                f"{BASE_URL}/?v=visual-browser-smoke",
+                timeout=TIMEOUT_MS,
+                wait_until="commit",
+            )
             open_visual_map(page)
 
             click_source_filter(page, "Cluster only")
@@ -231,6 +246,68 @@ def test_visual_globe_source_modes_and_deep_zoom() -> None:
             assert deep_zoom["zoom"] >= 8.0, f"Expected deep zoom >= 8x. State: {deep_zoom_state}"
             assert deep_zoom["paths"] > 0, (
                 f"Expected path rendering to survive deep zoom. State: {deep_zoom_state}"
+            )
+
+            assert_no_browser_errors(console_errors, page_errors)
+
+
+def test_visual_map_standalone_window_renders() -> None:
+    require_live_app()
+    source_counts = recent_source_counts()
+    if source_counts["total"] <= 0:
+        pytest.skip(
+            "Standalone visual map smoke needs recent cluster or RBL spots in the latest "
+            f"1h window. Current counts: {source_counts}"
+        )
+
+    playwright_api = pytest.importorskip(
+        "playwright.sync_api",
+        reason='Install browser diagnostics with: python -m pip install ".[browser]"',
+    )
+    sync_playwright = playwright_api.sync_playwright
+
+    console_errors: list[str] = []
+    page_errors: list[str] = []
+
+    with sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.launch(headless=True)
+        except Exception as exc:
+            message = str(exc)
+            if "Executable doesn't exist" in message or "playwright install" in message:
+                pytest.skip(
+                    "Playwright Chromium is not installed. "
+                    "Run: python -m playwright install chromium"
+                )
+            raise
+
+        with browser:
+            page = browser.new_page(viewport={"width": 1280, "height": 860})
+            page.on(
+                "console",
+                lambda msg: console_errors.append(msg.text) if msg.type == "error" else None,
+            )
+            page.on("pageerror", lambda exc: page_errors.append(str(exc)))
+
+            page.goto(
+                f"{BASE_URL}/visual-map.html?sources=cluster,rbl&window=60"
+                "&overlay=dxcc&pathWidth=2.1&v=visual-standalone-smoke",
+                timeout=TIMEOUT_MS,
+                wait_until="commit",
+            )
+            page.wait_for_selector("canvas.visual-globe-canvas", timeout=TIMEOUT_MS)
+
+            state = wait_for_visual_state(page, min_plotted=1)
+            parsed = parse_visual_state(state)
+            assert parsed["canvas_count"] >= 3, f"Standalone globe canvases missing. State: {state}"
+            assert int(state.get("dockButtons") or 0) == 1, (
+                f"Standalone map should expose one Dock button. State: {state}"
+            )
+            assert int(state.get("undockButtons") or 0) == 0, (
+                f"Standalone map should not show Undock. State: {state}"
+            )
+            assert parsed["cluster"] + parsed["rbl"] > 0, (
+                f"Standalone map did not expose source counts. State: {state}"
             )
 
             assert_no_browser_errors(console_errors, page_errors)

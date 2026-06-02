@@ -2,12 +2,16 @@
 """Smoke checks for the frontend/backend API contract."""
 
 import time
+from pathlib import Path
 
 import _bootstrap  # noqa: F401
 from fastapi.testclient import TestClient
 
 import backend.main
 from backend.api import solar as solar_api
+from activity_intelligence.repository import ActivityRepository
+from activity_intelligence.services import ActivityIntelligenceService
+import activity_intelligence.services as ai_services
 
 
 backend.main.register_all_services()
@@ -43,6 +47,9 @@ GET_ROUTES = [
     "/api/spots/source-stats",
     "/api/cluster/rbl/status",
     "/api/cluster/rbl/profiles",
+    "/api/activity-intelligence",
+    "/api/activity-intelligence/reference",
+    "/api/activity-intelligence/rbn",
     "/api/country/data",
     "/api/country/by-name/{name}",
     "/api/qrz/profile/{callsign:path}",
@@ -94,6 +101,8 @@ POST_ROUTES = [
     "/api/rotor/auto/goto",
     "/api/cluster/command",
     "/api/cluster/rbl",
+    "/api/activity-intelligence/refresh",
+    "/api/activity-intelligence/contest-context",
     "/api/cluster/reconnect",
     "/api/shutdown",
     "/api/restart",
@@ -164,6 +173,10 @@ def assert_response_has_keys(method: str, path: str, expected_keys: set[str], **
     return payload
 
 
+def install_temp_activity_service(tmp_path):
+    ai_services._service = ActivityIntelligenceService(repository=ActivityRepository(tmp_path / "activity_intelligence.duckdb"))
+
+
 def test_frontend_routes_are_registered():
     missing = []
     for path in GET_ROUTES:
@@ -207,7 +220,8 @@ def test_legacy_ft8_tx_routes_are_disabled_by_default(monkeypatch):
         assert "deprecated and disabled" in response.text
 
 
-def test_safe_frontend_read_contracts():
+def test_safe_frontend_read_contracts(tmp_path):
+    install_temp_activity_service(tmp_path)
     solar_api._solar_cache["timestamp"] = time.time()
     solar_api._solar_cache["data"] = {
         "source": "contract-test",
@@ -241,11 +255,15 @@ def test_safe_frontend_read_contracts():
     assert_response_has_keys("GET", "/api/spots/source-stats", {"ok", "live", "all_time", "windows"})
     assert_response_has_keys("GET", "/api/cluster/rbl/status", {"ok", "enabled", "profile", "telemetry"})
     assert_response_has_keys("GET", "/api/cluster/rbl/profiles", {"ok", "default_profile", "profiles"})
+    assert_response_has_keys("GET", "/api/activity-intelligence", {"ok", "sourceStatus", "sourceCatalog", "contestContext", "rbn"})
+    assert_response_has_keys("GET", "/api/activity-intelligence/reference?q=", {"ok", "results"})
+    assert_response_has_keys("GET", "/api/activity-intelligence/rbn", {"ok", "rbn"})
     assert_response_has_keys("GET", "/api/qso/outbox/status", {"success", "outbox"})
     assert_response_has_keys("GET", "/api/solar", {"source", "indices", "hf_conditions"})
 
 
-def test_safe_frontend_post_contracts():
+def test_safe_frontend_post_contracts(tmp_path):
+    install_temp_activity_service(tmp_path)
     assert_response_has_keys(
         "POST",
         "/api/spots/filtered-search",
@@ -266,9 +284,33 @@ def test_safe_frontend_post_contracts():
     )
     assert_response_has_keys(
         "POST",
+        "/api/activity-intelligence/contest-context",
+        {"ok", "contestContext"},
+        json={"contestId": None},
+    )
+    assert_response_has_keys(
+        "POST",
         "/api/cluster/reconnect",
         {"success", "message"},
     )
+
+
+def test_activity_intelligence_frontend_static_contracts():
+    root = Path(__file__).resolve().parents[2]
+    template = (root / "frontend" / "templates" / "dx-spots.html").read_text(encoding="utf-8")
+    script = (root / "frontend" / "js" / "dx-spots.js").read_text(encoding="utf-8")
+    styles = (root / "frontend" / "main-styles.css").read_text(encoding="utf-8")
+
+    assert "activity-contest-banner" in template
+    assert "setActivityContestContext" in template
+    assert "activity-rbn-heatmap" in template
+    assert "activity-source-strip" in template
+    assert "getActivityContestBanner()" in script
+    assert "getActivityRbnBandRows()" in script
+    assert "getActivitySourceRows()" in script
+    assert "activity-rbn-bar-row" in styles
+    assert "activity-contest-banner" in styles
+    assert "activity-source-row" in styles
 
 
 if __name__ == "__main__":

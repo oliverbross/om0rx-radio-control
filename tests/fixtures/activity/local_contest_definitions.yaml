@@ -1,0 +1,9 @@
+contests:
+  - id: local-field-day
+    name: Local Field Day
+    startUtc: 2026-06-02T00:00:00Z
+    endUtc: 2026-06-03T00:00:00Z
+    modes: [CW, SSB]
+    bands: [40m, 20m]
+    exchange: RST + serial
+    rulesUrl: https://example.invalid/rules

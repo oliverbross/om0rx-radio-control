@@ -54,6 +54,51 @@ window.RadioControlConfig = {
             RADIO_LAYOUT_PRESET: 'compact',
             RBL_COMMAND_PROFILE: 'dxspider',
             RBL_COMMAND_PROFILES: {},
+            ACTIVITY_INTELLIGENCE: {
+                enabled: true,
+                enrichExistingSpots: true,
+                showPriorityScore: true,
+                autoSortByPriority: false,
+                dxpeditions: {
+                    enabled: true,
+                    ng3kAdxoEnabled: true,
+                    dxcalIcsEnabled: true,
+                    ng3kPollHours: 12,
+                },
+                contests: {
+                    enabled: true,
+                    wa7bnmEnabled: true,
+                    wa7bnmFeedPollHours: 6,
+                    wa7bnmDetailParsingEnabled: false,
+                    localContestDefinitionsPath: 'config/contest_definitions.yaml',
+                    showRunningContestBanner: true,
+                },
+                portable: {
+                    enabled: true,
+                    pota: { enabled: true, useUndocumentedApi: true, activeSpotIntervalSeconds: 60 },
+                    sota: { enabled: true, activeSpotIntervalSeconds: 60, alertsIntervalSeconds: 300 },
+                    wwff: { enabled: true, minRefreshSeconds: 30 },
+                    parksnpeaks: { enabled: true, spotsIntervalSeconds: 60, alertsIntervalSeconds: 300 },
+                },
+                propagation: {
+                    enabled: true,
+                    swpcEnabled: true,
+                    lowerPriorityWhenPoor: true,
+                    showReasonTooltips: true,
+                    useRbnEvidence: true,
+                },
+                rbn: {
+                    enabled: true,
+                    ingestFromExistingCluster: true,
+                    directTelnet: false,
+                    directTelnetHost: 'telnet.reversebeacon.net',
+                    directTelnetPort: 7000,
+                    directFt8TelnetHost: 'telnet.reversebeacon.net',
+                    directFt8TelnetPort: 7001,
+                    ownCallOnlyProcessing: true,
+                    stationCalls: [],
+                },
+            },
         },
 
         showConfigModal: false,
@@ -69,6 +114,7 @@ window.RadioControlConfig = {
             { id: 'wsjtx', name: 'WSJT-X' },
             { id: 'cty', name: 'CTY / Paths' },
             { id: 'logging', name: 'Logging' },
+            { id: 'activity', name: 'Activity Intel' },
             { id: 'colours', name: 'Colours' },
             { id: 'specials', name: 'Special Stations' },
         ],
@@ -112,6 +158,7 @@ window.RadioControlConfig = {
 
                 if (data.success) {
                     this.configData = { ...this.configData, ...data.config };
+                    this.syncActivityIntelligenceConfigFromSettings();
                     console.log('Configuration loaded:', this.configData);
                 }
             } catch (error) {
@@ -156,6 +203,7 @@ window.RadioControlConfig = {
                     };
 
                     this.syncWinKeyerConfigFromSettings();
+                    this.syncActivityIntelligenceConfigFromSettings();
 
                     setTimeout(() => {
                         if (this.showConfigModal) {
@@ -212,6 +260,10 @@ window.RadioControlConfig = {
                         this.configData = { ...this.configData, ...data.config };
                         console.log('ROTOR_ENABLED from config:', this.configData.ROTOR_ENABLED);
                         this.syncWinKeyerConfigFromSettings();
+                        this.syncActivityIntelligenceConfigFromSettings();
+                        if (this.loadActivityIntelligence) {
+                            this.loadActivityIntelligence();
+                        }
                     }
                 }
             } catch (error) {
@@ -227,6 +279,50 @@ window.RadioControlConfig = {
                 this.winkeyer.memories = this.configData.WINKEYER_MEMORIES;
             }
             console.log('WinKeyer config synced, enabled:', this.winKeyerEnabled);
+        },
+
+        syncActivityIntelligenceConfigFromSettings() {
+            const defaults = window.RadioControlConfig.data.configData.ACTIVITY_INTELLIGENCE;
+            this.configData.ACTIVITY_INTELLIGENCE = {
+                ...defaults,
+                ...(this.configData.ACTIVITY_INTELLIGENCE || {}),
+                dxpeditions: {
+                    ...defaults.dxpeditions,
+                    ...((this.configData.ACTIVITY_INTELLIGENCE || {}).dxpeditions || {}),
+                },
+                contests: {
+                    ...defaults.contests,
+                    ...((this.configData.ACTIVITY_INTELLIGENCE || {}).contests || {}),
+                },
+                portable: {
+                    ...defaults.portable,
+                    ...((this.configData.ACTIVITY_INTELLIGENCE || {}).portable || {}),
+                    pota: {
+                        ...defaults.portable.pota,
+                        ...(((this.configData.ACTIVITY_INTELLIGENCE || {}).portable || {}).pota || {}),
+                    },
+                    sota: {
+                        ...defaults.portable.sota,
+                        ...(((this.configData.ACTIVITY_INTELLIGENCE || {}).portable || {}).sota || {}),
+                    },
+                    wwff: {
+                        ...defaults.portable.wwff,
+                        ...(((this.configData.ACTIVITY_INTELLIGENCE || {}).portable || {}).wwff || {}),
+                    },
+                    parksnpeaks: {
+                        ...defaults.portable.parksnpeaks,
+                        ...(((this.configData.ACTIVITY_INTELLIGENCE || {}).portable || {}).parksnpeaks || {}),
+                    },
+                },
+                propagation: {
+                    ...defaults.propagation,
+                    ...((this.configData.ACTIVITY_INTELLIGENCE || {}).propagation || {}),
+                },
+                rbn: {
+                    ...defaults.rbn,
+                    ...((this.configData.ACTIVITY_INTELLIGENCE || {}).rbn || {}),
+                },
+            };
         },
     },
 };

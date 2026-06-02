@@ -10,6 +10,7 @@ build/
 
 # Logs directory
 /logs/
+/artifacts/
 *.log
 *.log.*
 

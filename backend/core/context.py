@@ -39,6 +39,7 @@ class AppContext:
     adif_handler: Any = None
     wavelog_sync_manager: Any = None
     rotor: Any = None
+    activity_intelligence: Any = None
     sync_status: Dict[str, Any] = field(default_factory=default_sync_status)
 
 
@@ -70,3 +71,4 @@ def sync_app_state(app: Any, context: AppContext) -> None:
     app.state.adif_handler = context.adif_handler
     app.state.wavelog_sync_manager = context.wavelog_sync_manager
     app.state.rotor = context.rotor
+    app.state.activity_intelligence = context.activity_intelligence

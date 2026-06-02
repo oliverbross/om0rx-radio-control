@@ -7,6 +7,7 @@
  */
 (function() {
     console.log('🔄 Template Loader: Starting to load template fragments in parallel...');
+    const templateCacheKey = '20260602-visual-map-cache-fix';
     
     // Template loading schedule: which file goes into which section
     const templateSchedule = [
@@ -51,7 +52,7 @@
             if (partialCache.has(partialPath)) {
                 return partialCache.get(partialPath);
             }
-            const promise = fetch(partialPath)
+            const promise = fetch(`${partialPath}?v=${templateCacheKey}`)
                 .then(response => {
                     if (!response.ok) {
                         throw new Error(`HTTP ${response.status} loading ${partialPath}`);
@@ -71,7 +72,7 @@
     }
 
     templateSchedule.forEach(({ file: templatePath, target: targetId, label: templateName, order }) => {
-        fetch(templatePath)
+        fetch(`${templatePath}?v=${templateCacheKey}`)
             .then(response => {
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status} loading ${templatePath}`);

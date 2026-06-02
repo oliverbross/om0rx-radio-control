@@ -441,6 +441,152 @@
                             <input type="text" v-model="configData.ADIF_LOG_PATH" placeholder="C:\\path\\to\\qso_log.adif">
                         </div>
                     </div>
+
+                    <!-- Activity Intelligence Tab -->
+                    <div v-if="activeConfigTab === 'activity'" class="config-form">
+                        <h4 style="margin-bottom: 12px; font-size: 12px; color: #4a9eff; font-weight: 600;">Activity Intelligence</h4>
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.enabled" id="ai-enabled">
+                            <label for="ai-enabled">Enable Activity Intelligence</label>
+                        </div>
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.enrichExistingSpots" id="ai-enrich">
+                            <label for="ai-enrich">Enrich existing cluster/RBL spots</label>
+                        </div>
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.autoSortByPriority" id="ai-sort">
+                            <label for="ai-sort">Prefer priority sorting for intelligence views</label>
+                        </div>
+
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        <h5 style="font-size: 11px; color: #b0d4ff; margin-bottom: 8px;">Sources</h5>
+                        <div style="display: grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap: 8px 14px;">
+                            <div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.dxpeditions.enabled" id="ai-dx">
+                                    <label for="ai-dx">DXpeditions</label>
+                                </div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.dxpeditions.ng3kAdxoEnabled" id="ai-ng3k">
+                                    <label for="ai-ng3k">NG3K ADXO</label>
+                                </div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.dxpeditions.dxcalIcsEnabled" id="ai-dxcal">
+                                    <label for="ai-dxcal">DXCAL iCal</label>
+                                </div>
+                                <div class="config-field">
+                                    <label>DX poll hours</label>
+                                    <input type="number" v-model.number="configData.ACTIVITY_INTELLIGENCE.dxpeditions.ng3kPollHours" min="6" max="48">
+                                </div>
+                            </div>
+                            <div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.contests.enabled" id="ai-contests">
+                                    <label for="ai-contests">Contest calendar</label>
+                                </div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.contests.wa7bnmEnabled" id="ai-wa7bnm">
+                                    <label for="ai-wa7bnm">WA7BNM feed</label>
+                                </div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.contests.wa7bnmDetailParsingEnabled" id="ai-wa7bnm-detail">
+                                    <label for="ai-wa7bnm-detail">WA7BNM detail parsing</label>
+                                </div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.contests.showRunningContestBanner" id="ai-contest-banner">
+                                    <label for="ai-contest-banner">Running contest banner</label>
+                                </div>
+                                <div class="config-field">
+                                    <label>Contest poll hours</label>
+                                    <input type="number" v-model.number="configData.ACTIVITY_INTELLIGENCE.contests.wa7bnmFeedPollHours" min="3" max="48">
+                                </div>
+                                <div class="config-field">
+                                    <label>Local contest definitions</label>
+                                    <input type="text" v-model="configData.ACTIVITY_INTELLIGENCE.contests.localContestDefinitionsPath">
+                                </div>
+                            </div>
+                            <div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.portable.enabled" id="ai-portable">
+                                    <label for="ai-portable">Portable activations</label>
+                                </div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.portable.pota.enabled" id="ai-pota">
+                                    <label for="ai-pota">POTA</label>
+                                </div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.portable.sota.enabled" id="ai-sota">
+                                    <label for="ai-sota">SOTA</label>
+                                </div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.portable.wwff.enabled" id="ai-wwff">
+                                    <label for="ai-wwff">WWFF</label>
+                                </div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.portable.parksnpeaks.enabled" id="ai-parksnpeaks">
+                                    <label for="ai-parksnpeaks">ParksnPeaks</label>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.propagation.enabled" id="ai-prop">
+                                    <label for="ai-prop">Propagation badges</label>
+                                </div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.propagation.swpcEnabled" id="ai-swpc">
+                                    <label for="ai-swpc">NOAA SWPC</label>
+                                </div>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.propagation.useRbnEvidence" id="ai-rbn-evidence">
+                                    <label for="ai-rbn-evidence">Use RBN evidence</label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+                        <h5 style="font-size: 11px; color: #b0d4ff; margin-bottom: 8px;">Reverse Beacon Network</h5>
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.rbn.enabled" id="ai-rbn">
+                            <label for="ai-rbn">Enable RBN analytics</label>
+                        </div>
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.rbn.ingestFromExistingCluster" id="ai-rbn-cluster">
+                            <label for="ai-rbn-cluster">Use existing RBL/cluster stream</label>
+                        </div>
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.rbn.directTelnet" id="ai-rbn-telnet">
+                            <label for="ai-rbn-telnet">Direct RBN telnet</label>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 100px 1fr 100px; gap: 8px;">
+                            <div class="config-field">
+                                <label>CW/RTTY host</label>
+                                <input type="text" v-model="configData.ACTIVITY_INTELLIGENCE.rbn.directTelnetHost">
+                            </div>
+                            <div class="config-field">
+                                <label>Port</label>
+                                <input type="number" v-model.number="configData.ACTIVITY_INTELLIGENCE.rbn.directTelnetPort">
+                            </div>
+                            <div class="config-field">
+                                <label>FT8 host</label>
+                                <input type="text" v-model="configData.ACTIVITY_INTELLIGENCE.rbn.directFt8TelnetHost">
+                            </div>
+                            <div class="config-field">
+                                <label>Port</label>
+                                <input type="number" v-model.number="configData.ACTIVITY_INTELLIGENCE.rbn.directFt8TelnetPort">
+                            </div>
+                        </div>
+                        <div class="config-field">
+                            <label>Station calls for own-signal matching</label>
+                            <input type="text"
+                                   :value="(configData.ACTIVITY_INTELLIGENCE.rbn.stationCalls || []).join(', ')"
+                                   @input="configData.ACTIVITY_INTELLIGENCE.rbn.stationCalls = $event.target.value.split(',').map(v => v.trim().toUpperCase()).filter(Boolean)"
+                                   placeholder="OM0RX, CONTESTCALL">
+                        </div>
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.ACTIVITY_INTELLIGENCE.rbn.ownCallOnlyProcessing" id="ai-rbn-own">
+                            <label for="ai-rbn-own">Keep only own-call RBN reports</label>
+                        </div>
+                    </div>
                     
                     <!-- Colours Tab -->
                     <div v-if="activeConfigTab === 'colours'" class="config-form">

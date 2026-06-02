@@ -44,6 +44,13 @@ const dxSpotsData = {
     spotSourceStats: null,
     spotSourceStatsLoading: false,
     spotSourceStatsTimer: null,
+    activityIntelligence: null,
+    activityIntelligenceLoading: false,
+    activityIntelligenceTimer: null,
+    activityReferenceQuery: '',
+    activityReferenceResults: [],
+    activityReferenceLoading: false,
+    activityPanelCollapsed: false,
     spotSourceMuted: {
         cluster: false,
         rbl: false,
@@ -74,6 +81,8 @@ const dxSpotsData = {
     filteredSearchRetryAfter: 0,
     selectedSpot: null,
     selectedSpotExplain: null,
+    selectedSpotActivityDetail: null,
+    selectedSpotActivityLoading: false,
     spotExplainLoading: false,
     spotExplainError: '',
     visualSpotWindowMinutes: 60,
@@ -662,32 +671,36 @@ const dxSpotsMethods = {
     },
 
     async loadVisualFallbackSpots() {
-        const filterCriteria = this.buildSpotFilterCriteria({
-            maxAgeMinutes: this.visualSpotWindowMinutes || 60,
+        const fallbackLimit = Math.max(Number(this.maxSpots || 100), 100);
+        const filterKey = JSON.stringify({
+            ...this.buildSpotFilterCriteria(),
+            visual_window_minutes: this.visualSpotWindowMinutes || 60,
+            fallback_limit: fallbackLimit,
         });
-        const filterKey = JSON.stringify(filterCriteria);
         if (this.visualFallbackLoading || (this.visualFallbackFilterKey === filterKey && this.visualFallbackSpots.length > 0)) {
             return;
         }
 
         this.visualFallbackLoading = true;
         try {
-            const response = await fetch('/api/spots/filtered-search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(filterCriteria)
-            });
-            if (!response.ok) {
-                throw new Error(`API error: ${response.statusText}`);
-            }
-            const result = await response.json();
-            if (result.ok) {
-                this.visualFallbackSpots = result.spots || [];
-                this.visualFallbackFilterKey = filterKey;
-            } else {
-                this.visualFallbackSpots = [];
-                this.visualFallbackFilterKey = filterKey;
-            }
+            const fetchJson = async (url, timeoutMs = 12000) => {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+                try {
+                    const response = await fetch(url, { signal: controller.signal });
+                    if (!response.ok) {
+                        throw new Error(`API error: ${response.statusText}`);
+                    }
+                    return await response.json();
+                } finally {
+                    clearTimeout(timeoutId);
+                }
+            };
+
+            const result = await fetchJson(`/api/spots/live-cache?limit=${fallbackLimit}`, 8000);
+            const spots = result.spots || [];
+            this.visualFallbackSpots = spots;
+            this.visualFallbackFilterKey = filterKey;
         } catch (error) {
             console.warn('Visual spot fallback search failed:', error);
             this.visualFallbackSpots = [];
@@ -702,6 +715,33 @@ const dxSpotsMethods = {
         if (this.viewMode !== 'visual') return;
         if (this.getVisualCandidateSpots().length > 0) return;
         this.loadVisualFallbackSpots();
+    },
+
+    isVisualMapResolving() {
+        if (this.visualFallbackLoading || this.visualCtyLoading) {
+            return true;
+        }
+        if (this.visualCtyError) {
+            return false;
+        }
+
+        const candidates = this.getVisualCandidateSpots();
+        if (!Array.isArray(candidates) || candidates.length === 0) {
+            return false;
+        }
+
+        const mapped = this.getVisualRawSpotItems();
+        return mapped.length === 0 && !this.visualCtyReady;
+    },
+
+    getVisualMapResolvingText() {
+        if (this.visualFallbackLoading) {
+            return 'Loading recent spot map...';
+        }
+        if (this.visualCtyLoading || !this.visualCtyReady) {
+            return 'Resolving spot locations...';
+        }
+        return 'Preparing visual map...';
     },
     
     matchesCurrentFilters(spot) {
@@ -761,6 +801,9 @@ const dxSpotsMethods = {
 
         const source = spot.spot_source || 'cluster';
         if (!this.spotsFilter.spotSources.includes(source)) {
+            return false;
+        }
+        if (this.spotSourceMuted[source]) {
             return false;
         }
 
@@ -1368,7 +1411,7 @@ const dxSpotsMethods = {
         if (this.spotSourceStatsLoading) return;
         this.spotSourceStatsLoading = true;
         try {
-            const response = await fetch('/api/spots/source-stats');
+            const response = await fetch('/api/spots/source-stats?fast=true');
             const data = await response.json();
             if (!response.ok) {
                 throw new Error(data.detail || data.error || `HTTP ${response.status}`);
@@ -1392,6 +1435,252 @@ const dxSpotsMethods = {
         if (this.spotSourceStatsTimer) {
             clearInterval(this.spotSourceStatsTimer);
             this.spotSourceStatsTimer = null;
+        }
+    },
+
+    async loadActivityIntelligence() {
+        if (this.activityIntelligenceLoading) return;
+        this.activityIntelligenceLoading = true;
+        try {
+            const response = await fetch('/api/activity-intelligence');
+            const data = await response.json();
+            if (!response.ok || !data.ok) {
+                throw new Error(data.detail || data.error || `HTTP ${response.status}`);
+            }
+            this.activityIntelligence = data;
+        } catch (error) {
+            console.warn('Could not load Activity Intelligence:', error);
+        } finally {
+            this.activityIntelligenceLoading = false;
+        }
+    },
+
+    async refreshActivityIntelligence() {
+        if (this.activityIntelligenceLoading) return;
+        this.activityIntelligenceLoading = true;
+        try {
+            const response = await fetch('/api/activity-intelligence/refresh?force=true', { method: 'POST' });
+            const data = await response.json();
+            if (!response.ok || !data.ok) {
+                throw new Error(data.detail || data.error || `HTTP ${response.status}`);
+            }
+            this.activityIntelligenceLoading = false;
+            await this.loadActivityIntelligence();
+            this.showStatus('Activity Intelligence refreshed', 'success');
+        } catch (error) {
+            this.showStatus(`Activity refresh failed: ${error.message}`, 'error');
+        } finally {
+            this.activityIntelligenceLoading = false;
+        }
+    },
+
+    setupActivityIntelligenceRefresh() {
+        this.cleanupActivityIntelligenceRefresh();
+        this.activityIntelligenceTimer = setInterval(() => {
+            this.loadActivityIntelligence();
+        }, 45000);
+    },
+
+    cleanupActivityIntelligenceRefresh() {
+        if (this.activityIntelligenceTimer) {
+            clearInterval(this.activityIntelligenceTimer);
+            this.activityIntelligenceTimer = null;
+        }
+    },
+
+    getActivityDxpeditions() {
+        const items = this.activityIntelligence?.dxpeditions || [];
+        return items.slice(0, 6);
+    },
+
+    getActivityPortableActivations() {
+        const items = this.activityIntelligence?.portableActivations || [];
+        return items.slice(0, 8);
+    },
+
+    getActivityCurrentContests() {
+        const now = Date.now();
+        return (this.activityIntelligence?.contests || [])
+            .filter(item => Date.parse(item.start_utc) <= now && Date.parse(item.end_utc) >= now)
+            .slice(0, 4);
+    },
+
+    getActivityUpcomingContests() {
+        const now = Date.now();
+        return (this.activityIntelligence?.contests || [])
+            .filter(item => Date.parse(item.start_utc) > now)
+            .slice(0, 4);
+    },
+
+    getActivityContestBanner() {
+        const contextBanner = this.activityIntelligence?.contestContext?.banner;
+        const selected = this.activityIntelligence?.contestContext?.selected;
+        const currentBand = this.freqToBand ? this.freqToBand(this.radioStatus?.frequency) : '';
+        const currentMode = this.normalizeActivityContestMode(this.radioStatus?.mode || '');
+        const candidates = selected ? [selected] : this.getActivityCurrentContests();
+        const match = candidates.find(item => this.activityContestMatches(item, currentBand, currentMode));
+        if (match) {
+            const parts = [match.name || 'Contest active'];
+            if (currentBand) parts.push(currentBand);
+            if (currentMode) parts.push(currentMode);
+            return {
+                contestId: match.id,
+                label: parts.join(' · '),
+                exchange: match.exchange || '',
+                selected: selected && selected.id === match.id,
+            };
+        }
+        return contextBanner || null;
+    },
+
+    activityContestMatches(contest, band, mode) {
+        const bands = (contest?.bands || []).map(item => String(item).toLowerCase());
+        const modes = (contest?.modes || []).map(item => this.normalizeActivityContestMode(item));
+        if (band && bands.length && !bands.includes(String(band).toLowerCase())) return false;
+        if (mode && modes.length && !modes.includes(mode)) return false;
+        return true;
+    },
+
+    normalizeActivityContestMode(mode) {
+        const text = String(mode || '').toUpperCase();
+        if (['USB', 'LSB', 'AM', 'FM'].includes(text)) return 'SSB';
+        if (['DIGU', 'DIGL', 'PSK', 'DIGI'].includes(text)) return 'DIGI';
+        return text;
+    },
+
+    async setActivityContestContext(contestId) {
+        try {
+            const response = await fetch('/api/activity-intelligence/contest-context', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contestId }),
+            });
+            const data = await response.json();
+            if (!response.ok || !data.ok) {
+                throw new Error(data.detail || data.error || `HTTP ${response.status}`);
+            }
+            this.activityIntelligence = {
+                ...(this.activityIntelligence || {}),
+                contestContext: data.contestContext,
+            };
+            this.spotsFilter.sortBy = 'score';
+            this.showStatus(contestId ? 'Contest context selected' : 'Contest context cleared', 'success');
+        } catch (error) {
+            this.showStatus(`Contest context failed: ${error.message}`, 'error');
+        }
+    },
+
+    getActivitySourceStatusText() {
+        const states = this.activityIntelligence?.sourceStatus || [];
+        if (!states.length) return 'No sources synced yet';
+        const ok = states.filter(state => state.last_success_at_utc && !state.last_error).length;
+        const failing = states.filter(state => state.last_error).length;
+        return `${ok}/${states.length} sources ok${failing ? ` · ${failing} failing` : ''}`;
+    },
+
+    getActivitySourceRows() {
+        const catalog = this.activityIntelligence?.sourceCatalog || [];
+        const states = this.activityIntelligence?.sourceStatus || [];
+        const byState = new Map(states.map(state => [state.source_id || state.sourceId, state]));
+        const rows = catalog.map(source => {
+            const state = byState.get(source.sourceId) || {};
+            return { ...source, ...state, sourceId: source.sourceId };
+        });
+        for (const state of states) {
+            const id = state.source_id || state.sourceId;
+            if (id && !rows.some(row => row.sourceId === id)) {
+                rows.push({ ...state, sourceId: id, label: id });
+            }
+        }
+        return rows.slice(0, 16);
+    },
+
+    getActivityRbnSummaryText() {
+        const rbn = this.activityIntelligence?.rbn;
+        if (!rbn) return 'No RBN data';
+        if (!rbn.totalReports) return 'No own-call reports';
+        const snr = rbn.maxSnrDb !== null && rbn.maxSnrDb !== undefined ? ` · max ${rbn.maxSnrDb} dB` : '';
+        return `${rbn.totalReports} reports · ${rbn.uniqueSkimmers} skimmers${snr}`;
+    },
+
+    getActivityRbnBandRows() {
+        return (this.activityIntelligence?.rbn?.bandSummary || []).slice(0, 5);
+    },
+
+    getActivityRbnHeadingRows() {
+        return (this.activityIntelligence?.rbn?.azimuthSectors || []).slice(0, 6);
+    },
+
+    getActivityRbnAntennaRows() {
+        return (this.activityIntelligence?.rbn?.antennaComparisons || []).slice(0, 3);
+    },
+
+    getActivityRbnHeatmapRows() {
+        return (this.activityIntelligence?.rbn?.bandOpeningHeatmap || []).slice(-18);
+    },
+
+    getActivityRbnNoReportWarning() {
+        const rbn = this.activityIntelligence?.rbn;
+        if (!rbn || !rbn.noReportsWarning) return '';
+        if (rbn.noReportsMinutes === null || rbn.noReportsMinutes === undefined) {
+            return 'No own-call RBN reports in this window';
+        }
+        return `No own-call reports for ${rbn.noReportsMinutes} min`;
+    },
+
+    getActivityRbnBarWidth(value) {
+        const rows = this.getActivityRbnBandRows();
+        const maxReports = Math.max(1, ...rows.map(row => Number(row.reports || 0)));
+        return Math.max(6, Math.round((Number(value || 0) / maxReports) * 100));
+    },
+
+    getActivityRbnHeatmapOpacity(value) {
+        const rows = this.getActivityRbnHeatmapRows();
+        const maxReports = Math.max(1, ...rows.map(row => Number(row.reports || 0)));
+        return Math.max(0.25, Math.min(1, Number(value || 0) / maxReports));
+    },
+
+    getSpotActivityTags(spot) {
+        return Array.isArray(spot?.activity_tags) ? spot.activity_tags : [];
+    },
+
+    getSpotPropagationLabel(spot) {
+        const prop = spot?.propagation;
+        if (!prop || !prop.label || prop.label === 'UNKNOWN') return '';
+        return `${prop.label} ${prop.score ?? ''}`.trim();
+    },
+
+    getActivityTagClass(tag) {
+        const type = String(tag?.type || '').toLowerCase().replaceAll('_', '-');
+        return `activity-tag-${type}`;
+    },
+
+    formatActivityTime(value) {
+        if (!value) return '-';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return String(value).slice(0, 16);
+        return date.toLocaleString([], { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    },
+
+    async lookupActivityReference() {
+        const query = String(this.activityReferenceQuery || '').trim();
+        if (!query) {
+            this.activityReferenceResults = [];
+            return;
+        }
+        this.activityReferenceLoading = true;
+        try {
+            const response = await fetch(`/api/activity-intelligence/reference?q=${encodeURIComponent(query)}`);
+            const data = await response.json();
+            if (!response.ok || !data.ok) {
+                throw new Error(data.detail || data.error || `HTTP ${response.status}`);
+            }
+            this.activityReferenceResults = data.results || [];
+        } catch (error) {
+            console.warn('Reference lookup failed:', error);
+            this.activityReferenceResults = [];
+        } finally {
+            this.activityReferenceLoading = false;
         }
     },
 
@@ -2040,7 +2329,7 @@ const dxSpotsMethods = {
         const sorted = [...(spots || [])];
         if (this.spotsFilter.sortBy === 'score') {
             sorted.sort((a, b) =>
-                (Number(b.spot_score || 0) - Number(a.spot_score || 0)) ||
+                (this.getSpotScore(b) - this.getSpotScore(a)) ||
                 (Number(b.timestamp || 0) - Number(a.timestamp || 0))
             );
         }
@@ -2048,7 +2337,7 @@ const dxSpotsMethods = {
     },
 
     getSpotScore(spot) {
-        return Number(spot.spot_score || 0);
+        return Number(spot?.priority_score ?? spot?.spot_score ?? 0);
     },
 
     getSpotScoreLabel(spot) {
@@ -2079,8 +2368,10 @@ const dxSpotsMethods = {
         if (event) event.stopPropagation();
         this.selectedSpot = spot;
         this.selectedSpotExplain = null;
+        this.selectedSpotActivityDetail = null;
         this.spotExplainError = '';
         this.spotExplainLoading = true;
+        this.selectedSpotActivityLoading = true;
 
         try {
             const frequencyKhz = spot.frequency_mhz
@@ -2104,13 +2395,62 @@ const dxSpotsMethods = {
         } finally {
             this.spotExplainLoading = false;
         }
+
+        try {
+            await this.loadSelectedSpotActivityDetail(spot);
+        } finally {
+            this.selectedSpotActivityLoading = false;
+        }
+    },
+
+    async loadSelectedSpotActivityDetail(spot) {
+        const tags = this.getSpotActivityTags(spot);
+        const dxTag = tags.find(tag => tag.type === 'DXPEDITION' && tag.ref_id);
+        if (!dxTag) {
+            this.selectedSpotActivityDetail = {
+                tags,
+                propagation: spot.propagation || null,
+                recommendedActions: spot.recommended_actions || [],
+            };
+            return;
+        }
+        try {
+            const response = await fetch(`/api/activity-intelligence/dxpeditions/${encodeURIComponent(dxTag.ref_id)}`);
+            const data = await response.json();
+            if (!response.ok || !data.ok) {
+                throw new Error(data.detail || data.error || `HTTP ${response.status}`);
+            }
+            this.selectedSpotActivityDetail = {
+                tags,
+                propagation: spot.propagation || null,
+                recommendedActions: spot.recommended_actions || [],
+                dxpedition: data.dxpedition,
+                workedMatrix: data.workedMatrix || [],
+                matrixModes: data.matrixModes || [],
+            };
+        } catch (error) {
+            console.warn('Activity detail failed:', error);
+            this.selectedSpotActivityDetail = {
+                tags,
+                propagation: spot.propagation || null,
+                recommendedActions: spot.recommended_actions || [],
+                error: error.message,
+            };
+        }
+    },
+
+    getActivityMatrixCellClass(cell) {
+        const status = String(cell?.status || '').toLowerCase().replaceAll(' ', '-');
+        return `activity-matrix-${status}`;
     },
 
     closeSpotDetails() {
         this.selectedSpot = null;
         this.selectedSpotExplain = null;
+        this.selectedSpotActivityDetail = null;
         this.spotExplainError = '';
         this.spotExplainLoading = false;
+        this.selectedSpotActivityLoading = false;
     },
     
     // === Worked QSO Lookup (matches by CALL + BAND + MODE) ===
@@ -3936,7 +4276,7 @@ const dxSpotsMethods = {
 
         const fallback = Array.isArray(this.visualFallbackSpots) ? this.visualFallbackSpots : [];
         if (fallback.length > 0) {
-            return this.applySourceAndRblFilters(fallback);
+            return fallback.filter(spot => this.matchesCurrentFilters(spot));
         }
 
         if (this.viewMode === 'visual' && !this.visualFallbackLoading) {

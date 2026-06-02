@@ -1,5 +1,14 @@
 <div :class="['compact-radio-row', compactLayoutClass()]">
     <div class="compact-radio-left">
+        <div class="compact-brand-container">
+            <button class="app-brand-button compact-brand-button" @click="togglePowerMenu" title="Server control: Shutdown or Restart">
+                OM0RX Radio Control
+            </button>
+            <div v-if="showPowerMenu" class="power-menu compact-power-menu">
+                <button class="power-menu-item" @click="shutdownServer">Shutdown</button>
+                <button class="power-menu-item" @click="restartServer">Restart</button>
+            </div>
+        </div>
         <button class="compact-config-btn" @click="showConfigDialog">⚙️ Config</button>
         <button @click="toggleDetailedRadioControls" :class="['compact-config-btn', { active: configData.RADIO_SHOW_DETAILED_CONTROLS }]">
             {{ configData.RADIO_SHOW_DETAILED_CONTROLS ? 'Compact' : 'Controls' }}

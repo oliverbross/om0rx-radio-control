@@ -45,6 +45,8 @@ from backend.api.solar import router as solar_router
 from backend.api.wavelog_log import router as wavelog_log_router
 from backend.api.ft8 import router as ft8_router
 from backend.api.static_files import setup_static_files
+from activity_intelligence.api import router as activity_intelligence_router
+from activity_intelligence.services import get_activity_intelligence_service
 
 # === Additional Imports for Initialization ===
 from radio_control.dxbridge import FlexCtl
@@ -108,6 +110,7 @@ def register_all_services():
     app.include_router(solar_router)
     app.include_router(wavelog_log_router)
     app.include_router(ft8_router)
+    app.include_router(activity_intelligence_router)
     
     # Register rotor router and set service instance
     from services.rotator import get_rotator_service
@@ -252,6 +255,11 @@ async def initialize_services():
     )
     
     await init_classifier()  # Async
+    try:
+        context.activity_intelligence = get_activity_intelligence_service()
+        logging.info("✅ Activity Intelligence initialized")
+    except Exception as e:
+        logging.error(f"❌ Activity Intelligence initialization failed: {e}")
     context.background_task_service = configure_background_tasks(
         context,
         broadcast_status,

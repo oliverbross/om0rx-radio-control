@@ -1,7 +1,7 @@
         <!-- Row 1: Buttons centered, sliders below, UTC on right -->
         <div class="control-row" style="flex-wrap: wrap; justify-content: center; position: relative;">
             <!-- Power Button & Title in top left corner -->
-            <div class="power-button-container">
+            <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" class="power-button-container">
                 <button class="app-brand-button" @click="togglePowerMenu" title="Server control: Shutdown or Restart">
                     OM0RX Radio Control
                 </button>

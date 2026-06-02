@@ -38,6 +38,7 @@ class BackgroundTaskService:
     broadcast_status: BroadcastStatus
     broadcast_spots: BroadcastSpots
     tasks: List[asyncio.Task] = field(default_factory=list)
+    rbn_direct_task: Optional[asyncio.Task] = None
 
 
 _service: Optional[BackgroundTaskService] = None
@@ -388,6 +389,12 @@ async def process_cluster_spot(spot_data: dict):
         except Exception as e:
             logger.debug("Could not correlate spot with local decodes: %s", e)
         enrich_spot_intelligence(spot)
+        try:
+            activity_intelligence = getattr(context, "activity_intelligence", None)
+            if activity_intelligence:
+                activity_intelligence.enrich_spot(spot)
+        except Exception:
+            logger.debug("Could not enrich spot with Activity Intelligence", exc_info=True)
 
         # Add to cache (keep last 200 visible rows, aggregating repeated RBL spots)
         spot, was_merged = upsert_live_spot(dx_spots_cache, spot, max_len=200)
@@ -460,6 +467,34 @@ async def poll_dx_spots():
             await asyncio.sleep(30.0)
 
 
+async def poll_activity_intelligence():
+    """Refresh external Activity Intelligence sources without blocking core services."""
+    service = require_background_task_service()
+    context = service.context
+
+    while True:
+        try:
+            activity_intelligence = getattr(context, "activity_intelligence", None)
+            if activity_intelligence:
+                await activity_intelligence.refresh_due_sources(force=False)
+                rbn_settings = activity_intelligence.settings.get("rbn", {})
+                rbn_enabled = rbn_settings.get("enabled", True) and rbn_settings.get("directTelnet", False)
+                if rbn_enabled and (service.rbn_direct_task is None or service.rbn_direct_task.done()):
+                    service.rbn_direct_task = asyncio.create_task(activity_intelligence.run_direct_rbn_telnet())
+                    service.tasks.append(service.rbn_direct_task)
+                    logger.info("✅ Direct RBN telnet task started")
+                elif not rbn_enabled and service.rbn_direct_task and not service.rbn_direct_task.done():
+                    service.rbn_direct_task.cancel()
+                    service.rbn_direct_task = None
+                    logger.info("⏹️ Direct RBN telnet task stopped")
+            await asyncio.sleep(60.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Activity Intelligence refresh loop error: %s", e)
+            await asyncio.sleep(120.0)
+
+
 async def start_background_tasks():
     """Start all background tasks"""
     service = require_background_task_service()
@@ -481,6 +516,11 @@ async def start_background_tasks():
     spots_task = asyncio.create_task(poll_dx_spots())
     tasks.append(spots_task)
     logger.info("✅ Spot cache monitoring started")
+
+    if getattr(service.context, "activity_intelligence", None):
+        activity_task = asyncio.create_task(poll_activity_intelligence())
+        tasks.append(activity_task)
+        logger.info("✅ Activity Intelligence refresh task started")
 
     # Start Wavelog→DuckDB read-cache sync if manager is available
     if service.context.wavelog_sync_manager:

@@ -61,10 +61,33 @@ function Clear-StartupLogs {
     }
 }
 
+function Get-ProtectedProcessIds {
+    $protectedIds = @([int]$PID)
+    $current = Get-CimInstance Win32_Process -Filter "ProcessId = $PID" -ErrorAction SilentlyContinue
+
+    while ($current -and $current.ParentProcessId) {
+        $parentId = [int]$current.ParentProcessId
+        if ($parentId -le 0 -or $protectedIds -contains $parentId) {
+            break
+        }
+
+        $protectedIds += $parentId
+        $current = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
+    }
+
+    return $protectedIds
+}
+
+function Test-ProtectedProcessId {
+    param([int]$ProcessId)
+
+    return (Get-ProtectedProcessIds) -contains $ProcessId
+}
+
 function Stop-ProcessTree {
     param([int]$ProcessId)
 
-    if ($ProcessId -le 0 -or $ProcessId -eq $PID) {
+    if ($ProcessId -le 0 -or (Test-ProtectedProcessId -ProcessId $ProcessId)) {
         return
     }
 
@@ -84,7 +107,7 @@ function Stop-ProcessId {
         [string]$Reason
     )
 
-    if ($ProcessId -le 0 -or $ProcessId -eq $PID) {
+    if ($ProcessId -le 0 -or (Test-ProtectedProcessId -ProcessId $ProcessId)) {
         return
     }
 
@@ -108,16 +131,26 @@ function Stop-ProcessesOnPort {
     }
 }
 
+function Stop-KnownRuntimePorts {
+    $ports = @($BackendPort, 8080, 8081, 8091, 12166, 2237) | Select-Object -Unique
+    foreach ($port in $ports) {
+        Stop-ProcessesOnPort -Port $port
+    }
+}
+
 function Stop-ProjectProcesses {
     $patterns = @("start_all.ps1", "backend.main:app", "sdc-bridge-server.js", "launch_windows.py")
+    $protectedProcessIds = @(Get-ProtectedProcessIds)
 
     $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {
             $commandLine = $_.CommandLine
-            $_.ProcessId -ne $PID -and
+            $protectedProcessIds -notcontains [int]$_.ProcessId -and
             $commandLine -and
-            $commandLine -match [regex]::Escape($ProjectRoot) -and
-            ($patterns | Where-Object { $commandLine -like "*$_*" })
+            (
+                ($commandLine -match [regex]::Escape($ProjectRoot) -and ($patterns | Where-Object { $commandLine -like "*$_*" })) -or
+                $commandLine -like "*backend.main:app*"
+            )
         }
 
     foreach ($process in $processes) {
@@ -127,8 +160,7 @@ function Stop-ProjectProcesses {
 
 function Stop-StaleRuntime {
     Write-Host "🧹 Cleaning stale local runtime processes..." -ForegroundColor Yellow
-    Stop-ProcessesOnPort -Port $BackendPort
-    Stop-ProcessesOnPort -Port 8091
+    Stop-KnownRuntimePorts
     Stop-ProjectProcesses
     Start-Sleep -Seconds 2
 }
@@ -320,8 +352,7 @@ finally {
     Stop-StartedProcess -Process $backendProcess -Name "Backend"
     Stop-StartedProcess -Process $bridgeProcess -Name "Bridge"
     Stop-StartedProcess -Process $launcherProcess -Name "Launcher"
-    Stop-ProcessesOnPort -Port $BackendPort
-    Stop-ProcessesOnPort -Port 8091
+    Stop-KnownRuntimePorts
     Stop-ProjectProcesses
     Clear-LifecycleRequest
     Write-Host "✅ All managed processes stopped" -ForegroundColor Green

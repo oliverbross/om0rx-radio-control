@@ -41,13 +41,35 @@ Write-Host ""
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
 
-# ============= KILL PORT PROCESSES =============
+function Get-ProtectedProcessIds {
+    $protectedIds = @([int]$PID)
+    $current = Get-CimInstance Win32_Process -Filter "ProcessId = $PID" -ErrorAction SilentlyContinue
+
+    while ($current -and $current.ParentProcessId) {
+        $parentId = [int]$current.ParentProcessId
+        if ($parentId -le 0 -or $protectedIds -contains $parentId) {
+            break
+        }
+
+        $protectedIds += $parentId
+        $current = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
+    }
+
+    return $protectedIds
+}
+
+# ============= KILL STALE RUNTIME PROCESSES =============
 Write-Host "🧹 Cleaning up ports..." -ForegroundColor Yellow
-$portsToClean = @(2237, 8091, $BackendPort, 12166)
+$protectedProcessIds = @(Get-ProtectedProcessIds)
+$portsToClean = @(2237, 8091, 12166, $BackendPort, 8080, 8081) | Select-Object -Unique
 foreach ($port in $portsToClean) {
     $processes = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
     if ($processes) {
         foreach ($proc in $processes) {
+            if ($protectedProcessIds -contains [int]$proc) {
+                continue
+            }
+
             try {
                 Stop-Process -Id $proc -Force -ErrorAction SilentlyContinue
                 Write-Host "   ✓ Killed process on port $port (PID: $proc)" -ForegroundColor Green
@@ -55,6 +77,24 @@ foreach ($port in $portsToClean) {
                 # Silent fail
             }
         }
+    }
+}
+
+# Also kill duplicate OM0RX backend processes that may hold DuckDB locks even
+# when they are not bound to the selected backend port.
+$backendProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object {
+        $protectedProcessIds -notcontains [int]$_.ProcessId -and
+        $_.CommandLine -and
+        $_.CommandLine -like "*backend.main:app*"
+    }
+
+foreach ($process in $backendProcesses) {
+    try {
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+        Write-Host "   ✓ Killed stale backend process (PID: $($process.ProcessId))" -ForegroundColor Green
+    } catch {
+        # Silent fail
     }
 }
 

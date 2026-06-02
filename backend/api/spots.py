@@ -34,6 +34,7 @@ class SpotFilterRequest(BaseModel):
     rbl_dedupe_minutes: Optional[int] = None
     max_age_minutes: Optional[int] = None
     sort_by: str = "time"
+    visual_map: bool = False
 
 
 class SpotMaintenanceRepairRequest(BaseModel):
@@ -365,15 +366,26 @@ async def get_spots(
         from radio_control.local_heard import correlate_local_heard
         from services.ft8_service import get_ft8_service
         from radio_control import config as app_config
+        from activity_intelligence.services import get_activity_intelligence_service
 
         decoded_messages = get_ft8_service().get_decoded_messages(limit=100)
+        activity_intelligence = get_activity_intelligence_service()
         for spot in filtered_spots:
             correlate_local_heard(spot, decoded_messages, mycall=getattr(app_config, "MY_STATION", ""))
             enrich_spot_intelligence(spot)
+            activity_intelligence.enrich_spot(spot)
     except Exception:
         logger.debug("Could not enrich cached spots with intelligence fields", exc_info=True)
     
     return {"spots": filtered_spots}
+
+
+@router.get("/api/spots/live-cache")
+async def get_live_spot_cache(request: Request, limit: int = 250):
+    """Return current in-memory spot cache rows without expensive enrichment."""
+    dx_spots_cache = getattr(request.app.state, "dx_spots_cache", [])
+    safe_limit = max(1, min(int(limit or 250), 500))
+    return {"spots": [dict(spot) for spot in dx_spots_cache[:safe_limit]]}
 
 
 @router.get("/api/spots/cty-prefixes")
@@ -572,20 +584,24 @@ async def search_filtered_spots(req: SpotFilterRequest, request: Request):
             sort_by=req.sort_by,
         )
         _enrich_spot_cty_locations(request.app.state, spots)
-        try:
-            from radio_control.local_heard import correlate_local_heard
-            from radio_control.spot_intelligence import enrich_spot_intelligence
-            from services.ft8_service import get_ft8_service
-            from radio_control import config as app_config
+        if not req.visual_map:
+            try:
+                from radio_control.local_heard import correlate_local_heard
+                from radio_control.spot_intelligence import enrich_spot_intelligence
+                from services.ft8_service import get_ft8_service
+                from radio_control import config as app_config
+                from activity_intelligence.services import get_activity_intelligence_service
 
-            decoded_messages = get_ft8_service().get_decoded_messages(limit=100)
-            for spot in spots:
-                correlate_local_heard(spot, decoded_messages, mycall=getattr(app_config, "MY_STATION", ""))
-                enrich_spot_intelligence(spot)
-            if req.sort_by == "score":
-                spots.sort(key=lambda spot: (spot.get("spot_score", 0), spot.get("timestamp", 0)), reverse=True)
-        except Exception:
-            logger.debug("Could not correlate filtered spots with local decodes", exc_info=True)
+                decoded_messages = get_ft8_service().get_decoded_messages(limit=100)
+                activity_intelligence = get_activity_intelligence_service()
+                for spot in spots:
+                    correlate_local_heard(spot, decoded_messages, mycall=getattr(app_config, "MY_STATION", ""))
+                    enrich_spot_intelligence(spot)
+                    activity_intelligence.enrich_spot(spot)
+                if req.sort_by == "score":
+                    spots.sort(key=lambda spot: (spot.get("spot_score", 0), spot.get("timestamp", 0)), reverse=True)
+            except Exception:
+                logger.debug("Could not correlate filtered spots with local decodes", exc_info=True)
         
         logger.debug(f"✓ Filtered search returned {len(spots)} spots (using pre-computed classifications from database)")
         return {"ok": True, "spots": spots, "count": len(spots)}
@@ -678,9 +694,16 @@ async def get_spots_count(request: Request):
 
 
 @router.get("/api/spots/source-stats")
-async def get_spots_source_stats(request: Request):
+async def get_spots_source_stats(request: Request, fast: bool = False):
     """Get live cache and persisted recent source counts for cluster/RBL monitoring."""
     live_stats = _build_live_source_stats(getattr(request.app.state, "dx_spots_cache", []))
+    if fast:
+        return {
+            "ok": True,
+            "live": live_stats,
+            "all_time": live_stats,
+            "windows": [],
+        }
     try:
         from radio_control.spots_logger import get_spots_logger
 

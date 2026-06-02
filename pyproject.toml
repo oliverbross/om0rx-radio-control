@@ -31,7 +31,7 @@ browser = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["backend*", "radio_control*", "services*"]
+include = ["backend*", "radio_control*", "services*", "activity_intelligence*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/smoke"]
