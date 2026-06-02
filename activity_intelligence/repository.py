@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -76,9 +77,7 @@ class _PostgresActivityConnection:
 
     def _translate_sql(self, query: str) -> str:
         sql = query.replace("?", "%s")
-        sql = sql.replace("DOUBLE DEFAULT", "DOUBLE PRECISION DEFAULT")
-        sql = sql.replace(" DOUBLE,", " DOUBLE PRECISION,")
-        sql = sql.replace(" DOUBLE\n", " DOUBLE PRECISION\n")
+        sql = re.sub(r"\bDOUBLE\b", "DOUBLE PRECISION", sql)
         sql = sql.replace("INSERT OR IGNORE INTO ai_raw_source_payloads", "INSERT INTO ai_raw_source_payloads")
         if "INSERT INTO ai_raw_source_payloads" in sql and "ON CONFLICT" not in sql:
             sql += " ON CONFLICT (source_id, content_hash) DO NOTHING"

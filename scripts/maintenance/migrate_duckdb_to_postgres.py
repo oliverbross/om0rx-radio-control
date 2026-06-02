@@ -132,6 +132,7 @@ def _copy_rows(
             print(f"{table}: {len(missing)} missing legacy columns will be imported as NULL")
 
         select_exprs = [column if column in available else f"NULL AS {column}" for column in columns]
+        order_column = "id" if "id" in available else "received_at" if "received_at" in available else columns[0]
         total = int(source.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
         if total <= 0:
             print(f"skip {table}: no rows")
@@ -155,7 +156,7 @@ def _copy_rows(
                         f"""
                         SELECT {", ".join(select_exprs)}
                         FROM {table}
-                        ORDER BY id
+                        ORDER BY {order_column}
                         LIMIT ? OFFSET ?
                         """,
                         [batch_size, offset],
