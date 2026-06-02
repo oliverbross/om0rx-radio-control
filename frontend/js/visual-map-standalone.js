@@ -34,7 +34,7 @@
     }
 
     async function loadTemplate() {
-        const response = await fetch('templates/dx-spots.html?v=20260602-visual-map-cache-fix', {
+        const response = await fetch('templates/dx-spots.html?v=20260602-postgres-layout-fix', {
             cache: 'no-store',
         });
         if (!response.ok) {

@@ -1413,9 +1413,10 @@
             display: flex;
             gap: 8px;
             margin-bottom: 8px;
-            align-items: center;
+            align-items: flex-start;
             flex-wrap: wrap;
             flex: 0 0 auto;
+            overflow: visible;
         }
         
         .detach-btn {
@@ -1624,19 +1625,24 @@
             flex-wrap: wrap;
             align-items: center;
             flex: 1 1 620px;
-            min-width: 420px;
+            min-width: min(100%, 280px);
             margin: 0;
         }
 
         .spots-actions-bar {
             display: flex;
             align-items: center;
-            justify-content: flex-end;
+            justify-content: flex-start;
             gap: 6px;
-            flex: 0 1 auto;
+            flex: 1 1 100%;
             flex-wrap: wrap;
             min-width: 0;
-            margin-left: auto;
+            margin-left: 0;
+            overflow: visible;
+        }
+
+        .spots-actions-bar .filter-dropdown {
+            flex: 0 0 auto;
         }
         
         .filter-dropdown {
@@ -2669,6 +2675,26 @@
             white-space: nowrap;
         }
 
+        .datastore-badge {
+            display: inline-flex;
+            align-items: center;
+            min-height: 24px;
+            padding: 4px 8px;
+            border: 1px solid #475569;
+            border-radius: 4px;
+            background: #1f2937;
+            color: #dbeafe;
+            font-size: 10px;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
+        .datastore-badge.postgres {
+            border-color: #059669;
+            background: #0d2f25;
+            color: #a7f3d0;
+        }
+
         .rbl-dropdown-menu {
             min-width: 230px;
         }
@@ -2894,11 +2920,12 @@
         .rbl-monitor-strip {
             display: flex;
             align-items: center;
+            flex-wrap: wrap;
             gap: 7px;
             padding: 7px 14px;
             background: #1b1d20;
             border-bottom: 1px solid #3d3520;
-            overflow-x: auto;
+            overflow: visible;
             min-height: 42px;
         }
 
@@ -2955,6 +2982,7 @@
             align-items: center;
             gap: 6px;
             min-width: 0;
+            flex-wrap: wrap;
         }
 
         .rbl-band-btn {

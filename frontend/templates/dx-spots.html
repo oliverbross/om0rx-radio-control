@@ -230,6 +230,12 @@
                 <!-- Spots View: Stats and Actions -->
                 <div v-if="viewMode === 'spots' || viewMode === 'visual'" class="spots-actions-bar">
                 <span class="spots-source-counter">{{ getSpotSourceCounterText() }}</span>
+                <span
+                    v-if="getDatastoreBadgeText()"
+                    :class="['datastore-badge', { postgres: getDatastoreBadgeText() === 'PostgreSQL' }]"
+                    :title="getDatastoreBadgeTitle()">
+                    DB {{ getDatastoreBadgeText() }}
+                </span>
                 <div class="filter-dropdown">
                     <button @click="toggleDropdown('presets')" class="filter-btn">
                         Presets ▼

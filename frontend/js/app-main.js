@@ -2256,6 +2256,24 @@ function mountVueApp() {
             return parts.join(' - ');
         },
 
+        getDatastoreService() {
+            const services = this.serviceHealth && Array.isArray(this.serviceHealth.services)
+                ? this.serviceHealth.services
+                : [];
+            return services.find(service => service.id === 'datastore') || null;
+        },
+
+        getDatastoreBadgeText() {
+            const service = this.getDatastoreService();
+            return service && service.value ? service.value : '';
+        },
+
+        getDatastoreBadgeTitle() {
+            const service = this.getDatastoreService();
+            if (!service) return 'Database backend status is loading';
+            return this.serviceHealthPillTitle(service);
+        },
+
         async handleServiceHealthClick(service) {
             if (!service || !service.action) return;
 
