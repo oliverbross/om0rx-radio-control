@@ -371,6 +371,7 @@
                             <button @click="resetVisualGlobeView" class="visual-icon-btn" title="Reset globe">Reset</button>
                         </div>
                         <span class="visual-stat-pill">{{ getVisualSpotStats().plotted }} plotted</span>
+                        <span class="visual-stat-pill">{{ getVisualSpotStats().paths }} paths</span>
                         <span class="visual-stat-pill">{{ getVisualSpotStats().hidden }} without location</span>
                         <span v-if="visualMapMode === 'polar'" class="visual-stat-pill">Radius {{ getVisualMapRadiusKm().toLocaleString() }} km</span>
                         <span v-if="visualMapMode === 'globe'" class="visual-stat-pill">{{ getVisualOverlaySummary() }}</span>
@@ -389,14 +390,26 @@
                         </div>
                         <div class="visual-map-card">
                             <div v-if="visualMapMode === 'globe'" class="visual-globe-wrap">
+                                <canvas ref="visualGlobeBaseCanvas"
+                                        class="visual-globe-canvas visual-globe-layer visual-globe-base-layer"
+                                        aria-hidden="true"></canvas>
+                                <canvas ref="visualGlobePathCanvas"
+                                        class="visual-globe-canvas visual-globe-layer visual-globe-path-layer"
+                                        aria-hidden="true"></canvas>
                                 <canvas ref="visualGlobeCanvas"
-                                        class="visual-globe-canvas"
+                                        class="visual-globe-canvas visual-globe-layer visual-globe-marker-layer"
                                         @wheel.prevent="onVisualGlobeWheel"
                                         @mousedown="startVisualGlobeDrag"
-                                        @mousemove="moveVisualGlobeDrag"
+                                        @mousemove="onVisualGlobeMouseMove"
                                         @mouseup="endVisualGlobeDrag"
                                         @mouseleave="endVisualGlobeDrag"
                                         @click="focusVisualGlobeClick"></canvas>
+                                <div v-if="visualGlobeHover"
+                                     class="visual-globe-tooltip"
+                                     :style="{ left: visualGlobeHover.x + 'px', top: visualGlobeHover.y + 'px' }">
+                                    <strong>{{ visualGlobeHover.title }}</strong>
+                                    <span v-for="line in visualGlobeHover.lines" :key="line">{{ line }}</span>
+                                </div>
                                 <div v-if="visualTopoLoading" class="visual-globe-status">Loading countries...</div>
                                 <div v-if="visualTopoError" class="visual-globe-status error">{{ visualTopoError }}</div>
                             </div>
@@ -465,6 +478,11 @@
                             <div class="visual-legend">
                                 <span v-for="band in getVisualLegendBands()" :key="band">
                                     <i :style="{ backgroundColor: getVisualBandColor(band) }"></i>{{ band }}
+                                </span>
+                            </div>
+                            <div v-if="getVisualPathLegendItems().length" class="visual-path-legend">
+                                <span v-for="item in getVisualPathLegendItems()" :key="item.group">
+                                    <i :style="{ backgroundColor: item.color }"></i>{{ item.group }} paths
                                 </span>
                             </div>
                             <div class="visual-overlay-breakdown">

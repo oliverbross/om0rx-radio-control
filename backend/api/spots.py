@@ -107,6 +107,35 @@ def _spot_has_valid_coordinate(spot: Dict[str, Any], keys: List[str], limit: flo
     )
 
 
+def _clean_spotter_callsign(callsign: Any) -> str:
+    value = str(callsign or "").strip().upper()
+    if not value:
+        return ""
+    value = value.split()[0]
+    value = value.split("#", 1)[0]
+    if "-" in value:
+        value = value.split("-", 1)[0]
+    return "".join(ch for ch in value if ch.isalnum() or ch == "/")
+
+
+def _cty_location_payload(callsign: str, info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    latitude = info.get("latitude")
+    longitude = info.get("longitude")
+    if not (_coordinate_is_valid(latitude, 90) and _coordinate_is_valid(longitude, 180)):
+        return None
+    return {
+        "callsign": callsign,
+        "country": info.get("country"),
+        "dxcc": info.get("dxcc"),
+        "cq": info.get("cq"),
+        "itu": info.get("itu"),
+        "continent": info.get("continent"),
+        "latitude": latitude,
+        "longitude": longitude,
+        "location_source": "cty_prefix",
+    }
+
+
 def _enrich_spot_cty_locations(app_state: Any, spots: List[Dict[str, Any]], max_lookups: int = 500) -> None:
     """Add CTY-prefix country, zone, and approximate entity coordinates when absent."""
     cty_resolver = getattr(app_state, "cty_resolver", None)
@@ -115,21 +144,28 @@ def _enrich_spot_cty_locations(app_state: Any, spots: List[Dict[str, Any]], max_
 
     cache: Dict[str, Dict[str, Any]] = {}
     lookups = 0
-    for spot in spots or []:
-        callsign = (spot.get("callsign") or "").strip().upper()
+
+    def resolve_callsign(raw_callsign: Any) -> tuple[str, Dict[str, Any]]:
+        nonlocal lookups
+        callsign = _clean_spotter_callsign(raw_callsign)
         if not callsign:
-            continue
+            return "", {}
         if callsign not in cache:
             if lookups >= max_lookups:
-                continue
+                return callsign, {}
             try:
                 cache[callsign] = cty_resolver.lookup(callsign) or {}
             except Exception:
                 logger.debug("CTY enrichment lookup failed for %s", callsign, exc_info=True)
                 cache[callsign] = {}
             lookups += 1
+        return callsign, cache.get(callsign) or {}
 
-        info = cache.get(callsign) or {}
+    for spot in spots or []:
+        callsign = (spot.get("callsign") or "").strip().upper()
+        if not callsign:
+            continue
+        _, info = resolve_callsign(callsign)
         if not info:
             continue
 
@@ -152,6 +188,34 @@ def _enrich_spot_cty_locations(app_state: Any, spots: List[Dict[str, Any]], max_
             spot["longitude"] = info.get("longitude")
         if (not has_lat or not has_lon) and spot.get("latitude") is not None and spot.get("longitude") is not None:
             spot.setdefault("location_source", "cty_prefix")
+
+        raw_spotters: List[Any] = []
+        if spot.get("aggregate_spotters") and isinstance(spot.get("aggregate_spotters"), list):
+            raw_spotters.extend(spot.get("aggregate_spotters")[:8])
+        for key in ("spotter", "dx_de", "dxde", "spotter_call"):
+            if spot.get(key):
+                raw_spotters.append(spot.get(key))
+
+        spotter_locations: List[Dict[str, Any]] = []
+        seen_spotters: set[str] = set()
+        for raw_spotter in raw_spotters:
+            spotter_call, spotter_info = resolve_callsign(raw_spotter)
+            if not spotter_call or spotter_call in seen_spotters:
+                continue
+            seen_spotters.add(spotter_call)
+            payload = _cty_location_payload(spotter_call, spotter_info)
+            if payload:
+                spotter_locations.append(payload)
+
+        if spotter_locations:
+            primary = spotter_locations[0]
+            spot["spotter_callsign"] = primary["callsign"]
+            spot["spotter_country"] = primary.get("country")
+            spot["spotter_latitude"] = primary.get("latitude")
+            spot["spotter_longitude"] = primary.get("longitude")
+            spot["spotter_cq"] = primary.get("cq")
+            spot["spotter_itu"] = primary.get("itu")
+            spot["spotter_locations"] = spotter_locations
 
 
 async def _refresh_uncertain_spot_classifications(

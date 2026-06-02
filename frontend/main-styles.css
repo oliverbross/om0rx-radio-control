@@ -1718,8 +1718,58 @@
             touch-action: none;
         }
 
+        .visual-globe-layer {
+            position: absolute;
+            inset: 0;
+        }
+
+        .visual-globe-base-layer,
+        .visual-globe-path-layer {
+            pointer-events: none;
+        }
+
+        .visual-globe-marker-layer {
+            position: relative;
+            z-index: 3;
+        }
+
         .visual-globe-canvas:active {
             cursor: grabbing;
+        }
+
+        .visual-globe-tooltip {
+            position: absolute;
+            z-index: 5;
+            max-width: 230px;
+            transform: translate(10px, 10px);
+            padding: 7px 8px;
+            background: rgba(8, 13, 20, 0.92);
+            border: 1px solid rgba(148, 163, 184, 0.55);
+            border-radius: 5px;
+            box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+            color: #dbeafe;
+            font-size: 10px;
+            line-height: 1.35;
+            pointer-events: none;
+        }
+
+        .visual-globe-tooltip strong,
+        .visual-globe-tooltip span {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .visual-globe-tooltip strong {
+            color: #f8fafc;
+            font-size: 11px;
+            font-weight: 900;
+        }
+
+        .visual-globe-tooltip span {
+            color: #bfdbfe;
+            font-weight: 700;
         }
 
         .visual-globe-status {
@@ -1824,7 +1874,7 @@
 
         .visual-side-panel {
             display: grid;
-            grid-template-rows: auto auto 1fr;
+            grid-template-rows: auto auto auto 1fr;
             gap: 8px;
             min-width: 0;
             min-height: 420px;
@@ -1855,6 +1905,33 @@
             height: 9px;
             border-radius: 50%;
             border: 1px solid rgba(255, 255, 255, 0.35);
+        }
+
+        .visual-path-legend {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+            padding: 7px 8px;
+            background: #131b24;
+            border: 1px solid #2d3b4b;
+            border-radius: 6px;
+        }
+
+        .visual-path-legend span {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            color: #cbd5e1;
+            font-size: 10px;
+            font-weight: 800;
+        }
+
+        .visual-path-legend i {
+            width: 18px;
+            height: 3px;
+            border-radius: 999px;
+            box-shadow: 0 0 6px rgba(255, 255, 255, 0.24);
         }
 
         .visual-overlay-breakdown {

@@ -92,6 +92,20 @@ const dxSpotsData = {
     visualGlobeDrawPending: false,
     visualGlobeRefreshTimer: null,
     visualGlobeVisibleMarkers: [],
+    visualGlobeVisiblePaths: [],
+    visualGlobeHover: null,
+    visualOverlayPalette: [
+        'rgba(121, 201, 176, 0.58)',
+        'rgba(245, 184, 100, 0.56)',
+        'rgba(132, 190, 236, 0.56)',
+        'rgba(228, 136, 170, 0.54)',
+        'rgba(168, 203, 103, 0.56)',
+        'rgba(195, 157, 225, 0.55)',
+        'rgba(239, 155, 117, 0.54)',
+        'rgba(116, 205, 211, 0.54)',
+        'rgba(221, 203, 112, 0.56)',
+        'rgba(151, 183, 239, 0.55)',
+    ],
     visualCtyEntries: [],
     visualCtyLoading: false,
     visualCtyReady: false,
@@ -2302,6 +2316,50 @@ const dxSpotsMethods = {
         return this.visualTopoCountryIndex[key] || null;
     },
 
+    cleanVisualCallsign(callsign) {
+        let value = String(callsign || '').toUpperCase().trim();
+        if (!value) return '';
+        value = value.split(/\s+/)[0].split('#')[0].split('-')[0];
+        return value.replace(/[^A-Z0-9/]/g, '');
+    },
+
+    hashVisualString(value) {
+        return String(value || '').split('').reduce((hash, char) => (
+            ((hash << 5) - hash + char.charCodeAt(0)) | 0
+        ), 0);
+    },
+
+    getVisualModeGroup(spot) {
+        const mode = String((spot && spot.mode) || '').toUpperCase();
+        const rblMode = String((spot && spot.rbl_mode_group) || '').toUpperCase();
+        if (mode.includes('CW') || rblMode === 'CW') return 'CW';
+        if (mode.includes('SSB') || mode === 'USB' || mode === 'LSB' || rblMode === 'SSB') return 'SSB';
+        if (mode.includes('FT') || mode.includes('DIG') || mode.includes('RTTY') || mode.includes('PSK') || rblMode === 'DIGI') return 'DIGI';
+        return 'OTHER';
+    },
+
+    getVisualModeColor(spot) {
+        const colors = {
+            CW: '#f6c85f',
+            SSB: '#6bb6ff',
+            DIGI: '#7dd3c7',
+            OTHER: '#c4b5fd',
+        };
+        return colors[this.getVisualModeGroup(spot)] || colors.OTHER;
+    },
+
+    getVisualCountryPaletteColor(countryKey, stat, featureName = '') {
+        const palette = this.visualOverlayPalette || [];
+        if (palette.length === 0) return 'rgba(121, 201, 176, 0.58)';
+        const dxccSeed = Number(stat && stat.dxcc) || 0;
+        const cqSeed = stat && stat.cqZones && stat.cqZones.size ? Number([...stat.cqZones][0]) : 0;
+        const centroid = this.getVisualTopoCountryInfo(featureName || countryKey);
+        const latBin = centroid ? Math.round(Number(centroid.latitude) / 8) : 0;
+        const lonBin = centroid ? Math.round(Number(centroid.longitude) / 12) : 0;
+        const hash = Math.abs(this.hashVisualString(`${countryKey}:${dxccSeed}:${cqSeed}:${latBin}:${lonBin}`) + latBin * 7 + lonBin * 11);
+        return palette[hash % palette.length];
+    },
+
     getVisualFeatureName(feature) {
         const properties = feature && feature.properties ? feature.properties : {};
         return properties.name || properties.NAME || properties.admin || properties.ADMIN || properties.sovereignt || properties.SOVEREIGNT || '';
@@ -2329,11 +2387,13 @@ const dxSpotsMethods = {
                     ituZones: new Set(),
                     rbl: 0,
                     cluster: 0,
+                    dxcc: spot.dxcc || null,
                 });
             }
             const item = stats.get(countryKey);
             item.count += 1;
             item.topScore = Math.max(item.topScore, this.getSpotScore(spot));
+            if (!item.dxcc && spot.dxcc) item.dxcc = spot.dxcc;
             if (spot.dxcc_status) item.dxccStatuses.add(spot.dxcc_status);
             if (spot.call_status) item.callStatuses.add(spot.call_status);
             const cq = this.getVisualZone(spot, 'cq');
@@ -2401,25 +2461,23 @@ const dxSpotsMethods = {
             .slice(0, 10);
     },
 
-    getVisualOverlayColor(stat) {
-        if (!stat) return 'rgba(23, 35, 49, 0.78)';
+    getVisualOverlayColor(stat, featureName = '') {
+        if (!stat) return 'rgba(28, 39, 51, 0.62)';
         if (this.visualOverlayMode === 'cq') {
             const first = Number([...stat.cqZones][0] || 0);
-            return this.getVisualZoneColor(first || stat.topScore, 40);
+            return this.getVisualZoneColor(first || stat.topScore, 40, 0.50);
         }
         if (this.visualOverlayMode === 'itu') {
             const first = Number([...stat.ituZones][0] || 0);
-            return this.getVisualZoneColor(first || stat.topScore, 90);
+            return this.getVisualZoneColor(first || stat.topScore, 90, 0.50);
         }
-        if (stat.dxccStatuses.has('ATNO') || stat.topScore >= 80) return 'rgba(239, 68, 68, 0.62)';
-        if ([...stat.dxccStatuses].some(status => String(status).includes('New'))) return 'rgba(56, 189, 248, 0.52)';
-        if (stat.topScore >= 55) return 'rgba(245, 158, 11, 0.50)';
-        return 'rgba(34, 197, 94, 0.34)';
+        const countryKey = this.normalizeVisualCountryName(featureName);
+        return this.getVisualCountryPaletteColor(countryKey, stat, featureName);
     },
 
-    getVisualZoneColor(value, maxValue) {
-        const hue = Math.round((Number(value || 0) / Math.max(1, maxValue)) * 300);
-        return `hsla(${hue}, 78%, 56%, 0.48)`;
+    getVisualZoneColor(value, maxValue, alpha = 0.48) {
+        const hue = Math.round((Number(value || 0) / Math.max(1, maxValue)) * 280 + 25);
+        return `hsla(${hue}, 70%, 62%, ${alpha})`;
     },
 
     projectVisualGlobe(lon, lat, width, height) {
@@ -2437,6 +2495,55 @@ const dxSpotsMethods = {
             visible: cosc >= 0,
             cosc,
         };
+    },
+
+    interpolateVisualGreatCircle(from, to, steps = 28) {
+        const lat1 = this.toRadians(from.lat);
+        const lon1 = this.toRadians(from.lon);
+        const lat2 = this.toRadians(to.lat);
+        const lon2 = this.toRadians(to.lon);
+        const delta = 2 * Math.asin(Math.sqrt(
+            Math.sin((lat2 - lat1) / 2) ** 2 +
+            Math.cos(lat1) * Math.cos(lat2) * Math.sin((lon2 - lon1) / 2) ** 2,
+        ));
+        if (!Number.isFinite(delta) || delta < 0.00001) return [from, to];
+
+        const points = [];
+        for (let i = 0; i <= steps; i += 1) {
+            const fraction = i / steps;
+            const a = Math.sin((1 - fraction) * delta) / Math.sin(delta);
+            const b = Math.sin(fraction * delta) / Math.sin(delta);
+            const x = a * Math.cos(lat1) * Math.cos(lon1) + b * Math.cos(lat2) * Math.cos(lon2);
+            const y = a * Math.cos(lat1) * Math.sin(lon1) + b * Math.cos(lat2) * Math.sin(lon2);
+            const z = a * Math.sin(lat1) + b * Math.sin(lat2);
+            const lat = Math.atan2(z, Math.sqrt(x * x + y * y)) * 180 / Math.PI;
+            const lon = Math.atan2(y, x) * 180 / Math.PI;
+            points.push({ lat, lon });
+        }
+        return points;
+    },
+
+    drawVisualGreatCircle(ctx, path, width, height) {
+        const points = this.interpolateVisualGreatCircle(path.from, path.to, 34)
+            .map(point => this.projectVisualGlobe(point.lon, point.lat, width, height));
+        let drawing = false;
+        const screenPoints = [];
+        ctx.beginPath();
+        points.forEach(point => {
+            if (!point || !point.visible) {
+                drawing = false;
+                return;
+            }
+            screenPoints.push({ x: point.x, y: point.y });
+            if (!drawing) {
+                ctx.moveTo(point.x, point.y);
+                drawing = true;
+            } else {
+                ctx.lineTo(point.x, point.y);
+            }
+        });
+        ctx.stroke();
+        return screenPoints;
     },
 
     drawVisualGeometryPath(ctx, geometry, width, height) {
@@ -2509,50 +2616,98 @@ const dxSpotsMethods = {
     },
 
     async drawVisualGlobe() {
-        const canvas = this.$refs ? this.$refs.visualGlobeCanvas : null;
-        if (!canvas) return;
+        const markerCanvas = this.$refs ? this.$refs.visualGlobeCanvas : null;
+        const baseCanvas = this.$refs ? this.$refs.visualGlobeBaseCanvas : null;
+        const pathCanvas = this.$refs ? this.$refs.visualGlobePathCanvas : null;
+        if (!markerCanvas) return;
         await this.ensureVisualTopoFeatures();
 
-        const rect = canvas.getBoundingClientRect();
+        const rect = markerCanvas.getBoundingClientRect();
         const ratio = window.devicePixelRatio || 1;
         const width = Math.max(320, Math.floor(rect.width || 900));
         const height = Math.max(320, Math.floor(rect.height || 520));
-        if (canvas.width !== Math.floor(width * ratio) || canvas.height !== Math.floor(height * ratio)) {
-            canvas.width = Math.floor(width * ratio);
-            canvas.height = Math.floor(height * ratio);
-        }
+        const canvases = [baseCanvas, pathCanvas, markerCanvas].filter(Boolean);
+        canvases.forEach(canvas => {
+            if (canvas.width !== Math.floor(width * ratio) || canvas.height !== Math.floor(height * ratio)) {
+                canvas.width = Math.floor(width * ratio);
+                canvas.height = Math.floor(height * ratio);
+            }
+        });
 
-        const ctx = canvas.getContext('2d');
-        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-        ctx.clearRect(0, 0, width, height);
+        const baseCtx = (baseCanvas || markerCanvas).getContext('2d');
+        const pathCtx = (pathCanvas || markerCanvas).getContext('2d');
+        const markerCtx = markerCanvas.getContext('2d');
+        [baseCtx, pathCtx, markerCtx].forEach(ctx => {
+            ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+            ctx.clearRect(0, 0, width, height);
+        });
 
         const centerX = width / 2;
         const centerY = height / 2;
         const radius = Math.min(width, height) * 0.46 * Number(this.visualGlobeZoom || 1);
         const overlayStats = this.buildVisualOverlayStats();
 
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-        ctx.clip();
-        const gradient = ctx.createRadialGradient(centerX - radius * 0.28, centerY - radius * 0.30, radius * 0.05, centerX, centerY, radius);
+        baseCtx.save();
+        baseCtx.beginPath();
+        baseCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        baseCtx.clip();
+        const gradient = baseCtx.createRadialGradient(centerX - radius * 0.28, centerY - radius * 0.30, radius * 0.05, centerX, centerY, radius);
         gradient.addColorStop(0, '#20384a');
         gradient.addColorStop(1, '#071018');
-        ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, width, height);
-        this.drawVisualGraticule(ctx, width, height);
+        baseCtx.fillStyle = gradient;
+        baseCtx.fillRect(0, 0, width, height);
+        this.drawVisualGraticule(baseCtx, width, height);
 
         this.visualTopoFeatures.forEach(feature => {
             const name = this.getVisualFeatureName(feature);
             const stat = overlayStats.get(this.normalizeVisualCountryName(name));
-            ctx.beginPath();
-            this.drawVisualGeometryPath(ctx, feature.geometry, width, height);
-            ctx.fillStyle = this.getVisualOverlayColor(stat);
-            ctx.strokeStyle = stat ? 'rgba(226, 232, 240, 0.48)' : 'rgba(100, 116, 139, 0.42)';
-            ctx.lineWidth = stat ? 0.9 : 0.55;
-            ctx.fill();
-            ctx.stroke();
+            baseCtx.beginPath();
+            this.drawVisualGeometryPath(baseCtx, feature.geometry, width, height);
+            baseCtx.fillStyle = this.getVisualOverlayColor(stat, name);
+            baseCtx.strokeStyle = stat ? 'rgba(241, 245, 249, 0.52)' : 'rgba(113, 128, 150, 0.34)';
+            baseCtx.lineWidth = stat ? 0.9 : 0.55;
+            baseCtx.fill();
+            baseCtx.stroke();
         });
+        baseCtx.restore();
+
+        pathCtx.save();
+        pathCtx.beginPath();
+        pathCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        pathCtx.clip();
+        const visiblePaths = [];
+        this.getVisualSpotPathItems().forEach(path => {
+            pathCtx.save();
+            pathCtx.strokeStyle = path.color;
+            pathCtx.globalAlpha = Math.min(0.82, 0.24 + Math.max(0, path.score) / 140);
+            pathCtx.lineWidth = path.score >= 80 ? 2.1 : path.score >= 55 ? 1.65 : 1.15;
+            if ((path.spot.spot_source || 'cluster') === 'rbl') {
+                pathCtx.setLineDash([5, 4]);
+            } else {
+                pathCtx.setLineDash([]);
+            }
+            const screenPoints = this.drawVisualGreatCircle(pathCtx, path, width, height);
+            pathCtx.restore();
+            if (screenPoints.length > 1) {
+                visiblePaths.push({ ...path, points: screenPoints });
+            }
+
+            const fromPoint = this.projectVisualGlobe(path.from.lon, path.from.lat, width, height);
+            if (fromPoint && fromPoint.visible) {
+                pathCtx.save();
+                pathCtx.globalAlpha = 0.86;
+                pathCtx.beginPath();
+                pathCtx.arc(fromPoint.x, fromPoint.y, 2.6, 0, Math.PI * 2);
+                pathCtx.fillStyle = path.color;
+                pathCtx.strokeStyle = '#071018';
+                pathCtx.lineWidth = 1;
+                pathCtx.fill();
+                pathCtx.stroke();
+                pathCtx.restore();
+            }
+        });
+        this.visualGlobeVisiblePaths = visiblePaths;
+        pathCtx.restore();
 
         const visibleMarkers = [];
         this.getVisualRawSpotItems().slice(0, 180).forEach(item => {
@@ -2561,47 +2716,51 @@ const dxSpotsMethods = {
             visibleMarkers.push({ ...item, point });
         });
 
+        markerCtx.save();
+        markerCtx.beginPath();
+        markerCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        markerCtx.clip();
         visibleMarkers.forEach(item => {
             const spot = item.spot;
             const score = this.getSpotScore(spot);
             const markerRadius = score >= 80 ? 6 : score >= 55 ? 5 : 4;
-            ctx.beginPath();
-            ctx.arc(item.point.x, item.point.y, markerRadius, 0, Math.PI * 2);
-            ctx.fillStyle = this.getVisualBandColor(spot.band);
-            ctx.strokeStyle = (spot.spot_source || 'cluster') === 'rbl' ? '#fbbf24' : '#f8fafc';
-            ctx.lineWidth = this.isVisualSpotSelected(spot) ? 3 : 1.6;
-            ctx.fill();
-            ctx.stroke();
+            markerCtx.beginPath();
+            markerCtx.arc(item.point.x, item.point.y, markerRadius, 0, Math.PI * 2);
+            markerCtx.fillStyle = this.getVisualBandColor(spot.band);
+            markerCtx.strokeStyle = (spot.spot_source || 'cluster') === 'rbl' ? '#fbbf24' : '#f8fafc';
+            markerCtx.lineWidth = this.isVisualSpotSelected(spot) ? 3 : 1.6;
+            markerCtx.fill();
+            markerCtx.stroke();
 
             const zone = this.getVisualZone(spot, this.visualOverlayMode);
             if (score >= 80 || spot.local_heard || zone) {
-                ctx.font = '700 10px system-ui, sans-serif';
-                ctx.fillStyle = '#f8fafc';
-                ctx.strokeStyle = '#071018';
-                ctx.lineWidth = 3;
+                markerCtx.font = '700 10px system-ui, sans-serif';
+                markerCtx.fillStyle = '#f8fafc';
+                markerCtx.strokeStyle = '#071018';
+                markerCtx.lineWidth = 3;
                 const label = zone && this.visualOverlayMode !== 'dxcc' ? `${spot.callsign} z${zone}` : spot.callsign;
-                ctx.strokeText(label, item.point.x + 7, item.point.y - 7);
-                ctx.fillText(label, item.point.x + 7, item.point.y - 7);
+                markerCtx.strokeText(label, item.point.x + 7, item.point.y - 7);
+                markerCtx.fillText(label, item.point.x + 7, item.point.y - 7);
             }
         });
         this.visualGlobeVisibleMarkers = visibleMarkers;
-        ctx.restore();
+        markerCtx.restore();
 
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(191, 219, 254, 0.45)';
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        ctx.fillStyle = '#bbf7d0';
-        ctx.font = '800 11px system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(`Globe · ${this.visualOverlayMode.toUpperCase()} · drag to rotate · wheel to zoom`, centerX, height - 12);
-        ctx.restore();
+        markerCtx.save();
+        markerCtx.beginPath();
+        markerCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        markerCtx.strokeStyle = 'rgba(191, 219, 254, 0.45)';
+        markerCtx.lineWidth = 1.5;
+        markerCtx.stroke();
+        markerCtx.fillStyle = '#bbf7d0';
+        markerCtx.font = '800 11px system-ui, sans-serif';
+        markerCtx.textAlign = 'center';
+        markerCtx.fillText(`Globe · ${this.visualOverlayMode.toUpperCase()} · drag to rotate · wheel to zoom`, centerX, height - 12);
+        markerCtx.restore();
     },
 
     zoomVisualGlobe(factor) {
-        this.visualGlobeZoom = Math.max(0.72, Math.min(2.2, Number(this.visualGlobeZoom || 1) * Number(factor || 1)));
+        this.visualGlobeZoom = Math.max(0.55, Math.min(5.5, Number(this.visualGlobeZoom || 1) * Number(factor || 1)));
         this.queueVisualGlobeDraw();
     },
 
@@ -2612,7 +2771,7 @@ const dxSpotsMethods = {
     },
 
     onVisualGlobeWheel(event) {
-        this.zoomVisualGlobe(event.deltaY < 0 ? 1.12 : 0.89);
+        this.zoomVisualGlobe(event.deltaY < 0 ? 1.18 : 0.85);
     },
 
     startVisualGlobeDrag(event) {
@@ -2629,25 +2788,108 @@ const dxSpotsMethods = {
         if (!this.visualGlobeDragging || !this.visualGlobeDragStart) return;
         const dx = event.clientX - this.visualGlobeDragStart.x;
         const dy = event.clientY - this.visualGlobeDragStart.y;
+        const zoom = Math.max(0.75, Number(this.visualGlobeZoom || 1));
         this.visualGlobeRotation = {
-            lon: this.visualGlobeDragStart.lon - dx * 0.35,
-            lat: Math.max(-75, Math.min(75, this.visualGlobeDragStart.lat + dy * 0.25)),
+            lon: this.visualGlobeDragStart.lon - (dx * 0.35) / zoom,
+            lat: Math.max(-75, Math.min(75, this.visualGlobeDragStart.lat + (dy * 0.25) / zoom)),
         };
         this.queueVisualGlobeDraw();
+    },
+
+    onVisualGlobeMouseMove(event) {
+        if (this.visualGlobeDragging) {
+            this.moveVisualGlobeDrag(event);
+            return;
+        }
+        this.updateVisualGlobeHover(event);
     },
 
     endVisualGlobeDrag() {
         this.visualGlobeDragging = false;
         this.visualGlobeDragStart = null;
+        this.visualGlobeHover = null;
+    },
+
+    distanceToVisualSegment(point, a, b) {
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        if (dx === 0 && dy === 0) return Math.hypot(point.x - a.x, point.y - a.y);
+        const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / (dx * dx + dy * dy)));
+        return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
+    },
+
+    getNearestVisualPath(point) {
+        return (this.visualGlobeVisiblePaths || [])
+            .map(path => {
+                let distance = Infinity;
+                for (let i = 1; i < path.points.length; i += 1) {
+                    distance = Math.min(distance, this.distanceToVisualSegment(point, path.points[i - 1], path.points[i]));
+                }
+                return { path, distance };
+            })
+            .sort((a, b) => a.distance - b.distance)[0];
+    },
+
+    getVisualEventPoint(event) {
+        const canvas = this.$refs ? this.$refs.visualGlobeCanvas : null;
+        if (!canvas) return null;
+        const rect = canvas.getBoundingClientRect();
+        return {
+            x: event.clientX - rect.left,
+            y: event.clientY - rect.top,
+        };
+    },
+
+    updateVisualGlobeHover(event) {
+        const point = this.getVisualEventPoint(event);
+        if (!point) return;
+        const nearestMarker = (this.visualGlobeVisibleMarkers || [])
+            .map(item => ({
+                item,
+                distance: Math.hypot(item.point.x - point.x, item.point.y - point.y),
+            }))
+            .sort((a, b) => a.distance - b.distance)[0];
+        if (nearestMarker && nearestMarker.distance <= 14) {
+            const spot = nearestMarker.item.spot || {};
+            const source = (spot.spot_source || 'cluster') === 'rbl' ? 'RBL' : 'Cluster';
+            this.visualGlobeHover = {
+                x: point.x,
+                y: point.y,
+                title: `${spot.callsign || '-'} ${spot.band || ''} ${spot.mode || ''}`.trim(),
+                lines: [
+                    `${source} · score ${this.getSpotScore(spot)}`,
+                    `${spot.country || '-'} · CQ ${this.getVisualZone(spot, 'cq') || '-'} · ITU ${this.getVisualZone(spot, 'itu') || '-'}`,
+                    `${Math.round(nearestMarker.item.distanceKm).toLocaleString()} km · ${Math.round(nearestMarker.item.bearing)} deg`,
+                ],
+            };
+            return;
+        }
+
+        const nearestPath = this.getNearestVisualPath(point);
+        if (nearestPath && nearestPath.distance <= 9) {
+            const path = nearestPath.path;
+            const spot = path.spot || {};
+            this.visualGlobeHover = {
+                x: point.x,
+                y: point.y,
+                title: `${path.spotter.callsign} hears ${spot.callsign || '-'}`,
+                lines: [
+                    `${spot.band || ''} ${spot.mode || ''} · ${path.modeGroup}`,
+                    `${Math.round(path.distanceKm).toLocaleString()} km path`,
+                    `${path.spotter.country || '-'} to ${spot.country || '-'}`,
+                ],
+            };
+            return;
+        }
+
+        this.visualGlobeHover = null;
     },
 
     focusVisualGlobeClick(event) {
-        if (!this.visualGlobeVisibleMarkers || this.visualGlobeVisibleMarkers.length === 0) return;
-        const canvas = this.$refs ? this.$refs.visualGlobeCanvas : null;
-        if (!canvas) return;
-        const rect = canvas.getBoundingClientRect();
-        const x = event.clientX - rect.left;
-        const y = event.clientY - rect.top;
+        const point = this.getVisualEventPoint(event);
+        if (!point) return;
+        const x = point.x;
+        const y = point.y;
         const nearest = this.visualGlobeVisibleMarkers
             .map(item => ({
                 item,
@@ -2656,6 +2898,11 @@ const dxSpotsMethods = {
             .sort((a, b) => a.distance - b.distance)[0];
         if (nearest && nearest.distance <= 14) {
             this.focusVisualSpot(nearest.item.spot);
+            return;
+        }
+        const nearestPath = this.getNearestVisualPath(point);
+        if (nearestPath && nearestPath.distance <= 9) {
+            this.focusVisualSpot(nearestPath.path.spot);
         }
     },
 
@@ -2718,6 +2965,97 @@ const dxSpotsMethods = {
 
         const grid = spot.gridsquare || spot.grid || spot.grid_square || spot.locator || spot.dx_grid;
         return this.gridToLatLon(grid);
+    },
+
+    getVisualSpotterLocationFromPayload(payload) {
+        if (!payload) return null;
+        const lat = Number(payload.latitude ?? payload.lat);
+        const lon = Number(payload.longitude ?? payload.lon ?? payload.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+            return null;
+        }
+        return {
+            callsign: payload.callsign || payload.spotter || '',
+            country: payload.country || '',
+            location: { lat, lon },
+            source: payload.location_source || 'cty_prefix',
+        };
+    },
+
+    getVisualSpotterLocations(spot) {
+        if (!spot) return [];
+        const locations = [];
+        const seen = new Set();
+        const addLocation = candidate => {
+            if (!candidate || !candidate.callsign) return;
+            const key = this.cleanVisualCallsign(candidate.callsign);
+            if (!key || seen.has(key)) return;
+            seen.add(key);
+            locations.push({ ...candidate, callsign: key });
+        };
+
+        if (Array.isArray(spot.spotter_locations)) {
+            spot.spotter_locations.forEach(payload => addLocation(this.getVisualSpotterLocationFromPayload(payload)));
+        }
+
+        const directPayload = this.getVisualSpotterLocationFromPayload({
+            callsign: spot.spotter_callsign || spot.spotter,
+            country: spot.spotter_country,
+            latitude: spot.spotter_latitude,
+            longitude: spot.spotter_longitude,
+            location_source: 'cty_prefix',
+        });
+        addLocation(directPayload);
+
+        const rawSpotters = [];
+        if (Array.isArray(spot.aggregate_spotters)) rawSpotters.push(...spot.aggregate_spotters.slice(0, 8));
+        ['spotter', 'dx_de', 'dxde', 'spotter_call'].forEach(key => {
+            if (spot[key]) rawSpotters.push(spot[key]);
+        });
+
+        rawSpotters.forEach(raw => {
+            const callsign = this.cleanVisualCallsign(raw);
+            if (!callsign || seen.has(callsign)) return;
+            const info = this.getVisualCtyInfo(callsign);
+            if (!info) return;
+            addLocation({
+                callsign,
+                country: info.country,
+                location: { lat: Number(info.latitude), lon: Number(info.longitude) },
+                source: 'cty_prefix',
+            });
+        });
+
+        return locations;
+    },
+
+    getVisualSpotPathItems() {
+        return this.getVisualRawSpotItems()
+            .flatMap(item => {
+                const spotters = this.getVisualSpotterLocations(item.spot).slice(0, 4);
+                return spotters.map(spotter => {
+                    const pathDistanceKm = this.calculateDistanceKm(
+                        spotter.location.lat,
+                        spotter.location.lon,
+                        item.location.lat,
+                        item.location.lon,
+                    );
+                    return {
+                        key: `${item.key}:${spotter.callsign}`,
+                        spot: item.spot,
+                        spotter,
+                        dx: item,
+                        from: spotter.location,
+                        to: item.location,
+                        distanceKm: pathDistanceKm,
+                        modeGroup: this.getVisualModeGroup(item.spot),
+                        color: this.getVisualModeColor(item.spot),
+                        score: this.getSpotScore(item.spot),
+                    };
+                });
+            })
+            .sort((a, b) => b.score - a.score || b.distanceKm - a.distanceKm)
+            .slice(0, 280);
     },
 
     isVisualNeededSpot(spot) {
@@ -2916,6 +3254,7 @@ const dxSpotsMethods = {
             hidden: Math.max(0, source.length - plotted.length),
             rbl,
             cluster,
+            paths: this.getVisualSpotPathItems().length,
         };
     },
 
@@ -2939,6 +3278,17 @@ const dxSpotsMethods = {
     getVisualLegendBands() {
         return [...new Set(this.getVisualSpotItems().map(item => item.spot.band || 'Unknown'))]
             .sort((a, b) => this.availableBands.indexOf(a) - this.availableBands.indexOf(b));
+    },
+
+    getVisualPathLegendItems() {
+        const groups = new Set(this.getVisualSpotPathItems().map(path => path.modeGroup));
+        const order = ['CW', 'SSB', 'DIGI', 'OTHER'];
+        return order
+            .filter(group => groups.has(group))
+            .map(group => ({
+                group,
+                color: this.getVisualModeColor({ mode: group === 'DIGI' ? 'FT8' : group }),
+            }));
     },
 
     getVisualSpotClass(spot) {
