@@ -536,6 +536,9 @@ function mountVueApp() {
         filteredSpots: {
             handler(newSpots) {
                 if (this.viewMode === 'visual' && typeof this.queueVisualGlobeDraw === 'function') {
+                    if ((!newSpots || newSpots.length === 0) && typeof this.ensureVisualSpotCandidates === 'function') {
+                        this.ensureVisualSpotCandidates();
+                    }
                     this.queueVisualGlobeDraw();
                 }
             },
@@ -563,8 +566,12 @@ function mountVueApp() {
             if (mode === 'log') {
                 this.loadLogEntries();
             } else if (mode === 'visual') {
-                this.performFilteredSearch({ forceSourceSearch: true });
-                this.$nextTick(() => this.queueVisualGlobeDraw());
+                this.performFilteredSearch({ forceSourceSearch: true })
+                    .finally(() => this.ensureVisualSpotCandidates());
+                this.$nextTick(() => {
+                    this.ensureVisualSpotCandidates();
+                    this.queueVisualGlobeDraw();
+                });
             }
         },
         

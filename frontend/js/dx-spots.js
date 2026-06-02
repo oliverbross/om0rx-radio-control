@@ -105,6 +105,9 @@ const dxSpotsData = {
     visualGlobeVisibleMarkers: [],
     visualGlobeVisiblePaths: [],
     visualGlobeHover: null,
+    visualFallbackSpots: [],
+    visualFallbackLoading: false,
+    visualFallbackFilterKey: '',
     visualOverlayPalette: [
         'rgba(121, 201, 176, 0.58)',
         'rgba(245, 184, 100, 0.56)',
@@ -487,6 +490,8 @@ const dxSpotsMethods = {
         this.lastSearchFilter = null;
         this.filteredSearchWarning = '';
         this.filteredSearchRetryAfter = 0;
+        this.visualFallbackSpots = [];
+        this.visualFallbackFilterKey = '';
     },
 
     applySpotPreset(presetId) {
@@ -523,6 +528,24 @@ const dxSpotsMethods = {
     },
     
     // === Filtered Search (Database Query) ===
+
+    buildSpotFilterCriteria() {
+        const rblSourceSelected = this.rblSourceSelected();
+        return {
+            limit: this.maxSpots,
+            callsign: this.spotsFilter.callsign || null,
+            bands: this.spotsFilter.bands.length > 0 ? this.spotsFilter.bands : null,
+            modes: this.spotsFilter.modes.length > 0 ? this.spotsFilter.modes : null,
+            zones_cq: this.spotsFilter.cqs.length > 0 ? this.spotsFilter.cqs : null,
+            continents: this.spotsFilter.continents.length > 0 ? this.spotsFilter.continents : null,
+            special_tags: this.spotsFilter.specials.length > 0 ? this.spotsFilter.specials : null,
+            spot_sources: this.spotsFilter.spotSources.length > 0 ? this.spotsFilter.spotSources : null,
+            rbl_modes: rblSourceSelected && this.spotsFilter.rblModes.length > 0 ? this.spotsFilter.rblModes : null,
+            rbl_min_snr: rblSourceSelected && this.spotsFilter.rblMinSnr !== '' ? Number(this.spotsFilter.rblMinSnr) : null,
+            rbl_dedupe_minutes: rblSourceSelected && Number(this.spotsFilter.rblDedupeMinutes) > 0 ? Number(this.spotsFilter.rblDedupeMinutes) : null,
+            sort_by: this.spotsFilter.sortBy || 'time',
+        };
+    },
     
     async performFilteredSearch(options = {}) {
         /**
@@ -539,26 +562,13 @@ const dxSpotsMethods = {
                 return;
             }
             
-            const rblSourceSelected = this.rblSourceSelected();
-
-            // Build filter criteria for API
-            const filterCriteria = {
-                limit: this.maxSpots,
-                callsign: this.spotsFilter.callsign || null,
-                bands: this.spotsFilter.bands.length > 0 ? this.spotsFilter.bands : null,
-                modes: this.spotsFilter.modes.length > 0 ? this.spotsFilter.modes : null,
-                zones_cq: this.spotsFilter.cqs.length > 0 ? this.spotsFilter.cqs : null,
-                continents: this.spotsFilter.continents.length > 0 ? this.spotsFilter.continents : null,
-                special_tags: this.spotsFilter.specials.length > 0 ? this.spotsFilter.specials : null,
-                spot_sources: this.spotsFilter.spotSources.length > 0 ? this.spotsFilter.spotSources : null,
-                rbl_modes: rblSourceSelected && this.spotsFilter.rblModes.length > 0 ? this.spotsFilter.rblModes : null,
-                rbl_min_snr: rblSourceSelected && this.spotsFilter.rblMinSnr !== '' ? Number(this.spotsFilter.rblMinSnr) : null,
-                rbl_dedupe_minutes: rblSourceSelected && Number(this.spotsFilter.rblDedupeMinutes) > 0 ? Number(this.spotsFilter.rblDedupeMinutes) : null,
-                sort_by: this.spotsFilter.sortBy || 'time',
-            };
+            const filterCriteria = this.buildSpotFilterCriteria();
             
             // Check if filter criteria changed
-            if (JSON.stringify(filterCriteria) === JSON.stringify(this.lastSearchFilter)) {
+            if (
+                JSON.stringify(filterCriteria) === JSON.stringify(this.lastSearchFilter) &&
+                this.filteredSearchResults.length > 0
+            ) {
                 console.log('ℹ️ Filter criteria unchanged, skipping search');
                 return;
             }
@@ -643,6 +653,47 @@ const dxSpotsMethods = {
             this.lastSearchFilter &&
             Array.isArray(this.lastSearchFilter.spot_sources)
         );
+    },
+
+    async loadVisualFallbackSpots() {
+        const filterCriteria = this.buildSpotFilterCriteria();
+        const filterKey = JSON.stringify(filterCriteria);
+        if (this.visualFallbackLoading || (this.visualFallbackFilterKey === filterKey && this.visualFallbackSpots.length > 0)) {
+            return;
+        }
+
+        this.visualFallbackLoading = true;
+        try {
+            const response = await fetch('/api/spots/filtered-search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(filterCriteria)
+            });
+            if (!response.ok) {
+                throw new Error(`API error: ${response.statusText}`);
+            }
+            const result = await response.json();
+            if (result.ok) {
+                this.visualFallbackSpots = result.spots || [];
+                this.visualFallbackFilterKey = filterKey;
+            } else {
+                this.visualFallbackSpots = [];
+                this.visualFallbackFilterKey = filterKey;
+            }
+        } catch (error) {
+            console.warn('Visual spot fallback search failed:', error);
+            this.visualFallbackSpots = [];
+            this.visualFallbackFilterKey = filterKey;
+        } finally {
+            this.visualFallbackLoading = false;
+            this.queueVisualGlobeDraw();
+        }
+    },
+
+    ensureVisualSpotCandidates() {
+        if (this.viewMode !== 'visual') return;
+        if (this.getVisualCandidateSpots().length > 0) return;
+        this.loadVisualFallbackSpots();
     },
     
     matchesCurrentFilters(spot) {
@@ -1648,8 +1699,42 @@ const dxSpotsMethods = {
         }
     },
 
+    parseSpotTimestampValue(value) {
+        if (value === null || value === undefined || value === '') return 0;
+        const numeric = Number(value);
+        if (Number.isFinite(numeric) && numeric > 0) {
+            return numeric > 1000000000000 ? Math.floor(numeric / 1000) : numeric;
+        }
+
+        const text = String(value).trim();
+        if (!text) return 0;
+        let normalized = text.replace(' ', 'T');
+        normalized = normalized.replace(/([+-]\d{2})$/, '$1:00');
+        const parsed = Date.parse(normalized);
+        return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
+    },
+
     getSpotTimestamp(spot) {
-        return Number(spot.aggregate_last_timestamp || spot.timestamp || 0);
+        if (!spot) return 0;
+        const direct = this.parseSpotTimestampValue(
+            spot.aggregate_last_timestamp ??
+            spot.timestamp ??
+            spot.received_timestamp ??
+            spot.receivedAt
+        );
+        if (direct) return direct;
+
+        if (spot.received_at) {
+            const receivedAt = this.parseSpotTimestampValue(spot.received_at);
+            if (receivedAt) return receivedAt;
+        }
+
+        if (spot.date_utc && spot.time_utc) {
+            const timeText = String(spot.time_utc).replace(/(\.\d{3})\d+/, '$1');
+            return this.parseSpotTimestampValue(`${spot.date_utc}T${timeText}Z`);
+        }
+
+        return 0;
     },
 
     getRblLiveSpots() {
@@ -2061,6 +2146,7 @@ const dxSpotsMethods = {
         this.ensureVisualCtyData();
         this.visualGlobeRefreshTimer = setInterval(() => {
             if (this.viewMode === 'visual' && this.visualMapMode === 'globe') {
+                this.ensureVisualSpotCandidates();
                 this.queueVisualGlobeDraw();
             }
         }, 2000);
@@ -3755,14 +3841,41 @@ const dxSpotsMethods = {
         return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
     },
 
+    getVisualCandidateSpots() {
+        const visible = Array.isArray(this.filteredSpots) ? this.filteredSpots : [];
+        if (visible.length > 0) return visible;
+
+        const searched = Array.isArray(this.filteredSearchResults) ? this.filteredSearchResults : [];
+        if (searched.length > 0 && this.hasDatabaseBackedSpotResults()) {
+            return this.applySourceAndRblFilters(searched);
+        }
+
+        const fallback = Array.isArray(this.visualFallbackSpots) ? this.visualFallbackSpots : [];
+        if (fallback.length > 0) {
+            return this.applySourceAndRblFilters(fallback);
+        }
+
+        if (this.viewMode === 'visual' && !this.visualFallbackLoading) {
+            setTimeout(() => this.loadVisualFallbackSpots(), 0);
+        }
+
+        return visible;
+    },
+
     getVisualBaseSpots() {
         const nowSeconds = Math.floor(Date.now() / 1000);
         const windowSeconds = Number(this.visualSpotWindowMinutes || 60) * 60;
-        let spots = (this.filteredSpots || []).filter(spot => {
+        const candidates = this.getVisualCandidateSpots();
+        let spots = candidates.filter(spot => {
             const timestamp = this.getSpotTimestamp(spot);
             if (!timestamp) return true;
             return nowSeconds - timestamp <= windowSeconds;
         });
+
+        const hasTimestampedCandidates = candidates.some(spot => Boolean(this.getSpotTimestamp(spot)));
+        if (spots.length === 0 && candidates.length > 0 && !hasTimestampedCandidates) {
+            spots = candidates.slice(0, this.maxSpots || candidates.length);
+        }
 
         if (this.visualSpotLatestOnly) {
             const latestByCall = new Map();

@@ -26,7 +26,7 @@ REQUIRED_MODULES = {
 
 def script_sources() -> list[str]:
     html = INDEX.read_text(encoding="utf-8")
-    return re.findall(r'<script\s+src="([^"]+)"', html)
+    return [source.split("?", 1)[0] for source in re.findall(r'<script\s+src="([^"]+)"', html)]
 
 
 def test_required_modules_load_before_app_main():

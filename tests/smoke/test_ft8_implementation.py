@@ -780,6 +780,7 @@ def test_foxhound_hound_frequency_rules_are_enforced():
         freq = 420
 
     service = FT8Service(mycall="OM0RX", mygrid="JN88")
+    service.tx_capability_enabled = True
     service.set_special_activity({"enabled": True, "role": "hound", "submode": "foxhound"})
     service.set_tx_options(tx_audio_frequency=3900)
 

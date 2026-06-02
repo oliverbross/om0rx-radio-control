@@ -247,7 +247,7 @@
   "RBL_ALERT_RULES": {
     "bands": [],
     "cooldownMinutes": 10,
-    "enabled": true,
+    "enabled": false,
     "localHeard": true,
     "minScore": 55,
     "minSnr": 8,
