@@ -44,6 +44,7 @@ data/*
 !data/countries-110m.json
 !data/cty.csv
 !data/cty.dat
+!data/zone-overlays.json
 *.db
 *.db-journal
 *.duckdb

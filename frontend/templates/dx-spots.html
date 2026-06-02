@@ -417,6 +417,8 @@
                                 </div>
                                 <div v-if="visualTopoLoading" class="visual-globe-status">Loading countries...</div>
                                 <div v-if="visualTopoError" class="visual-globe-status error">{{ visualTopoError }}</div>
+                                <div v-if="visualZoneOverlayLoading" class="visual-globe-status">Loading zone overlay...</div>
+                                <div v-if="visualZoneOverlayError" class="visual-globe-status error">{{ visualZoneOverlayError }}</div>
                             </div>
                             <svg v-if="visualMapMode === 'polar'" class="visual-polar-map" viewBox="0 0 520 520" role="img" aria-label="Filtered spots polar map">
                                 <defs>

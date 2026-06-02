@@ -86,6 +86,10 @@ const dxSpotsData = {
     visualTopoLoading: false,
     visualTopoError: '',
     visualTopoCountryIndex: {},
+    visualZoneOverlayData: null,
+    visualZoneOverlayLoading: false,
+    visualZoneOverlayError: '',
+    visualZoneOverlayReady: false,
     visualGlobeZoom: 1.1,
     visualGlobeRotation: { lon: -15, lat: 25 },
     visualGlobeDragging: false,
@@ -2245,6 +2249,33 @@ const dxSpotsMethods = {
         }
     },
 
+    async ensureVisualZoneOverlays() {
+        if (this.visualZoneOverlayReady || this.visualZoneOverlayLoading) return;
+        this.visualZoneOverlayLoading = true;
+        this.visualZoneOverlayError = '';
+        try {
+            const response = await fetch('/api/zone-overlays');
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const payload = await response.json();
+            this.visualZoneOverlayData = payload && payload.overlays ? payload.overlays : {};
+            this.visualZoneOverlayReady = true;
+        } catch (error) {
+            console.warn('Could not load visual zone overlays:', error);
+            this.visualZoneOverlayError = 'Zone overlays unavailable';
+            this.visualZoneOverlayData = {};
+            this.visualZoneOverlayReady = false;
+        } finally {
+            this.visualZoneOverlayLoading = false;
+        }
+    },
+
+    getVisualActiveZoneOverlay() {
+        if (this.visualOverlayMode !== 'cq' && this.visualOverlayMode !== 'itu') return null;
+        return this.visualZoneOverlayData && this.visualZoneOverlayData[this.visualOverlayMode]
+            ? this.visualZoneOverlayData[this.visualOverlayMode]
+            : null;
+    },
+
     normalizeVisualCountryName(name) {
         const raw = String(name || '')
             .toUpperCase()
@@ -2384,6 +2415,31 @@ const dxSpotsMethods = {
         if (type === 'cq') return String(spot.cq || spot.cq_zone || spot.cqz || '').trim();
         if (type === 'itu') return String(spot.itu || spot.itu_zone || spot.ituz || spot.dxcc_itu || '').trim();
         return '';
+    },
+
+    buildVisualZoneActivity(type = this.visualOverlayMode) {
+        const activity = new Map();
+        this.getVisualSourceSpots().forEach(spot => {
+            const zone = this.getVisualZone(spot, type);
+            if (!zone) return;
+            if (!activity.has(zone)) {
+                activity.set(zone, {
+                    zone,
+                    count: 0,
+                    rbl: 0,
+                    cluster: 0,
+                    needed: 0,
+                    topScore: 0,
+                });
+            }
+            const item = activity.get(zone);
+            item.count += 1;
+            item.topScore = Math.max(item.topScore, this.getSpotScore(spot));
+            if ((spot.spot_source || 'cluster') === 'rbl') item.rbl += 1;
+            else item.cluster += 1;
+            if (this.isVisualNeededSpot(spot)) item.needed += 1;
+        });
+        return activity;
     },
 
     buildVisualOverlayStats() {
@@ -2630,12 +2686,88 @@ const dxSpotsMethods = {
         ctx.restore();
     },
 
+    drawVisualZoneLine(ctx, points, width, height) {
+        let drawing = false;
+        (points || []).forEach(coord => {
+            const projected = this.projectVisualGlobe(coord[0], coord[1], width, height);
+            if (!projected || !projected.visible || projected.cosc < 0.02) {
+                drawing = false;
+                return;
+            }
+            if (!drawing) {
+                ctx.moveTo(projected.x, projected.y);
+                drawing = true;
+            } else {
+                ctx.lineTo(projected.x, projected.y);
+            }
+        });
+    },
+
+    drawVisualZoneOverlay(ctx, width, height) {
+        const overlay = this.getVisualActiveZoneOverlay();
+        if (!overlay) return;
+
+        const isCq = this.visualOverlayMode === 'cq';
+        const activity = this.buildVisualZoneActivity(this.visualOverlayMode);
+        const lineColor = isCq ? 'rgba(251, 191, 36, 0.72)' : 'rgba(56, 189, 248, 0.72)';
+        const activeFill = isCq ? 'rgba(120, 75, 0, 0.82)' : 'rgba(8, 80, 112, 0.82)';
+        const activeStroke = isCq ? '#fbbf24' : '#38bdf8';
+        const passiveText = isCq ? 'rgba(253, 230, 138, 0.58)' : 'rgba(186, 230, 253, 0.58)';
+
+        ctx.save();
+        ctx.strokeStyle = lineColor;
+        ctx.lineWidth = Math.max(0.75, Math.min(1.35, Number(this.visualGlobeZoom || 1)));
+        ctx.setLineDash([6, 4]);
+        (overlay.lines || []).forEach(line => {
+            ctx.beginPath();
+            this.drawVisualZoneLine(ctx, line.points, width, height);
+            ctx.stroke();
+        });
+        ctx.restore();
+
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = '800 10px system-ui, sans-serif';
+        const showPassiveLabels = Number(this.visualGlobeZoom || 1) >= 1.2;
+        (overlay.labels || []).forEach(label => {
+            const zone = String(label.zone);
+            const zoneActivity = activity.get(zone);
+            if (!zoneActivity && !showPassiveLabels) return;
+            const point = this.projectVisualGlobe(label.lon, label.lat, width, height);
+            if (!point || !point.visible || point.cosc < 0.08) return;
+            const text = this.visualOverlayMode === 'cq' ? `CQ ${label.zone}` : `ITU ${label.zone}`;
+            const widthPx = ctx.measureText(text).width + 10;
+            if (zoneActivity) {
+                ctx.fillStyle = activeFill;
+                ctx.strokeStyle = activeStroke;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                if (typeof ctx.roundRect === 'function') {
+                    ctx.roundRect(point.x - widthPx / 2, point.y - 9, widthPx, 18, 4);
+                } else {
+                    ctx.rect(point.x - widthPx / 2, point.y - 9, widthPx, 18);
+                }
+                ctx.fill();
+                ctx.stroke();
+                ctx.fillStyle = '#f8fafc';
+            } else {
+                ctx.fillStyle = passiveText;
+            }
+            ctx.fillText(text, point.x, point.y);
+        });
+        ctx.restore();
+    },
+
     async drawVisualGlobe() {
         const markerCanvas = this.$refs ? this.$refs.visualGlobeCanvas : null;
         const baseCanvas = this.$refs ? this.$refs.visualGlobeBaseCanvas : null;
         const pathCanvas = this.$refs ? this.$refs.visualGlobePathCanvas : null;
         if (!markerCanvas) return;
         await this.ensureVisualTopoFeatures();
+        if (this.visualOverlayMode === 'cq' || this.visualOverlayMode === 'itu') {
+            await this.ensureVisualZoneOverlays();
+        }
 
         const rect = markerCanvas.getBoundingClientRect();
         const ratio = window.devicePixelRatio || 1;
@@ -2684,6 +2816,7 @@ const dxSpotsMethods = {
             baseCtx.fill();
             baseCtx.stroke();
         });
+        this.drawVisualZoneOverlay(baseCtx, width, height);
         baseCtx.restore();
 
         pathCtx.save();
