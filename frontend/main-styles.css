@@ -1682,6 +1682,14 @@
             font-weight: 700;
         }
 
+        .visual-confidence-select {
+            min-width: 112px;
+        }
+
+        .visual-path-width-select {
+            min-width: 96px;
+        }
+
         .visual-icon-btn {
             height: 24px;
             min-width: 26px;
@@ -1823,6 +1831,10 @@
             stroke-dasharray: 4 3;
         }
 
+        .visual-spot-line.approximate {
+            opacity: 0.56;
+        }
+
         .visual-spot-marker {
             stroke: #071018;
             stroke-width: 2;
@@ -1848,6 +1860,10 @@
 
         .visual-spot-marker.confirmed {
             opacity: 0.58;
+        }
+
+        .visual-spot-marker.approximate {
+            opacity: 0.68;
         }
 
         .visual-spot-label {
@@ -2040,6 +2056,10 @@
 
         .visual-spot-source.rbl {
             color: #fbbf24;
+        }
+
+        .visual-spot-source.approximate {
+            color: #fde68a;
         }
 
         .visual-spot-score {

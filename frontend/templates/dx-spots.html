@@ -366,6 +366,12 @@
                                 <option value="cq">CQ zones</option>
                                 <option value="itu">ITU zones</option>
                             </select>
+                            <select v-model="visualLocationConfidence" @change="queueVisualGlobeDraw" class="visual-overlay-select visual-confidence-select">
+                                <option value="all">All locations</option>
+                                <option value="exact">Exact only</option>
+                                <option value="approximate">Approx only</option>
+                                <option value="unknown">Unknown only</option>
+                            </select>
                             <button @click="zoomVisualGlobe(1.2)" class="visual-icon-btn" title="Zoom in">+</button>
                             <button @click="zoomVisualGlobe(0.83)" class="visual-icon-btn" title="Zoom out">-</button>
                             <button @click="resetVisualGlobeView" class="visual-icon-btn" title="Reset globe">Reset</button>
@@ -374,11 +380,19 @@
                                 <option value="band">Band paths</option>
                                 <option value="mode">Mode paths</option>
                             </select>
+                            <select v-model.number="visualPathWidth" @change="queueVisualGlobeDraw" class="visual-overlay-select visual-path-width-select">
+                                <option :value="0.9">Thin lines</option>
+                                <option :value="1.4">Normal lines</option>
+                                <option :value="2.1">Bold lines</option>
+                                <option :value="3">Heavy lines</option>
+                            </select>
                         </div>
                         <span class="visual-stat-pill">{{ getVisualSpotStats().plotted }} plotted</span>
                         <span class="visual-stat-pill">{{ getVisualSpotStats().paths }} paths</span>
                         <span class="visual-stat-pill">{{ getVisualSpotStats().hidden }} without location</span>
+                        <span class="visual-stat-pill">{{ getVisualSpotStats().exact }} exact</span>
                         <span v-if="getVisualSpotStats().approximate" class="visual-stat-pill">{{ getVisualSpotStats().approximate }} approximate</span>
+                        <span v-if="getVisualSpotStats().unknown" class="visual-stat-pill">{{ getVisualSpotStats().unknown }} unknown</span>
                         <span v-if="visualMapMode === 'polar'" class="visual-stat-pill">Radius {{ getVisualMapRadiusKm().toLocaleString() }} km</span>
                         <span v-if="visualMapMode === 'globe'" class="visual-stat-pill">{{ getVisualOverlaySummary() }}</span>
                         <span class="visual-qth-pill">QTH {{ getVisualHomeGrid() }}</span>
@@ -456,7 +470,7 @@
                                           x1="260" y1="260"
                                           :x2="item.x" :y2="item.y"
                                           :class="['visual-spot-line', getVisualSpotClass(item.spot)]"
-                                          :style="{ stroke: getVisualBandColor(item.spot.band), opacity: item.lineOpacity }"></line>
+                                          :style="{ stroke: getVisualBandColor(item.spot.band), opacity: item.lineOpacity, strokeWidth: visualPathWidth + 'px' }"></line>
                                 </g>
                                 <g class="visual-spot-markers">
                                     <circle v-for="item in getVisualSpotItems()"
@@ -512,7 +526,10 @@
                                     <span class="visual-spot-call">{{ item.spot.callsign }}</span>
                                     <span class="visual-spot-meta">{{ item.spot.band }} {{ item.spot.mode }}</span>
                                     <span class="visual-spot-distance">{{ Math.round(item.distanceKm).toLocaleString() }} km · {{ Math.round(item.bearing) }}°</span>
-                                    <span class="visual-spot-source" :class="{ rbl: item.spot.spot_source === 'rbl' }">{{ item.spot.spot_source === 'rbl' ? 'RBL' : 'Cluster' }}</span>
+                                    <span class="visual-spot-source"
+                                          :class="{ rbl: item.spot.spot_source === 'rbl', approximate: getVisualLocationConfidence(item.spot) === 'approximate' }">
+                                        {{ item.spot.spot_source === 'rbl' ? 'RBL' : 'Cluster' }} · {{ getVisualLocationConfidence(item.spot) }}
+                                    </span>
                                     <span class="visual-spot-score" :style="getSpotScoreStyle(item.spot)">{{ getSpotScore(item.spot) }}</span>
                                 </button>
                             </div>

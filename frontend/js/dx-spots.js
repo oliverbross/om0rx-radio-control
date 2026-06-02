@@ -82,6 +82,8 @@ const dxSpotsData = {
     visualMapMode: 'globe',
     visualOverlayMode: 'dxcc',
     visualPathColorBy: 'band',
+    visualPathWidth: 1.4,
+    visualLocationConfidence: 'all',
     visualTopoFeatures: [],
     visualTopoLoading: false,
     visualTopoError: '',
@@ -113,6 +115,7 @@ const dxSpotsData = {
     ],
     visualCtyEntries: [],
     visualCtyLoading: false,
+    visualCtyLoadPromise: null,
     visualCtyReady: false,
     visualCtyError: '',
     visualCtyLookupCache: {},
@@ -2049,27 +2052,32 @@ const dxSpotsMethods = {
     },
 
     async ensureVisualCtyData() {
-        if (this.visualCtyReady || this.visualCtyLoading) return;
+        if (this.visualCtyReady) return;
+        if (this.visualCtyLoadPromise) return this.visualCtyLoadPromise;
         this.visualCtyLoading = true;
         this.visualCtyError = '';
-        try {
-            const response = await fetch('/api/spots/cty-prefixes');
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const text = await response.text();
-            this.visualCtyEntries = this.parseVisualCtyContent(text);
-            this.visualCtyCountryIndex = this.buildVisualCtyCountryIndex(this.visualCtyEntries);
-            this.visualCtyLookupCache = {};
-            this.visualCtyReady = this.visualCtyEntries.length > 0;
-        } catch (error) {
-            console.warn('Could not load visual CTY prefix data:', error);
-            this.visualCtyError = 'CTY prefix locations unavailable';
-            this.visualCtyEntries = [];
-            this.visualCtyCountryIndex = {};
-            this.visualCtyReady = false;
-        } finally {
-            this.visualCtyLoading = false;
-            this.queueVisualGlobeDraw();
-        }
+        this.visualCtyLoadPromise = (async () => {
+            try {
+                const response = await fetch('/api/spots/cty-prefixes');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const text = await response.text();
+                this.visualCtyEntries = this.parseVisualCtyContent(text);
+                this.visualCtyCountryIndex = this.buildVisualCtyCountryIndex(this.visualCtyEntries);
+                this.visualCtyLookupCache = {};
+                this.visualCtyReady = this.visualCtyEntries.length > 0;
+            } catch (error) {
+                console.warn('Could not load visual CTY prefix data:', error);
+                this.visualCtyError = 'CTY prefix locations unavailable';
+                this.visualCtyEntries = [];
+                this.visualCtyCountryIndex = {};
+                this.visualCtyReady = false;
+            } finally {
+                this.visualCtyLoading = false;
+                this.visualCtyLoadPromise = null;
+                this.queueVisualGlobeDraw();
+            }
+        })();
+        return this.visualCtyLoadPromise;
     },
 
     splitVisualCsvLine(line) {
@@ -2195,6 +2203,23 @@ const dxSpotsMethods = {
         const lat = Number(spot.latitude ?? spot.lat ?? spot.dxcc_lat);
         const lon = Number(spot.longitude ?? spot.lon ?? spot.lng ?? spot.dxcc_long);
         return Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+    },
+
+    isVisualApproximateLocation(spot) {
+        if (!spot) return false;
+        const source = String(spot.location_source || spot.grid_source || '').toLowerCase();
+        return spot.location_confidence === 'low' ||
+            source.includes('cty') ||
+            source.includes('dxcc') ||
+            source.includes('entity') ||
+            source.includes('country');
+    },
+
+    getVisualLocationConfidence(spot) {
+        if (!spot) return 'unknown';
+        if (!this.getSpotLocation(spot)) return 'unknown';
+        if (this.isVisualApproximateLocation(spot)) return 'approximate';
+        return 'exact';
     },
 
     enrichVisualSpotFromCty(spot) {
@@ -2433,8 +2458,25 @@ const dxSpotsMethods = {
 
     getVisualZone(spot, type) {
         if (!spot) return '';
-        if (type === 'cq') return String(spot.cq || spot.cq_zone || spot.cqz || '').trim();
-        if (type === 'itu') return String(spot.itu || spot.itu_zone || spot.ituz || spot.dxcc_itu || '').trim();
+        const callInfo = this.getVisualCtyInfo(spot.callsign);
+        const countryInfo = this.getVisualCtyCountryInfo(spot.country || spot.dxcc_entity || spot.entity);
+        const validZone = (value, max) => {
+            const zone = Number(String(value ?? '').trim());
+            if (!Number.isInteger(zone) || zone < 1 || zone > max) return '';
+            return String(zone);
+        };
+        if (type === 'cq') {
+            for (const value of [callInfo && callInfo.cq, countryInfo && countryInfo.cq, spot.cq_zone, spot.cqz, spot.cq]) {
+                const zone = validZone(value, 40);
+                if (zone) return zone;
+            }
+        }
+        if (type === 'itu') {
+            for (const value of [callInfo && callInfo.itu, countryInfo && countryInfo.itu, spot.itu_zone, spot.ituz, spot.itu, spot.dxcc_itu]) {
+                const zone = validZone(value, 90);
+                if (zone) return zone;
+            }
+        }
         return '';
     },
 
@@ -2514,6 +2556,15 @@ const dxSpotsMethods = {
             .filter(Boolean)
             .sort((a, b) => a.length - b.length || a.localeCompare(b));
         if (prefixes.length) return prefixes[0];
+        const key = this.normalizeVisualCountryName(featureName);
+        return key.slice(0, 3);
+    },
+
+    getVisualFeatureDxccLabel(featureName = '') {
+        const info = this.getVisualCtyCountryInfo(featureName);
+        if (info && info.primaryPrefix) {
+            return String(info.primaryPrefix).replace(/\/.*$/, '').toUpperCase();
+        }
         const key = this.normalizeVisualCountryName(featureName);
         return key.slice(0, 3);
     },
@@ -2707,6 +2758,16 @@ const dxSpotsMethods = {
         return screenPoints;
     },
 
+    getVisualPathLineWidth(path) {
+        const score = Number(path && path.score || 0);
+        const base = score >= 80 ? 1.55 : score >= 55 ? 1.22 : 0.92;
+        return Math.max(0.75, Math.min(5.5, base * Number(this.visualPathWidth || 1.4)));
+    },
+
+    getVisualPathHitTolerance() {
+        return Math.max(8, 5 + Number(this.visualPathWidth || 1.4) * 4);
+    },
+
     drawVisualGeometryPath(ctx, geometry, width, height) {
         const drawRing = ring => {
             let drawing = false;
@@ -2806,7 +2867,7 @@ const dxSpotsMethods = {
 
         ctx.save();
         ctx.strokeStyle = lineColor;
-        ctx.lineWidth = Math.max(0.75, Math.min(1.35, Number(this.visualGlobeZoom || 1)));
+        ctx.lineWidth = Math.max(1.2, Math.min(2.4, Number(this.visualGlobeZoom || 1) * 0.85));
         ctx.setLineDash([6, 4]);
         (overlay.lines || []).forEach(line => {
             ctx.beginPath();
@@ -2818,8 +2879,8 @@ const dxSpotsMethods = {
         ctx.save();
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.font = '800 10px system-ui, sans-serif';
-        const showPassiveLabels = Number(this.visualGlobeZoom || 1) >= 1.2;
+        ctx.font = '900 11px system-ui, sans-serif';
+        const showPassiveLabels = Number(this.visualGlobeZoom || 1) >= 1.0;
         (overlay.labels || []).forEach(label => {
             const zone = String(label.zone);
             const zoneActivity = activity.get(zone);
@@ -2849,9 +2910,9 @@ const dxSpotsMethods = {
         ctx.restore();
     },
 
-    drawVisualDxccLabels(ctx, width, height, overlayStats) {
-        if (this.visualOverlayMode !== 'dxcc') return;
-
+    drawVisualActiveZoneLabels(ctx, width, height, overlayStats) {
+        if (this.visualOverlayMode !== 'cq' && this.visualOverlayMode !== 'itu') return;
+        const isCq = this.visualOverlayMode === 'cq';
         const labels = (this.visualTopoFeatures || [])
             .map(feature => {
                 const name = this.getVisualFeatureName(feature);
@@ -2859,13 +2920,15 @@ const dxSpotsMethods = {
                 const stat = overlayStats.get(key);
                 const centroid = this.getVisualTopoCountryInfo(name);
                 if (!stat || !centroid) return null;
+                const zoneSet = isCq ? stat.cqZones : stat.ituZones;
+                const zone = [...zoneSet][0];
+                if (!zone) return null;
                 const point = this.projectVisualGlobe(centroid.longitude, centroid.latitude, width, height);
                 if (!point || !point.visible || point.cosc < 0.10) return null;
                 return {
-                    key,
                     point,
                     stat,
-                    label: this.getVisualCountryStatLabel(stat, name),
+                    text: `${isCq ? 'CQ' : 'ITU'} ${zone}`,
                 };
             })
             .filter(Boolean)
@@ -2875,13 +2938,62 @@ const dxSpotsMethods = {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.font = '900 10px system-ui, sans-serif';
+        labels.slice(0, 70).forEach(item => {
+            const widthPx = ctx.measureText(item.text).width + 12;
+            ctx.fillStyle = isCq ? 'rgba(120, 75, 0, 0.86)' : 'rgba(8, 80, 112, 0.86)';
+            ctx.strokeStyle = item.stat.needed > 0 ? '#f97316' : (isCq ? '#fbbf24' : '#38bdf8');
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            if (typeof ctx.roundRect === 'function') {
+                ctx.roundRect(item.point.x - widthPx / 2, item.point.y - 9, widthPx, 18, 4);
+            } else {
+                ctx.rect(item.point.x - widthPx / 2, item.point.y - 9, widthPx, 18);
+            }
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = '#f8fafc';
+            ctx.fillText(item.text, item.point.x, item.point.y);
+        });
+        ctx.restore();
+    },
+
+    drawVisualDxccLabels(ctx, width, height, overlayStats) {
+        if (this.visualOverlayMode !== 'dxcc') return;
+        const showPassiveLabels = Number(this.visualGlobeZoom || 1) >= 1.65;
+
+        const labels = (this.visualTopoFeatures || [])
+            .map(feature => {
+                const name = this.getVisualFeatureName(feature);
+                const key = this.normalizeVisualCountryName(name);
+                const stat = overlayStats.get(key);
+                const centroid = this.getVisualTopoCountryInfo(name);
+                if ((!stat && !showPassiveLabels) || !centroid) return null;
+                const point = this.projectVisualGlobe(centroid.longitude, centroid.latitude, width, height);
+                if (!point || !point.visible || point.cosc < 0.10) return null;
+                return {
+                    key,
+                    point,
+                    stat,
+                    active: Boolean(stat),
+                    label: stat ? this.getVisualCountryStatLabel(stat, name) : this.getVisualFeatureDxccLabel(name),
+                };
+            })
+            .filter(Boolean)
+            .sort((a, b) => Number(b.stat && b.stat.count || 0) - Number(a.stat && a.stat.count || 0));
+
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = '900 10px system-ui, sans-serif';
         labels.slice(0, 80).forEach(item => {
             const label = item.label;
             const widthPx = ctx.measureText(label).width + 10;
-            ctx.fillStyle = item.stat.lowConfidence >= item.stat.count
+            ctx.fillStyle = item.stat && item.stat.lowConfidence >= item.stat.count
                 ? 'rgba(15, 23, 42, 0.74)'
-                : 'rgba(3, 7, 18, 0.82)';
-            ctx.strokeStyle = item.stat.needed > 0 ? '#f97316' : 'rgba(248, 250, 252, 0.62)';
+                : item.active ? 'rgba(3, 7, 18, 0.82)' : 'rgba(15, 23, 42, 0.45)';
+            ctx.strokeStyle = item.stat && item.stat.needed > 0
+                ? '#f97316'
+                : item.active ? 'rgba(248, 250, 252, 0.62)' : 'rgba(148, 163, 184, 0.38)';
             ctx.lineWidth = 1;
             ctx.beginPath();
             if (typeof ctx.roundRect === 'function') {
@@ -2891,7 +3003,7 @@ const dxSpotsMethods = {
             }
             ctx.fill();
             ctx.stroke();
-            ctx.fillStyle = '#f8fafc';
+            ctx.fillStyle = item.active ? '#f8fafc' : 'rgba(226, 232, 240, 0.70)';
             ctx.fillText(label, item.point.x, item.point.y);
         });
         ctx.restore();
@@ -2903,6 +3015,7 @@ const dxSpotsMethods = {
         const pathCanvas = this.$refs ? this.$refs.visualGlobePathCanvas : null;
         if (!markerCanvas) return;
         await this.ensureVisualTopoFeatures();
+        await this.ensureVisualCtyData();
         if (this.visualOverlayMode === 'cq' || this.visualOverlayMode === 'itu') {
             await this.ensureVisualZoneOverlays();
         }
@@ -2956,6 +3069,7 @@ const dxSpotsMethods = {
             baseCtx.stroke();
         });
         this.drawVisualZoneOverlay(baseCtx, width, height);
+        this.drawVisualActiveZoneLabels(baseCtx, width, height, overlayStats);
         this.drawVisualDxccLabels(baseCtx, width, height, overlayStats);
         baseCtx.restore();
 
@@ -2967,8 +3081,8 @@ const dxSpotsMethods = {
         this.getVisualSpotPathItems().forEach(path => {
             pathCtx.save();
             pathCtx.strokeStyle = path.color;
-            pathCtx.globalAlpha = Math.min(0.82, 0.24 + Math.max(0, path.score) / 140);
-            pathCtx.lineWidth = path.score >= 80 ? 2.1 : path.score >= 55 ? 1.65 : 1.15;
+            pathCtx.globalAlpha = Math.min(0.92, 0.30 + Math.max(0, path.score) / 125);
+            pathCtx.lineWidth = this.getVisualPathLineWidth(path);
             if ((path.spot.spot_source || 'cluster') === 'rbl') {
                 pathCtx.setLineDash([5, 4]);
             } else {
@@ -3168,7 +3282,7 @@ const dxSpotsMethods = {
         }
 
         const nearestPath = this.getNearestVisualPath(point);
-        if (nearestPath && nearestPath.distance <= 9) {
+        if (nearestPath && nearestPath.distance <= this.getVisualPathHitTolerance()) {
             const path = nearestPath.path;
             const spot = path.spot || {};
             this.visualGlobeHover = {
@@ -3203,7 +3317,7 @@ const dxSpotsMethods = {
             return;
         }
         const nearestPath = this.getNearestVisualPath(point);
-        if (nearestPath && nearestPath.distance <= 9) {
+        if (nearestPath && nearestPath.distance <= this.getVisualPathHitTolerance()) {
             this.focusVisualSpot(nearestPath.path.spot);
         }
     },
@@ -3441,6 +3555,12 @@ const dxSpotsMethods = {
         return spots.filter(this.getVisualQuickFilterPredicate(active));
     },
 
+    applyVisualLocationConfidenceFilter(spots) {
+        const selected = this.visualLocationConfidence || 'all';
+        if (selected === 'all') return spots;
+        return spots.filter(spot => this.getVisualLocationConfidence(spot) === selected);
+    },
+
     toRadians(value) {
         return (Number(value) * Math.PI) / 180;
     },
@@ -3491,7 +3611,7 @@ const dxSpotsMethods = {
     },
 
     getVisualSourceSpots() {
-        return this.applyVisualQuickFilter(this.getVisualBaseSpots());
+        return this.applyVisualLocationConfidenceFilter(this.applyVisualQuickFilter(this.getVisualBaseSpots()));
     },
 
     getVisualRawSpotItems() {
@@ -3551,9 +3671,9 @@ const dxSpotsMethods = {
         const plotted = this.getVisualRawSpotItems();
         const rbl = plotted.filter(item => (item.spot.spot_source || 'cluster') === 'rbl').length;
         const cluster = plotted.length - rbl;
-        const approximate = plotted.filter(item => (
-            item.spot.location_confidence === 'low' || item.spot.location_source === 'cty_prefix'
-        )).length;
+        const exact = source.filter(spot => this.getVisualLocationConfidence(spot) === 'exact').length;
+        const approximate = source.filter(spot => this.getVisualLocationConfidence(spot) === 'approximate').length;
+        const unknown = source.filter(spot => this.getVisualLocationConfidence(spot) === 'unknown').length;
         return {
             total: source.length,
             plotted: plotted.length,
@@ -3561,7 +3681,9 @@ const dxSpotsMethods = {
             rbl,
             cluster,
             paths: this.getVisualSpotPathItems().length,
+            exact,
             approximate,
+            unknown,
         };
     },
 
@@ -3611,6 +3733,9 @@ const dxSpotsMethods = {
         const classes = [];
         if ((spot.spot_source || 'cluster') === 'rbl') classes.push('rbl');
         if (spot.local_heard) classes.push('heard');
+        const confidence = this.getVisualLocationConfidence(spot);
+        if (confidence === 'approximate') classes.push('approximate');
+        if (confidence === 'unknown') classes.push('unknown-location');
         if (this.getSpotScore(spot) >= 80) classes.push('hot');
         if (this.getSpotScore(spot) >= 55) classes.push('good');
         if (spot.dxcc_status === 'Confirmed' || spot.call_status === 'Confirmed') classes.push('confirmed');
