@@ -16,6 +16,7 @@ router = APIRouter()
 
 _country_data_cache = None
 _zone_overlay_cache = None
+_admin1_overlay_cache = None
 
 def load_country_data():
     """Load country GeoJSON data from TopoJSON file and convert to GeoJSON"""
@@ -61,6 +62,28 @@ def load_zone_overlay_data():
         return _zone_overlay_cache
     except Exception as e:
         logger.error(f"Error loading zone overlay data: {e}")
+        return None
+
+
+def load_admin1_overlay_data():
+    """Load US state and Canada province overlay boundaries."""
+    global _admin1_overlay_cache
+    if _admin1_overlay_cache is not None:
+        return _admin1_overlay_cache
+
+    data_path = config.DATA_DIR / "visual-admin1-us-ca.geojson"
+    if not data_path.exists():
+        logger.warning(f"Admin-1 overlay data file not found: {data_path}")
+        return None
+
+    try:
+        with open(data_path, 'r', encoding='utf-8') as f:
+            _admin1_overlay_cache = json.load(f)
+
+        logger.info("✅ US/Canada admin-1 overlay data loaded successfully")
+        return _admin1_overlay_cache
+    except Exception as e:
+        logger.error(f"Error loading admin-1 overlay data: {e}")
         return None
 
 def normalize_name(name: str) -> str:
@@ -208,6 +231,15 @@ async def get_zone_overlay_data():
     data = load_zone_overlay_data()
     if not data:
         raise HTTPException(status_code=404, detail="Zone overlay data not available")
+    return data
+
+
+@router.get("/api/admin1-overlays")
+async def get_admin1_overlay_data():
+    """Get US state and Canada province overlay boundary data."""
+    data = load_admin1_overlay_data()
+    if not data:
+        raise HTTPException(status_code=404, detail="Admin-1 overlay data not available")
     return data
 
 @router.get("/api/country/by-name/{name}")

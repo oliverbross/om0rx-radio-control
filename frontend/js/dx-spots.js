@@ -92,6 +92,10 @@ const dxSpotsData = {
     visualZoneOverlayLoading: false,
     visualZoneOverlayError: '',
     visualZoneOverlayReady: false,
+    visualAdmin1Features: [],
+    visualAdmin1Loading: false,
+    visualAdmin1Error: '',
+    visualAdmin1Ready: false,
     visualGlobeZoom: 1.1,
     visualGlobeRotation: { lon: -15, lat: 25 },
     visualGlobeDragging: false,
@@ -2023,6 +2027,19 @@ const dxSpotsMethods = {
         this.queueVisualGlobeDraw();
     },
 
+    handleVisualOverlayModeChange() {
+        if (this.visualOverlayMode === 'us-states') {
+            this.visualMapMode = 'globe';
+            this.visualGlobeRotation = { lon: -98, lat: 37 };
+            this.visualGlobeZoom = Math.max(Number(this.visualGlobeZoom || 1), 1.65);
+        } else if (this.visualOverlayMode === 'ca-provinces') {
+            this.visualMapMode = 'globe';
+            this.visualGlobeRotation = { lon: -96, lat: 57 };
+            this.visualGlobeZoom = Math.max(Number(this.visualGlobeZoom || 1), 1.45);
+        }
+        this.queueVisualGlobeDraw();
+    },
+
     setupVisualGlobeRefresh() {
         this.cleanupVisualGlobeRefresh();
         this.ensureVisualCtyData();
@@ -2303,6 +2320,30 @@ const dxSpotsMethods = {
             this.visualZoneOverlayReady = false;
         } finally {
             this.visualZoneOverlayLoading = false;
+        }
+    },
+
+    isVisualAdmin1Overlay(mode = this.visualOverlayMode) {
+        return mode === 'us-states' || mode === 'ca-provinces';
+    },
+
+    async ensureVisualAdmin1Overlays() {
+        if (this.visualAdmin1Ready || this.visualAdmin1Loading) return;
+        this.visualAdmin1Loading = true;
+        this.visualAdmin1Error = '';
+        try {
+            const response = await fetch('/api/admin1-overlays');
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const payload = await response.json();
+            this.visualAdmin1Features = payload && Array.isArray(payload.features) ? payload.features : [];
+            this.visualAdmin1Ready = this.visualAdmin1Features.length > 0;
+        } catch (error) {
+            console.warn('Could not load visual state/province overlay:', error);
+            this.visualAdmin1Error = 'State/province overlay unavailable';
+            this.visualAdmin1Features = [];
+            this.visualAdmin1Ready = false;
+        } finally {
+            this.visualAdmin1Loading = false;
         }
     },
 
@@ -2643,10 +2684,17 @@ const dxSpotsMethods = {
             overlay.forEach(item => item.ituZones.forEach(zone => zones.add(zone)));
             return `${zones.size} ITU zones`;
         }
+        if (this.visualOverlayMode === 'us-states') {
+            return `${this.getVisualAdmin1FeaturesForMode().length} US states`;
+        }
+        if (this.visualOverlayMode === 'ca-provinces') {
+            return `${this.getVisualAdmin1FeaturesForMode().length} Canada provinces/territories`;
+        }
         return `${overlay.size} DXCC/countries · ${stats.cluster} cluster / ${stats.rbl} RBL`;
     },
 
     getVisualOverlayBreakdown() {
+        if (this.isVisualAdmin1Overlay()) return [];
         const groups = new Map();
         this.getVisualSourceSpots().forEach(spot => {
             let key = '';
@@ -2706,6 +2754,23 @@ const dxSpotsMethods = {
         const zone = Math.max(1, Number(value || 1));
         const hue = Math.round((zone * 47) % 360);
         return `hsla(${hue}, 72%, 66%, ${alpha})`;
+    },
+
+    getVisualAdmin1FeaturesForMode(mode = this.visualOverlayMode) {
+        const adminName = mode === 'us-states'
+            ? 'United States of America'
+            : mode === 'ca-provinces' ? 'Canada' : '';
+        if (!adminName) return [];
+        return (this.visualAdmin1Features || []).filter(feature => (
+            feature && feature.properties && feature.properties.admin === adminName
+        ));
+    },
+
+    getVisualAdmin1Label(feature) {
+        const props = feature && feature.properties ? feature.properties : {};
+        return String(props.postal || props.abbrev || props.name || '')
+            .replace(/^US-|^CA-/i, '')
+            .toUpperCase();
     },
 
     projectVisualGlobe(lon, lat, width, height) {
@@ -2973,6 +3038,57 @@ const dxSpotsMethods = {
         ctx.restore();
     },
 
+    drawVisualAdmin1Overlay(ctx, width, height) {
+        if (!this.isVisualAdmin1Overlay()) return;
+        const features = this.getVisualAdmin1FeaturesForMode();
+        if (!features.length) return;
+        const palette = [
+            'rgba(248, 211, 157, 0.58)',
+            'rgba(235, 145, 129, 0.50)',
+            'rgba(211, 184, 120, 0.54)',
+            'rgba(160, 207, 190, 0.50)',
+            'rgba(184, 205, 238, 0.48)',
+            'rgba(238, 182, 205, 0.48)',
+        ];
+        const isCanada = this.visualOverlayMode === 'ca-provinces';
+
+        ctx.save();
+        features.forEach((feature, index) => {
+            ctx.beginPath();
+            this.drawVisualGeometryPath(ctx, feature.geometry, width, height);
+            ctx.fillStyle = palette[index % palette.length];
+            ctx.strokeStyle = isCanada ? 'rgba(186, 230, 253, 0.72)' : 'rgba(248, 250, 252, 0.72)';
+            ctx.lineWidth = 0.9;
+            ctx.fill();
+            ctx.stroke();
+        });
+        ctx.restore();
+
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = '900 13px system-ui, sans-serif';
+        features.forEach(feature => {
+            const props = feature.properties || {};
+            const lon = Number(props.longitude);
+            const lat = Number(props.latitude);
+            const centroid = Number.isFinite(lon) && Number.isFinite(lat)
+                ? { longitude: lon, latitude: lat }
+                : this.getVisualGeometryCentroid(feature.geometry);
+            if (!centroid) return;
+            const point = this.projectVisualGlobe(centroid.longitude, centroid.latitude, width, height);
+            if (!point || !point.visible || point.cosc < 0.06) return;
+            const label = this.getVisualAdmin1Label(feature);
+            if (!label) return;
+            ctx.lineWidth = 2.5;
+            ctx.strokeStyle = 'rgba(241, 245, 249, 0.62)';
+            ctx.strokeText(label, point.x, point.y);
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+            ctx.fillText(label, point.x, point.y);
+        });
+        ctx.restore();
+    },
+
     drawVisualDxccLabels(ctx, width, height, overlayStats) {
         if (this.visualOverlayMode !== 'dxcc') return;
         const zoom = Number(this.visualGlobeZoom || 1);
@@ -3048,6 +3164,9 @@ const dxSpotsMethods = {
         if (this.visualOverlayMode === 'cq' || this.visualOverlayMode === 'itu') {
             await this.ensureVisualZoneOverlays();
         }
+        if (this.isVisualAdmin1Overlay()) {
+            await this.ensureVisualAdmin1Overlays();
+        }
 
         const rect = markerCanvas.getBoundingClientRect();
         const ratio = window.devicePixelRatio || 1;
@@ -3098,6 +3217,7 @@ const dxSpotsMethods = {
             baseCtx.stroke();
         });
         this.drawVisualZoneOverlay(baseCtx, width, height);
+        this.drawVisualAdmin1Overlay(baseCtx, width, height);
         this.drawVisualActiveZoneLabels(baseCtx, width, height, overlayStats);
         this.drawVisualDxccLabels(baseCtx, width, height, overlayStats);
         baseCtx.restore();

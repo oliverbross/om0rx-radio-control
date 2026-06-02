@@ -45,6 +45,7 @@ data/*
 !data/cty.csv
 !data/cty.dat
 !data/zone-overlays.json
+!data/visual-admin1-us-ca.geojson
 *.db
 *.db-journal
 *.duckdb
