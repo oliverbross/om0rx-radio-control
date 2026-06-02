@@ -9,6 +9,7 @@ import time
 
 from backend.core import get_app_context
 from radio_control import config
+from radio_control.postgres_store import get_postgres_dsn, should_use_postgres
 from radio_control.qso_outbox import get_qso_outbox
 from services.ft8_service import get_ft8_service
 from services.rotator import get_rotator_service
@@ -72,7 +73,7 @@ def _db_file_summary(path: Path) -> Dict[str, Any]:
 
 
 def _cached_sync_status(context: Any) -> Dict[str, Any]:
-    """Return Wavelog sync state without opening DuckDB."""
+    """Return Wavelog sync state without opening the backing cache."""
     status = dict(context.sync_status or {})
     sync_manager = getattr(context, "wavelog_sync_manager", None)
 
@@ -239,7 +240,7 @@ async def get_status(request: Request):
 
 @router.get("/api/sync-status")
 async def get_sync_status(request: Request):
-    """Get the Wavelog to DuckDB sync status."""
+    """Get the Wavelog local read-cache sync status."""
     context = get_app_context(request)
     status = await _sync_status_fast(context)
     if context.wavelog_sync_manager:
@@ -299,7 +300,7 @@ async def get_service_health(request: Request):
     elif outbox_queued:
         wavelog = _service("wavelog", "Wavelog", "warn", f"{outbox_queued} queued", "Offline upload outbox has queued QSOs", "outbox-retry")
     elif sync_status.get("syncing") or sync_status.get("status") == "busy":
-        wavelog = _service("wavelog", "Wavelog", "busy", "syncing", "Wavelog to DuckDB sync is running", "sync")
+        wavelog = _service("wavelog", "Wavelog", "busy", "syncing", "Wavelog local sync is running", "sync")
     elif sync_status.get("status_stale"):
         records = int(sync_status.get("total_records") or 0)
         wavelog = _service("wavelog", "Wavelog", "warn", f"{records} QSOs", "Using cached Wavelog sync status", "sync")
@@ -319,17 +320,28 @@ async def get_service_health(request: Request):
         qrz = _service("qrz", "QRZ", "warn", "missing cfg", "QRZ username or password is missing", "config")
     services.append(qrz)
 
-    spots_db = _db_file_summary(config.DATA_DIR / "spots.duckdb")
-    qso_db = _db_file_summary(config.DATA_DIR / "qso_log.duckdb")
-    db_ok = spots_db["exists"] and qso_db["exists"]
-    db_value = f"spots {'ok' if spots_db['exists'] else 'missing'} / qso {'ok' if qso_db['exists'] else 'missing'}"
-    services.append(_service(
-        "duckdb",
-        "DuckDB",
-        "ok" if db_ok else "warn",
-        db_value,
-        f"Spots DB: {spots_db['path']}; QSO DB: {qso_db['path']}",
-    ))
+    if should_use_postgres():
+        dsn_configured = bool(get_postgres_dsn())
+        services.append(_service(
+            "datastore",
+            "Data Store",
+            "ok" if dsn_configured else "warn",
+            "PostgreSQL" if dsn_configured else "missing cfg",
+            "PostgreSQL local read cache is selected",
+            None if dsn_configured else "config",
+        ))
+    else:
+        spots_db = _db_file_summary(config.DATA_DIR / "spots.duckdb")
+        qso_db = _db_file_summary(config.DATA_DIR / "qso_log.duckdb")
+        db_ok = spots_db["exists"] and qso_db["exists"]
+        db_value = f"spots {'ok' if spots_db['exists'] else 'missing'} / qso {'ok' if qso_db['exists'] else 'missing'}"
+        services.append(_service(
+            "datastore",
+            "Data Store",
+            "ok" if db_ok else "warn",
+            db_value,
+            f"Legacy spots DB: {spots_db['path']}; QSO DB: {qso_db['path']}",
+        ))
 
     services.append(_ft8_health())
     services.append(await _rotor_health())

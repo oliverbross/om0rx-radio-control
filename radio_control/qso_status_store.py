@@ -12,6 +12,8 @@ from pymysql.cursors import DictCursor
 import duckdb
 
 from radio_control import config
+from radio_control.postgres_store import connect as connect_postgres
+from radio_control.postgres_store import should_use_postgres
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +101,27 @@ class DuckDBQSOStatusStore:
             return True
 
         try:
-            if self._use_duckdb:
+            if should_use_postgres() and not self._use_duckdb:
+                with connect_postgres() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT dxcc, band, mode, submode, lotw_qsl_rcvd
+                            FROM qso_records
+                            WHERE dxcc IS NOT NULL
+                            """
+                        )
+                        rows = [
+                            {
+                                "dxcc": dxcc,
+                                "band": band,
+                                "mode": mode,
+                                "submode": submode,
+                                "lotw_qsl_rcvd": lotw_qsl_rcvd,
+                            }
+                            for dxcc, band, mode, submode, lotw_qsl_rcvd in cur.fetchall()
+                        ]
+            elif self._use_duckdb:
                 conn = duckdb.connect(str(self.db_path))
                 try:
                     rows = [
@@ -186,7 +208,12 @@ class DuckDBQSOStatusStore:
             self.dxcc_bandmode_confirmed = dxcc_bandmode_confirmed
             self._loaded_at = now
             self._loaded_mtime = now
-            source = "DuckDB" if self._use_duckdb else "Wavelog DB"
+            if should_use_postgres() and not self._use_duckdb:
+                source = "PostgreSQL"
+            elif self._use_duckdb:
+                source = "DuckDB"
+            else:
+                source = "Wavelog DB"
             logger.info(
                 "Loaded QSO status sets from %s: dxcc=%d confirmed=%d band=%d mode=%d bandmode_cnf=%d",
                 source,

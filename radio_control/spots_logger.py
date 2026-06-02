@@ -915,7 +915,14 @@ def get_spots_logger() -> SpotsLogger:
     """Get or create the global spots logger instance"""
     global _logger_instance
     if _logger_instance is None:
-        _logger_instance = SpotsLogger()
+        from radio_control.postgres_store import should_use_postgres
+
+        if should_use_postgres():
+            from radio_control.postgres_spots_logger import PostgresSpotsLogger
+
+            _logger_instance = PostgresSpotsLogger()
+        else:
+            _logger_instance = SpotsLogger()
     return _logger_instance
 
 

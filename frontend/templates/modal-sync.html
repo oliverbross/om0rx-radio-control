@@ -4,7 +4,7 @@
         <div id="sync-modal" v-if="showSyncModal" class="modal-overlay" @click.self="showSyncModal = false">
         <div class="modal-content" style="max-width: 650px;">
             <div class="modal-header">
-                <h2>📊 Wavelog→DuckDB Sync Status</h2>
+                <h2>📊 Wavelog Local Sync Status</h2>
                 <button @click="showSyncModal = false" class="modal-close">✕</button>
             </div>
             <div class="modal-body" style="padding: 20px; font-size: 14px;">
@@ -59,9 +59,9 @@
                     </div>
                 </div>
                 
-                <!-- Wavelog vs DuckDB Comparison -->
+                <!-- Wavelog vs Local Cache Comparison -->
                 <div style="margin-top: 20px; padding: 15px; background-color: #2a2a2a; border-radius: 5px; border-left: 4px solid #2196f3;">
-                    <strong style="font-size: 14px; display: block; margin-bottom: 10px; color: #fff;">🔄 Wavelog → DuckDB Sync:</strong>
+                    <strong style="font-size: 14px; display: block; margin-bottom: 10px; color: #fff;">🔄 Wavelog → Local Cache Sync:</strong>
                     <div style="display: flex; justify-content: space-around; align-items: center;">
                         <div style="text-align: center;">
                             <div style="font-size: 13px; color: #bbb; margin-bottom: 5px;">Wavelog (Source)</div>
@@ -69,7 +69,7 @@
                         </div>
                         <div style="font-size: 20px; color: #666;">→</div>
                         <div style="text-align: center;">
-                            <div style="font-size: 13px; color: #bbb; margin-bottom: 5px;">DuckDB (Cache)</div>
+                            <div style="font-size: 13px; color: #bbb; margin-bottom: 5px;">Local Cache</div>
                             <div style="font-size: 20px; font-weight: bold; color: #2196f3;">{{ syncStatus.total_records || 0 }} QSOs</div>
                         </div>
                         <div style="font-size: 12px; color: #bbb; margin-left: 10px;">
@@ -87,9 +87,9 @@
                 </div>
                 
                 <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #333;">
-                    <strong style="font-size: 14px;">Database Location:</strong>
+                    <strong style="font-size: 14px;">Database Backend:</strong>
                     <div style="margin-top: 5px; font-size: 12px; color: #999; font-family: monospace;">
-                        /data/qso_log.duckdb
+                        PostgreSQL when configured, otherwise legacy local cache
                     </div>
                 </div>
             </div>

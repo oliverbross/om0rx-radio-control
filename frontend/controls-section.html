@@ -40,7 +40,7 @@
                 <button
                     @click="showSyncModal = true"
                     :class="syncStatus.syncing ? 'sync-button sync-syncing' : 'sync-button'"
-                    :title="syncStatus.syncing ? 'Wavelog→DuckDB sync in progress...' : `Wavelog→DuckDB: ${syncStatus.total_records} records synced`"
+                    :title="syncStatus.syncing ? 'Wavelog local sync in progress...' : `Wavelog local cache: ${syncStatus.total_records} records synced`"
                     style="padding: 4px 8px; font-size: 12px;">
                     {{ syncStatus.syncing ? '⟳ Syncing...' : `📊 ${syncStatus.total_records} QSOs` }}
                 </button>

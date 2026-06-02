@@ -1,7 +1,9 @@
 """
-Reset Wavelog→DuckDB Sync
+Reset Wavelog local sync
 Clears sync metadata and optionally all synced data to force a fresh initial sync
 """
+
+import sys
 
 import _bootstrap  # noqa: F401
 from radio_control.wavelog_duckdb_sync import get_wavelog_sync
@@ -18,7 +20,7 @@ logger = logging.getLogger(__name__)
 def main():
     """Reset the Wavelog sync"""
     print("\n" + "="*60)
-    print("Wavelog→DuckDB Sync Reset Tool")
+    print("Wavelog Local Sync Reset Tool")
     print("="*60 + "\n")
     
     # Ask user if they want to clear data too
@@ -37,7 +39,7 @@ def main():
     clear_data = (choice == "2")
     
     if clear_data:
-        confirm = input("\n⚠️  WARNING: This will delete all synced QSOs from DuckDB!\n"
+        confirm = input("\n⚠️  WARNING: This will delete all synced QSOs from the local cache!\n"
                        "Type 'YES' to confirm: ").strip()
         if confirm != "YES":
             print("\n❌ Cancelled - confirmation not received")
@@ -59,8 +61,8 @@ def main():
             print("\n📋 Next steps:")
             print("   1. The sync will automatically restart on next cycle (60 seconds)")
             print("   2. Or restart the backend to trigger immediate sync")
-            print(f"\n   The initial sync will process records in batches of 1000")
-            print(f"   Watch the logs for progress updates")
+            print("\n   The initial sync will process records in batches of 1000")
+            print("   Watch the logs for progress updates")
         else:
             print(f"\n❌ Reset failed: {result.get('error', 'Unknown error')}")
             return 1

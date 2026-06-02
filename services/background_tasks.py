@@ -157,7 +157,7 @@ async def poll_radio_status():
                         try:
                             if flex.sock:
                                 flex.sock.close()
-                        except:
+                        except Exception:
                             pass
                         flex.sock = None
                         consecutive_failures = 0
@@ -351,7 +351,7 @@ async def process_cluster_spot(spot_data: dict):
             try:
                 from radio_control.rotor_math import latlon_to_grid
                 gridsquare = latlon_to_grid(latitude, longitude, precision=6)
-            except:
+            except Exception:
                 gridsquare = None
 
         spot = {
@@ -522,13 +522,13 @@ async def start_background_tasks():
         tasks.append(activity_task)
         logger.info("✅ Activity Intelligence refresh task started")
 
-    # Start Wavelog→DuckDB read-cache sync if manager is available
+    # Start Wavelog local read-cache sync if manager is available
     if service.context.wavelog_sync_manager:
         from radio_control.wavelog_duckdb_sync import periodic_wavelog_sync
 
         wavelog_task = asyncio.create_task(periodic_wavelog_sync())
         tasks.append(wavelog_task)
-        logger.info("✅ Wavelog→DuckDB read-cache periodic sync task started")
+        logger.info("✅ Wavelog local read-cache periodic sync task started")
 
     if service.context.wavelog_client:
         from radio_control import config

@@ -4,7 +4,6 @@ Direct database access for log viewing
 """
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from typing import Optional
 import asyncio
 import logging
 
@@ -108,7 +107,7 @@ async def search_callsign(
 @router.get("/sync-status")
 async def get_wavelog_sync_status(request: Request):
     """
-    Get Wavelog→DuckDB read-cache sync status
+    Get Wavelog local read-cache sync status
     
     Returns current sync status including:
     - Total records synced
@@ -157,7 +156,7 @@ async def reset_wavelog_sync(
     clear_data: bool = Query(default=False, description="Clear all synced data (if True)")
 ):
     """
-    Reset Wavelog→DuckDB read-cache sync to force a fresh initial sync
+    Reset Wavelog local read-cache sync to force a fresh initial sync
     
     - **clear_data**: If true, also clears all synced QSO records (default: False)
     

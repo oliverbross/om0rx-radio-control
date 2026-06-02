@@ -31,9 +31,8 @@ from services.background_tasks import (
 
 # Import additional service modules for initialization
 from services.qso_logging import init_qso_logging_clients, register_qso_logging_endpoints
-from services.rotator import init_rotator_service
 from services.wsjtx import get_wsjtx_service, register_wsjtx_endpoints
-from services.country_data import load_country_data, router as country_data_router
+from services.country_data import router as country_data_router
 
 # === API Router Imports ===
 from backend.api.health import router as health_router
@@ -215,14 +214,14 @@ async def init_classifier():
 
 
 def init_wavelog_sync_manager():
-    """Initialize the Wavelog→DuckDB read-cache sync manager."""
+    """Initialize the Wavelog local read-cache sync manager."""
     try:
         context.wavelog_sync_manager = init_wavelog_sync()
-        logging.info("✅ Wavelog→DuckDB read-cache sync initialized")
+        logging.info("✅ Wavelog local read-cache sync initialized")
         sync_runtime_state()
         return True
     except Exception as e:
-        logging.error(f"❌ Wavelog→DuckDB sync initialization failed: {e}")
+        logging.error(f"❌ Wavelog local sync initialization failed: {e}")
         return False
 
 

@@ -780,14 +780,28 @@ def get_wavelog_sync() -> WavelogDuckDBSync:
     """Get or create the Wavelog sync instance"""
     global _sync_instance
     if _sync_instance is None:
-        _sync_instance = WavelogDuckDBSync()
+        from radio_control.postgres_store import should_use_postgres
+
+        if should_use_postgres():
+            from radio_control.postgres_wavelog_sync import PostgresWavelogSync
+
+            _sync_instance = PostgresWavelogSync()
+        else:
+            _sync_instance = WavelogDuckDBSync()
     return _sync_instance
 
 
 def init_wavelog_sync():
     """Initialize Wavelog sync"""
     global _sync_instance
-    _sync_instance = WavelogDuckDBSync()
+    from radio_control.postgres_store import should_use_postgres
+
+    if should_use_postgres():
+        from radio_control.postgres_wavelog_sync import PostgresWavelogSync
+
+        _sync_instance = PostgresWavelogSync()
+    else:
+        _sync_instance = WavelogDuckDBSync()
     return _sync_instance
 
 

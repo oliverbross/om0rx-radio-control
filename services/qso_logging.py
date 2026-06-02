@@ -10,7 +10,6 @@ import json
 import logging
 from typing import Optional, Dict, Any
 from datetime import date, datetime, time, timezone
-from pathlib import Path
 from threading import RLock
 from fastapi import HTTPException, APIRouter
 from pydantic import BaseModel
@@ -23,6 +22,8 @@ from radio_control.adif_handler import ADIFHandler
 from radio_control.cty_resolvers import CtyDatResolver
 from radio_control.qso_outbox import get_qso_outbox
 from radio_control import config
+from radio_control.postgres_store import connect as connect_postgres
+from radio_control.postgres_store import should_use_postgres
 from services.wavelog_log import get_wavelog_log_service
 
 logger = logging.getLogger(__name__)
@@ -194,7 +195,63 @@ def _format_qso_time(value: Any) -> str:
     return text.replace(":", "")[:6]
 
 
+def _format_recent_qso_rows(rows: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
+    qsos: list[dict[str, Any]] = []
+    for row in rows:
+        (
+            call,
+            qso_date,
+            time_on,
+            mode,
+            submode,
+            frequency,
+            band,
+            rst_sent,
+            rst_rcvd,
+            lotw_qsl_rcvd,
+            country,
+            gridsquare,
+            name,
+        ) = row
+        qsos.append(
+            {
+                "call": (call or "").upper(),
+                "qso_date": _format_qso_date(qso_date),
+                "time_on": _format_qso_time(time_on),
+                "mode": (submode or mode or "").upper(),
+                "frequency": frequency or 0,
+                "rst_sent": rst_sent or "",
+                "rst_rcvd": rst_rcvd or "",
+                "band": band or "",
+                "lotw_qsl": "Y"
+                if str(lotw_qsl_rcvd or "").strip().upper() in {"Y", "YES", "1", "TRUE"}
+                else "N",
+                "country": country or "",
+                "gridsquare": gridsquare or "",
+                "name": name or "",
+            }
+        )
+    return qsos
+
+
 def _get_recent_qsos_from_duckdb(callsign: str, limit: int) -> list[dict[str, Any]]:
+    normalized_limit = max(1, min(int(limit or 5), 100))
+    if should_use_postgres():
+        with connect_postgres() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT call, qso_date, time_on, mode, submode, frequency, band,
+                           rst_sent, rst_rcvd, lotw_qsl_rcvd, country, gridsquare, name
+                    FROM qso_records
+                    WHERE UPPER(call) = UPPER(%s)
+                    ORDER BY COALESCE(qso_datetime, time_on) DESC
+                    LIMIT %s
+                    """,
+                    (callsign, normalized_limit),
+                )
+                return _format_recent_qso_rows(cur.fetchall())
+
     db_path = config.DATA_DIR / "qso_log.duckdb"
     if not db_path.exists():
         return []
@@ -210,43 +267,9 @@ def _get_recent_qsos_from_duckdb(callsign: str, limit: int) -> list[dict[str, An
             ORDER BY COALESCE(qso_datetime, time_on) DESC
             LIMIT ?
             """,
-            [callsign, max(1, min(int(limit or 5), 100))],
+            [callsign, normalized_limit],
         ).fetchall()
-
-        qsos: list[dict[str, Any]] = []
-        for row in rows:
-            (
-                call,
-                qso_date,
-                time_on,
-                mode,
-                submode,
-                frequency,
-                band,
-                rst_sent,
-                rst_rcvd,
-                lotw_qsl_rcvd,
-                country,
-                gridsquare,
-                name,
-            ) = row
-            qsos.append(
-                {
-                    "call": (call or "").upper(),
-                    "qso_date": _format_qso_date(qso_date),
-                    "time_on": _format_qso_time(time_on),
-                    "mode": (submode or mode or "").upper(),
-                    "frequency": frequency or 0,
-                    "rst_sent": rst_sent or "",
-                    "rst_rcvd": rst_rcvd or "",
-                    "band": band or "",
-                    "lotw_qsl": "Y" if str(lotw_qsl_rcvd or "").strip().upper() in {"Y", "YES", "1", "TRUE"} else "N",
-                    "country": country or "",
-                    "gridsquare": gridsquare or "",
-                    "name": name or "",
-                }
-            )
-        return qsos
+        return _format_recent_qso_rows(rows)
     finally:
         conn.close()
 
@@ -398,7 +421,7 @@ async def log_qso(qso: QSORequest):
         raise
     except Exception as e:
         logger.error(f"❌ Unexpected QSO logging error: {str(e)}", exc_info=True)
-        logger.error(f"   Full traceback available above", exc_info=False)
+        logger.error("   Full traceback available above", exc_info=False)
         raise HTTPException(
             status_code=500,
             detail=f"QSO logging failed: {type(e).__name__}: {str(e)}"

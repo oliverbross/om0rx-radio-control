@@ -1,4 +1,4 @@
-"""DuckDB persistence for Activity Intelligence."""
+"""Persistence for Activity Intelligence."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from typing import Any
 import duckdb
 
 from radio_control import config
+from radio_control.postgres_store import connect as connect_postgres
+from radio_control.postgres_store import should_use_postgres
 
 from .adapters import iso_utc, stable_id
 from .models import (
@@ -41,13 +43,58 @@ def _from_json(value: str | None) -> Any:
         return None
 
 
+class _PostgresActivityResult:
+    def __init__(self, rows: list[tuple[Any, ...]] | None = None):
+        self._rows = rows or []
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return self._rows
+
+    def fetchone(self) -> tuple[Any, ...] | None:
+        return self._rows[0] if self._rows else None
+
+
+class _PostgresActivityConnection:
+    """Tiny DuckDB-style adapter for the activity repository's simple SQL."""
+
+    def __init__(self):
+        self._context = connect_postgres()
+        self._conn = self._context.__enter__()
+
+    def execute(self, query: str, params: list[Any] | tuple[Any, ...] | None = None) -> _PostgresActivityResult:
+        sql = self._translate_sql(query)
+        with self._conn.cursor() as cur:
+            cur.execute(sql, params or [])
+            rows = cur.fetchall() if cur.description else []
+        return _PostgresActivityResult(rows)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._context.__exit__(None, None, None)
+
+    def _translate_sql(self, query: str) -> str:
+        sql = query.replace("?", "%s")
+        sql = sql.replace("DOUBLE DEFAULT", "DOUBLE PRECISION DEFAULT")
+        sql = sql.replace(" DOUBLE,", " DOUBLE PRECISION,")
+        sql = sql.replace(" DOUBLE\n", " DOUBLE PRECISION\n")
+        sql = sql.replace("INSERT OR IGNORE INTO ai_raw_source_payloads", "INSERT INTO ai_raw_source_payloads")
+        if "INSERT INTO ai_raw_source_payloads" in sql and "ON CONFLICT" not in sql:
+            sql += " ON CONFLICT (source_id, content_hash) DO NOTHING"
+        return sql
+
+
 class ActivityRepository:
-    """Small DuckDB cache for external source state and normalized activities."""
+    """Small cache for external source state and normalized activities."""
 
     def __init__(self, db_path: str | Path | None = None):
-        self.db_path = Path(db_path or (config.DATA_DIR / "activity_intelligence.duckdb"))
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = duckdb.connect(str(self.db_path))
+        self.db_path = Path(db_path) if db_path else config.DATA_DIR / "activity_intelligence.duckdb"
+        if db_path is None and should_use_postgres():
+            self.conn = _PostgresActivityConnection()
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = duckdb.connect(str(self.db_path))
         self._initialize_schema()
 
     def _initialize_schema(self) -> None:
@@ -547,7 +594,10 @@ class ActivityRepository:
             clauses = ["activator_call = ?"]
             params: list[Any] = [call]
             for token in tokens[:6]:
-                clauses.append("contains(upper(references_json), ?)")
+                if isinstance(self.conn, _PostgresActivityConnection):
+                    clauses.append("position(? in upper(references_json)) > 0")
+                else:
+                    clauses.append("contains(upper(references_json), ?)")
                 params.append(token)
             rows = self.conn.execute(
                 f"""

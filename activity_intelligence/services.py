@@ -14,6 +14,8 @@ import duckdb
 import httpx
 
 from radio_control import config
+from radio_control.postgres_store import connect as connect_postgres
+from radio_control.postgres_store import should_use_postgres
 from radio_control.rotor_math import bearing_from_coordinates, grid_to_latlon
 from radio_control.spot_intelligence import score_spot as base_score_spot
 
@@ -303,7 +305,6 @@ class ActivityIntelligenceService:
                 )
 
         current_contests = self.contest_context(spot.get("band"), spot.get("mode")).get("candidates", [])
-        spot_mode = str(spot.get("mode") or "").upper()
         for contest in current_contests[:2]:
             tags.append(ActivityTag("CONTEST_ACTIVE", contest.get("name", "Contest active"), 0.72, contest.get("source_id", "WA7BNM"), contest.get("id")))
             ai_score += int(weights.get("contestActiveBandMode", 10))
@@ -862,21 +863,25 @@ class ActivityIntelligenceService:
         reference = str(reference or "").upper().strip()
         if not reference:
             return {"worked": False, "count": 0, "status": "unknown"}
-        if not self.qso_db_path.exists():
+        use_postgres = should_use_postgres()
+        if not use_postgres and not self.qso_db_path.exists():
             return {"worked": False, "count": 0, "status": "no-cache"}
         field = {"POTA": "pota_ref", "SOTA": "sota_ref", "WWFF": "wwff_ref"}.get(program)
         clauses = []
         params: list[Any] = []
+        placeholder = "%s" if use_postgres else "?"
         if field:
-            clauses.append(f"upper(coalesce({field}, '')) = ?")
+            clauses.append(f"upper(coalesce({field}, '')) = {placeholder}")
             params.append(reference)
-        clauses.append("(upper(coalesce(sig, '')) = ? AND upper(coalesce(sig_info, '')) = ?)")
+        clauses.append(
+            f"(upper(coalesce(sig, '')) = {placeholder} AND upper(coalesce(sig_info, '')) = {placeholder})"
+        )
         params.extend([program, reference])
-        clauses.append("upper(coalesce(comment, '')) LIKE ?")
+        clauses.append(f"upper(coalesce(comment, '')) LIKE {placeholder}")
         params.append(f"%{reference}%")
         call_clause = ""
         if callsign:
-            call_clause = " AND upper(coalesce(call, '')) = ?"
+            call_clause = f" AND upper(coalesce(call, '')) = {placeholder}"
             params.append(_normalize_call(callsign))
         query = f"""
             SELECT COUNT(*) AS count, MAX(coalesce(qso_datetime, time_on)) AS last_worked
@@ -884,11 +889,17 @@ class ActivityIntelligenceService:
             WHERE ({' OR '.join(clauses)}){call_clause}
         """
         try:
-            conn = duckdb.connect(str(self.qso_db_path), read_only=True)
-            try:
-                row = conn.execute(query, params).fetchone()
-            finally:
-                conn.close()
+            if use_postgres:
+                with connect_postgres() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(query, params)
+                        row = cur.fetchone()
+            else:
+                conn = duckdb.connect(str(self.qso_db_path), read_only=True)
+                try:
+                    row = conn.execute(query, params).fetchone()
+                finally:
+                    conn.close()
         except Exception:
             logger.debug("Portable reference status lookup failed for %s %s", program, reference, exc_info=True)
             return {"worked": False, "count": 0, "status": "unavailable"}

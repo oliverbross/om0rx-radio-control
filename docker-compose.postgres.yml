@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: om0rx-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: om0rx_radio_control
+      POSTGRES_USER: om0rx
+      POSTGRES_PASSWORD: om0rx_local_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - om0rx_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U om0rx -d om0rx_radio_control"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  om0rx_postgres_data:
