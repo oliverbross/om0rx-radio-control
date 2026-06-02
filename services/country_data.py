@@ -66,12 +66,12 @@ def load_zone_overlay_data():
 
 
 def load_admin1_overlay_data():
-    """Load US state and Canada province overlay boundaries."""
+    """Load admin-1 overlay boundaries used by the visual map."""
     global _admin1_overlay_cache
     if _admin1_overlay_cache is not None:
         return _admin1_overlay_cache
 
-    data_path = config.DATA_DIR / "visual-admin1-us-ca.geojson"
+    data_path = config.DATA_DIR / "visual-admin1-overlays.geojson"
     if not data_path.exists():
         logger.warning(f"Admin-1 overlay data file not found: {data_path}")
         return None
@@ -80,7 +80,7 @@ def load_admin1_overlay_data():
         with open(data_path, 'r', encoding='utf-8') as f:
             _admin1_overlay_cache = json.load(f)
 
-        logger.info("✅ US/Canada admin-1 overlay data loaded successfully")
+        logger.info("✅ Admin-1 overlay data loaded successfully")
         return _admin1_overlay_cache
     except Exception as e:
         logger.error(f"Error loading admin-1 overlay data: {e}")
@@ -236,7 +236,7 @@ async def get_zone_overlay_data():
 
 @router.get("/api/admin1-overlays")
 async def get_admin1_overlay_data():
-    """Get US state and Canada province overlay boundary data."""
+    """Get admin-1 overlay boundary data for visual map layers."""
     data = load_admin1_overlay_data()
     if not data:
         raise HTTPException(status_code=404, detail="Admin-1 overlay data not available")

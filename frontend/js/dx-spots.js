@@ -2036,6 +2036,10 @@ const dxSpotsMethods = {
             this.visualMapMode = 'globe';
             this.visualGlobeRotation = { lon: -96, lat: 57 };
             this.visualGlobeZoom = Math.max(Number(this.visualGlobeZoom || 1), 1.45);
+        } else if (this.visualOverlayMode === 'ru-oblasts') {
+            this.visualMapMode = 'globe';
+            this.visualGlobeRotation = { lon: 90, lat: 58 };
+            this.visualGlobeZoom = Math.max(Number(this.visualGlobeZoom || 1), 1.25);
         }
         this.queueVisualGlobeDraw();
     },
@@ -2324,7 +2328,7 @@ const dxSpotsMethods = {
     },
 
     isVisualAdmin1Overlay(mode = this.visualOverlayMode) {
-        return mode === 'us-states' || mode === 'ca-provinces';
+        return mode === 'us-states' || mode === 'ca-provinces' || mode === 'ru-oblasts';
     },
 
     async ensureVisualAdmin1Overlays() {
@@ -2690,6 +2694,9 @@ const dxSpotsMethods = {
         if (this.visualOverlayMode === 'ca-provinces') {
             return `${this.getVisualAdmin1FeaturesForMode().length} Canada provinces/territories`;
         }
+        if (this.visualOverlayMode === 'ru-oblasts') {
+            return `${this.getVisualAdmin1FeaturesForMode().length} Russian regions`;
+        }
         return `${overlay.size} DXCC/countries · ${stats.cluster} cluster / ${stats.rbl} RBL`;
     },
 
@@ -2759,7 +2766,8 @@ const dxSpotsMethods = {
     getVisualAdmin1FeaturesForMode(mode = this.visualOverlayMode) {
         const adminName = mode === 'us-states'
             ? 'United States of America'
-            : mode === 'ca-provinces' ? 'Canada' : '';
+            : mode === 'ca-provinces' ? 'Canada'
+                : mode === 'ru-oblasts' ? 'Russia' : '';
         if (!adminName) return [];
         return (this.visualAdmin1Features || []).filter(feature => (
             feature && feature.properties && feature.properties.admin === adminName

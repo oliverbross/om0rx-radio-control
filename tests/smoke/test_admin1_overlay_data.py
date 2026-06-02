@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-ADMIN1_OVERLAYS = ROOT / "data" / "visual-admin1-us-ca.geojson"
+ADMIN1_OVERLAYS = ROOT / "data" / "visual-admin1-overlays.geojson"
 
 
 def iter_coordinates(geometry):
@@ -26,11 +26,14 @@ def test_admin1_overlay_asset_has_expected_regions():
     features = payload["features"]
     us = [item for item in features if item["properties"]["admin"] == "United States of America"]
     ca = [item for item in features if item["properties"]["admin"] == "Canada"]
+    ru = [item for item in features if item["properties"]["admin"] == "Russia"]
     labels = {item["properties"]["postal"] for item in features}
 
     assert len(us) == 51
     assert len(ca) == 13
-    assert {"CA", "TX", "NY", "ON", "QC", "BC"}.issubset(labels)
+    assert len(ru) == 83
+    assert {"CA", "TX", "NY", "ON", "QC", "BC", "MOW", "MOS", "SPE", "TOM"}.issubset(labels)
+    assert all(item["properties"]["iso_3166_2"].startswith("RU-") for item in ru)
 
 
 def test_admin1_overlay_coordinates_are_valid():
