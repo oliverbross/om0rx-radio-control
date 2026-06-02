@@ -2167,8 +2167,19 @@ const dxSpotsMethods = {
         const index = {};
         (entries || []).forEach(entry => {
             const key = this.normalizeVisualCountryName(entry.country);
-            if (!key || index[key]) return;
-            index[key] = entry;
+            if (!key) return;
+            if (!index[key]) {
+                index[key] = {
+                    ...entry,
+                    prefixes: [],
+                };
+            }
+            const prefix = String(entry.prefix || entry.primaryPrefix || '')
+                .replace(/\/.*$/, '')
+                .toUpperCase();
+            if (prefix && !index[key].prefixes.includes(prefix)) {
+                index[key].prefixes.push(prefix);
+            }
         });
         return index;
     },
@@ -2551,22 +2562,27 @@ const dxSpotsMethods = {
 
     getVisualCountryStatLabel(stat, featureName = '') {
         if (!stat) return '';
+        const dxccLabel = this.getVisualFeatureDxccLabel(featureName);
+        if (dxccLabel) return dxccLabel;
         if (stat.primaryPrefix) return stat.primaryPrefix;
         const prefixes = [...(stat.prefixes || [])]
             .filter(Boolean)
             .sort((a, b) => a.length - b.length || a.localeCompare(b));
         if (prefixes.length) return prefixes[0];
-        const key = this.normalizeVisualCountryName(featureName);
-        return key.slice(0, 3);
+        return '';
     },
 
     getVisualFeatureDxccLabel(featureName = '') {
         const info = this.getVisualCtyCountryInfo(featureName);
-        if (info && info.primaryPrefix) {
-            return String(info.primaryPrefix).replace(/\/.*$/, '').toUpperCase();
-        }
-        const key = this.normalizeVisualCountryName(featureName);
-        return key.slice(0, 3);
+        if (!info) return '';
+        const key = this.normalizeVisualCountryName(featureName || info.country);
+        const specialLabels = {
+            GERMANY: 'DA-DR',
+        };
+        if (specialLabels[key]) return specialLabels[key];
+        return String(info.primaryPrefix || info.prefix || '')
+            .replace(/\/.*$/, '')
+            .toUpperCase();
     },
 
     buildVisualCountryColorMap(overlayStats) {
@@ -2863,11 +2879,11 @@ const dxSpotsMethods = {
         const lineColor = isCq ? 'rgba(251, 191, 36, 0.72)' : 'rgba(56, 189, 248, 0.72)';
         const activeFill = isCq ? 'rgba(120, 75, 0, 0.82)' : 'rgba(8, 80, 112, 0.82)';
         const activeStroke = isCq ? '#fbbf24' : '#38bdf8';
-        const passiveText = isCq ? 'rgba(253, 230, 138, 0.58)' : 'rgba(186, 230, 253, 0.58)';
+        const passiveText = isCq ? 'rgba(253, 230, 138, 0.82)' : 'rgba(186, 230, 253, 0.82)';
 
         ctx.save();
         ctx.strokeStyle = lineColor;
-        ctx.lineWidth = Math.max(1.2, Math.min(2.4, Number(this.visualGlobeZoom || 1) * 0.85));
+        ctx.lineWidth = Math.max(1.6, Math.min(3.2, Number(this.visualGlobeZoom || 1) * 1.05));
         ctx.setLineDash([6, 4]);
         (overlay.lines || []).forEach(line => {
             ctx.beginPath();
@@ -2879,7 +2895,7 @@ const dxSpotsMethods = {
         ctx.save();
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.font = '900 11px system-ui, sans-serif';
+        ctx.font = '900 14px system-ui, sans-serif';
         const showPassiveLabels = Number(this.visualGlobeZoom || 1) >= 1.0;
         (overlay.labels || []).forEach(label => {
             const zone = String(label.zone);
@@ -2888,16 +2904,16 @@ const dxSpotsMethods = {
             const point = this.projectVisualGlobe(label.lon, label.lat, width, height);
             if (!point || !point.visible || point.cosc < 0.08) return;
             const text = this.visualOverlayMode === 'cq' ? `CQ ${label.zone}` : `ITU ${label.zone}`;
-            const widthPx = ctx.measureText(text).width + 10;
+            const widthPx = ctx.measureText(text).width + 14;
             if (zoneActivity) {
                 ctx.fillStyle = activeFill;
                 ctx.strokeStyle = activeStroke;
                 ctx.lineWidth = 1;
                 ctx.beginPath();
                 if (typeof ctx.roundRect === 'function') {
-                    ctx.roundRect(point.x - widthPx / 2, point.y - 9, widthPx, 18, 4);
+                    ctx.roundRect(point.x - widthPx / 2, point.y - 12, widthPx, 24, 5);
                 } else {
-                    ctx.rect(point.x - widthPx / 2, point.y - 9, widthPx, 18);
+                    ctx.rect(point.x - widthPx / 2, point.y - 12, widthPx, 24);
                 }
                 ctx.fill();
                 ctx.stroke();
@@ -2937,17 +2953,17 @@ const dxSpotsMethods = {
         ctx.save();
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.font = '900 10px system-ui, sans-serif';
-        labels.slice(0, 70).forEach(item => {
-            const widthPx = ctx.measureText(item.text).width + 12;
+        ctx.font = '900 13px system-ui, sans-serif';
+        labels.slice(0, 90).forEach(item => {
+            const widthPx = ctx.measureText(item.text).width + 14;
             ctx.fillStyle = isCq ? 'rgba(120, 75, 0, 0.86)' : 'rgba(8, 80, 112, 0.86)';
             ctx.strokeStyle = item.stat.needed > 0 ? '#f97316' : (isCq ? '#fbbf24' : '#38bdf8');
             ctx.lineWidth = 1.2;
             ctx.beginPath();
             if (typeof ctx.roundRect === 'function') {
-                ctx.roundRect(item.point.x - widthPx / 2, item.point.y - 9, widthPx, 18, 4);
+                ctx.roundRect(item.point.x - widthPx / 2, item.point.y - 11, widthPx, 22, 5);
             } else {
-                ctx.rect(item.point.x - widthPx / 2, item.point.y - 9, widthPx, 18);
+                ctx.rect(item.point.x - widthPx / 2, item.point.y - 11, widthPx, 22);
             }
             ctx.fill();
             ctx.stroke();
@@ -2959,7 +2975,8 @@ const dxSpotsMethods = {
 
     drawVisualDxccLabels(ctx, width, height, overlayStats) {
         if (this.visualOverlayMode !== 'dxcc') return;
-        const showPassiveLabels = Number(this.visualGlobeZoom || 1) >= 1.65;
+        const zoom = Number(this.visualGlobeZoom || 1);
+        const fontSize = Math.max(12, Math.min(16, Math.round(10 + zoom * 2)));
 
         const labels = (this.visualTopoFeatures || [])
             .map(feature => {
@@ -2967,43 +2984,55 @@ const dxSpotsMethods = {
                 const key = this.normalizeVisualCountryName(name);
                 const stat = overlayStats.get(key);
                 const centroid = this.getVisualTopoCountryInfo(name);
-                if ((!stat && !showPassiveLabels) || !centroid) return null;
+                const label = this.getVisualFeatureDxccLabel(name);
+                if (!label || !centroid) return null;
                 const point = this.projectVisualGlobe(centroid.longitude, centroid.latitude, width, height);
-                if (!point || !point.visible || point.cosc < 0.10) return null;
+                if (!point || !point.visible || point.cosc < 0.04) return null;
                 return {
                     key,
                     point,
                     stat,
                     active: Boolean(stat),
-                    label: stat ? this.getVisualCountryStatLabel(stat, name) : this.getVisualFeatureDxccLabel(name),
+                    label: stat ? this.getVisualCountryStatLabel(stat, name) : label,
                 };
             })
             .filter(Boolean)
-            .sort((a, b) => Number(b.stat && b.stat.count || 0) - Number(a.stat && a.stat.count || 0));
+            .sort((a, b) => Number(a.active) - Number(b.active) ||
+                Number(a.point.cosc || 0) - Number(b.point.cosc || 0) ||
+                Number(a.stat && a.stat.count || 0) - Number(b.stat && b.stat.count || 0));
 
         ctx.save();
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.font = '900 10px system-ui, sans-serif';
-        labels.slice(0, 80).forEach(item => {
+        ctx.font = `900 ${fontSize}px system-ui, sans-serif`;
+        labels.forEach(item => {
             const label = item.label;
-            const widthPx = ctx.measureText(label).width + 10;
+            const widthPx = ctx.measureText(label).width + (item.active ? 14 : 10);
+            const heightPx = item.active ? fontSize + 10 : fontSize + 7;
+            if (!item.active) {
+                ctx.lineWidth = 2.4;
+                ctx.strokeStyle = 'rgba(241, 245, 249, 0.58)';
+                ctx.strokeText(label, item.point.x, item.point.y);
+                ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+                ctx.fillText(label, item.point.x, item.point.y);
+                return;
+            }
             ctx.fillStyle = item.stat && item.stat.lowConfidence >= item.stat.count
                 ? 'rgba(15, 23, 42, 0.74)'
-                : item.active ? 'rgba(3, 7, 18, 0.82)' : 'rgba(15, 23, 42, 0.45)';
+                : 'rgba(3, 7, 18, 0.82)';
             ctx.strokeStyle = item.stat && item.stat.needed > 0
                 ? '#f97316'
-                : item.active ? 'rgba(248, 250, 252, 0.62)' : 'rgba(148, 163, 184, 0.38)';
-            ctx.lineWidth = 1;
+                : 'rgba(248, 250, 252, 0.66)';
+            ctx.lineWidth = 1.2;
             ctx.beginPath();
             if (typeof ctx.roundRect === 'function') {
-                ctx.roundRect(item.point.x - widthPx / 2, item.point.y - 8, widthPx, 16, 4);
+                ctx.roundRect(item.point.x - widthPx / 2, item.point.y - heightPx / 2, widthPx, heightPx, 5);
             } else {
-                ctx.rect(item.point.x - widthPx / 2, item.point.y - 8, widthPx, 16);
+                ctx.rect(item.point.x - widthPx / 2, item.point.y - heightPx / 2, widthPx, heightPx);
             }
             ctx.fill();
             ctx.stroke();
-            ctx.fillStyle = item.active ? '#f8fafc' : 'rgba(226, 232, 240, 0.70)';
+            ctx.fillStyle = item.active ? '#f8fafc' : 'rgba(241, 245, 249, 0.86)';
             ctx.fillText(label, item.point.x, item.point.y);
         });
         ctx.restore();
