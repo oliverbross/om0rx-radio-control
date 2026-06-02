@@ -524,14 +524,14 @@ const dxSpotsMethods = {
     
     // === Filtered Search (Database Query) ===
     
-    async performFilteredSearch() {
+    async performFilteredSearch(options = {}) {
         /**
          * Query spots from DuckDB database when filters are applied
          * This allows access to all historical spots, not just the cached recent ones
          */
         try {
             // Check if any filter is active
-            const hasFilters = this.hasActiveFilters();
+            const hasFilters = this.hasActiveFilters() || Boolean(options.forceSourceSearch);
             
             if (!hasFilters) {
                 console.log('ℹ️ No filters active, using cache');
@@ -606,6 +606,10 @@ const dxSpotsMethods = {
                 this.dxSpots = this.queuedRealtimeSpots.concat(this.dxSpots);
                 this.queuedRealtimeSpots = [];
             }
+
+            if (typeof this.queueVisualGlobeDraw === 'function') {
+                this.queueVisualGlobeDraw();
+            }
         }
     },
     
@@ -630,6 +634,14 @@ const dxSpotsMethods = {
             rblFilterActive ||
             this.spotsFilter.workedB4Include ||
             this.spotsFilter.workedB4Exclude
+        );
+    },
+
+    hasDatabaseBackedSpotResults() {
+        return Boolean(
+            this.filteredSearchResults.length > 0 &&
+            this.lastSearchFilter &&
+            Array.isArray(this.lastSearchFilter.spot_sources)
         );
     },
     
@@ -3950,7 +3962,7 @@ const dxSpotsComputed = {
         // - Real-time spots are added to filteredSearchResults when they match filters
         
         // If database search results are available, use them
-        if (this.hasActiveFilters() && this.filteredSearchResults.length > 0) {
+        if ((this.hasActiveFilters() || this.hasDatabaseBackedSpotResults()) && this.filteredSearchResults.length > 0) {
             console.log(`📊 Using ${this.filteredSearchResults.length} spots from database search`);
             
             // Apply local-only filters: worked b4 and DXCC status

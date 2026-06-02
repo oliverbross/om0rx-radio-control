@@ -510,7 +510,7 @@ function mountVueApp() {
                     clearTimeout(this.spotsFilterDebounceTimer);
                 }
                 this.spotsFilterDebounceTimer = setTimeout(() => {
-                    this.performFilteredSearch();
+                    this.performFilteredSearch({ forceSourceSearch: true });
                 }, 300);
             },
             deep: true  // Watch nested properties in the filter object
@@ -518,9 +518,9 @@ function mountVueApp() {
         
         // Watch for maxSpots changes to refetch with new limit if filters are active
         maxSpots() {
-            if (this.hasActiveFilters() && this.filteredSearchResults.length > 0) {
+            if ((this.hasActiveFilters() || this.hasDatabaseBackedSpotResults()) && this.filteredSearchResults.length > 0) {
                 console.log(`🔄 maxSpots changed to ${this.maxSpots}, refetching...`);
-                this.performFilteredSearch();
+                this.performFilteredSearch({ forceSourceSearch: true });
             }
         },
 
@@ -535,7 +535,9 @@ function mountVueApp() {
         // Watch for spots changes (removed solar overlays)
         filteredSpots: {
             handler(newSpots) {
-                // Spots updated
+                if (this.viewMode === 'visual' && typeof this.queueVisualGlobeDraw === 'function') {
+                    this.queueVisualGlobeDraw();
+                }
             },
             immediate: false
         },
@@ -560,6 +562,9 @@ function mountVueApp() {
             this.viewMode = mode;
             if (mode === 'log') {
                 this.loadLogEntries();
+            } else if (mode === 'visual') {
+                this.performFilteredSearch({ forceSourceSearch: true });
+                this.$nextTick(() => this.queueVisualGlobeDraw());
             }
         },
         
@@ -1192,6 +1197,7 @@ function mountVueApp() {
             
             // Load worked callsigns from Wavelog
             await this.loadWorkedCallsigns();
+            await this.performFilteredSearch({ forceSourceSearch: true });
             await this.loadQsoOutboxStatus();
             
             // Load rotor status if enabled

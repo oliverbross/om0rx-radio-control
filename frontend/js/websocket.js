@@ -95,6 +95,10 @@ const websocketMethods = {
                     if (this.dxSpots.length > this.maxSpots) {
                         this.dxSpots = this.dxSpots.slice(0, this.maxSpots);
                     }
+
+                    if (this.viewMode === 'visual' && typeof this.queueVisualGlobeDraw === 'function') {
+                        this.queueVisualGlobeDraw();
+                    }
                     
                     // Sync to popup window if open
                     if (this.spotsDetached) {
