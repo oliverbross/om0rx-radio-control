@@ -82,7 +82,7 @@ const dxSpotsData = {
     visualMapMode: 'globe',
     visualOverlayMode: 'dxcc',
     visualPathColorBy: 'band',
-    visualPathWidth: 1.4,
+    visualPathWidth: 2.1,
     visualLocationConfidence: 'all',
     visualTopoFeatures: [],
     visualTopoLoading: false,
@@ -2952,12 +2952,12 @@ const dxSpotsMethods = {
 
     getVisualPathLineWidth(path) {
         const score = Number(path && path.score || 0);
-        const base = score >= 80 ? 1.55 : score >= 55 ? 1.22 : 0.92;
-        return Math.max(0.75, Math.min(5.5, base * Number(this.visualPathWidth || 1.4)));
+        const base = score >= 80 ? 1.72 : score >= 55 ? 1.38 : 1.08;
+        return Math.max(1.15, Math.min(7.2, base * Number(this.visualPathWidth || 2.1)));
     },
 
     getVisualPathHitTolerance() {
-        return Math.max(8, 5 + Number(this.visualPathWidth || 1.4) * 4);
+        return Math.max(10, 6 + Number(this.visualPathWidth || 2.1) * 4.5);
     },
 
     drawVisualGeometryPath(ctx, geometry, width, height) {
@@ -3361,10 +3361,10 @@ const dxSpotsMethods = {
                 pathCtx.save();
                 pathCtx.globalAlpha = 0.86;
                 pathCtx.beginPath();
-                pathCtx.arc(fromPoint.x, fromPoint.y, 2.6, 0, Math.PI * 2);
+                pathCtx.arc(fromPoint.x, fromPoint.y, 3.4, 0, Math.PI * 2);
                 pathCtx.fillStyle = path.color;
                 pathCtx.strokeStyle = '#071018';
-                pathCtx.lineWidth = 1;
+                pathCtx.lineWidth = 1.4;
                 pathCtx.fill();
                 pathCtx.stroke();
                 pathCtx.restore();

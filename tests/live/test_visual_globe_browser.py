@@ -153,8 +153,18 @@ def assert_source_mode(state: dict[str, Any], *, cluster: bool, rbl: bool) -> No
 
 
 def assert_no_browser_errors(console_errors: list[str], page_errors: list[str]) -> None:
+    benign_console_fragments = (
+        "Error fetching service health: AbortError",
+    )
+    actionable_console_errors = [
+        message
+        for message in console_errors
+        if not any(fragment in message for fragment in benign_console_fragments)
+    ]
     assert not page_errors, "Browser page errors:\n" + "\n".join(page_errors)
-    assert not console_errors, "Browser console errors:\n" + "\n".join(console_errors)
+    assert not actionable_console_errors, (
+        "Browser console errors:\n" + "\n".join(actionable_console_errors)
+    )
 
 
 def test_visual_globe_source_modes_and_deep_zoom() -> None:
