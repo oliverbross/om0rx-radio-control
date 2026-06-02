@@ -377,6 +377,7 @@
                             </select>
                             <button @click="zoomVisualGlobe(1.2)" class="visual-icon-btn" title="Zoom in">+</button>
                             <button @click="zoomVisualGlobe(0.83)" class="visual-icon-btn" title="Zoom out">-</button>
+                            <span class="visual-zoom-pill">{{ getVisualGlobeZoomLabel() }}</span>
                             <button @click="resetVisualGlobeView" class="visual-icon-btn" title="Reset globe">Reset</button>
                             <button @click="centerVisualGlobeOnHome" class="visual-icon-btn" title="Center on configured station grid">QTH</button>
                             <select v-model="visualPathColorBy" @change="queueVisualGlobeDraw" class="visual-overlay-select visual-path-color-select">

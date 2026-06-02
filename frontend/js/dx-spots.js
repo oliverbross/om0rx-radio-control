@@ -108,6 +108,7 @@ const dxSpotsData = {
     visualFallbackSpots: [],
     visualFallbackLoading: false,
     visualFallbackFilterKey: '',
+    visualGlobeMaxZoom: 9,
     visualOverlayPalette: [
         'rgba(121, 201, 176, 0.58)',
         'rgba(245, 184, 100, 0.56)',
@@ -2124,6 +2125,10 @@ const dxSpotsMethods = {
         this.queueVisualGlobeDraw();
     },
 
+    getVisualGlobeZoomLabel() {
+        return `${Number(this.visualGlobeZoom || 1).toFixed(1)}x`;
+    },
+
     handleVisualOverlayModeChange() {
         if (this.visualOverlayMode === 'us-states') {
             this.visualMapMode = 'globe';
@@ -3198,7 +3203,8 @@ const dxSpotsMethods = {
     drawVisualDxccLabels(ctx, width, height, overlayStats) {
         if (this.visualOverlayMode !== 'dxcc') return;
         const zoom = Number(this.visualGlobeZoom || 1);
-        const fontSize = Math.max(12, Math.min(16, Math.round(10 + zoom * 2)));
+        const fontSize = Math.max(12, Math.min(19, Math.round(10 + zoom * 1.65)));
+        const maxLabels = zoom >= 6 ? 80 : zoom >= 3 ? 110 : 150;
 
         const labels = (this.visualTopoFeatures || [])
             .map(feature => {
@@ -3221,7 +3227,8 @@ const dxSpotsMethods = {
             .filter(Boolean)
             .sort((a, b) => Number(a.active) - Number(b.active) ||
                 Number(a.point.cosc || 0) - Number(b.point.cosc || 0) ||
-                Number(a.stat && a.stat.count || 0) - Number(b.stat && b.stat.count || 0));
+                Number(a.stat && a.stat.count || 0) - Number(b.stat && b.stat.count || 0))
+            .slice(-maxLabels);
 
         ctx.save();
         ctx.textAlign = 'center';
@@ -3423,7 +3430,8 @@ const dxSpotsMethods = {
     },
 
     zoomVisualGlobe(factor) {
-        this.visualGlobeZoom = Math.max(0.55, Math.min(5.5, Number(this.visualGlobeZoom || 1) * Number(factor || 1)));
+        const maxZoom = Number(this.visualGlobeMaxZoom || 9);
+        this.visualGlobeZoom = Math.max(0.55, Math.min(maxZoom, Number(this.visualGlobeZoom || 1) * Number(factor || 1)));
         this.queueVisualGlobeDraw();
     },
 
@@ -3442,7 +3450,7 @@ const dxSpotsMethods = {
     },
 
     onVisualGlobeWheel(event) {
-        this.zoomVisualGlobe(event.deltaY < 0 ? 1.18 : 0.85);
+        this.zoomVisualGlobe(event.deltaY < 0 ? 1.24 : 0.82);
     },
 
     startVisualGlobeDrag(event) {
