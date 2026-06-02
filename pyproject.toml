@@ -26,6 +26,9 @@ dev = [
   "pytest>=8.0.0",
   "ruff>=0.8.0",
 ]
+browser = [
+  "playwright>=1.45.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["backend*", "radio_control*", "services*"]

@@ -7,6 +7,7 @@
   "scripts": {
     "check": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/maintenance/check_project.ps1",
     "check:frontend": "python tests/smoke/test_frontend_module_contracts.py",
+    "check:visual-live": "python -m pytest tests/live/test_visual_globe_browser.py -q",
     "start:sdc": "node bridge/sdc-bridge-server.js",
     "start:sdc:debug": "node --inspect bridge/sdc-bridge-server.js"
   },
