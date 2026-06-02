@@ -81,6 +81,7 @@ const dxSpotsData = {
     visualSpotLatestOnly: true,
     visualMapMode: 'globe',
     visualOverlayMode: 'dxcc',
+    visualPathColorBy: 'band',
     visualTopoFeatures: [],
     visualTopoLoading: false,
     visualTopoError: '',
@@ -2101,6 +2102,12 @@ const dxSpotsMethods = {
         return { value, exact };
     },
 
+    normalizeVisualCtyLongitude(value) {
+        const longitude = Number(value);
+        if (!Number.isFinite(longitude) || Math.abs(longitude) > 180) return null;
+        return -longitude;
+    },
+
     parseVisualCtyContent(content) {
         const entries = [];
         const addToken = (country, token) => {
@@ -2125,7 +2132,7 @@ const dxSpotsMethods = {
                 return;
             }
             const latitude = Number(parts[6]);
-            const longitude = Number(parts[7]);
+            const longitude = this.normalizeVisualCtyLongitude(parts[7]);
             if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
             currentCountry = {
                 country: parts[1],
@@ -2348,6 +2355,13 @@ const dxSpotsMethods = {
         return colors[this.getVisualModeGroup(spot)] || colors.OTHER;
     },
 
+    getVisualPathColor(spot) {
+        if (this.visualPathColorBy === 'mode') {
+            return this.getVisualModeColor(spot);
+        }
+        return this.getVisualBandColor(spot && spot.band);
+    },
+
     getVisualCountryPaletteColor(countryKey, stat, featureName = '') {
         const palette = this.visualOverlayPalette || [];
         if (palette.length === 0) return 'rgba(121, 201, 176, 0.58)';
@@ -2476,8 +2490,9 @@ const dxSpotsMethods = {
     },
 
     getVisualZoneColor(value, maxValue, alpha = 0.48) {
-        const hue = Math.round((Number(value || 0) / Math.max(1, maxValue)) * 280 + 25);
-        return `hsla(${hue}, 70%, 62%, ${alpha})`;
+        const zone = Math.max(1, Number(value || 1));
+        const hue = Math.round((zone * 47) % 360);
+        return `hsla(${hue}, 72%, 66%, ${alpha})`;
     },
 
     projectVisualGlobe(lon, lat, width, height) {
@@ -2530,7 +2545,7 @@ const dxSpotsMethods = {
         const screenPoints = [];
         ctx.beginPath();
         points.forEach(point => {
-            if (!point || !point.visible) {
+            if (!point || !point.visible || point.cosc < 0.04) {
                 drawing = false;
                 return;
             }
@@ -2766,7 +2781,15 @@ const dxSpotsMethods = {
 
     resetVisualGlobeView() {
         this.visualGlobeZoom = 1.1;
-        this.visualGlobeRotation = { lon: -15, lat: 25 };
+        this.centerVisualGlobeOnHome();
+    },
+
+    centerVisualGlobeOnHome() {
+        const home = this.getVisualHomeLocation();
+        this.visualGlobeRotation = {
+            lon: Number(home.lon || 0),
+            lat: Math.max(-65, Math.min(65, Number(home.lat || 0))),
+        };
         this.queueVisualGlobeDraw();
     },
 
@@ -3049,7 +3072,8 @@ const dxSpotsMethods = {
                         to: item.location,
                         distanceKm: pathDistanceKm,
                         modeGroup: this.getVisualModeGroup(item.spot),
-                        color: this.getVisualModeColor(item.spot),
+                        color: this.getVisualPathColor(item.spot),
+                        colorKey: this.visualPathColorBy === 'mode' ? this.getVisualModeGroup(item.spot) : (item.spot.band || 'Unknown'),
                         score: this.getSpotScore(item.spot),
                     };
                 });
@@ -3281,14 +3305,23 @@ const dxSpotsMethods = {
     },
 
     getVisualPathLegendItems() {
-        const groups = new Set(this.getVisualSpotPathItems().map(path => path.modeGroup));
-        const order = ['CW', 'SSB', 'DIGI', 'OTHER'];
-        return order
-            .filter(group => groups.has(group))
-            .map(group => ({
-                group,
-                color: this.getVisualModeColor({ mode: group === 'DIGI' ? 'FT8' : group }),
-            }));
+        const paths = this.getVisualSpotPathItems();
+        if (this.visualPathColorBy === 'mode') {
+            const groups = new Set(paths.map(path => path.modeGroup));
+            const order = ['CW', 'SSB', 'DIGI', 'OTHER'];
+            return order
+                .filter(group => groups.has(group))
+                .map(group => ({
+                    label: `${group} paths`,
+                    color: this.getVisualModeColor({ mode: group === 'DIGI' ? 'FT8' : group }),
+                }));
+        }
+        const bands = [...new Set(paths.map(path => path.spot.band || 'Unknown'))]
+            .sort((a, b) => this.availableBands.indexOf(a) - this.availableBands.indexOf(b));
+        return bands.map(band => ({
+            label: `${band} paths`,
+            color: this.getVisualBandColor(band),
+        }));
     },
 
     getVisualSpotClass(spot) {

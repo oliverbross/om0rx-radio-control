@@ -369,6 +369,11 @@
                             <button @click="zoomVisualGlobe(1.2)" class="visual-icon-btn" title="Zoom in">+</button>
                             <button @click="zoomVisualGlobe(0.83)" class="visual-icon-btn" title="Zoom out">-</button>
                             <button @click="resetVisualGlobeView" class="visual-icon-btn" title="Reset globe">Reset</button>
+                            <button @click="centerVisualGlobeOnHome" class="visual-icon-btn" title="Center on configured station grid">QTH</button>
+                            <select v-model="visualPathColorBy" @change="queueVisualGlobeDraw" class="visual-overlay-select visual-path-color-select">
+                                <option value="band">Band paths</option>
+                                <option value="mode">Mode paths</option>
+                            </select>
                         </div>
                         <span class="visual-stat-pill">{{ getVisualSpotStats().plotted }} plotted</span>
                         <span class="visual-stat-pill">{{ getVisualSpotStats().paths }} paths</span>
@@ -481,8 +486,8 @@
                                 </span>
                             </div>
                             <div v-if="getVisualPathLegendItems().length" class="visual-path-legend">
-                                <span v-for="item in getVisualPathLegendItems()" :key="item.group">
-                                    <i :style="{ backgroundColor: item.color }"></i>{{ item.group }} paths
+                                <span v-for="item in getVisualPathLegendItems()" :key="item.label">
+                                    <i :style="{ backgroundColor: item.color }"></i>{{ item.label }}
                                 </span>
                             </div>
                             <div class="visual-overlay-breakdown">

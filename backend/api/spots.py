@@ -120,7 +120,7 @@ def _clean_spotter_callsign(callsign: Any) -> str:
 
 def _cty_location_payload(callsign: str, info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     latitude = info.get("latitude")
-    longitude = info.get("longitude")
+    longitude = _normalize_cty_longitude(info.get("longitude"))
     if not (_coordinate_is_valid(latitude, 90) and _coordinate_is_valid(longitude, 180)):
         return None
     return {
@@ -134,6 +134,17 @@ def _cty_location_payload(callsign: str, info: Dict[str, Any]) -> Optional[Dict[
         "longitude": longitude,
         "location_source": "cty_prefix",
     }
+
+
+def _normalize_cty_longitude(value: Any) -> Optional[float]:
+    """Convert CTY longitude convention (west positive) to map longitude (east positive)."""
+    try:
+        longitude = float(value)
+    except (TypeError, ValueError):
+        return None
+    if abs(longitude) > 180:
+        return None
+    return -longitude
 
 
 def _enrich_spot_cty_locations(app_state: Any, spots: List[Dict[str, Any]], max_lookups: int = 500) -> None:
@@ -184,8 +195,10 @@ def _enrich_spot_cty_locations(app_state: Any, spots: List[Dict[str, Any]], max_
         has_lon = _spot_has_valid_coordinate(spot, ["longitude", "lon", "lng", "dxcc_long"], 180)
         if not has_lat and _coordinate_is_valid(info.get("latitude"), 90):
             spot["latitude"] = info.get("latitude")
-        if not has_lon and _coordinate_is_valid(info.get("longitude"), 180):
-            spot["longitude"] = info.get("longitude")
+        normalized_longitude = _normalize_cty_longitude(info.get("longitude"))
+        approximate_cty_location = spot.get("location_source") == "cty_prefix" or spot.get("location_confidence") == "low"
+        if (not has_lon or approximate_cty_location) and _coordinate_is_valid(normalized_longitude, 180):
+            spot["longitude"] = normalized_longitude
         if (not has_lat or not has_lon) and spot.get("latitude") is not None and spot.get("longitude") is not None:
             spot.setdefault("location_source", "cty_prefix")
 
