@@ -76,7 +76,9 @@ def get_country_and_zone(callsign: str) -> Optional[Dict[str, Any]]:
                     'cq_zone': info.get('cq'),
                     'itu_zone': info.get('itu'),
                     'continent': info.get('continent'),
-                    'dxcc': info.get('dxcc')
+                    'dxcc': info.get('dxcc'),
+                    'latitude': info.get('latitude'),
+                    'longitude': info.get('longitude'),
                 }
     except Exception as e:
         logger.debug(f"Error looking up country for {callsign}: {e}")

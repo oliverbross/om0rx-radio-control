@@ -5,7 +5,7 @@ Handles DX spot tuning, filtering, and spot management endpoints
 
 import logging
 import asyncio
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from typing import Any, Dict, Optional, List
 
@@ -90,6 +90,68 @@ def _build_live_source_stats(spots: List[Dict[str, Any]]) -> Dict[str, Any]:
             stats["other"] += 1
 
     return stats
+
+
+def _coordinate_is_valid(value: Any, limit: float) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return abs(number) <= limit
+
+
+def _spot_has_valid_coordinate(spot: Dict[str, Any], keys: List[str], limit: float) -> bool:
+    return any(
+        key in spot and spot.get(key) is not None and _coordinate_is_valid(spot.get(key), limit)
+        for key in keys
+    )
+
+
+def _enrich_spot_cty_locations(app_state: Any, spots: List[Dict[str, Any]], max_lookups: int = 500) -> None:
+    """Add CTY-prefix country, zone, and approximate entity coordinates when absent."""
+    cty_resolver = getattr(app_state, "cty_resolver", None)
+    if not cty_resolver:
+        return
+
+    cache: Dict[str, Dict[str, Any]] = {}
+    lookups = 0
+    for spot in spots or []:
+        callsign = (spot.get("callsign") or "").strip().upper()
+        if not callsign:
+            continue
+        if callsign not in cache:
+            if lookups >= max_lookups:
+                continue
+            try:
+                cache[callsign] = cty_resolver.lookup(callsign) or {}
+            except Exception:
+                logger.debug("CTY enrichment lookup failed for %s", callsign, exc_info=True)
+                cache[callsign] = {}
+            lookups += 1
+
+        info = cache.get(callsign) or {}
+        if not info:
+            continue
+
+        if not spot.get("country") or spot.get("country") == "UNKNOWN":
+            spot["country"] = info.get("country")
+        if spot.get("dxcc") is None and info.get("dxcc") is not None:
+            spot["dxcc"] = info.get("dxcc")
+        if not spot.get("continent") and info.get("continent"):
+            spot["continent"] = info.get("continent")
+        if not spot.get("cq") and not spot.get("cq_zone") and info.get("cq"):
+            spot["cq"] = info.get("cq")
+        if not spot.get("itu") and not spot.get("itu_zone") and info.get("itu"):
+            spot["itu"] = info.get("itu")
+
+        has_lat = _spot_has_valid_coordinate(spot, ["latitude", "lat", "dxcc_lat"], 90)
+        has_lon = _spot_has_valid_coordinate(spot, ["longitude", "lon", "lng", "dxcc_long"], 180)
+        if not has_lat and _coordinate_is_valid(info.get("latitude"), 90):
+            spot["latitude"] = info.get("latitude")
+        if not has_lon and _coordinate_is_valid(info.get("longitude"), 180):
+            spot["longitude"] = info.get("longitude")
+        if (not has_lat or not has_lon) and spot.get("latitude") is not None and spot.get("longitude") is not None:
+            spot.setdefault("location_source", "cty_prefix")
 
 
 async def _refresh_uncertain_spot_classifications(
@@ -178,6 +240,7 @@ async def get_spots(
     """Get DX spots with optional filtering (from cache only)"""
     dx_spots_cache = getattr(request.app.state, 'dx_spots_cache', [])
     await _refresh_uncertain_spot_classifications(request.app.state, dx_spots_cache)
+    _enrich_spot_cty_locations(request.app.state, dx_spots_cache)
     filtered_spots = dx_spots_cache
     
     # Apply filters
@@ -219,6 +282,26 @@ async def get_spots(
         logger.debug("Could not enrich cached spots with intelligence fields", exc_info=True)
     
     return {"spots": filtered_spots}
+
+
+@router.get("/api/spots/cty-prefixes")
+async def get_cty_prefixes():
+    """Serve CTY prefix CSV for frontend-only visual spot location fallback."""
+    try:
+        from radio_control import config as app_config
+
+        cty_csv = app_config.DATA_DIR / "cty.csv"
+        if not cty_csv.exists():
+            raise HTTPException(status_code=404, detail="cty.csv not found")
+        return Response(
+            content=cty_csv.read_text(encoding="utf-8", errors="replace"),
+            media_type="text/csv",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error serving CTY prefix CSV: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/api/spots/explain/{callsign:path}")
@@ -395,6 +478,7 @@ async def search_filtered_spots(req: SpotFilterRequest, request: Request):
             rbl_dedupe_minutes=req.rbl_dedupe_minutes,
             sort_by=req.sort_by,
         )
+        _enrich_spot_cty_locations(request.app.state, spots)
         try:
             from radio_control.local_heard import correlate_local_heard
             from radio_control.spot_intelligence import enrich_spot_intelligence

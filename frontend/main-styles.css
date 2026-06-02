@@ -1594,9 +1594,55 @@
 
         .visual-map-layout {
             display: grid;
-            grid-template-columns: minmax(360px, 1fr) minmax(270px, 360px);
+            grid-template-columns: minmax(90px, 118px) minmax(360px, 1fr) minmax(270px, 360px);
             gap: 12px;
             align-items: stretch;
+        }
+
+        .visual-quick-rail {
+            display: grid;
+            align-content: start;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        .visual-quick-filter-btn {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 6px;
+            min-height: 34px;
+            padding: 6px 8px;
+            background: #1d2630;
+            border: 1px solid #334155;
+            border-radius: 5px;
+            color: #cbd5e1;
+            font-size: 11px;
+            font-weight: 800;
+            text-align: left;
+            cursor: pointer;
+        }
+
+        .visual-quick-filter-btn:hover,
+        .visual-quick-filter-btn.active {
+            background: #12345c;
+            border-color: #60a5fa;
+            color: #f8fafc;
+        }
+
+        .visual-quick-filter-btn strong {
+            min-width: 22px;
+            padding: 2px 5px;
+            border-radius: 4px;
+            background: #0f172a;
+            color: #93c5fd;
+            font-size: 10px;
+            text-align: center;
+        }
+
+        .visual-quick-filter-btn.active strong {
+            background: #1d4ed8;
+            color: #fff;
         }
 
         .visual-map-card {
@@ -1778,7 +1824,7 @@
 
         .visual-side-panel {
             display: grid;
-            grid-template-rows: auto 1fr;
+            grid-template-rows: auto auto 1fr;
             gap: 8px;
             min-width: 0;
             min-height: 420px;
@@ -1809,6 +1855,62 @@
             height: 9px;
             border-radius: 50%;
             border: 1px solid rgba(255, 255, 255, 0.35);
+        }
+
+        .visual-overlay-breakdown {
+            padding: 8px;
+            background: #17202a;
+            border: 1px solid #2d3b4b;
+            border-radius: 6px;
+        }
+
+        .visual-overlay-breakdown-title {
+            margin-bottom: 6px;
+            color: #bfdbfe;
+            font-size: 10px;
+            font-weight: 900;
+            text-transform: uppercase;
+        }
+
+        .visual-overlay-chip-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 5px;
+        }
+
+        .visual-overlay-chip {
+            min-width: 0;
+            padding: 5px 6px;
+            background: #111827;
+            border: 1px solid #334155;
+            border-radius: 4px;
+        }
+
+        .visual-overlay-chip.needed {
+            border-color: #f59e0b;
+            background: #281a08;
+        }
+
+        .visual-overlay-chip strong,
+        .visual-overlay-chip em {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .visual-overlay-chip strong {
+            color: #e5e7eb;
+            font-size: 10px;
+            font-weight: 900;
+        }
+
+        .visual-overlay-chip em {
+            margin-top: 2px;
+            color: #93c5fd;
+            font-size: 9px;
+            font-style: normal;
+            font-weight: 800;
         }
 
         .visual-spot-list {
@@ -1887,7 +1989,13 @@
 
         @media (max-width: 1240px) {
             .visual-map-layout {
-                grid-template-columns: 1fr;
+                grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+            }
+
+            .visual-quick-rail {
+                grid-column: 1 / -1;
+                grid-template-columns: repeat(7, minmax(84px, 1fr));
+                overflow-x: auto;
             }
 
             .visual-side-panel {
@@ -1896,6 +2004,12 @@
 
             .visual-spot-list {
                 max-height: 260px;
+            }
+        }
+
+        @media (max-width: 940px) {
+            .visual-map-layout {
+                grid-template-columns: 1fr;
             }
         }
 
@@ -1918,6 +2032,14 @@
             }
 
             .visual-map-layout {
+                grid-template-columns: minmax(0, 1fr);
+            }
+
+            .visual-quick-rail {
+                grid-template-columns: repeat(7, minmax(78px, 1fr));
+            }
+
+            .visual-overlay-chip-grid {
                 grid-template-columns: minmax(0, 1fr);
             }
 

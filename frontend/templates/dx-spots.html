@@ -378,6 +378,15 @@
                     </div>
 
                     <div class="visual-map-layout">
+                        <div class="visual-quick-rail" aria-label="Visual spot quick filters">
+                            <button v-for="filter in getVisualQuickFilterItems()"
+                                    :key="'visual-filter-' + filter.id"
+                                    @click="setVisualQuickFilter(filter.id)"
+                                    :class="['visual-quick-filter-btn', { active: filter.active }]">
+                                <span>{{ filter.label }}</span>
+                                <strong>{{ filter.count }}</strong>
+                            </button>
+                        </div>
                         <div class="visual-map-card">
                             <div v-if="visualMapMode === 'globe'" class="visual-globe-wrap">
                                 <canvas ref="visualGlobeCanvas"
@@ -458,6 +467,17 @@
                                     <i :style="{ backgroundColor: getVisualBandColor(band) }"></i>{{ band }}
                                 </span>
                             </div>
+                            <div class="visual-overlay-breakdown">
+                                <div class="visual-overlay-breakdown-title">{{ visualOverlayMode.toUpperCase() }} activity</div>
+                                <div class="visual-overlay-chip-grid">
+                                    <span v-for="item in getVisualOverlayBreakdown()"
+                                          :key="'overlay-' + item.key"
+                                          :class="['visual-overlay-chip', { needed: item.needed > 0 }]">
+                                        <strong>{{ item.label }}</strong>
+                                        <em>{{ item.count }} · {{ item.rbl }} RBL</em>
+                                    </span>
+                                </div>
+                            </div>
                             <div class="visual-spot-list">
                                 <button v-for="item in getVisualSpotItems().slice(0, 24)"
                                         :key="'list-' + item.key"
@@ -471,7 +491,7 @@
                                 </button>
                             </div>
                             <div v-if="getVisualSpotItems().length === 0" class="visual-empty-state">
-                                No mapped spots in the current filters. Spots need grid or latitude/longitude data to appear here.
+                                No mapped spots in the current filters. The visual map can use grid, latitude/longitude, or CTY prefix location data.
                             </div>
                         </div>
                     </div>

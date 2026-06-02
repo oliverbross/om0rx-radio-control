@@ -84,6 +84,7 @@ const dxSpotsData = {
     visualTopoFeatures: [],
     visualTopoLoading: false,
     visualTopoError: '',
+    visualTopoCountryIndex: {},
     visualGlobeZoom: 1.1,
     visualGlobeRotation: { lon: -15, lat: 25 },
     visualGlobeDragging: false,
@@ -91,6 +92,22 @@ const dxSpotsData = {
     visualGlobeDrawPending: false,
     visualGlobeRefreshTimer: null,
     visualGlobeVisibleMarkers: [],
+    visualCtyEntries: [],
+    visualCtyLoading: false,
+    visualCtyReady: false,
+    visualCtyError: '',
+    visualCtyLookupCache: {},
+    visualCtyCountryIndex: {},
+    visualSpotQuickFilter: 'all',
+    visualQuickFilters: [
+        { id: 'all', label: 'All' },
+        { id: 'needed', label: 'Needed' },
+        { id: 'hot', label: 'Hot' },
+        { id: 'cluster', label: 'Cluster' },
+        { id: 'rbl', label: 'RBL' },
+        { id: 'mapped', label: 'Mapped' },
+        { id: 'heard', label: 'Heard' },
+    ],
     
     // 🆕 Queue for real-time spots arriving during filtered search
     // These are shown after the search completes, preventing filter interruption
@@ -1986,6 +2003,7 @@ const dxSpotsMethods = {
 
     setupVisualGlobeRefresh() {
         this.cleanupVisualGlobeRefresh();
+        this.ensureVisualCtyData();
         this.visualGlobeRefreshTimer = setInterval(() => {
             if (this.viewMode === 'visual' && this.visualMapMode === 'globe') {
                 this.queueVisualGlobeDraw();
@@ -2011,6 +2029,169 @@ const dxSpotsMethods = {
         }, 0);
     },
 
+    async ensureVisualCtyData() {
+        if (this.visualCtyReady || this.visualCtyLoading) return;
+        this.visualCtyLoading = true;
+        this.visualCtyError = '';
+        try {
+            const response = await fetch('/api/spots/cty-prefixes');
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const text = await response.text();
+            this.visualCtyEntries = this.parseVisualCtyContent(text);
+            this.visualCtyCountryIndex = this.buildVisualCtyCountryIndex(this.visualCtyEntries);
+            this.visualCtyLookupCache = {};
+            this.visualCtyReady = this.visualCtyEntries.length > 0;
+        } catch (error) {
+            console.warn('Could not load visual CTY prefix data:', error);
+            this.visualCtyError = 'CTY prefix locations unavailable';
+            this.visualCtyEntries = [];
+            this.visualCtyCountryIndex = {};
+            this.visualCtyReady = false;
+        } finally {
+            this.visualCtyLoading = false;
+            this.queueVisualGlobeDraw();
+        }
+    },
+
+    splitVisualCsvLine(line) {
+        const parts = [];
+        let part = '';
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i += 1) {
+            const char = line[i];
+            if (char === '"') {
+                inQuotes = !inQuotes;
+            } else if (char === ',' && !inQuotes) {
+                parts.push(part.trim());
+                part = '';
+            } else {
+                part += char;
+            }
+        }
+        if (part.endsWith(';')) part = part.slice(0, -1);
+        parts.push(part.trim());
+        return parts;
+    },
+
+    cleanVisualCtyToken(token) {
+        const raw = String(token || '').trim();
+        if (!raw || raw === ';') return null;
+        const exact = raw.startsWith('=');
+        let value = exact ? raw.slice(1) : raw;
+        value = value
+            .replace(/;$/, '')
+            .replace(/[({<\[].*$/, '')
+            .replace(/[^A-Za-z0-9/]/g, '')
+            .toUpperCase();
+        if (!value) return null;
+        return { value, exact };
+    },
+
+    parseVisualCtyContent(content) {
+        const entries = [];
+        const addToken = (country, token) => {
+            const cleaned = this.cleanVisualCtyToken(token);
+            if (!cleaned) return;
+            entries.push({
+                ...country,
+                prefix: cleaned.value,
+                exact: cleaned.exact,
+            });
+        };
+
+        let currentCountry = null;
+        String(content || '').split(/\r?\n/).forEach(line => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            const parts = this.splitVisualCsvLine(trimmed);
+            if (parts.length < 9) {
+                if (currentCountry) {
+                    trimmed.split(',').forEach(alias => addToken(currentCountry, alias));
+                }
+                return;
+            }
+            const latitude = Number(parts[6]);
+            const longitude = Number(parts[7]);
+            if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+            currentCountry = {
+                country: parts[1],
+                dxcc: Number(parts[2]) || null,
+                continent: parts[3],
+                cq: Number(parts[4]) || null,
+                itu: Number(parts[5]) || null,
+                latitude,
+                longitude,
+            };
+            addToken(currentCountry, parts[0]);
+            String(parts[9] || '').split(/\s+/).forEach(alias => addToken(currentCountry, alias));
+        });
+
+        return entries.sort((a, b) => b.prefix.length - a.prefix.length || Number(b.exact) - Number(a.exact));
+    },
+
+    buildVisualCtyCountryIndex(entries) {
+        const index = {};
+        (entries || []).forEach(entry => {
+            const key = this.normalizeVisualCountryName(entry.country);
+            if (!key || index[key]) return;
+            index[key] = entry;
+        });
+        return index;
+    },
+
+    getVisualCountryLookupName(country) {
+        return String(country || '')
+            .replace(/^RBL\s+/i, '')
+            .trim();
+    },
+
+    getVisualCtyInfo(callsign) {
+        const call = String(callsign || '').toUpperCase().trim();
+        if (!call || !this.visualCtyReady) return null;
+        if (Object.prototype.hasOwnProperty.call(this.visualCtyLookupCache, call)) {
+            return this.visualCtyLookupCache[call];
+        }
+        const match = this.visualCtyEntries.find(entry => (
+            entry.exact ? call === entry.prefix : call.startsWith(entry.prefix)
+        )) || null;
+        this.visualCtyLookupCache[call] = match;
+        return match;
+    },
+
+    getVisualCtyCountryInfo(country) {
+        if (!country || !this.visualCtyReady) return null;
+        const key = this.normalizeVisualCountryName(this.getVisualCountryLookupName(country));
+        return this.visualCtyCountryIndex[key] || null;
+    },
+
+    hasVisualCoordinates(spot) {
+        if (!spot) return false;
+        const lat = Number(spot.latitude ?? spot.lat ?? spot.dxcc_lat);
+        const lon = Number(spot.longitude ?? spot.lon ?? spot.lng ?? spot.dxcc_long);
+        return Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+    },
+
+    enrichVisualSpotFromCty(spot) {
+        if (!spot || spot._visualCtyEnriched) return spot;
+        const info = this.getVisualCtyInfo(spot.callsign) ||
+            this.getVisualCtyCountryInfo(spot.country || spot.dxcc_entity || spot.entity) ||
+            this.getVisualTopoCountryInfo(spot.country || spot.dxcc_entity || spot.entity);
+        if (!info) return spot;
+
+        if (!spot.country || spot.country === 'UNKNOWN') spot.country = info.country;
+        if (!spot.dxcc) spot.dxcc = info.dxcc;
+        if (!spot.continent) spot.continent = info.continent;
+        if (!spot.cq && !spot.cq_zone && info.cq) spot.cq = info.cq;
+        if (!spot.itu && !spot.itu_zone && info.itu) spot.itu = info.itu;
+        if (!this.hasVisualCoordinates(spot)) {
+            spot.latitude = info.latitude;
+            spot.longitude = info.longitude;
+            spot.location_source = info.location_source || 'cty_prefix';
+        }
+        spot._visualCtyEnriched = true;
+        return spot;
+    },
+
     async ensureVisualTopoFeatures() {
         if (this.visualTopoFeatures.length > 0 || this.visualTopoLoading) return;
         this.visualTopoLoading = true;
@@ -2032,10 +2213,12 @@ const dxSpotsMethods = {
             } else {
                 this.visualTopoFeatures = [];
             }
+            this.visualTopoCountryIndex = this.buildVisualTopoCountryIndex(this.visualTopoFeatures);
         } catch (error) {
             console.warn('Could not load visual globe country topology:', error);
             this.visualTopoError = 'Country outlines unavailable';
             this.visualTopoFeatures = [];
+            this.visualTopoCountryIndex = {};
         } finally {
             this.visualTopoLoading = false;
         }
@@ -2057,11 +2240,66 @@ const dxSpotsMethods = {
             RUSSIANFEDERATION: 'RUSSIA',
             ASIATICRUSSIA: 'RUSSIA',
             EUROPEANRUSSIA: 'RUSSIA',
+            ASIATICTURKEY: 'TURKEY',
+            EUROPEANTURKEY: 'TURKEY',
             CZECHREPUBLIC: 'CZECHIA',
+            FEDREPOFGERMANY: 'GERMANY',
             FEDERALREPUBLICOFGERMANY: 'GERMANY',
+            MADEIRAISLANDS: 'PORTUGAL',
             SOUTHAFRICA: 'SOUTHAFRICA',
         };
         return aliases[raw] || raw;
+    },
+
+    getVisualGeometryCentroid(geometry) {
+        if (!geometry || !geometry.coordinates) return null;
+        const points = [];
+        const collectRing = ring => {
+            (ring || []).forEach(coord => {
+                const lon = Number(coord && coord[0]);
+                const lat = Number(coord && coord[1]);
+                if (Number.isFinite(lat) && Number.isFinite(lon)) {
+                    points.push({ lat, lon });
+                }
+            });
+        };
+        if (geometry.type === 'Polygon') {
+            geometry.coordinates.forEach(collectRing);
+        } else if (geometry.type === 'MultiPolygon') {
+            geometry.coordinates.forEach(polygon => polygon.forEach(collectRing));
+        }
+        if (points.length === 0) return null;
+        const totals = points.reduce((acc, point) => ({
+            lat: acc.lat + point.lat,
+            lon: acc.lon + point.lon,
+        }), { lat: 0, lon: 0 });
+        return {
+            latitude: totals.lat / points.length,
+            longitude: totals.lon / points.length,
+            location_source: 'country_centroid',
+        };
+    },
+
+    buildVisualTopoCountryIndex(features) {
+        const index = {};
+        (features || []).forEach(feature => {
+            const name = this.getVisualFeatureName(feature);
+            const key = this.normalizeVisualCountryName(name);
+            if (!key || index[key]) return;
+            const centroid = this.getVisualGeometryCentroid(feature.geometry);
+            if (!centroid) return;
+            index[key] = {
+                country: name,
+                ...centroid,
+            };
+        });
+        return index;
+    },
+
+    getVisualTopoCountryInfo(country) {
+        if (!country) return null;
+        const key = this.normalizeVisualCountryName(this.getVisualCountryLookupName(country));
+        return this.visualTopoCountryIndex[key] || null;
     },
 
     getVisualFeatureName(feature) {
@@ -2122,6 +2360,45 @@ const dxSpotsMethods = {
             return `${zones.size} ITU zones`;
         }
         return `${overlay.size} DXCC/countries · ${stats.cluster} cluster / ${stats.rbl} RBL`;
+    },
+
+    getVisualOverlayBreakdown() {
+        const groups = new Map();
+        this.getVisualSourceSpots().forEach(spot => {
+            let key = '';
+            let label = '';
+            if (this.visualOverlayMode === 'cq') {
+                key = this.getVisualZone(spot, 'cq');
+                label = key ? `CQ ${key}` : '';
+            } else if (this.visualOverlayMode === 'itu') {
+                key = this.getVisualZone(spot, 'itu');
+                label = key ? `ITU ${key}` : '';
+            } else {
+                key = this.normalizeVisualCountryName(spot.country || spot.dxcc_entity || spot.entity || '');
+                label = spot.country || spot.dxcc_entity || spot.entity || '';
+            }
+            if (!key || !label) return;
+            if (!groups.has(key)) {
+                groups.set(key, {
+                    key,
+                    label,
+                    count: 0,
+                    rbl: 0,
+                    cluster: 0,
+                    needed: 0,
+                    topScore: 0,
+                });
+            }
+            const item = groups.get(key);
+            item.count += 1;
+            item.topScore = Math.max(item.topScore, this.getSpotScore(spot));
+            if ((spot.spot_source || 'cluster') === 'rbl') item.rbl += 1;
+            else item.cluster += 1;
+            if (this.isVisualNeededSpot(spot)) item.needed += 1;
+        });
+        return [...groups.values()]
+            .sort((a, b) => b.needed - a.needed || b.topScore - a.topScore || b.count - a.count || a.label.localeCompare(b.label))
+            .slice(0, 10);
     },
 
     getVisualOverlayColor(stat) {
@@ -2430,6 +2707,7 @@ const dxSpotsMethods = {
 
     getSpotLocation(spot) {
         if (!spot) return null;
+        this.enrichVisualSpotFromCty(spot);
         const latValue = spot.latitude ?? spot.lat ?? spot.dxcc_lat;
         const lonValue = spot.longitude ?? spot.lon ?? spot.lng ?? spot.dxcc_long;
         const lat = Number(latValue);
@@ -2440,6 +2718,86 @@ const dxSpotsMethods = {
 
         const grid = spot.gridsquare || spot.grid || spot.grid_square || spot.locator || spot.dx_grid;
         return this.gridToLatLon(grid);
+    },
+
+    isVisualNeededSpot(spot) {
+        const callStatus = String(spot.call_status || '');
+        const dxccStatus = String(spot.dxcc_status || '');
+        return dxccStatus === 'ATNO' ||
+            callStatus.includes('New') ||
+            dxccStatus.includes('New') ||
+            dxccStatus.startsWith('C/') ||
+            dxccStatus.startsWith('W/');
+    },
+
+    isVisualHotSpot(spot) {
+        return this.getSpotScore(spot) >= 55;
+    },
+
+    getVisualQuickFilterPredicate(filterId) {
+        const id = filterId || 'all';
+        if (id === 'cluster') {
+            return spot => (spot.spot_source || 'cluster') !== 'rbl';
+        }
+        if (id === 'rbl') {
+            return spot => (spot.spot_source || 'cluster') === 'rbl';
+        }
+        if (id === 'needed') {
+            return spot => this.isVisualNeededSpot(spot);
+        }
+        if (id === 'hot') {
+            return spot => this.isVisualHotSpot(spot);
+        }
+        if (id === 'mapped') {
+            return spot => Boolean(this.getSpotLocation(spot));
+        }
+        if (id === 'heard') {
+            return spot => Boolean(spot.local_heard);
+        }
+        return () => true;
+    },
+
+    getActiveVisualQuickFilterId() {
+        if (this.visualSpotQuickFilter && this.visualSpotQuickFilter !== 'all') {
+            return this.visualSpotQuickFilter;
+        }
+        const sources = this.spotsFilter.spotSources || [];
+        if (sources.length === 1 && sources[0] === 'cluster') return 'cluster';
+        if (sources.length === 1 && sources[0] === 'rbl') return 'rbl';
+        return 'all';
+    },
+
+    setVisualQuickFilter(filterId) {
+        const id = filterId || 'all';
+        if (id === 'all') {
+            this.visualSpotQuickFilter = 'all';
+            this.showAllSpotSources();
+        } else if (id === 'cluster') {
+            this.visualSpotQuickFilter = 'all';
+            this.showOnlyClusterSpots();
+        } else if (id === 'rbl') {
+            this.visualSpotQuickFilter = 'all';
+            this.showOnlyRblSpots();
+        } else {
+            this.visualSpotQuickFilter = id;
+        }
+        this.queueVisualGlobeDraw();
+    },
+
+    getVisualQuickFilterItems() {
+        const base = this.getVisualBaseSpots();
+        const active = this.getActiveVisualQuickFilterId();
+        return this.visualQuickFilters.map(filter => ({
+            ...filter,
+            count: base.filter(this.getVisualQuickFilterPredicate(filter.id)).length,
+            active: active === filter.id,
+        }));
+    },
+
+    applyVisualQuickFilter(spots) {
+        const active = this.visualSpotQuickFilter || 'all';
+        if (active === 'all') return spots;
+        return spots.filter(this.getVisualQuickFilterPredicate(active));
     },
 
     toRadians(value) {
@@ -2467,7 +2825,7 @@ const dxSpotsMethods = {
         return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
     },
 
-    getVisualSourceSpots() {
+    getVisualBaseSpots() {
         const nowSeconds = Math.floor(Date.now() / 1000);
         const windowSeconds = Number(this.visualSpotWindowMinutes || 60) * 60;
         let spots = (this.filteredSpots || []).filter(spot => {
@@ -2488,7 +2846,11 @@ const dxSpotsMethods = {
             spots = [...latestByCall.values()];
         }
 
-        return spots;
+        return spots.map(spot => this.enrichVisualSpotFromCty(spot));
+    },
+
+    getVisualSourceSpots() {
+        return this.applyVisualQuickFilter(this.getVisualBaseSpots());
     },
 
     getVisualRawSpotItems() {
