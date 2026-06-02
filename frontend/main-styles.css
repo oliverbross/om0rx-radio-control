@@ -1708,6 +1708,85 @@
             border-color: #60a5fa;
         }
 
+        .visual-undock-btn {
+            min-width: 58px;
+        }
+
+        body[data-visual-map-standalone="true"] {
+            margin: 0;
+            min-height: 100vh;
+            background: #071018;
+            color: #e5e7eb;
+            overflow: auto;
+        }
+
+        .visual-map-standalone-app {
+            min-height: 100vh;
+            background: #071018;
+        }
+
+        .visual-map-standalone-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-height: 34px;
+            padding: 6px 10px;
+            background: #101821;
+            border-bottom: 1px solid #2d3b4b;
+            color: #dbeafe;
+            font-size: 12px;
+        }
+
+        .visual-map-standalone-status {
+            padding: 3px 7px;
+            border: 1px solid #334155;
+            border-radius: 4px;
+            color: #bfdbfe;
+            background: #172033;
+            font-weight: 700;
+        }
+
+        .visual-map-standalone-status.success {
+            color: #bbf7d0;
+            border-color: #166534;
+            background: #052e16;
+        }
+
+        .visual-map-standalone-status.warning {
+            color: #fde68a;
+            border-color: #92400e;
+            background: #451a03;
+        }
+
+        body[data-visual-map-standalone="true"] .spots-container {
+            border-top: 0;
+        }
+
+        body[data-visual-map-standalone="true"] .view-mode-toggle,
+        body[data-visual-map-standalone="true"] .spots-db-link,
+        body[data-visual-map-standalone="true"] .clear-all-btn {
+            display: none;
+        }
+
+        body[data-visual-map-standalone="true"] .spots-header {
+            position: sticky;
+            top: 0;
+            z-index: 20;
+        }
+
+        body[data-visual-map-standalone="true"] .visual-spots-panel {
+            min-height: calc(100vh - 120px);
+        }
+
+        body[data-visual-map-standalone="true"] .visual-globe-wrap {
+            min-height: calc(100vh - 190px);
+        }
+
+        body[data-visual-map-standalone="true"] .visual-globe-canvas {
+            height: calc(100vh - 190px);
+            min-height: 560px;
+        }
+
         .visual-zoom-pill {
             min-width: 38px;
             height: 24px;

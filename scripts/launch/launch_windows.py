@@ -10,7 +10,6 @@ import sys
 import threading
 import time
 import os
-from pathlib import Path
 
 # Try to import webview, with fallback instructions
 try:
@@ -44,6 +43,12 @@ DIGITAL_WINDOW_CONFIG = {
     "width": 1260,
     "height": 860,
 }
+VISUAL_MAP_WINDOW_CONFIG = {
+    "title": "OM0RX Radio Control - Visual Map",
+    "url": f"{BASE_URL}/visual-map.html",
+    "width": 1320,
+    "height": 920,
+}
 
 
 class DesktopApi:
@@ -51,6 +56,7 @@ class DesktopApi:
 
     def __init__(self):
         self._digital_window = None
+        self._visual_map_window = None
         self._lock = threading.Lock()
 
     def open_digital_window(self):
@@ -82,6 +88,48 @@ class DesktopApi:
             except Exception as exc:
                 print(f"❌ Failed to create Digital window: {exc}")
                 return {"success": False, "error": str(exc)}
+
+    def open_visual_map_window(self, url=None):
+        """Open or focus the native visual map window without using browser tabs."""
+        with self._lock:
+            try:
+                if self._visual_map_window:
+                    try:
+                        self._visual_map_window.restore()
+                        self._visual_map_window.show()
+                        self._visual_map_window.evaluate_js("window.focus && window.focus();")
+                        return {"success": True, "reused": True}
+                    except Exception:
+                        self._visual_map_window = None
+
+                target_url = self._resolve_visual_map_url(url)
+                self._visual_map_window = webview.create_window(
+                    title=VISUAL_MAP_WINDOW_CONFIG["title"],
+                    url=target_url,
+                    width=VISUAL_MAP_WINDOW_CONFIG["width"],
+                    height=VISUAL_MAP_WINDOW_CONFIG["height"],
+                    resizable=True,
+                    focus=True,
+                )
+                print(
+                    f"✅ Created window: {VISUAL_MAP_WINDOW_CONFIG['title']} -> "
+                    f"{target_url}"
+                )
+                return {"success": True, "reused": False}
+            except Exception as exc:
+                print(f"❌ Failed to create visual map window: {exc}")
+                return {"success": False, "error": str(exc)}
+
+    def _resolve_visual_map_url(self, url=None):
+        """Resolve frontend-provided relative visual-map URLs against the backend base URL."""
+        if not url:
+            return VISUAL_MAP_WINDOW_CONFIG["url"]
+        value = str(url)
+        if value.startswith("http://") or value.startswith("https://"):
+            return value
+        if not value.startswith("/"):
+            value = "/" + value
+        return f"{BASE_URL}{value}"
 
 
 def launch_windows():

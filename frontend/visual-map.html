@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OM0RX Radio Control - Visual Map</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link rel="stylesheet" href="main-styles.css?v=20260602-visual-map-window">
+</head>
+<body data-visual-map-standalone="true">
+    <div id="app" class="visual-map-standalone-app">
+        <div class="visual-map-standalone-title">
+            <strong>OM0RX Visual Spots Map</strong>
+            <span v-if="statusMessage" :class="['visual-map-standalone-status', statusMessage.type]">
+                {{ statusMessage.message }}
+            </span>
+        </div>
+        <div id="dx-spots-section"></div>
+    </div>
+
+    <script src="js/logger.js"></script>
+    <script src="js/dx-spots.js?v=20260602-visual-map-window"></script>
+    <script src="https://unpkg.com/topojson-client@3"></script>
+    <script src="js/visual-map-standalone.js?v=20260602-visual-map-window"></script>
+</body>
+</html>

@@ -349,6 +349,18 @@
                                 Polar
                             </button>
                         </div>
+                        <button v-if="!isVisualMapStandalone()"
+                                @click="openVisualMapWindow"
+                                class="visual-icon-btn visual-undock-btn"
+                                title="Open the visual map in a separate window">
+                            Undock
+                        </button>
+                        <button v-else
+                                @click="dockVisualMapWindow"
+                                class="visual-icon-btn visual-undock-btn"
+                                title="Return focus to the main radio-control window">
+                            Dock
+                        </button>
                         <div class="visual-window-group">
                             <button v-for="minutes in visualSpotWindows" :key="minutes"
                                     @click="setVisualSpotWindow(minutes)"

@@ -9,13 +9,16 @@ import _bootstrap  # noqa: F401
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = PROJECT_ROOT / "frontend"
+LAUNCH_WINDOWS = PROJECT_ROOT / "scripts" / "launch" / "launch_windows.py"
 APP_MAIN = FRONTEND / "js" / "app-main.js"
 INDEX = FRONTEND / "index.html"
 RADIO_CONTROLS = FRONTEND / "js" / "radio-controls.js"
 DX_SPOTS = FRONTEND / "js" / "dx-spots.js"
+VISUAL_MAP_STANDALONE = FRONTEND / "js" / "visual-map-standalone.js"
 COMPACT_RADIO_PARTIAL = FRONTEND / "templates" / "partials" / "compact-radio-controls.html"
 SOURCE_MONITOR_PARTIAL = FRONTEND / "templates" / "partials" / "spots-source-monitor.html"
 DX_SPOTS_TEMPLATE = FRONTEND / "templates" / "dx-spots.html"
+VISUAL_MAP_HTML = FRONTEND / "visual-map.html"
 
 REQUIRED_MODULES = {
     "js/config-modal.js": "RadioControlConfig",
@@ -189,6 +192,8 @@ def test_visual_spots_map_contract():
         "getVisualBandColor",
         "setVisualMapMode('globe')",
         "focusVisualSpot(item.spot)",
+        "openVisualMapWindow",
+        "dockVisualMapWindow",
     ):
         assert token in template
 
@@ -244,6 +249,10 @@ def test_visual_spots_map_contract():
         "getVisualSpotItems",
         "getVisualMapRadiusKm",
         "getVisualHomeGrid",
+        "isVisualMapStandalone",
+        "buildVisualMapWindowUrl",
+        "openVisualMapWindow",
+        "dockVisualMapWindow",
     ):
         assert token in dx_spots
 
@@ -253,6 +262,8 @@ def test_visual_spots_map_contract():
         ".visual-quick-filter-btn",
         ".visual-overlay-breakdown",
         ".visual-path-legend",
+        ".visual-undock-btn",
+        ".visual-map-standalone-app",
         ".visual-globe-tooltip",
         ".visual-globe-layer",
         ".visual-polar-map",
@@ -267,6 +278,33 @@ def test_visual_spots_map_contract():
     assert "this.cleanupVisualGlobeRefresh()" in app_main
 
 
+def test_visual_map_standalone_window_contract():
+    html = VISUAL_MAP_HTML.read_text(encoding="utf-8")
+    standalone = VISUAL_MAP_STANDALONE.read_text(encoding="utf-8")
+
+    assert 'data-visual-map-standalone="true"' in html
+    assert "js/dx-spots.js" in html
+    assert "js/visual-map-standalone.js" in html
+    assert "templates/dx-spots.html" in standalone
+    assert "resolveTemplateIncludes" in standalone
+    assert "applyUrlState" in standalone
+    assert "connectStandaloneSpotSocket" in standalone
+    assert "refreshStandaloneFallback" in standalone
+    assert "window.FlexRadioSpots.methods" in standalone
+    assert "viewMode: 'visual'" in standalone
+    assert "window.pywebview?.api?.open_visual_map_window" in DX_SPOTS.read_text(encoding="utf-8")
+
+
+def test_visual_map_native_window_launcher_contract():
+    launcher = LAUNCH_WINDOWS.read_text(encoding="utf-8")
+
+    assert "VISUAL_MAP_WINDOW_CONFIG" in launcher
+    assert "visual-map.html" in launcher
+    assert "def open_visual_map_window(self, url=None):" in launcher
+    assert "self._visual_map_window" in launcher
+    assert "def _resolve_visual_map_url(self, url=None):" in launcher
+
+
 if __name__ == "__main__":
     test_required_modules_load_before_app_main()
     test_required_modules_expose_expected_globals()
@@ -277,4 +315,6 @@ if __name__ == "__main__":
     test_compact_radio_controls_are_shared_and_persistent()
     test_spot_source_state_contract()
     test_visual_spots_map_contract()
+    test_visual_map_standalone_window_contract()
+    test_visual_map_native_window_launcher_contract()
     print("Frontend module contract smoke checks passed")

@@ -182,6 +182,7 @@ const dxSpotsData = {
     spotsWindow: null,
     spotsDetached: false,
     spotsChannel: null, // BroadcastChannel for window sync
+    visualMapWindow: null,
 };
 
 const dxSpotsMethods = {
@@ -857,6 +858,75 @@ const dxSpotsMethods = {
             this.spotsChannel.close();
             this.spotsChannel = null;
         }
+    },
+
+    isVisualMapStandalone() {
+        return document.body.dataset.visualMapStandalone === 'true';
+    },
+
+    buildVisualMapWindowUrl() {
+        const params = new URLSearchParams();
+        params.set('view', 'visual');
+        params.set('map', this.visualMapMode || 'globe');
+        params.set('window', String(this.visualSpotWindowMinutes || 60));
+        params.set('latest', this.visualSpotLatestOnly ? '1' : '0');
+        params.set('overlay', this.visualOverlayMode || 'dxcc');
+        params.set('confidence', this.visualLocationConfidence || 'all');
+        params.set('pathColor', this.visualPathColorBy || 'band');
+        params.set('pathWidth', String(this.visualPathWidth || 2.1));
+        params.set('quick', this.visualSpotQuickFilter || 'all');
+        params.set('sources', (this.spotsFilter.spotSources || ['cluster']).join(','));
+        if (this.spotsFilter.bands.length > 0) params.set('bands', this.spotsFilter.bands.join(','));
+        if (this.spotsFilter.modes.length > 0) params.set('modes', this.spotsFilter.modes.join(','));
+        if (this.spotsFilter.rblModes.length > 0) params.set('rblModes', this.spotsFilter.rblModes.join(','));
+        if (this.spotsFilter.rblMinSnr !== '') params.set('rblMinSnr', String(this.spotsFilter.rblMinSnr));
+        if (Number(this.spotsFilter.rblDedupeMinutes) > 0) {
+            params.set('rblDedupeMinutes', String(this.spotsFilter.rblDedupeMinutes));
+        }
+        return `/visual-map.html?${params.toString()}`;
+    },
+
+    async openVisualMapWindow() {
+        if (this.visualMapWindow && !this.visualMapWindow.closed) {
+            this.visualMapWindow.focus();
+            return;
+        }
+        const url = this.buildVisualMapWindowUrl();
+        if (window.pywebview?.api?.open_visual_map_window) {
+            try {
+                const result = await window.pywebview.api.open_visual_map_window(url);
+                if (result && result.success) {
+                    return;
+                }
+                console.warn('Native visual map window request failed:', result?.error || result);
+            } catch (error) {
+                console.warn('Unable to request native visual map window:', error);
+            }
+        }
+        const features = [
+            'width=1320',
+            'height=920',
+            'left=80',
+            'top=40',
+            'scrollbars=yes',
+            'resizable=yes',
+        ].join(',');
+        this.visualMapWindow = window.open(url, 'visualMapWindow', features);
+        if (this.visualMapWindow) {
+            this.visualMapWindow.focus();
+            this.visualMapWindow.addEventListener('beforeunload', () => {
+                this.visualMapWindow = null;
+            });
+        } else if (typeof this.showStatus === 'function') {
+            this.showStatus('Map pop-out was blocked by the browser', 'warning');
+        }
+    },
+
+    dockVisualMapWindow() {
+        if (window.opener && !window.opener.closed) {
+            window.opener.focus();
+        }
+        window.close();
     },
     
     // === Filter Status ===
