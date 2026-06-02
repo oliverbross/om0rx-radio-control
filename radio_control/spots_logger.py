@@ -2,13 +2,12 @@
 DX Spots Logger - DuckDB-based persistent logging of all incoming spots
 Stores all spot details for statistical analysis and persistence across app reloads
 """
-import os
 import logging
 from datetime import datetime, timedelta, UTC
-from pathlib import Path
 from typing import Optional, Dict, Any, List
 import duckdb
 
+from radio_control import config
 from radio_control.spot_processor import (
     band_from_khz,
     infer_mode,
@@ -47,7 +46,7 @@ def _initialize_cty_resolver():
                 str(cty_dat),
                 csv_path=str(cty_csv) if cty_csv.exists() else None
             )
-            logger.debug(f"✓ CTY resolver initialized")
+            logger.debug("✓ CTY resolver initialized")
     except Exception as e:
         logger.debug(f"Warning: Could not initialize CTY resolver: {e}")
 
@@ -84,8 +83,6 @@ def get_country_and_zone(callsign: str) -> Optional[Dict[str, Any]]:
         logger.debug(f"Error looking up country for {callsign}: {e}")
     
     return None
-
-from radio_control import config
 
 # Data directory path
 DATA_DIR = config.DATA_DIR
@@ -194,7 +191,7 @@ class SpotsLogger:
                 except duckdb.CatalogException:
                     pass  # Index already exists
             self._indexes_created = True
-            logger.debug(f"✅ Spots database indexes created")
+            logger.debug("✅ Spots database indexes created")
         except Exception as e:
             logger.warning(f"⚠️ Index creation warning: {e}")
     
@@ -219,7 +216,7 @@ class SpotsLogger:
         try:
             # Check if connection is valid
             if not self.conn:
-                logger.error(f"❌ Database connection is None - cannot save spot")
+                logger.error("❌ Database connection is None - cannot save spot")
                 return False
             
             # Extract and validate required fields
@@ -598,6 +595,7 @@ class SpotsLogger:
         rbl_mode_groups: Optional[List[str]] = None,
         rbl_min_snr: Optional[float] = None,
         rbl_dedupe_minutes: Optional[int] = None,
+        max_age_minutes: Optional[int] = None,
         sort_by: str = "time",
     ) -> List[Dict]:
         """
@@ -651,6 +649,11 @@ class SpotsLogger:
                 where_clauses.append(f"COALESCE(spot_source, 'cluster') IN ({placeholders})")
                 params.extend(normalized_sources)
 
+            if max_age_minutes and max_age_minutes > 0:
+                cutoff = datetime.now(UTC) - timedelta(minutes=max_age_minutes)
+                where_clauses.append("received_at >= ?")
+                params.append(cutoff)
+
             # RBL broad-mode filter
             if rbl_mode_groups and len(rbl_mode_groups) > 0:
                 normalized_groups = [str(group).upper() for group in rbl_mode_groups]
@@ -677,7 +680,7 @@ class SpotsLogger:
                 # Build OR condition for special tags since they're comma-separated
                 or_clauses = []
                 for tag in special_tags_filter:
-                    or_clauses.append(f"special_tags LIKE ?")
+                    or_clauses.append("special_tags LIKE ?")
                     params.append(f"%{tag}%")
                 where_clauses.append(f"({' OR '.join(or_clauses)})")
             

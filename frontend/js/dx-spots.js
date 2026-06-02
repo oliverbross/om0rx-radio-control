@@ -530,9 +530,9 @@ const dxSpotsMethods = {
     
     // === Filtered Search (Database Query) ===
 
-    buildSpotFilterCriteria() {
+    buildSpotFilterCriteria(options = {}) {
         const rblSourceSelected = this.rblSourceSelected();
-        return {
+        const criteria = {
             limit: this.maxSpots,
             callsign: this.spotsFilter.callsign || null,
             bands: this.spotsFilter.bands.length > 0 ? this.spotsFilter.bands : null,
@@ -546,6 +546,10 @@ const dxSpotsMethods = {
             rbl_dedupe_minutes: rblSourceSelected && Number(this.spotsFilter.rblDedupeMinutes) > 0 ? Number(this.spotsFilter.rblDedupeMinutes) : null,
             sort_by: this.spotsFilter.sortBy || 'time',
         };
+        if (Number(options.maxAgeMinutes) > 0) {
+            criteria.max_age_minutes = Number(options.maxAgeMinutes);
+        }
+        return criteria;
     },
     
     async performFilteredSearch(options = {}) {
@@ -657,7 +661,9 @@ const dxSpotsMethods = {
     },
 
     async loadVisualFallbackSpots() {
-        const filterCriteria = this.buildSpotFilterCriteria();
+        const filterCriteria = this.buildSpotFilterCriteria({
+            maxAgeMinutes: this.visualSpotWindowMinutes || 60,
+        });
         const filterKey = JSON.stringify(filterCriteria);
         if (this.visualFallbackLoading || (this.visualFallbackFilterKey === filterKey && this.visualFallbackSpots.length > 0)) {
             return;

@@ -440,6 +440,7 @@
                                 <div v-if="visualZoneOverlayError" class="visual-globe-status error">{{ visualZoneOverlayError }}</div>
                                 <div v-if="visualAdmin1Loading" class="visual-globe-status">Loading state/province overlay...</div>
                                 <div v-if="visualAdmin1Error" class="visual-globe-status error">{{ visualAdmin1Error }}</div>
+                                <div v-if="visualFallbackLoading && getVisualSpotItems().length === 0" class="visual-globe-status">Loading recent spot map...</div>
                             </div>
                             <svg v-if="visualMapMode === 'polar'" class="visual-polar-map" viewBox="0 0 520 520" role="img" aria-label="Filtered spots polar map">
                                 <defs>
@@ -539,7 +540,7 @@
                                     <span class="visual-spot-score" :style="getSpotScoreStyle(item.spot)">{{ getSpotScore(item.spot) }}</span>
                                 </button>
                             </div>
-                            <div v-if="getVisualSpotItems().length === 0" class="visual-empty-state">
+                            <div v-if="getVisualSpotItems().length === 0 && !visualFallbackLoading" class="visual-empty-state">
                                 No mapped spots in the current filters. The visual map can use grid, latitude/longitude, or CTY prefix location data.
                             </div>
                         </div>

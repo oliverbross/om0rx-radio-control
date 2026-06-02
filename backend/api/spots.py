@@ -32,6 +32,7 @@ class SpotFilterRequest(BaseModel):
     rbl_modes: Optional[List[str]] = None
     rbl_min_snr: Optional[float] = None
     rbl_dedupe_minutes: Optional[int] = None
+    max_age_minutes: Optional[int] = None
     sort_by: str = "time"
 
 
@@ -567,6 +568,7 @@ async def search_filtered_spots(req: SpotFilterRequest, request: Request):
             rbl_mode_groups=req.rbl_modes,
             rbl_min_snr=req.rbl_min_snr,
             rbl_dedupe_minutes=req.rbl_dedupe_minutes,
+            max_age_minutes=req.max_age_minutes,
             sort_by=req.sort_by,
         )
         _enrich_spot_cty_locations(request.app.state, spots)

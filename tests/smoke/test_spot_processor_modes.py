@@ -71,6 +71,36 @@ def test_rbl_mode_filter_does_not_hide_cluster_spots(tmp_path):
     assert calls == {"K1ABC", "K1RBL"}
 
 
+def test_filtered_spots_can_limit_to_recent_window(tmp_path):
+    db_path = tmp_path / "spots.duckdb"
+    now = datetime.now(UTC)
+
+    with SpotsLogger(str(db_path)) as logger:
+        assert logger.log_spot({
+            "spotter": "OM0RX",
+            "dxcall": "K1OLD",
+            "freq_khz": 14025.0,
+            "comment": "CW",
+            "timestamp": now - timedelta(hours=3),
+        })
+        assert logger.log_spot({
+            "spotter": "OM0RX",
+            "dxcall": "K1NEW",
+            "freq_khz": 14026.0,
+            "comment": "CW",
+            "timestamp": now - timedelta(minutes=10),
+        })
+
+        visible = logger.get_filtered_spots(
+            limit=10,
+            spot_sources=["cluster"],
+            max_age_minutes=60,
+        )
+
+    calls = {spot["callsign"] for spot in visible}
+    assert calls == {"K1NEW"}
+
+
 def test_spot_intelligence_scores_and_extracts_snr():
     assert extract_rbl_snr("CW 13dB Q:9") == 13
     assert extract_rbl_snr("RBN FT8 -12 dB") == -12
