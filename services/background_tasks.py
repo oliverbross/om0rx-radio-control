@@ -64,6 +64,17 @@ def require_background_task_service() -> BackgroundTaskService:
     return _service
 
 
+def _normalize_cty_longitude(value):
+    """Convert CTY longitude convention (west positive) to map longitude (east positive)."""
+    try:
+        longitude = float(value)
+    except (TypeError, ValueError):
+        return None
+    if abs(longitude) > 180:
+        return None
+    return -longitude
+
+
 def set_globals(
     flex_ctl,
     ws_clients,
@@ -241,7 +252,7 @@ async def process_cluster_spot(spot_data: dict):
             entity = info.get('country')
             cq = info.get('cq')
             latitude = info.get('latitude')
-            longitude = info.get('longitude')
+            longitude = _normalize_cty_longitude(info.get('longitude'))
             if latitude is not None and longitude is not None:
                 location_source = "cty_exact" if info.get("exact_match") else "cty_prefix"
                 location_confidence = "medium" if info.get("exact_match") else "low"

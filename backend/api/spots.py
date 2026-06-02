@@ -147,6 +147,18 @@ def _normalize_cty_longitude(value: Any) -> Optional[float]:
     return -longitude
 
 
+def _update_cty_grid_from_coordinates(spot: Dict[str, Any]) -> None:
+    """Keep generated CTY grids consistent with normalized CTY coordinates."""
+    try:
+        from radio_control.rotor_math import latlon_to_grid
+
+        latitude = float(spot.get("latitude"))
+        longitude = float(spot.get("longitude"))
+        spot["gridsquare"] = latlon_to_grid(latitude, longitude, precision=6)
+    except Exception:
+        return
+
+
 def _enrich_spot_cty_locations(app_state: Any, spots: List[Dict[str, Any]], max_lookups: int = 500) -> None:
     """Add CTY-prefix country, zone, and approximate entity coordinates when absent."""
     cty_resolver = getattr(app_state, "cty_resolver", None)
@@ -199,6 +211,8 @@ def _enrich_spot_cty_locations(app_state: Any, spots: List[Dict[str, Any]], max_
         approximate_cty_location = spot.get("location_source") == "cty_prefix" or spot.get("location_confidence") == "low"
         if (not has_lon or approximate_cty_location) and _coordinate_is_valid(normalized_longitude, 180):
             spot["longitude"] = normalized_longitude
+            if _coordinate_is_valid(spot.get("latitude"), 90):
+                _update_cty_grid_from_coordinates(spot)
         if (not has_lat or not has_lon) and spot.get("latitude") is not None and spot.get("longitude") is not None:
             spot.setdefault("location_source", "cty_prefix")
 

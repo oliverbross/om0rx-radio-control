@@ -2140,6 +2140,7 @@ const dxSpotsMethods = {
             if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
             currentCountry = {
                 country: parts[1],
+                primaryPrefix: String(parts[0] || '').toUpperCase(),
                 dxcc: Number(parts[2]) || null,
                 continent: parts[3],
                 cq: Number(parts[4]) || null,
@@ -2295,9 +2296,19 @@ const dxSpotsMethods = {
             ASIATICTURKEY: 'TURKEY',
             EUROPEANTURKEY: 'TURKEY',
             CZECHREPUBLIC: 'CZECHIA',
+            SLOVAKREPUBLIC: 'SLOVAKIA',
             FEDREPOFGERMANY: 'GERMANY',
             FEDERALREPUBLICOFGERMANY: 'GERMANY',
             MADEIRAISLANDS: 'PORTUGAL',
+            AZORES: 'PORTUGAL',
+            CANARYISLANDS: 'SPAIN',
+            BALEARICISLANDS: 'SPAIN',
+            SARDINIA: 'ITALY',
+            SICILY: 'ITALY',
+            CRETE: 'GREECE',
+            CORSICA: 'FRANCE',
+            DOMINICANREPUBLIC: 'DOMINICANREP',
+            KINGDOMOFESWATINI: 'ESWATINI',
             SOUTHAFRICA: 'SOUTHAFRICA',
         };
         return aliases[raw] || raw;
@@ -2405,6 +2416,16 @@ const dxSpotsMethods = {
         return palette[hash % palette.length];
     },
 
+    getVisualCountryPrefixForSpot(spot) {
+        const info = this.getVisualCtyInfo(spot && spot.callsign);
+        if (info && info.primaryPrefix) {
+            return String(info.primaryPrefix).replace(/\/.*$/, '').toUpperCase();
+        }
+        const call = this.cleanVisualCallsign(spot && spot.callsign);
+        const match = call.match(/^[A-Z]{1,3}/);
+        return match ? match[0] : '';
+    },
+
     getVisualFeatureName(feature) {
         const properties = feature && feature.properties ? feature.properties : {};
         return properties.name || properties.NAME || properties.admin || properties.ADMIN || properties.sovereignt || properties.SOVEREIGNT || '';
@@ -2445,18 +2466,24 @@ const dxSpotsMethods = {
     buildVisualOverlayStats() {
         const stats = new Map();
         this.getVisualSourceSpots().forEach(spot => {
-            const countryKey = this.normalizeVisualCountryName(spot.country || spot.dxcc_entity || spot.entity || '');
+            const countryName = this.getVisualCountryLookupName(spot.country || spot.dxcc_entity || spot.entity || '');
+            const countryKey = this.normalizeVisualCountryName(countryName);
             if (!countryKey) return;
             if (!stats.has(countryKey)) {
+                const countryInfo = this.getVisualCtyCountryInfo(countryName);
                 stats.set(countryKey, {
                     count: 0,
                     topScore: 0,
+                    primaryPrefix: countryInfo && countryInfo.primaryPrefix ? String(countryInfo.primaryPrefix).toUpperCase() : '',
+                    prefixes: new Set(),
                     dxccStatuses: new Set(),
                     callStatuses: new Set(),
                     cqZones: new Set(),
                     ituZones: new Set(),
                     rbl: 0,
                     cluster: 0,
+                    needed: 0,
+                    lowConfidence: 0,
                     dxcc: spot.dxcc || null,
                 });
             }
@@ -2464,6 +2491,8 @@ const dxSpotsMethods = {
             item.count += 1;
             item.topScore = Math.max(item.topScore, this.getSpotScore(spot));
             if (!item.dxcc && spot.dxcc) item.dxcc = spot.dxcc;
+            const prefix = this.getVisualCountryPrefixForSpot(spot);
+            if (prefix) item.prefixes.add(prefix);
             if (spot.dxcc_status) item.dxccStatuses.add(spot.dxcc_status);
             if (spot.call_status) item.callStatuses.add(spot.call_status);
             const cq = this.getVisualZone(spot, 'cq');
@@ -2472,8 +2501,66 @@ const dxSpotsMethods = {
             if (itu) item.ituZones.add(itu);
             if ((spot.spot_source || 'cluster') === 'rbl') item.rbl += 1;
             else item.cluster += 1;
+            if (this.isVisualNeededSpot(spot)) item.needed += 1;
+            if (spot.location_confidence === 'low' || spot.location_source === 'cty_prefix') item.lowConfidence += 1;
         });
         return stats;
+    },
+
+    getVisualCountryStatLabel(stat, featureName = '') {
+        if (!stat) return '';
+        if (stat.primaryPrefix) return stat.primaryPrefix;
+        const prefixes = [...(stat.prefixes || [])]
+            .filter(Boolean)
+            .sort((a, b) => a.length - b.length || a.localeCompare(b));
+        if (prefixes.length) return prefixes[0];
+        const key = this.normalizeVisualCountryName(featureName);
+        return key.slice(0, 3);
+    },
+
+    buildVisualCountryColorMap(overlayStats) {
+        const palette = this.visualOverlayPalette || [];
+        const assigned = new Map();
+        if (!palette.length) return assigned;
+
+        const activeCountries = (this.visualTopoFeatures || [])
+            .map(feature => {
+                const name = this.getVisualFeatureName(feature);
+                const key = this.normalizeVisualCountryName(name);
+                const stat = overlayStats.get(key);
+                const centroid = this.getVisualTopoCountryInfo(name);
+                return stat && centroid ? { key, name, stat, centroid } : null;
+            })
+            .filter(Boolean)
+            .sort((a, b) => Number(b.stat.count || 0) - Number(a.stat.count || 0) || a.name.localeCompare(b.name));
+
+        activeCountries.forEach(country => {
+            let bestColor = palette[0];
+            let bestScore = Number.POSITIVE_INFINITY;
+            palette.forEach(color => {
+                let score = 0;
+                assigned.forEach((assignedColor, assignedKey) => {
+                    if (assignedColor !== color) return;
+                    const other = activeCountries.find(item => item.key === assignedKey);
+                    if (!other) return;
+                    const distance = this.calculateDistanceKm(
+                        country.centroid.latitude,
+                        country.centroid.longitude,
+                        other.centroid.latitude,
+                        other.centroid.longitude,
+                    );
+                    if (distance < 450) score += 1000;
+                    else if (distance < 850) score += 250;
+                    else if (distance < 1400) score += 60;
+                });
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestColor = color;
+                }
+            });
+            assigned.set(country.key, bestColor);
+        });
+        return assigned;
     },
 
     getVisualOverlaySummary() {
@@ -2531,7 +2618,7 @@ const dxSpotsMethods = {
             .slice(0, 10);
     },
 
-    getVisualOverlayColor(stat, featureName = '') {
+    getVisualOverlayColor(stat, featureName = '', countryColorMap = null) {
         if (!stat) return 'rgba(28, 39, 51, 0.62)';
         if (this.visualOverlayMode === 'cq') {
             const first = Number([...stat.cqZones][0] || 0);
@@ -2542,6 +2629,9 @@ const dxSpotsMethods = {
             return this.getVisualZoneColor(first || stat.topScore, 90, 0.50);
         }
         const countryKey = this.normalizeVisualCountryName(featureName);
+        if (countryColorMap && countryColorMap.has(countryKey)) {
+            return countryColorMap.get(countryKey);
+        }
         return this.getVisualCountryPaletteColor(countryKey, stat, featureName);
     },
 
@@ -2759,6 +2849,54 @@ const dxSpotsMethods = {
         ctx.restore();
     },
 
+    drawVisualDxccLabels(ctx, width, height, overlayStats) {
+        if (this.visualOverlayMode !== 'dxcc') return;
+
+        const labels = (this.visualTopoFeatures || [])
+            .map(feature => {
+                const name = this.getVisualFeatureName(feature);
+                const key = this.normalizeVisualCountryName(name);
+                const stat = overlayStats.get(key);
+                const centroid = this.getVisualTopoCountryInfo(name);
+                if (!stat || !centroid) return null;
+                const point = this.projectVisualGlobe(centroid.longitude, centroid.latitude, width, height);
+                if (!point || !point.visible || point.cosc < 0.10) return null;
+                return {
+                    key,
+                    point,
+                    stat,
+                    label: this.getVisualCountryStatLabel(stat, name),
+                };
+            })
+            .filter(Boolean)
+            .sort((a, b) => Number(b.stat.count || 0) - Number(a.stat.count || 0));
+
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = '900 10px system-ui, sans-serif';
+        labels.slice(0, 80).forEach(item => {
+            const label = item.label;
+            const widthPx = ctx.measureText(label).width + 10;
+            ctx.fillStyle = item.stat.lowConfidence >= item.stat.count
+                ? 'rgba(15, 23, 42, 0.74)'
+                : 'rgba(3, 7, 18, 0.82)';
+            ctx.strokeStyle = item.stat.needed > 0 ? '#f97316' : 'rgba(248, 250, 252, 0.62)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            if (typeof ctx.roundRect === 'function') {
+                ctx.roundRect(item.point.x - widthPx / 2, item.point.y - 8, widthPx, 16, 4);
+            } else {
+                ctx.rect(item.point.x - widthPx / 2, item.point.y - 8, widthPx, 16);
+            }
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = '#f8fafc';
+            ctx.fillText(label, item.point.x, item.point.y);
+        });
+        ctx.restore();
+    },
+
     async drawVisualGlobe() {
         const markerCanvas = this.$refs ? this.$refs.visualGlobeCanvas : null;
         const baseCanvas = this.$refs ? this.$refs.visualGlobeBaseCanvas : null;
@@ -2793,6 +2931,7 @@ const dxSpotsMethods = {
         const centerY = height / 2;
         const radius = Math.min(width, height) * 0.46 * Number(this.visualGlobeZoom || 1);
         const overlayStats = this.buildVisualOverlayStats();
+        const countryColorMap = this.buildVisualCountryColorMap(overlayStats);
 
         baseCtx.save();
         baseCtx.beginPath();
@@ -2810,13 +2949,14 @@ const dxSpotsMethods = {
             const stat = overlayStats.get(this.normalizeVisualCountryName(name));
             baseCtx.beginPath();
             this.drawVisualGeometryPath(baseCtx, feature.geometry, width, height);
-            baseCtx.fillStyle = this.getVisualOverlayColor(stat, name);
+            baseCtx.fillStyle = this.getVisualOverlayColor(stat, name, countryColorMap);
             baseCtx.strokeStyle = stat ? 'rgba(241, 245, 249, 0.52)' : 'rgba(113, 128, 150, 0.34)';
             baseCtx.lineWidth = stat ? 0.9 : 0.55;
             baseCtx.fill();
             baseCtx.stroke();
         });
         this.drawVisualZoneOverlay(baseCtx, width, height);
+        this.drawVisualDxccLabels(baseCtx, width, height, overlayStats);
         baseCtx.restore();
 
         pathCtx.save();
@@ -2876,9 +3016,15 @@ const dxSpotsMethods = {
             markerCtx.arc(item.point.x, item.point.y, markerRadius, 0, Math.PI * 2);
             markerCtx.fillStyle = this.getVisualBandColor(spot.band);
             markerCtx.strokeStyle = (spot.spot_source || 'cluster') === 'rbl' ? '#fbbf24' : '#f8fafc';
+            if (spot.location_confidence === 'low' || spot.location_source === 'cty_prefix') {
+                markerCtx.globalAlpha = 0.62;
+            } else {
+                markerCtx.globalAlpha = 1;
+            }
             markerCtx.lineWidth = this.isVisualSpotSelected(spot) ? 3 : 1.6;
             markerCtx.fill();
             markerCtx.stroke();
+            markerCtx.globalAlpha = 1;
 
             const zone = this.getVisualZone(spot, this.visualOverlayMode);
             if (score >= 80 || spot.local_heard || zone) {
@@ -3405,6 +3551,9 @@ const dxSpotsMethods = {
         const plotted = this.getVisualRawSpotItems();
         const rbl = plotted.filter(item => (item.spot.spot_source || 'cluster') === 'rbl').length;
         const cluster = plotted.length - rbl;
+        const approximate = plotted.filter(item => (
+            item.spot.location_confidence === 'low' || item.spot.location_source === 'cty_prefix'
+        )).length;
         return {
             total: source.length,
             plotted: plotted.length,
@@ -3412,6 +3561,7 @@ const dxSpotsMethods = {
             rbl,
             cluster,
             paths: this.getVisualSpotPathItems().length,
+            approximate,
         };
     },
 

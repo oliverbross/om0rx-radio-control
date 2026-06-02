@@ -378,6 +378,7 @@
                         <span class="visual-stat-pill">{{ getVisualSpotStats().plotted }} plotted</span>
                         <span class="visual-stat-pill">{{ getVisualSpotStats().paths }} paths</span>
                         <span class="visual-stat-pill">{{ getVisualSpotStats().hidden }} without location</span>
+                        <span v-if="getVisualSpotStats().approximate" class="visual-stat-pill">{{ getVisualSpotStats().approximate }} approximate</span>
                         <span v-if="visualMapMode === 'polar'" class="visual-stat-pill">Radius {{ getVisualMapRadiusKm().toLocaleString() }} km</span>
                         <span v-if="visualMapMode === 'globe'" class="visual-stat-pill">{{ getVisualOverlaySummary() }}</span>
                         <span class="visual-qth-pill">QTH {{ getVisualHomeGrid() }}</span>
