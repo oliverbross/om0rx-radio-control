@@ -38,6 +38,13 @@
                     DIGITAL
                 </button>
                 <button
+                    @click="launchPatchedWsjtxEngine"
+                    :disabled="wsjtxLaunchLoading || wsjtxPreflightLoading"
+                    title="Launch OM0RX patched WSJT-X"
+                    style="padding: 4px 8px; font-size: 12px; background: #15803d; color: white; border: 1px solid #22c55e; border-radius: 4px; cursor: pointer; font-weight: 600;">
+                    WSJT-X
+                </button>
+                <button
                     @click="showSyncModal = true"
                     :class="syncStatus.syncing ? 'sync-button sync-syncing' : 'sync-button'"
                     :title="syncStatus.syncing ? 'Wavelog local sync in progress...' : `Wavelog local cache: ${syncStatus.total_records} records synced`"

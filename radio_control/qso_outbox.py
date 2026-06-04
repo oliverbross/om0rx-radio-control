@@ -99,6 +99,7 @@ class QSOOutbox:
 
         attempted = 0
         uploaded = 0
+        duplicates = 0
         failures = []
         remaining = records[:]
 
@@ -109,6 +110,10 @@ class QSOOutbox:
                 uploaded += 1
                 remaining.remove(record)
                 logger.info("Uploaded queued Wavelog outbox record (%d/%d)", uploaded, attempted)
+            elif self._is_duplicate_upload_result(result):
+                duplicates += 1
+                remaining.remove(record)
+                logger.info("Removed queued Wavelog outbox record already present in Wavelog (%d/%d)", duplicates, attempted)
             else:
                 failures.append(result.get("message") or result.get("error") or "Unknown error")
                 break
@@ -118,6 +123,7 @@ class QSOOutbox:
             "success": not failures,
             "attempted": attempted,
             "uploaded": uploaded,
+            "duplicates": duplicates,
             "remaining": len(remaining),
             "failures": failures,
         }
@@ -157,6 +163,14 @@ class QSOOutbox:
         if not record:
             return ""
         return record + "\n<eor>"
+
+    @staticmethod
+    def _is_duplicate_upload_result(result: Dict[str, Any]) -> bool:
+        text = " ".join(
+            str(result.get(key) or "")
+            for key in ("message", "error")
+        ).lower()
+        return "duplicate" in text
 
     @staticmethod
     def _add_app_note(adif_record: str, note: str) -> str:

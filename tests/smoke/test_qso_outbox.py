@@ -7,14 +7,21 @@ from radio_control.qso_outbox import QSOOutbox
 
 
 class FakeWavelogClient:
-    def __init__(self, fail_first=False):
+    def __init__(self, fail_first=False, duplicate_first=False):
         self.fail_first = fail_first
+        self.duplicate_first = duplicate_first
         self.submitted = []
 
     async def submit_adif_string(self, adif_string):
         self.submitted.append(adif_string)
         if self.fail_first and len(self.submitted) == 1:
             return {"success": False, "message": "offline"}
+        if self.duplicate_first and len(self.submitted) == 1:
+            return {
+                "success": False,
+                "message": "Wavelog API error: 400",
+                "error": "Date/Time: 2026-05-26 04:50:00 Callsign: OM0RX Band: 20m Duplicate for OM0RX",
+            }
         return {"success": True, "message": "ok"}
 
 
@@ -62,7 +69,23 @@ def test_qso_outbox_keeps_remaining_records_after_failure():
         assert outbox.count() == 1
 
 
+def test_qso_outbox_treats_wavelog_duplicate_as_resolved():
+    with TemporaryDirectory() as temp_dir:
+        outbox = QSOOutbox(Path(temp_dir) / "wavelog_outbox.adif")
+        assert outbox.enqueue(sample_qso(), reason="offline")
+
+        import asyncio
+
+        result = asyncio.run(outbox.replay(FakeWavelogClient(duplicate_first=True)))
+        assert result["success"] is True
+        assert result["uploaded"] == 0
+        assert result["duplicates"] == 1
+        assert result["remaining"] == 0
+        assert outbox.count() == 0
+
+
 if __name__ == "__main__":
     test_qso_outbox_enqueue_deduplicates_and_replays()
     test_qso_outbox_keeps_remaining_records_after_failure()
+    test_qso_outbox_treats_wavelog_duplicate_as_resolved()
     print("qso outbox smoke checks passed")

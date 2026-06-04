@@ -7,7 +7,7 @@
  */
 (function() {
     console.log('🔄 Template Loader: Starting to load template fragments in parallel...');
-    const templateCacheKey = '20260604-wsjtx-planner-actions-1';
+    const templateCacheKey = '20260604-wsjtx-launch-outbox-2';
     
     // Template loading schedule: which file goes into which section
     const templateSchedule = [

@@ -408,6 +408,9 @@ def test_wsjtx_target_action_frontend_static_contracts():
     config_modal = (root / "frontend" / "js" / "config-modal.js").read_text(encoding="utf-8")
     config_template = (root / "frontend" / "templates" / "modal-config.html").read_text(encoding="utf-8")
     config_section = (root / "frontend" / "modals-section.html").read_text(encoding="utf-8")
+    controls_template = (root / "frontend" / "templates" / "controls-row1.html").read_text(encoding="utf-8")
+    controls_section = (root / "frontend" / "controls-section.html").read_text(encoding="utf-8")
+    compact_controls = (root / "frontend" / "templates" / "partials" / "compact-radio-controls.html").read_text(encoding="utf-8")
     index = (root / "frontend" / "index.html").read_text(encoding="utf-8")
     visual_map = (root / "frontend" / "visual-map.html").read_text(encoding="utf-8")
     ft8_template = (root / "frontend" / "templates" / "modal-ft8.html").read_text(encoding="utf-8")
@@ -552,6 +555,12 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "testWsjtxPrepareCommand" in config_modal
     assert "sendWsjtxAutoCqTest" in config_modal
     assert "sendWsjtxAutoAnswerTest" in config_modal
+    assert "launchPatchedWsjtxEngine" in controls_template
+    assert "WSJT-X" in controls_template
+    assert "launchPatchedWsjtxEngine" in controls_section
+    assert "WSJT-X" in controls_section
+    assert "launchPatchedWsjtxEngine" in compact_controls
+    assert "wsjtx-launch-button" in compact_controls
     assert "ft8WsjtxPersistenceLabel()" in ft8_template
     assert "ft8WsjtxPersistenceTitle()" in ft8_template
     assert "ft8-planner-db-badge" in ft8_template
@@ -574,9 +583,9 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "getWsjtxTimelineTraceId(event)" in config_section
     assert "/api/wsjtx/free-text" in config_modal
     assert "/api/wsjtx/reply" in config_modal
-    assert "20260604-wsjtx-planner-actions-1" in index
-    assert "20260604-wsjtx-planner-actions-1" in visual_map
-    assert "20260604-wsjtx-planner-actions-1" in (root / "frontend" / "templates-loader.js").read_text(encoding="utf-8")
+    assert "20260604-wsjtx-launch-outbox-2" in index
+    assert "20260604-wsjtx-launch-outbox-2" in visual_map
+    assert "20260604-wsjtx-launch-outbox-2" in (root / "frontend" / "templates-loader.js").read_text(encoding="utf-8")
 
 
 if __name__ == "__main__":
