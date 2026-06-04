@@ -306,10 +306,30 @@
                     </button>
                 </div>
 
-                <!-- @include templates/partials/spots-source-monitor.html -->
+            <!-- @include templates/partials/spots-source-monitor.html -->
 
-                <div v-if="wsjtxPlanner.open" class="wsjtx-planner-panel">
-                    <div class="wsjtx-planner-header">
+            <div class="wsjtx-engine-strip">
+                <div class="wsjtx-engine-status" :class="getWsjtxEngineStatusClass()">
+                    <strong>WSJT engine</strong>
+                    <span>{{ getWsjtxEngineStatusText() }}</span>
+                </div>
+                <div class="wsjtx-engine-pill" :class="getWsjtxEngineLogStatusClass()" :title="getWsjtxEngineLogStatusText()">
+                    {{ getWsjtxEngineLogStatusText() }}
+                </div>
+                <div class="wsjtx-engine-pill" title="Latest bridge decode and counter">
+                    {{ getWsjtxEngineDecodeText() }}
+                </div>
+                <div class="wsjtx-engine-pill" title="Backend planner policy summary">
+                    {{ getWsjtxPlannerAutomationText() }}
+                </div>
+                <button @click="refreshWsjtxEngineHealth({ force: true })" :disabled="wsjtxEngineHealthLoading">
+                    {{ wsjtxEngineHealthLoading ? 'Checking...' : 'Check WSJT' }}
+                </button>
+                <button @click="showConfigDialog('wsjtx')">WSJT tools</button>
+            </div>
+
+            <div v-if="wsjtxPlanner.open" class="wsjtx-planner-panel">
+                <div class="wsjtx-planner-header">
                         <div>
                             <strong>WSJT Planner</strong>
                             <span>{{ getWsjtxPlannerSummaryText() }}</span>

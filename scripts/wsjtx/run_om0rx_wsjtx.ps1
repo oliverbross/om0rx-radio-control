@@ -3,6 +3,7 @@ param(
     [string]$MsysRoot = "C:\JTSDK64-Tools\tools\msys64",
     [string]$RigName = "OM0RX-AUTO",
     [string]$ConfigName = "OM0RX-AUTO",
+    [switch]$NoAutoLog,
     [switch]$TestMode
 )
 
@@ -25,6 +26,43 @@ if (-not (Test-Path -LiteralPath $mingwBin)) {
 }
 
 $env:PATH = "$mingwBin;$usrBin;$env:PATH"
+
+function Set-IniValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string[]]$Lines,
+        [Parameter(Mandatory = $true)]
+        [string]$Key,
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    $pattern = "^$([regex]::Escape($Key))="
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -match $pattern) {
+            $Lines[$i] = "$Key=$Value"
+            return $Lines
+        }
+    }
+
+    return @($Lines + "$Key=$Value")
+}
+
+if (-not $NoAutoLog -and $RigName -eq "OM0RX-AUTO") {
+    $profileDir = Join-Path $env:LOCALAPPDATA "WSJT-X - $RigName"
+    $profileIni = Join-Path $profileDir "WSJT-X - $RigName.ini"
+    if (Test-Path -LiteralPath $profileIni) {
+        $profileLines = @(Get-Content -LiteralPath $profileIni)
+        $profileLines = Set-IniValue -Lines $profileLines -Key "PromptToLog" -Value "false"
+        $profileLines = Set-IniValue -Lines $profileLines -Key "AutoLog" -Value "true"
+        $profileLines = Set-IniValue -Lines $profileLines -Key "AcceptUDPRequests" -Value "true"
+        $profileLines = Set-IniValue -Lines $profileLines -Key "UDPServer" -Value "224.0.0.1"
+        $profileLines = Set-IniValue -Lines $profileLines -Key "UDPServerPort" -Value "2237"
+        Set-Content -LiteralPath $profileIni -Value $profileLines -Encoding UTF8
+        Write-Host "Automation logging enabled for $RigName profile."
+    }
+}
 
 $args = @("--rig-name", $RigName, "--config", $ConfigName)
 if ($TestMode) {

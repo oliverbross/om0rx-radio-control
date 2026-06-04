@@ -1163,8 +1163,10 @@ function mountVueApp() {
             await this.loadRblProfiles();
             await this.loadRblCommandStatus();
             await this.loadSpotSourceStats();
+            await this.refreshWsjtxEngineHealth({ force: true });
             await this.loadActivityIntelligence();
             this.setupSpotSourceStatsRefresh();
+            this.setupWsjtxEngineHealthRefresh();
             this.setupActivityIntelligenceRefresh();
             this.setupVisualGlobeRefresh();
             this.loadSpotSourceMuteState();

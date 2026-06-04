@@ -422,6 +422,12 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "Queue WSJT" in template
     assert "queueVisibleWsjtxCandidates(25)" in template
     assert "wsjtxCandidateQueue.message" in template
+    assert "wsjtx-engine-strip" in template
+    assert "getWsjtxEngineStatusText()" in template
+    assert "getWsjtxEngineLogStatusText()" in template
+    assert "getWsjtxEngineDecodeText()" in template
+    assert "getWsjtxPlannerAutomationText()" in template
+    assert "Check WSJT" in template
     assert "WSJT Planner" in template
     assert "toggleWsjtxPlannerPanel" in template
     assert "Prepare best" in template
@@ -443,6 +449,12 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "Queue WSJT" in section
     assert "queueVisibleWsjtxCandidates(25)" in section
     assert "wsjtxCandidateQueue.message" in section
+    assert "wsjtx-engine-strip" in section
+    assert "getWsjtxEngineStatusText()" in section
+    assert "getWsjtxEngineLogStatusText()" in section
+    assert "getWsjtxEngineDecodeText()" in section
+    assert "getWsjtxPlannerAutomationText()" in section
+    assert "Check WSJT" in section
     assert "WSJT Planner" in section
     assert "toggleWsjtxPlannerPanel" in section
     assert "Prepare best" in section
@@ -466,6 +478,13 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "getVisibleWsjtxCandidates" in script
     assert "queueVisibleWsjtxCandidates" in script
     assert "refreshWsjtxPlannerStatus" in script
+    assert "refreshWsjtxEngineHealth" in script
+    assert "setupWsjtxEngineHealthRefresh" in script
+    assert "cleanupWsjtxEngineHealthRefresh" in script
+    assert "getWsjtxEngineStatusText" in script
+    assert "getWsjtxEngineLogStatusText" in script
+    assert "getWsjtxEngineDecodeText" in script
+    assert "getWsjtxPlannerAutomationText" in script
     assert "getWsjtxPlannerFilterText" in script
     assert "isWsjtxPlannerActionableTarget" in script
     assert "prepareBestWsjtxPlannerTarget" in script
@@ -485,6 +504,8 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "/api/wsjtx/arm-target-from-spot" in script
     assert "confirmArm" in script
     assert "wsjtx-config" in app_main
+    assert "refreshWsjtxEngineHealth({ force: true })" in app_main
+    assert "setupWsjtxEngineHealthRefresh" in app_main
     assert "showConfigDialog(initialTab = 'database')" in config_modal
     assert "WSJT Engine Health" in config_template
     assert "WSJT Engine Health" in config_section

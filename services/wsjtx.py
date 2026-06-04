@@ -548,6 +548,30 @@ class WSJTXService:
                     }
                 }
             else:
+                duplicate_text = " ".join(
+                    str((result or {}).get(key) or "")
+                    for key in ("message", "error")
+                ).lower()
+                if "duplicate" in duplicate_text:
+                    logger.info("✅ WSJT-X QSO already exists in Wavelog; treating duplicate as resolved: %s", call)
+                    return {
+                        "success": True,
+                        "duplicate": True,
+                        "message": (result or {}).get("message") or "QSO already exists in Wavelog",
+                        "adif_saved": adif_saved,
+                        "qso_data": {
+                            "callsign": call,
+                            "frequency": req.get('frequency_hz') / 1_000_000 if req.get('frequency_hz') else None,
+                            "mode": req['mode'].upper(),
+                            "gridsquare": qso_data['gridsquare'],
+                            "rst_sent": req.get('rst_sent'),
+                            "rst_received": req.get('rst_received'),
+                            "name": qso_data['name'],
+                            "country": qso_data['country'],
+                            "state": qso_data['state'],
+                            "continent": qso_data['continent'],
+                        },
+                    }
                 logger.error(f"❌ Failed to log QSO to Wavelog: {result}")
                 outbox_queued = get_qso_outbox().enqueue(
                     qso_data,
@@ -1130,6 +1154,34 @@ class WSJTXService:
                 "warn",
                 "No decode has been seen from the bridge yet",
                 value_text=f"{bridge_stats.get('decodes', 0)} decodes",
+            )
+        logged_count = _coerce_int(bridge_stats.get("logged")) or 0
+        logged_uploads = _coerce_int(bridge_stats.get("loggedUploads")) or 0
+        logged_upload_errors = _coerce_int(bridge_stats.get("loggedUploadErrors")) or 0
+        if logged_upload_errors > 0:
+            last_upload = bridge_stats.get("lastLoggedUpload") or {}
+            add_check(
+                "logged-qso",
+                "Logged QSO UDP",
+                "warn",
+                f"WSJT logged-QSO upload errors: {last_upload.get('error') or logged_upload_errors}",
+                value_text=f"{logged_count} logged UDP, {logged_uploads} uploads",
+            )
+        elif logged_count > 0 or logged_uploads > 0:
+            add_check(
+                "logged-qso",
+                "Logged QSO UDP",
+                "ok",
+                "WSJT logged-QSO events are reaching the bridge and backend upload path",
+                value_text=f"{logged_count} logged UDP, {logged_uploads} uploads",
+            )
+        else:
+            add_check(
+                "logged-qso",
+                "Logged QSO UDP",
+                "warn",
+                "No WSJT logged-QSO UDP event has been received in this bridge session yet",
+                value_text="0 logged UDP",
             )
         add_check(
             "engine-build",

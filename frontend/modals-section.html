@@ -511,7 +511,7 @@
                             <ol style="font-size: 9px; color: #aaa; margin: 4px 0 0 16px; padding: 0;">
                                 <li>In WSJT-X, go Settings → Reporting</li>
                                 <li>✅ Enable "Accept UDP requests"</li>
-                                <li>Set Address: 127.0.0.1</li>
+                                <li>Set Address: {{ configData.WSJTX_UDP_MULTICAST }}</li>
                                 <li>Set Port: {{ configData.WSJTX_UDP_PORT }}</li>
                                 <li>Restart OM0RX Radio Control</li>
                                 <li>Modal will appear when working a station!</li>

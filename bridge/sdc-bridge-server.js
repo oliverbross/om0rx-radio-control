@@ -23,6 +23,7 @@
 import net from 'net';
 import dgram from 'dgram';
 import http from 'http';
+import https from 'https';
 import os from 'os';
 import { WebSocketServer } from 'ws';
 import { WsjtxParser } from './wsjtx-parser.js';
@@ -37,6 +38,7 @@ const WS_PORT = parseInt(process.env.WS_PORT || '8091');
 const WSJTX_COMMAND_PORT = parseInt(process.env.WSJTX_COMMAND_PORT || '8092');
 const WSJTX_ENABLED = process.env.WSJTX_ENABLED !== 'false';
 const BRIDGE_TEST_MODE = process.env.OM0RX_BRIDGE_TEST_MODE === '1';
+const OM0RX_BACKEND_URL = (process.env.OM0RX_BACKEND_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '');
 
 // WebSocket server is created during startup. Keeping module import side-effect
 // free in test mode lets protocol/diagnostic contracts be exercised safely.
@@ -54,11 +56,14 @@ let wsjtxStats = {
   logged: 0,
   commands: 0,
   commandErrors: 0,
+  loggedUploads: 0,
+  loggedUploadErrors: 0,
   other: 0,
   lastPacket: null,
   lastStatus: null,
   lastDecode: null,
   lastLogged: null,
+  lastLoggedUpload: null,
   lastCommand: null,
 };
 const WSJTX_TIMELINE_LIMIT = 80;
@@ -565,6 +570,7 @@ function startWSJTXListener() {
           dialFrequency: broadcastData.dialFrequency,
           mode: broadcastData.mode,
         });
+        uploadLoggedQsoToBackend(broadcastData);
       } else {
         wsjtxStats.other += 1;
         broadcastData = {
@@ -682,6 +688,104 @@ function sendJson(res, status, payload) {
   res.end(data);
 }
 
+function postJson(url, payload, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const data = JSON.stringify(payload);
+    const transport = target.protocol === 'https:' ? https : http;
+    const req = transport.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port,
+      path: `${target.pathname}${target.search}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data),
+      },
+      timeout: timeoutMs,
+    }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        let parsed = {};
+        try {
+          parsed = body ? JSON.parse(body) : {};
+        } catch {
+          parsed = { raw: body };
+        }
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve({ statusCode: res.statusCode, body: parsed });
+        } else {
+          const message = parsed.detail || parsed.error || parsed.message || body || `HTTP ${res.statusCode}`;
+          reject(new Error(typeof message === 'string' ? message : JSON.stringify(message)));
+        }
+      });
+    });
+    req.on('timeout', () => {
+      req.destroy(new Error(`POST ${url} timed out after ${timeoutMs}ms`));
+    });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+function buildLoggedQsoUpload(loggedData) {
+  if (!loggedData || !loggedData.dxCall) return null;
+  return {
+    call: String(loggedData.dxCall || '').trim().toUpperCase(),
+    frequency_hz: loggedData.dialFrequency ? Number(loggedData.dialFrequency) : null,
+    mode: loggedData.mode || 'FT8',
+    grid: loggedData.dxGrid || '',
+    rst_sent: loggedData.txRst || '',
+    rst_received: loggedData.rxRst || '',
+    comments: loggedData.adifText ? 'Auto-logged from WSJT-X UDP ADIF' : 'Auto-logged from WSJT-X UDP QSO Logged',
+    adif_text: loggedData.adifText || '',
+    source: 'wsjtx-bridge',
+  };
+}
+
+async function uploadLoggedQsoToBackend(loggedData) {
+  const payload = buildLoggedQsoUpload(loggedData);
+  if (!payload) {
+    return;
+  }
+  const uploadEntry = {
+    ts: Date.now(),
+    call: payload.call,
+    mode: payload.mode,
+    dialFrequency: payload.frequency_hz,
+    success: false,
+    error: '',
+  };
+  try {
+    const result = await postJson(`${OM0RX_BACKEND_URL}/api/wsjtx/log-qso`, payload);
+    uploadEntry.success = true;
+    uploadEntry.statusCode = result.statusCode;
+    uploadEntry.result = result.body;
+    wsjtxStats.loggedUploads += 1;
+    console.log(`✅ WSJT-X logged QSO uploaded to OM0RX backend: ${payload.call}`);
+  } catch (error) {
+    uploadEntry.error = error.message || String(error);
+    wsjtxStats.loggedUploadErrors += 1;
+    console.warn(`⚠️  WSJT-X logged QSO backend upload failed for ${payload.call}: ${uploadEntry.error}`);
+  } finally {
+    wsjtxStats.lastLoggedUpload = uploadEntry;
+    addWsjtxTimeline({
+      direction: 'out',
+      type: 'logged_upload',
+      clientId: latestWsjtxClientId,
+      dxCall: payload.call,
+      mode: payload.mode,
+      dialFrequency: payload.frequency_hz,
+      success: uploadEntry.success,
+      error: uploadEntry.error,
+    });
+  }
+}
+
 function startWsjtxCommandServer() {
   const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
@@ -743,11 +847,14 @@ export function __resetWsjtxBridgeDiagnosticsForTest() {
     logged: 0,
     commands: 0,
     commandErrors: 0,
+    loggedUploads: 0,
+    loggedUploadErrors: 0,
     other: 0,
     lastPacket: null,
     lastStatus: null,
     lastDecode: null,
     lastLogged: null,
+    lastLoggedUpload: null,
     lastCommand: null,
   };
   wsjtxTimeline.length = 0;

@@ -1849,6 +1849,86 @@
             font-size: 11px;
         }
 
+        .wsjtx-engine-strip {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 6px 10px 0;
+            padding: 6px 8px;
+            border: 1px solid #26384f;
+            border-radius: 6px;
+            background: #101923;
+            color: #cbd5e1;
+            font-size: 11px;
+            overflow-x: auto;
+            white-space: nowrap;
+        }
+
+        .wsjtx-engine-status,
+        .wsjtx-engine-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            min-height: 24px;
+            padding: 3px 8px;
+            border: 1px solid #374151;
+            border-radius: 4px;
+            background: #172033;
+            max-width: 460px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .wsjtx-engine-status span,
+        .wsjtx-engine-pill {
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .wsjtx-engine-status strong {
+            color: #ffffff;
+        }
+
+        .wsjtx-engine-status.ok,
+        .wsjtx-engine-pill.ok {
+            border-color: #0f766e;
+            background: #083c3a;
+            color: #bbf7d0;
+        }
+
+        .wsjtx-engine-status.warn,
+        .wsjtx-engine-pill.warn {
+            border-color: #b45309;
+            background: #3b2b0b;
+            color: #fde68a;
+        }
+
+        .wsjtx-engine-status.off {
+            border-color: #6b7280;
+            background: #20242a;
+            color: #d1d5db;
+        }
+
+        .wsjtx-engine-strip button {
+            min-height: 24px;
+            padding: 3px 9px;
+            border: 1px solid #3b4a60;
+            border-radius: 4px;
+            background: #243244;
+            color: #e5e7eb;
+            cursor: pointer;
+            font-weight: 700;
+        }
+
+        .wsjtx-engine-strip button:hover:not(:disabled) {
+            background: #2f4057;
+        }
+
+        .wsjtx-engine-strip button:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
         .wsjtx-planner-panel {
             margin: 6px 10px 8px;
             border: 1px solid #284462;

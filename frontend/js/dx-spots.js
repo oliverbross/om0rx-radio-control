@@ -107,6 +107,10 @@ const dxSpotsData = {
         filter: 'actionable',
         updatedAt: null,
     },
+    wsjtxEngineHealth: null,
+    wsjtxEngineHealthLoading: false,
+    wsjtxEngineHealthMessage: '',
+    wsjtxEngineHealthTimer: null,
     spotExplainLoading: false,
     spotExplainError: '',
     visualSpotWindowMinutes: 60,
@@ -538,6 +542,39 @@ const dxSpotsMethods = {
         this.wsjtxPlanner.updatedAt = new Date().toISOString();
     },
 
+    async refreshWsjtxEngineHealth(options = {}) {
+        if (this.wsjtxEngineHealthLoading && !options.force) return;
+        this.wsjtxEngineHealthLoading = true;
+        try {
+            const response = await fetch('/api/wsjtx/health');
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || result.success === false) {
+                throw new Error(result.detail || result.error || response.statusText);
+            }
+            this.wsjtxEngineHealth = result;
+            this.wsjtxEngineHealthMessage = '';
+        } catch (error) {
+            console.error('WSJT engine health refresh failed:', error);
+            this.wsjtxEngineHealthMessage = error.message || 'WSJT health refresh failed';
+        } finally {
+            this.wsjtxEngineHealthLoading = false;
+        }
+    },
+
+    setupWsjtxEngineHealthRefresh() {
+        this.cleanupWsjtxEngineHealthRefresh();
+        this.wsjtxEngineHealthTimer = setInterval(() => {
+            this.refreshWsjtxEngineHealth();
+        }, 30000);
+    },
+
+    cleanupWsjtxEngineHealthRefresh() {
+        if (this.wsjtxEngineHealthTimer) {
+            clearInterval(this.wsjtxEngineHealthTimer);
+            this.wsjtxEngineHealthTimer = null;
+        }
+    },
+
     async refreshWsjtxPlannerStatus(options = {}) {
         if (this.wsjtxPlanner.loading && !options.force) return;
         this.wsjtxPlanner.loading = true;
@@ -549,6 +586,7 @@ const dxSpotsMethods = {
             }
             this.updateWsjtxPlannerFromStatus(result);
             this.wsjtxPlanner.message = '';
+            this.refreshWsjtxEngineHealth();
         } catch (error) {
             console.error('WSJT planner refresh failed:', error);
             this.wsjtxPlanner.message = error.message || 'Planner refresh failed';
@@ -561,7 +599,66 @@ const dxSpotsMethods = {
         this.wsjtxPlanner.open = !this.wsjtxPlanner.open;
         if (this.wsjtxPlanner.open) {
             this.refreshWsjtxPlannerStatus({ force: true });
+            this.refreshWsjtxEngineHealth({ force: true });
         }
+    },
+
+    getWsjtxEngineStatusClass() {
+        const status = String(this.wsjtxEngineHealth?.status || '').toLowerCase();
+        if (this.wsjtxEngineHealth?.validation?.ready || status === 'ok') return 'ok';
+        if (status === 'off') return 'off';
+        if (status === 'warn') return 'warn';
+        return 'unknown';
+    },
+
+    getWsjtxEngineStatusText() {
+        if (this.wsjtxEngineHealthLoading && !this.wsjtxEngineHealth) return 'WSJT checking';
+        if (this.wsjtxEngineHealthMessage) return `WSJT error: ${this.wsjtxEngineHealthMessage}`;
+        const health = this.wsjtxEngineHealth || {};
+        const value = health.value || 'not checked';
+        const detail = health.detail || '';
+        return detail ? `WSJT ${value}: ${detail}` : `WSJT ${value}`;
+    },
+
+    getWsjtxEngineDecodeText() {
+        const stats = this.wsjtxEngineHealth?.bridge?.stats || {};
+        const decodes = Number(stats.decodes || 0);
+        const last = stats.lastDecode || this.wsjtxEngineHealth?.last_decode || {};
+        const age = stats.lastDecodeAgeMs;
+        const message = last.message ? String(last.message).slice(0, 36) : 'no decode';
+        if (!decodes) return '0 decodes';
+        if (Number.isFinite(Number(age))) return `${decodes} decodes · ${message} · ${Math.round(Number(age) / 1000)}s`;
+        return `${decodes} decodes · ${message}`;
+    },
+
+    getWsjtxEngineLogStatusClass() {
+        const stats = this.wsjtxEngineHealth?.bridge?.stats || {};
+        const errors = Number(stats.loggedUploadErrors || 0);
+        const logged = Number(stats.logged || 0);
+        const uploads = Number(stats.loggedUploads || 0);
+        if (errors > 0) return 'warn';
+        if (logged > 0 || uploads > 0) return 'ok';
+        return 'unknown';
+    },
+
+    getWsjtxEngineLogStatusText() {
+        const stats = this.wsjtxEngineHealth?.bridge?.stats || {};
+        const logged = Number(stats.logged || 0);
+        const uploads = Number(stats.loggedUploads || 0);
+        const errors = Number(stats.loggedUploadErrors || 0);
+        const lastUpload = stats.lastLoggedUpload || {};
+        if (errors > 0) return `QSO log upload errors ${errors}: ${lastUpload.error || 'check WSJT health'}`;
+        if (logged > 0 || uploads > 0) return `${logged} logged UDP · ${uploads} backend uploads`;
+        return 'No logged-QSO UDP received yet';
+    },
+
+    getWsjtxPlannerAutomationText() {
+        const status = this.wsjtxPlanner.status || {};
+        const settings = status.settings || {};
+        const active = status.enabled === false ? 'off' : 'on';
+        const wd = settings.watchdog_seconds || settings.max_call_attempts || status.max_call_attempts || 'guarded';
+        const avoid = settings.avoid_logged === false ? 'duplicates allowed' : 'needed-first';
+        return `Automation ${active} · ${avoid} · WD ${wd}`;
     },
 
     getWsjtxPlannerTargets() {
