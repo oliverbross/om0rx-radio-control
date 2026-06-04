@@ -8,6 +8,7 @@ import _bootstrap  # noqa: F401
 from fastapi.testclient import TestClient
 
 import backend.main
+from backend.api import server_control
 from backend.api import solar as solar_api
 from activity_intelligence.repository import ActivityRepository
 from activity_intelligence.services import ActivityIntelligenceService
@@ -28,6 +29,8 @@ GET_ROUTES = [
     "/api/rotor/config",
     "/api/rotor/auto/status",
     "/api/wsjtx/config",
+    "/api/wsjtx/health",
+    "/api/wsjtx/launch-logs",
     "/api/ft8/status",
     "/api/ft8/config",
     "/api/ft8/decoded",
@@ -91,6 +94,7 @@ POST_ROUTES = [
     "/api/rx2",
     "/api/split",
     "/api/config",
+    "/api/config/postgres/test",
     "/api/rotor/goto",
     "/api/rotor/direction",
     "/api/rotor/config",
@@ -108,6 +112,15 @@ POST_ROUTES = [
     "/api/restart",
     "/api/wsjtx/log-qso",
     "/api/wsjtx/auto-rotate",
+    "/api/wsjtx/command",
+    "/api/wsjtx/halt-tx",
+    "/api/wsjtx/free-text",
+    "/api/wsjtx/configure",
+    "/api/wsjtx/reply",
+    "/api/wsjtx/start-target",
+    "/api/wsjtx/start-target-from-spot",
+    "/api/wsjtx/launch-patched-engine",
+    "/api/wsjtx/launch-preflight",
     "/api/ft8/start",
     "/api/ft8/stop",
     "/api/ft8/config",
@@ -118,8 +131,13 @@ POST_ROUTES = [
     "/api/ft8/decoded/clear",
     "/api/ft8/automation/settings",
     "/api/ft8/automation/target",
+    "/api/ft8/automation/targets",
     "/api/ft8/automation/next",
     "/api/ft8/automation/attempt",
+    "/api/ft8/automation/promote",
+    "/api/ft8/automation/skip",
+    "/api/ft8/automation/wsjtx/prepare-next",
+    "/api/ft8/automation/wsjtx/prepare-target",
     "/api/spots/add-to-radio",
     "/api/spots/filtered-search",
     "/api/qso/log",
@@ -220,6 +238,24 @@ def test_legacy_ft8_tx_routes_are_disabled_by_default(monkeypatch):
         assert "deprecated and disabled" in response.text
 
 
+def test_wsjtx_prepare_request_accepts_frontend_and_api_field_names():
+    from backend.api.ft8 import AutomationWsjtxPrepareRequest
+
+    frontend_shape = AutomationWsjtxPrepareRequest.model_validate({
+        "cqOnly": False,
+        "autoCallStartOnly": False,
+    })
+    api_shape = AutomationWsjtxPrepareRequest.model_validate({
+        "cq_only": False,
+        "auto_call_start_only": False,
+    })
+
+    assert frontend_shape.cq_only is False
+    assert frontend_shape.auto_call_start_only is False
+    assert api_shape.cq_only is False
+    assert api_shape.auto_call_start_only is False
+
+
 def test_safe_frontend_read_contracts(tmp_path):
     install_temp_activity_service(tmp_path)
     solar_api._solar_cache["timestamp"] = time.time()
@@ -237,6 +273,8 @@ def test_safe_frontend_read_contracts(tmp_path):
     assert_response_has_keys("GET", "/api/rotor/status", {"ok", "enabled"})
     assert_response_has_keys("GET", "/api/rotor/config", {"ok", "enabled", "host"})
     assert_response_has_keys("GET", "/api/rotor/auto/status", {"ok", "auto_enabled", "home_grid"})
+    assert_response_has_keys("GET", "/api/wsjtx/health", {"success", "enabled", "status", "bridge", "processes", "engine", "decode_fresh", "last_decode", "checks", "validation", "timeline"})
+    assert_response_has_keys("GET", "/api/wsjtx/launch-logs?rigName=OM0RX-AUTO&lines=5", {"success", "rig_name", "lines", "logs"})
     assert_response_has_keys("GET", "/api/ft8/status", {"enabled", "mode"})
     assert_response_has_keys("GET", "/api/ft8/config", {"mode", "mycall", "mygrid"})
     assert_response_has_keys("GET", "/api/ft8/decoded", {"messages"})
@@ -295,6 +333,39 @@ def test_safe_frontend_post_contracts(tmp_path):
     )
 
 
+def test_postgres_connection_test_contract(monkeypatch):
+    monkeypatch.setattr(
+        server_control,
+        "test_connection",
+        lambda dsn=None, timeout_seconds=5: {
+            "database": "radio",
+            "user": "om0rx",
+            "server_addr": "127.0.0.1",
+            "server_port": 5432,
+            "server_version": "16-test",
+            "elapsed_ms": 1.2,
+        },
+    )
+
+    payload = assert_response_has_keys(
+        "POST",
+        "/api/config/postgres/test",
+        {"success", "message", "details"},
+        json={
+            "config": {
+                "POSTGRES_HOST": "127.0.0.1",
+                "POSTGRES_PORT": 5432,
+                "POSTGRES_DB": "radio",
+                "POSTGRES_USER": "om0rx",
+                "POSTGRES_PASSWORD": "secret",
+            }
+        },
+    )
+    assert payload["success"] is True
+    assert payload["details"]["database"] == "radio"
+    assert "secret" not in payload["message"]
+
+
 def test_activity_intelligence_frontend_static_contracts():
     root = Path(__file__).resolve().parents[2]
     template = (root / "frontend" / "templates" / "dx-spots.html").read_text(encoding="utf-8")
@@ -311,6 +382,190 @@ def test_activity_intelligence_frontend_static_contracts():
     assert "activity-rbn-bar-row" in styles
     assert "activity-contest-banner" in styles
     assert "activity-source-row" in styles
+
+
+def test_database_config_modal_exposes_postgres_controls():
+    root = Path(__file__).resolve().parents[2]
+    template = (root / "frontend" / "templates" / "modal-config.html").read_text(encoding="utf-8")
+    script = (root / "frontend" / "js" / "config-modal.js").read_text(encoding="utf-8")
+
+    assert "Local App Data Store" in template
+    assert "Storage Backend" in template
+    assert "PostgreSQL DSN" in template
+    assert "Test PostgreSQL Connection" in template
+    assert "WSJTX_BRIDGE_COMMAND_URL" in template
+    assert "WSJTX_BRIDGE_COMMAND_URL" in script
+    assert "/api/config/postgres/test" in script
+    assert "testPostgresConnection" in script
+
+
+def test_wsjtx_target_action_frontend_static_contracts():
+    root = Path(__file__).resolve().parents[2]
+    template = (root / "frontend" / "templates" / "dx-spots.html").read_text(encoding="utf-8")
+    section = (root / "frontend" / "dx-spots-section.html").read_text(encoding="utf-8")
+    script = (root / "frontend" / "js" / "dx-spots.js").read_text(encoding="utf-8")
+    app_main = (root / "frontend" / "js" / "app-main.js").read_text(encoding="utf-8")
+    config_modal = (root / "frontend" / "js" / "config-modal.js").read_text(encoding="utf-8")
+    config_template = (root / "frontend" / "templates" / "modal-config.html").read_text(encoding="utf-8")
+    config_section = (root / "frontend" / "modals-section.html").read_text(encoding="utf-8")
+    index = (root / "frontend" / "index.html").read_text(encoding="utf-8")
+    visual_map = (root / "frontend" / "visual-map.html").read_text(encoding="utf-8")
+    ft8_template = (root / "frontend" / "templates" / "modal-ft8.html").read_text(encoding="utf-8")
+    ft8_modal = (root / "frontend" / "js" / "ft8-modal.js").read_text(encoding="utf-8")
+    ft8_styles = (root / "frontend" / "ft8-modal.css").read_text(encoding="utf-8")
+
+    assert "Prepare WSJT" in template
+    assert "Arm WSJT" in template
+    assert "Queue WSJT" in template
+    assert "queueVisibleWsjtxCandidates(25)" in template
+    assert "wsjtxCandidateQueue.message" in template
+    assert "WSJT Planner" in template
+    assert "toggleWsjtxPlannerPanel" in template
+    assert "prepareWsjtxPlannerTarget(target)" in template
+    assert "promoteWsjtxPlannerTarget(target)" in template
+    assert "skipWsjtxPlannerTarget(target)" in template
+    assert "wsjtxSpotPrepare.message" in template
+    assert "wsjtxSpotPrepare.traceId" in template
+    assert "openWsjtxTraceInConfig(wsjtxSpotPrepare.traceId)" in template
+    assert "copyWsjtxTraceToClipboard(wsjtxSpotPrepare.traceId)" in template
+    assert "wsjtx-spot-trace-btn" in template
+    assert "wsjtx-spot-trace-copy-btn" in template
+    assert "getWsjtxSpotPrepareClass" in template
+    assert "Prepare WSJT" in section
+    assert "Arm WSJT" in section
+    assert "Queue WSJT" in section
+    assert "queueVisibleWsjtxCandidates(25)" in section
+    assert "wsjtxCandidateQueue.message" in section
+    assert "WSJT Planner" in section
+    assert "toggleWsjtxPlannerPanel" in section
+    assert "prepareWsjtxPlannerTarget(target)" in section
+    assert "promoteWsjtxPlannerTarget(target)" in section
+    assert "skipWsjtxPlannerTarget(target)" in section
+    assert "wsjtxSpotPrepare.message" in section
+    assert "wsjtxSpotPrepare.traceId" in section
+    assert "openWsjtxTraceInConfig(wsjtxSpotPrepare.traceId)" in section
+    assert "copyWsjtxTraceToClipboard(wsjtxSpotPrepare.traceId)" in section
+    assert "wsjtx-spot-trace-btn" in section
+    assert "wsjtx-spot-trace-copy-btn" in section
+    assert "getWsjtxSpotPrepareClass" in section
+    assert "startWsjtxTargetFromSpot" in script
+    assert "normalizeSpotFrequencyMhz" in script
+    assert "setWsjtxSpotPrepareState" in script
+    assert "buildWsjtxSpotTargetPayload" in script
+    assert "getVisibleWsjtxCandidates" in script
+    assert "queueVisibleWsjtxCandidates" in script
+    assert "refreshWsjtxPlannerStatus" in script
+    assert "prepareWsjtxPlannerTarget" in script
+    assert "promoteWsjtxPlannerTarget" in script
+    assert "skipWsjtxPlannerTarget" in script
+    assert "extractWsjtxTraceId" in script
+    assert "traceId: this.extractWsjtxTraceId(result)" in script
+    assert "openWsjtxTraceInConfig" in script
+    assert "this.wsjtxTimelineFilter = cleanTraceId" in script
+    assert "this.showConfigDialog('wsjtx')" in script
+    assert "getWsjtxSpotPrepareLabel" in script
+    assert "/api/ft8/automation/wsjtx/prepare-target" in script
+    assert "/api/ft8/automation/targets" in script
+    assert "/api/ft8/automation/promote" in script
+    assert "/api/ft8/automation/skip" in script
+    assert "/api/wsjtx/arm-target-from-spot" in script
+    assert "confirmArm" in script
+    assert "wsjtx-config" in app_main
+    assert "showConfigDialog(initialTab = 'database')" in config_modal
+    assert "WSJT Engine Health" in config_template
+    assert "WSJT Engine Health" in config_section
+    assert "wsjtx-health-checks" in config_template
+    assert "wsjtx-health-checks" in config_section
+    assert "wsjtx-timeline-panel" in config_template
+    assert "wsjtx-timeline-panel" in config_section
+    assert "wsjtx-timeline-toolbar" in config_template
+    assert "wsjtx-timeline-toolbar" in config_section
+    assert "wsjtx-command-error-panel" in config_template
+    assert "wsjtx-command-error-panel" in config_section
+    assert "wsjtxTimelineFilter" in config_template
+    assert "wsjtxTimelineFilter" in config_section
+    assert "Bridge timeline" in config_template
+    assert "Bridge timeline" in config_section
+    assert "Last decode" in config_template
+    assert "Last decode" in config_section
+    assert "Refresh WSJT" in config_template
+    assert "Halt TX" in config_template
+    assert "Test Prepare" in config_template
+    assert "Self Test" in config_template
+    assert "wsjtx-preflight-panel" in config_template
+    assert "wsjtx-preflight-panel" in config_section
+    assert "wsjtx-launch-result-panel" in config_template
+    assert "wsjtx-launch-result-panel" in config_section
+    assert "wsjtx-launch-log-viewer" in config_template
+    assert "wsjtx-launch-log-viewer" in config_section
+    assert "View logs" in config_template
+    assert "View logs" in config_section
+    assert "Preflight + Start" in config_template
+    assert "Preflight + Start" in config_section
+    assert "/api/wsjtx/health" in config_modal
+    assert "/api/wsjtx/halt-tx" in config_modal
+    assert "/api/wsjtx/launch-patched-engine" in config_modal
+    assert "/api/wsjtx/launch-preflight" in config_modal
+    assert "/api/wsjtx/launch-logs" in config_modal
+    assert "launchPatchedWsjtxEngine" in config_modal
+    assert "runWsjtxLaunchPreflight" in config_modal
+    assert "loadWsjtxLaunchLogs" in config_modal
+    assert "getWsjtxLaunchLogSections" in config_modal
+    assert "wsjtxLaunchLogs" in config_modal
+    assert "getWsjtxLaunchPayload" in config_modal
+    assert "requireReady" in config_modal
+    assert "testWsjtxLaunchPreflight" in config_modal
+    assert "formatWsjtxPreflightSummary" in config_modal
+    assert "wsjtxLaunchResult" in config_modal
+    assert "getWsjtxLaunchResultClass" in config_modal
+    assert "formatWsjtxLaunchSummary" in config_modal
+    assert "formatWsjtxLaunchPids" in config_modal
+    assert "formatWsjtxLaunchCommand" in config_modal
+    assert "getWsjtxLaunchLogRows" in config_modal
+    assert "getWsjtxReadinessChecks" in config_modal
+    assert "formatWsjtxValidationSummary" in config_modal
+    assert "getWsjtxCheckClass" in config_modal
+    assert "formatWsjtxLastDecode" in config_modal
+    assert "getWsjtxBridgeTimeline" in config_modal
+    assert "hasWsjtxBridgeTimeline" in config_modal
+    assert "clearWsjtxTimelineFilter" in config_modal
+    assert "getWsjtxTimelineTraceId" in config_modal
+    assert "copyWsjtxTraceToClipboard" in config_modal
+    assert "getWsjtxCommandErrorSummary" in config_modal
+    assert "focusWsjtxCommandErrorTrace" in config_modal
+    assert "getWsjtxTimelineSearchText" in config_modal
+    assert "formatWsjtxTimelineTitle" in config_modal
+    assert "formatWsjtxTimelineDetail" in config_modal
+    assert "getWsjtxTimelineClass" in config_modal
+    assert "traceId" in config_modal
+    assert "testWsjtxPrepareCommand" in config_modal
+    assert "sendWsjtxAutoCqTest" in config_modal
+    assert "sendWsjtxAutoAnswerTest" in config_modal
+    assert "ft8WsjtxPersistenceLabel()" in ft8_template
+    assert "ft8WsjtxPersistenceTitle()" in ft8_template
+    assert "ft8-planner-db-badge" in ft8_template
+    assert "ft8WsjtxPersistenceLabel" in ft8_modal
+    assert "ft8WsjtxPersistenceClass" in ft8_modal
+    assert "DB PostgreSQL" in ft8_modal
+    assert ".ft8-planner-db-badge.postgres" in ft8_styles
+    assert ".ft8-planner-db-badge.memory" in ft8_styles
+    assert ".ft8-planner-db-badge.error" in ft8_styles
+    assert "selectConfigTab" in config_modal
+    assert "WSJT automation controls" in config_template
+    assert "WSJT automation controls" in config_section
+    assert "wsjtx-health-message" in config_template
+    assert "wsjtx-health-message" in config_section
+    assert "Queue Auto CQ" in config_template
+    assert "Queue Auto CQ" in config_section
+    assert "Process Auto Answer" in config_template
+    assert "Process Auto Answer" in config_section
+    assert "getWsjtxTimelineTraceId(event)" in config_template
+    assert "getWsjtxTimelineTraceId(event)" in config_section
+    assert "/api/wsjtx/free-text" in config_modal
+    assert "/api/wsjtx/reply" in config_modal
+    assert "20260604-wsjtx-planner-panel-2" in index
+    assert "20260604-wsjtx-planner-panel-2" in visual_map
+    assert "20260604-wsjtx-planner-panel-2" in (root / "frontend" / "templates-loader.js").read_text(encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -8,8 +8,9 @@ settings are present; otherwise the legacy local cache remains available.
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Any, Iterator
 
 from radio_control import config
 
@@ -34,6 +35,29 @@ def get_postgres_dsn() -> str:
         return ""
 
     # Keyword DSN avoids URL escaping issues with special characters.
+    parts = [f"host={host}", f"port={port}", f"dbname={dbname}", f"user={user}"]
+    if password:
+        parts.append(f"password={password}")
+    return " ".join(parts)
+
+
+def get_postgres_dsn_from_values(values: dict[str, Any]) -> str:
+    """Build a PostgreSQL DSN from config-like values without reading global config."""
+    explicit = str(values.get("POSTGRES_DSN", "") or "").strip()
+    if explicit:
+        return explicit
+
+    host = str(values.get("POSTGRES_HOST", "") or "").strip()
+    dbname = str(values.get("POSTGRES_DB", "") or "").strip()
+    user = str(values.get("POSTGRES_USER", "") or "").strip()
+    password = str(values.get("POSTGRES_PASSWORD", "") or "")
+    try:
+        port = int(values.get("POSTGRES_PORT", 5432) or 5432)
+    except (TypeError, ValueError):
+        port = 5432
+    if not host or not dbname or not user:
+        return ""
+
     parts = [f"host={host}", f"port={port}", f"dbname={dbname}", f"user={user}"]
     if password:
         parts.append(f"password={password}")
@@ -73,6 +97,40 @@ def connect() -> Iterator[object]:
         yield conn
     finally:
         conn.close()
+
+
+def test_connection(dsn: str | None = None, timeout_seconds: int = 5) -> dict[str, Any]:
+    """Open a short PostgreSQL connection and return sanitized server metadata."""
+    conninfo = dsn if dsn is not None else get_postgres_dsn()
+    if not conninfo:
+        raise RuntimeError(
+            "POSTGRES_DSN or POSTGRES_HOST/POSTGRES_DB/POSTGRES_USER is not configured."
+        )
+
+    psycopg = require_psycopg()
+    started = time.perf_counter()
+    conn = psycopg.connect(conninfo, connect_timeout=timeout_seconds)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT current_database(), current_user,
+                       inet_server_addr()::text, inet_server_port(),
+                       current_setting('server_version')
+                """
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    return {
+        "database": row[0] if row else None,
+        "user": row[1] if row else None,
+        "server_addr": row[2] if row else None,
+        "server_port": row[3] if row else None,
+        "server_version": row[4] if row else None,
+        "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
+    }
 
 
 def initialize_schema() -> None:
@@ -174,6 +232,48 @@ def initialize_schema() -> None:
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_pg_qso_call_band_mode ON qso_records(upper(call), band, mode)"
             )
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS digital_targets (
+                    key TEXT PRIMARY KEY,
+                    call TEXT NOT NULL CHECK (length(call) > 0),
+                    band TEXT,
+                    mode TEXT NOT NULL DEFAULT 'FT8',
+                    source TEXT NOT NULL DEFAULT 'decoded',
+                    message TEXT,
+                    grid TEXT,
+                    country TEXT,
+                    dxcc INTEGER,
+                    continent TEXT,
+                    cq_zone TEXT,
+                    itu_zone TEXT,
+                    call_status TEXT DEFAULT 'Unknown',
+                    dxcc_status TEXT DEFAULT 'Unknown',
+                    status_source TEXT,
+                    score INTEGER DEFAULT 0,
+                    snr DOUBLE PRECISION,
+                    audio_offset INTEGER,
+                    dial_frequency DOUBLE PRECISION,
+                    created_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ,
+                    first_heard_at TIMESTAMPTZ,
+                    last_heard_at TIMESTAMPTZ,
+                    heard_slot_start_at TIMESTAMPTZ,
+                    last_attempt_at TIMESTAMPTZ,
+                    backoff_until TIMESTAMPTZ,
+                    attempts INTEGER DEFAULT 0,
+                    state TEXT DEFAULT 'queued',
+                    reason TEXT,
+                    heard BOOLEAN DEFAULT false
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_updated ON digital_targets(updated_at DESC)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_call ON digital_targets(upper(call))")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_state ON digital_targets(state)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_source ON digital_targets(source)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_band_mode ON digital_targets(band, mode)")
 
             cur.execute(
                 """

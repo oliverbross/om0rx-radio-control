@@ -105,7 +105,7 @@ function Stop-ProcessesOnPort {
 }
 
 function Stop-KnownRuntimePorts {
-    $ports = @($BackendPort, 8080, 8081, 8091, 12166, 2237) | Select-Object -Unique
+    $ports = @($BackendPort, 8080, 8081, 8091, 8092, 12166, 2237) | Select-Object -Unique
     foreach ($port in $ports) {
         Stop-ProcessesOnPort -Port $port
     }
@@ -184,7 +184,7 @@ function Get-LifecycleAction {
 
 function Start-BridgeProcess {
     Write-Host "📡 Starting WSJT-X bridge server..." -ForegroundColor Yellow
-    $bridgeCommand = "Set-Location '$ProjectRoot'; `$env:TCP_HOST='127.0.0.1'; `$env:TCP_PORT='12166'; `$env:WSJTX_UDP_PORT='2237'; `$env:WSJTX_UDP_MULTICAST='224.0.0.1'; `$env:WS_PORT='8091'; `$env:WSJTX_ENABLED='true'; & node '$BridgeScript'"
+    $bridgeCommand = "Set-Location '$ProjectRoot'; `$env:TCP_HOST='127.0.0.1'; `$env:TCP_PORT='12166'; `$env:WSJTX_UDP_PORT='2237'; `$env:WSJTX_UDP_MULTICAST='224.0.0.1'; `$env:WS_PORT='8091'; `$env:WSJTX_COMMAND_PORT='8092'; `$env:WSJTX_ENABLED='true'; & node '$BridgeScript'"
     $process = Start-Process powershell -ArgumentList "-NoProfile", "-Command", $bridgeCommand -WindowStyle Hidden -PassThru
     Write-Host "✅ Bridge process started (PID: $($process.Id))" -ForegroundColor Green
     Start-Sleep -Seconds 2

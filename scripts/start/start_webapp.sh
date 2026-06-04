@@ -133,6 +133,7 @@ export TCP_PORT="12166"
 export WSJTX_UDP_PORT="2237"
 export WSJTX_UDP_MULTICAST="224.0.0.1"
 export WS_PORT="8091"
+export WSJTX_COMMAND_PORT="8092"
 export WSJTX_ENABLED="true"
 
 node "$PROJECT_ROOT/bridge/sdc-bridge-server.js" > /tmp/bridge-server.log 2>&1 &
@@ -146,6 +147,7 @@ if kill -0 $BRIDGE_PID 2>/dev/null; then
     echo "✅ Multi-Protocol Bridge Server started (PID: $BRIDGE_PID)"
     echo "   SDC WebSocket: ws://localhost:8091"
     echo "   WSJT-X UDP: listening on port 2237"
+    echo "   WSJT-X Command API: http://127.0.0.1:8092/wsjtx/command"
 else
     echo "⚠️  Bridge Server may have failed to start"
     echo "   (This is optional - the app will still work without it)"

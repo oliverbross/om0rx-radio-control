@@ -7,7 +7,7 @@
  */
 (function() {
     console.log('🔄 Template Loader: Starting to load template fragments in parallel...');
-    const templateCacheKey = '20260602-visual-map-cache-fix';
+    const templateCacheKey = '20260604-wsjtx-planner-panel-2';
     
     // Template loading schedule: which file goes into which section
     const templateSchedule = [

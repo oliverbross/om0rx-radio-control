@@ -122,6 +122,59 @@ def build_qso_dedupe_key(qso_data: Dict[str, Any]) -> str:
     return "qso:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+async def _enrich_qso_from_qrz(qso_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill missing log fields from QRZ without making logging depend on QRZ."""
+    global qrz_client
+
+    callsign = str(qso_dict.get("callsign") or qso_dict.get("call") or "").strip().upper()
+    if not callsign:
+        return qso_dict
+
+    needs_enrichment = any(
+        not str(qso_dict.get(field) or "").strip()
+        for field in ("name", "gridsquare", "state", "country", "email")
+    ) or not qso_dict.get("cq_zone") or not qso_dict.get("itu_zone")
+    if not needs_enrichment:
+        return qso_dict
+
+    try:
+        if not qrz_client:
+            qrz_client = QRZClient()
+        profile = await asyncio.wait_for(qrz_client.lookup(callsign), timeout=7)
+    except Exception as exc:
+        logger.debug("QRZ enrichment skipped for %s: %s", callsign, exc)
+        return qso_dict
+
+    if not profile.get("success"):
+        logger.debug("QRZ enrichment unavailable for %s: %s", callsign, profile.get("message"))
+        return qso_dict
+
+    field_map = {
+        "name": "fname",
+        "gridsquare": "grid",
+        "state": "state",
+        "country": "country",
+        "email": "email",
+        "cq_zone": "cqzone",
+        "itu_zone": "ituzone",
+        "lotw_member": "lotw",
+    }
+    for qso_field, profile_field in field_map.items():
+        if qso_dict.get(qso_field) in (None, "", 0):
+            value = profile.get(profile_field)
+            if value not in (None, ""):
+                if qso_field in {"cq_zone", "itu_zone"}:
+                    try:
+                        qso_dict[qso_field] = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    qso_dict[qso_field] = value
+
+    logger.info("✅ QRZ enrichment applied for %s", callsign)
+    return qso_dict
+
+
 def _load_dedupe_ledger() -> Dict[str, Any]:
     if not _dedupe_ledger_path.exists():
         return {}
@@ -349,6 +402,7 @@ async def log_qso(qso: QSORequest):
         # Convert request to dict and preserve RST values as-is
         # They can be strings (FT8 SNR like "-12") or will be converted by wavelog_api
         qso_dict = qso.model_dump(exclude_unset=False)  # Include all fields
+        qso_dict = await _enrich_qso_from_qrz(qso_dict)
         qso_key = qso_dict.get("qso_key") or build_qso_dedupe_key(qso_dict)
         qso_dict["qso_key"] = qso_key
 

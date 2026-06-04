@@ -22,9 +22,11 @@
 
 import net from 'net';
 import dgram from 'dgram';
+import http from 'http';
 import os from 'os';
 import { WebSocketServer } from 'ws';
 import { WsjtxParser } from './wsjtx-parser.js';
+import { buildCommand } from './wsjtx-protocol.js';
 
 // Configuration from environment or defaults
 const TCP_HOST = process.env.TCP_HOST || '127.0.0.1';
@@ -32,16 +34,35 @@ const TCP_PORT = parseInt(process.env.TCP_PORT || '12166');
 const WSJTX_UDP_PORT = parseInt(process.env.WSJTX_UDP_PORT || '2237');
 const WSJTX_UDP_MULTICAST = process.env.WSJTX_UDP_MULTICAST || '224.0.0.1';
 const WS_PORT = parseInt(process.env.WS_PORT || '8091');
+const WSJTX_COMMAND_PORT = parseInt(process.env.WSJTX_COMMAND_PORT || '8092');
 const WSJTX_ENABLED = process.env.WSJTX_ENABLED !== 'false';
+const BRIDGE_TEST_MODE = process.env.OM0RX_BRIDGE_TEST_MODE === '1';
 
-// Create WebSocket server
-const wss = new WebSocketServer({ port: WS_PORT });
-console.log(`🔌 WebSocket server started on ws://localhost:${WS_PORT}`);
-console.log(`📡 SDC Skimmer bridge: tcp://${TCP_HOST}:${TCP_PORT}`);
-if (WSJTX_ENABLED) console.log(`📡 WSJT-X UDP listener: port ${WSJTX_UDP_PORT} (multicast: ${WSJTX_UDP_MULTICAST})`);
+// WebSocket server is created during startup. Keeping module import side-effect
+// free in test mode lets protocol/diagnostic contracts be exercised safely.
+let wss = null;
 
 // WSJT-X Parser
 const wsjtxParser = new WsjtxParser();
+let latestWsjtxEndpoint = null;
+let latestWsjtxClientId = '';
+let wsjtxCommandSender = null;
+let wsjtxStats = {
+  packets: 0,
+  statuses: 0,
+  decodes: 0,
+  logged: 0,
+  commands: 0,
+  commandErrors: 0,
+  other: 0,
+  lastPacket: null,
+  lastStatus: null,
+  lastDecode: null,
+  lastLogged: null,
+  lastCommand: null,
+};
+const WSJTX_TIMELINE_LIMIT = 80;
+const wsjtxTimeline = [];
 
 // ============= SDC PARSING =============
 
@@ -111,6 +132,9 @@ function extractLoggedAdifFields(msg) {
 // ============= BROADCAST FUNCTION =============
 
 function broadcast(data) {
+  if (!wss) {
+    return;
+  }
   const msg = JSON.stringify(data);
   
   let count = 0;
@@ -135,15 +159,189 @@ function broadcast(data) {
   }
 }
 
+function summariseWsjtxPayload(payload = {}) {
+  const target = payload.target && typeof payload.target === 'object' ? payload.target : payload;
+  const summary = {};
+  for (const [sourceKey, targetKey] of [
+    ['call', 'call'],
+    ['callsign', 'call'],
+    ['dxCall', 'call'],
+    ['grid', 'grid'],
+    ['dxGrid', 'grid'],
+    ['mode', 'mode'],
+    ['dialFrequency', 'dialFrequency'],
+    ['frequency', 'dialFrequency'],
+    ['rxDf', 'rxDf'],
+    ['txDf', 'txDf'],
+    ['enableTx', 'enableTx'],
+    ['holdTxFreq', 'holdTxFreq'],
+    ['traceId', 'traceId'],
+    ['trace_id', 'traceId'],
+  ]) {
+    if (target[sourceKey] !== undefined && summary[targetKey] === undefined) {
+      summary[targetKey] = target[sourceKey];
+    }
+  }
+  return summary;
+}
+
+function addWsjtxTimeline(entry) {
+  const item = {
+    ts: Date.now(),
+    ...entry,
+  };
+  wsjtxTimeline.push(item);
+  while (wsjtxTimeline.length > WSJTX_TIMELINE_LIMIT) {
+    wsjtxTimeline.shift();
+  }
+  return item;
+}
+
+function commandCapabilities() {
+  return {
+    clear: true,
+    replay: true,
+    halt_tx: true,
+    free_text: true,
+    location: true,
+    switch_configuration: true,
+    configure: true,
+    reply: true,
+    start_target_qso: true,
+  };
+}
+
+function getWsjtxClientSnapshot() {
+  if (!latestWsjtxEndpoint) {
+    return null;
+  }
+  return {
+    address: latestWsjtxEndpoint.address,
+    port: latestWsjtxEndpoint.port,
+    id: latestWsjtxClientId,
+    lastSeenMs: Date.now() - latestWsjtxEndpoint.ts,
+  };
+}
+
+function getWsjtxStatsSnapshot() {
+  const now = Date.now();
+  const age = (entry) => entry && entry.ts ? now - entry.ts : null;
+  return {
+    ...wsjtxStats,
+    lastPacketAgeMs: age(wsjtxStats.lastPacket),
+    lastStatusAgeMs: age(wsjtxStats.lastStatus),
+    lastDecodeAgeMs: age(wsjtxStats.lastDecode),
+    lastLoggedAgeMs: age(wsjtxStats.lastLogged),
+    lastCommandAgeMs: age(wsjtxStats.lastCommand),
+  };
+}
+
+function dispatchWsjtxCommand(command, payload = {}) {
+  if (command === 'status') {
+    return {
+      success: true,
+      client: getWsjtxClientSnapshot(),
+      capabilities: commandCapabilities(),
+      timeline: wsjtxTimeline.slice(-25),
+    };
+  }
+
+  const commandEntry = addWsjtxTimeline({
+    direction: 'out',
+    type: 'command',
+    command,
+    traceId: payload.traceId || (payload.target && payload.target.traceId) || '',
+    payload: summariseWsjtxPayload(payload),
+    client: getWsjtxClientSnapshot(),
+  });
+  wsjtxStats.commands += 1;
+  wsjtxStats.lastCommand = commandEntry;
+
+  if (!wsjtxCommandSender) {
+    wsjtxStats.commandErrors += 1;
+    commandEntry.success = false;
+    commandEntry.error = 'WSJT-X UDP listener is not running';
+    return { success: false, error: 'WSJT-X UDP listener is not running', traceId: commandEntry.traceId };
+  }
+
+  if (!latestWsjtxEndpoint) {
+    wsjtxStats.commandErrors += 1;
+    commandEntry.success = false;
+    commandEntry.error = 'No WSJT-X client has been seen yet';
+    return { success: false, error: 'No WSJT-X client has been seen yet', traceId: commandEntry.traceId };
+  }
+
+  const commandPayload = {
+    ...payload,
+    id: payload.id || latestWsjtxClientId || 'WSJT-X',
+  };
+  const packet = buildCommand(command, commandPayload);
+  const result = wsjtxCommandSender(packet, command);
+  result.traceId = commandEntry.traceId;
+  commandEntry.success = result.success === true;
+  commandEntry.bytes = result.bytes || 0;
+  commandEntry.client = result.client || commandEntry.client;
+  if (!result.success) {
+    wsjtxStats.commandErrors += 1;
+    commandEntry.error = result.error || 'command send failed';
+  }
+  return result;
+}
+
 // ============= SDC TCP CONNECTION =============
 
-// Handle WebSocket connections
-wss.on('connection', (ws) => {
-  console.log(`👤 WebSocket client connected. Total: ${wss.clients.size}`);
-  ws.on('close', () => {
-    console.log(`👤 WebSocket client disconnected. Total: ${wss.clients.size}`);
+function startWebSocketServer() {
+  if (wss) {
+    return wss;
+  }
+
+  wss = new WebSocketServer({ port: WS_PORT });
+  console.log(`🔌 WebSocket server started on ws://localhost:${WS_PORT}`);
+  console.log(`📡 SDC Skimmer bridge: tcp://${TCP_HOST}:${TCP_PORT}`);
+  if (WSJTX_ENABLED) console.log(`📡 WSJT-X UDP listener: port ${WSJTX_UDP_PORT} (multicast: ${WSJTX_UDP_MULTICAST})`);
+
+  // Handle WebSocket connections
+  wss.on('connection', (ws) => {
+    console.log(`👤 WebSocket client connected. Total: ${wss.clients.size}`);
+    ws.on('message', (raw) => {
+      let request = null;
+      try {
+        request = JSON.parse(raw.toString());
+      } catch (e) {
+        return;
+      }
+
+      if (!request || request.type !== 'wsjtx_command') {
+        return;
+      }
+
+      try {
+        const result = dispatchWsjtxCommand(request.command, request.payload || {});
+        ws.send(JSON.stringify({
+          type: 'wsjtx_command_result',
+          source: 'bridge',
+          command: request.command,
+          ...result,
+          ts: Date.now(),
+        }));
+      } catch (e) {
+        ws.send(JSON.stringify({
+          type: 'wsjtx_command_result',
+          source: 'bridge',
+          command: request.command,
+          success: false,
+          error: e.message,
+          ts: Date.now(),
+        }));
+      }
+    });
+    ws.on('close', () => {
+      console.log(`👤 WebSocket client disconnected. Total: ${wss.clients.size}`);
+    });
   });
-});
+
+  return wss;
+}
 
 // Connect to SDC TCP broadcast stream
 function connectSDC() {
@@ -223,10 +421,32 @@ function startWSJTXListener() {
   // This receives both multicast AND localhost packets on all interfaces
   // Windows has issues with dual sockets on same port, so we use reuseAddr for flexibility
   const udp = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+
+  wsjtxCommandSender = (packet, command) => {
+    const endpoint = latestWsjtxEndpoint;
+    if (!endpoint) {
+      return { success: false, error: 'No WSJT-X client endpoint is available' };
+    }
+
+    udp.send(packet, endpoint.port, endpoint.address);
+    console.log(`📨 Sent WSJT-X command ${command} to ${endpoint.address}:${endpoint.port} (${packet.length} bytes)`);
+    return {
+      success: true,
+      bytes: packet.length,
+      client: getWsjtxClientSnapshot(),
+    };
+  };
   
   // Shared message handler for both sockets
   function handleWSJTXMessage(buf, rinfo) {
     console.log(`📦 UDP packet received from ${rinfo.address}:${rinfo.port} (${buf.length} bytes)`);
+    wsjtxStats.packets += 1;
+    wsjtxStats.lastPacket = {
+      address: rinfo.address,
+      port: rinfo.port,
+      bytes: buf.length,
+      ts: Date.now(),
+    };
     
     try {
       // Show raw packet inspection
@@ -249,6 +469,15 @@ function startWSJTXListener() {
         console.warn(`    First 32 bytes: ${buf.slice(0, 32).toString('hex')}`);
         return;
       }
+
+      latestWsjtxEndpoint = {
+        address: rinfo.address,
+        port: rinfo.port,
+        ts: Date.now(),
+      };
+      if (msg.id) {
+        latestWsjtxClientId = msg.id;
+      }
       
       console.log(`✅ Parsed ${msg.type} message`);
       if (msg.type === 'DECODE') {
@@ -265,6 +494,7 @@ function startWSJTXListener() {
       let broadcastData = null;
 
       if (msg.type === 'STATUS') {
+        wsjtxStats.statuses += 1;
         broadcastData = {
           type: 'wsjtx_status',
           source: 'wsjtx',
@@ -276,19 +506,43 @@ function startWSJTXListener() {
           rxRst: msg.rxRst || '',
           ts: Date.now()
         };
+        wsjtxStats.lastStatus = broadcastData;
+        addWsjtxTimeline({
+          direction: 'in',
+          type: 'status',
+          clientId: latestWsjtxClientId,
+          dxCall: broadcastData.dxCall,
+          dxGrid: broadcastData.dxGrid,
+          dialFrequency: broadcastData.dialFrequency,
+          txEnabled: broadcastData.txEnabled,
+        });
       } else if (msg.type === 'DECODE') {
+        wsjtxStats.decodes += 1;
         broadcastData = {
           type: 'wsjtx_decode',
           source: 'wsjtx',
           isNew: msg.isNew || false,
-          frequency: msg.frequency ? Number(msg.frequency) : null,
+          frequency: msg.frequency ? Number(msg.frequency) : (wsjtxStats.lastStatus ? wsjtxStats.lastStatus.dialFrequency : null),
+          dialFrequency: wsjtxStats.lastStatus ? wsjtxStats.lastStatus.dialFrequency : null,
           time: msg.time,
+          snr: msg.snr,
           deltaFrequency: msg.deltaFrequency,
           mode: msg.mode || '',
           message: msg.message || '',
           ts: Date.now()
         };
-      } else if (msg.type === 'LOGGED_ADIF' || msg.type === 'LOGGED_ADIF_V2') {
+        wsjtxStats.lastDecode = broadcastData;
+        addWsjtxTimeline({
+          direction: 'in',
+          type: 'decode',
+          clientId: latestWsjtxClientId,
+          message: broadcastData.message,
+          mode: broadcastData.mode,
+          snr: broadcastData.snr,
+          deltaFrequency: broadcastData.deltaFrequency,
+        });
+      } else if (msg.type === 'QSO_LOGGED' || msg.type === 'LOGGED_ADIF') {
+        wsjtxStats.logged += 1;
         broadcastData = {
           type: 'wsjtx_logged_adif',
           source: 'wsjtx',
@@ -301,12 +555,29 @@ function startWSJTXListener() {
           adifText: msg.adifText || '',
           ts: Date.now()
         };
+        wsjtxStats.lastLogged = broadcastData;
+        addWsjtxTimeline({
+          direction: 'in',
+          type: 'logged',
+          clientId: latestWsjtxClientId,
+          dxCall: broadcastData.dxCall,
+          dxGrid: broadcastData.dxGrid,
+          dialFrequency: broadcastData.dialFrequency,
+          mode: broadcastData.mode,
+        });
       } else {
+        wsjtxStats.other += 1;
         broadcastData = {
           type: `wsjtx_${msg.msgType}`,
           source: 'wsjtx',
           ts: Date.now()
         };
+        addWsjtxTimeline({
+          direction: 'in',
+          type: 'other',
+          clientId: latestWsjtxClientId,
+          messageType: msg.msgType,
+        });
       }
 
       if (broadcastData) {
@@ -374,24 +645,151 @@ function startWSJTXListener() {
   udp.bind(WSJTX_UDP_PORT);
 }
 
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk.toString();
+      if (body.length > 1024 * 1024) {
+        reject(new Error('Request body too large'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      if (!body.trim()) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(body));
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function sendJson(res, status, payload) {
+  const data = JSON.stringify(payload);
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(data),
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+  });
+  res.end(data);
+}
+
+function startWsjtxCommandServer() {
+  const server = http.createServer(async (req, res) => {
+    if (req.method === 'OPTIONS') {
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/wsjtx/status') {
+      sendJson(res, 200, getWsjtxStatusSnapshot());
+      return;
+    }
+
+    if (req.method !== 'POST' || req.url !== '/wsjtx/command') {
+      sendJson(res, 404, { success: false, error: 'Not found' });
+      return;
+    }
+
+    try {
+      const request = await readJsonBody(req);
+      if (!request.command) {
+        sendJson(res, 400, { success: false, error: 'Missing command' });
+        return;
+      }
+
+      const result = dispatchWsjtxCommand(request.command, request.payload || {});
+      sendJson(res, result.success ? 200 : 409, {
+        command: request.command,
+        ...result,
+      });
+    } catch (e) {
+      sendJson(res, 400, { success: false, error: e.message });
+    }
+  });
+
+  server.listen(WSJTX_COMMAND_PORT, '127.0.0.1', () => {
+    console.log(`🎛️  WSJT-X command API: http://127.0.0.1:${WSJTX_COMMAND_PORT}/wsjtx/command`);
+  });
+}
+
+function getWsjtxStatusSnapshot() {
+  return {
+    success: true,
+    enabled: WSJTX_ENABLED,
+    client: getWsjtxClientSnapshot(),
+    stats: getWsjtxStatsSnapshot(),
+    capabilities: commandCapabilities(),
+    timeline: wsjtxTimeline.slice(-25),
+  };
+}
+
+export function __resetWsjtxBridgeDiagnosticsForTest() {
+  latestWsjtxEndpoint = null;
+  latestWsjtxClientId = '';
+  wsjtxCommandSender = null;
+  wsjtxStats = {
+    packets: 0,
+    statuses: 0,
+    decodes: 0,
+    logged: 0,
+    commands: 0,
+    commandErrors: 0,
+    other: 0,
+    lastPacket: null,
+    lastStatus: null,
+    lastDecode: null,
+    lastLogged: null,
+    lastCommand: null,
+  };
+  wsjtxTimeline.length = 0;
+}
+
+export function __dispatchWsjtxCommandForTest(command, payload = {}) {
+  return dispatchWsjtxCommand(command, payload);
+}
+
+export function __getWsjtxStatusForTest() {
+  return getWsjtxStatusSnapshot();
+}
+
 // ============= STARTUP =============
 
-// Start the SDC connection
-connectSDC();
+if (!BRIDGE_TEST_MODE) {
+  // Start WebSocket server
+  startWebSocketServer();
 
-// Start the WSJT-X listener
-startWSJTXListener();
+  // Start the SDC connection
+  connectSDC();
 
-// Graceful shutdown
-process.on('SIGINT', () => {
-  console.log('\n🛑 Shutting down...');
-  wss.clients.forEach(client => client.close());
-  wss.close();
-  process.exit(0);
-});
+  // Start the WSJT-X listener
+  startWSJTXListener();
 
-console.log('\n📝 Configuration:');
-console.log(`   SDC TCP Host: ${TCP_HOST}:${TCP_PORT}`);
-console.log(`   WSJT-X UDP: ${WSJTX_ENABLED ? `Enabled on port ${WSJTX_UDP_PORT} (multicast: ${WSJTX_UDP_MULTICAST})` : 'Disabled'}`);
-console.log(`   WebSocket Port: ${WS_PORT}`);
-console.log('\n💡 Press Ctrl+C to stop the server\n');
+  // Start local command API for backend-driven automation
+  startWsjtxCommandServer();
+
+  // Graceful shutdown
+  process.on('SIGINT', () => {
+    console.log('\n🛑 Shutting down...');
+    if (wss) {
+      wss.clients.forEach(client => client.close());
+      wss.close();
+    }
+    process.exit(0);
+  });
+
+  console.log('\n📝 Configuration:');
+  console.log(`   SDC TCP Host: ${TCP_HOST}:${TCP_PORT}`);
+  console.log(`   WSJT-X UDP: ${WSJTX_ENABLED ? `Enabled on port ${WSJTX_UDP_PORT} (multicast: ${WSJTX_UDP_MULTICAST})` : 'Disabled'}`);
+  console.log(`   WebSocket Port: ${WS_PORT}`);
+  console.log(`   WSJT-X Command API Port: ${WSJTX_COMMAND_PORT}`);
+  console.log('\n💡 Press Ctrl+C to stop the server\n');
+}

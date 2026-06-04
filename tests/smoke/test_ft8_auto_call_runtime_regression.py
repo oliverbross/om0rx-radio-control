@@ -156,20 +156,19 @@ def test_auto_call_idle_search_has_inactive_watchdog_and_never_queues_cq():
     assert "CQ OM0RX JN88" not in service.tx_queue
 
 
-def test_auto_call_ignores_worked_before_call_even_when_new_band():
+def test_auto_call_allows_needed_band_slot_when_avoiding_exact_duplicates():
     service = ClockedService()
     configure_auto_call(service)
-    skipped = add_candidate(service, "EA1EQ", status="New Band")
+    band_slot = add_candidate(service, "EA1EQ", status="New Band")
     usable = add_candidate(service, "K3ZK", status="New Call")
 
-    assert skipped is None
+    assert band_slot is not None
     assert usable is not None
 
     asyncio.run(service._automation_tick())
 
-    assert service.pending_tx_intent["call"] == "K3ZK"
-    assert service.tx_queue == ["K3ZK OM0RX JN88"]
-    assert all("EA1EQ" not in message for message in service.tx_queue)
+    assert service.pending_tx_intent["call"] == "EA1EQ"
+    assert service.tx_queue == ["EA1EQ OM0RX JN88"]
 
 
 def test_auto_call_does_not_start_from_someone_else_exchange_when_cq_only_is_off():

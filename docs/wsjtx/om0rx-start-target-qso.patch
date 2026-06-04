@@ -1,0 +1,341 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index f701940..267acc1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -167,6 +167,9 @@ if you want a console application instead then set this option to OFF.
+ If you just want to see the debug output from the application then the easiest way is to
+ attach a debugger which will then receive the console output inside its console." ON
+   "WIN32" OFF)
++option (OM0RX_BUILD_WITH_OMNIRIG
++  "Build optional Windows OmniRig COM transceiver support."
++  OFF)
+ 
+ #
+ # install locations
+@@ -358,12 +361,14 @@ if (WIN32)
+     ${wsjt_CXXSRCS}
+     killbyname.cpp
+     )
++endif (WIN32)
+ 
++if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+   set (wsjt_qt_CXXSRCS
+     ${wsjt_qt_CXXSRCS}
+     Transceiver/OmniRigTransceiver.cpp
+     )
+-endif (WIN32)
++endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+ 
+ set (wsjt_FSRCS
+   # put module sources first in the hope that they get rebuilt before use
+@@ -939,7 +944,7 @@ set_source_files_properties (lib/filbig.f90 PROPERTIES COMPILE_FLAGS "-Wno-alias
+ set_property (SOURCE ${all_C_and_CXXSRCS} APPEND_STRING PROPERTY COMPILE_FLAGS " -include wsjtx_config.h")
+ set_property (SOURCE ${all_C_and_CXXSRCS} APPEND PROPERTY OBJECT_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/wsjtx_config.h)
+ 
+-if (WIN32)
++if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+   # generate the OmniRig COM interface source
+   find_program (DUMPCPP dumpcpp)
+   if (DUMPCPP-NOTFOUND)
+@@ -1062,8 +1067,10 @@ find_package (Qt5 COMPONENTS Widgets SerialPort Multimedia PrintSupport Sql Ling
+ 
+ if (WIN32)
+   add_definitions (-DQT_NEEDS_QTMAIN)
+-  find_package (Qt5AxContainer REQUIRED)
+ endif (WIN32)
++if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
++  find_package (Qt5AxContainer REQUIRED)
++endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+ 
+ #
+ # Library building setup
+@@ -1546,10 +1553,10 @@ qt5_add_resources (wsjtx_RESOURCES_RCC
+   )
+ 
+ # AX COM servers
+-if (WIN32)
++if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+   include (QtAxMacros)
+   wrap_ax_server (GENAXSRCS ${AXSERVERSRCS})
+-endif (WIN32)
++endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+ 
+ #
+ # targets dependent on Qt
+@@ -1565,9 +1572,9 @@ add_library (wsjt_qt STATIC ${wsjt_qt_CXXSRCS} ${wsjt_qt_GENUISRCS} ${GENAXSRCS}
+ # set wsjtx_udp exports to static variants
+ target_compile_definitions (wsjt_qt PUBLIC UDP_STATIC_DEFINE)
+ target_link_libraries (wsjt_qt Hamlib::Hamlib Boost::log qcp Qt5::Widgets Qt5::Network Qt5::Sql Qt5::WebSockets)
+-if (WIN32)
++if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+   target_link_libraries (wsjt_qt Qt5::AxContainer Qt5::AxBase)
+-endif (WIN32)
++endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+ 
+ # build a library of package Qt functionality used in Fortran utilities
+ add_library (fort_qt STATIC ${fort_qt_CXXSRCS})
+diff --git a/Network/MessageClient.cpp b/Network/MessageClient.cpp
+index dbcbe06..3852f52 100644
+--- a/Network/MessageClient.cpp
++++ b/Network/MessageClient.cpp
+@@ -407,6 +407,18 @@ void MessageClient::impl::parse_message (QByteArray const& msg)
+             }
+             break;
+ 
++            case NetworkMessage::OM0RXStartTargetQSO:
++              {
++                QByteArray payload;
++                in >> payload;
++                TRACE_UDP ("OM0RXStartTargetQSO payload:" << payload);
++                if (check_status (in) != Fail)
++                  {
++                    Q_EMIT self_->start_target_qso (QString::fromUtf8 (payload));
++                  }
++              }
++              break;
++
+             default:
+               // Ignore
+               //
+diff --git a/Network/MessageClient.hpp b/Network/MessageClient.hpp
+index 28dc5a9..0301804 100644
+--- a/Network/MessageClient.hpp
++++ b/Network/MessageClient.hpp
+@@ -127,6 +127,9 @@ public:
+   // this signal is emitted if the server has sent information about a callsign
+   Q_SIGNAL void annotation_info (QString const& dx_call, bool sort_order_provided, quint32 sort_order);
+ 
++  // OM0RX local extension: a trusted controller has requested a target QSO.
++  Q_SIGNAL void start_target_qso (QString const& payload_json);
++
+   // this signal is emitted when network errors occur or if a host
+   // lookup fails
+   Q_SIGNAL void error (QString const&) const;
+diff --git a/Network/NetworkMessage.hpp b/Network/NetworkMessage.hpp
+index 8665305..6a29c02 100644
+--- a/Network/NetworkMessage.hpp
++++ b/Network/NetworkMessage.hpp
+@@ -530,6 +530,16 @@
+  *      ffffffff will remove the sort-order value from the internal table.
+  *      Callsigns without a sort order will be valued at zero for sorting purposes
+  *      in the hound display.
++ *
++ * OM0RX Start Target QSO In 17                   quint32
++ *                         Id (target unique key) utf8
++ *                         Payload                utf8 JSON
++ *
++ *      This project-local extension allows a trusted local automation
++ *      controller to prepare and arm a normal-mode QSO target without
++ *      requiring the target to already exist as a CQ/QRZ decode. The JSON
++ *      payload is intentionally self-describing so future OM0RX automation
++ *      fields can be added without changing the binary protocol again.
+  */
+ 
+ #include <QDataStream>
+@@ -562,6 +572,7 @@ namespace NetworkMessage
+       SwitchConfiguration,
+       Configure,
+       AnnotationInfo,
++      OM0RXStartTargetQSO,
+       maximum_message_type_     // ONLY add new message types
+                                 // immediately before here
+     };
+diff --git a/Transceiver/TransceiverFactory.cpp b/Transceiver/TransceiverFactory.cpp
+index 323a882..36741a5 100644
+--- a/Transceiver/TransceiverFactory.cpp
++++ b/Transceiver/TransceiverFactory.cpp
+@@ -8,7 +8,7 @@
+ #include "HRDTransceiver.hpp"
+ #include "EmulateSplitTransceiver.hpp"
+ 
+-#if defined (WIN32)
++#if OM0RX_BUILD_WITH_OMNIRIG
+ #include "OmniRigTransceiver.hpp"
+ #endif
+ 
+@@ -42,7 +42,7 @@ TransceiverFactory::TransceiverFactory ()
+   DXLabSuiteCommanderTransceiver::register_transceivers (&logger_, &transceivers_, CommanderId);
+   HRDTransceiver::register_transceivers (&logger_, &transceivers_, HRDId);
+   
+-#if defined (WIN32)
++#if OM0RX_BUILD_WITH_OMNIRIG
+   // OmniRig is ActiveX/COM server so only on Windows
+   OmniRigTransceiver::register_transceivers (&logger_, &transceivers_, OmniRigOneId, OmniRigTwoId);
+ #endif
+@@ -160,7 +160,7 @@ std::unique_ptr<Transceiver> TransceiverFactory::create (ParameterPack const& pa
+       }
+       break;
+ 
+-#if defined (WIN32)
++#if OM0RX_BUILD_WITH_OMNIRIG
+     case OmniRigOneId:
+       {
+         std::unique_ptr<TransceiverBase> basic_transceiver;
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+index c75aa42..140cefb 100644
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -50,6 +50,8 @@
+ #include <QUdpSocket>
+ #include <QAbstractItemView>
+ #include <QInputDialog>
++#include <QJsonDocument>
++#include <QJsonObject>
+ #include <QSound> // TCI
+ #include <QtMath> // TCI
+ #if QT_VERSION >= QT_VERSION_CHECK (5, 15, 0)
+@@ -834,6 +836,7 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+   connect (m_messageClient, &MessageClient::highlight_callsign, ui->decodedTextBrowser, &DisplayText::highlight_callsign);
+   connect (m_messageClient, &MessageClient::switch_configuration, m_multi_settings, &MultiSettings::select_configuration);
+   connect (m_messageClient, &MessageClient::configure, this, &MainWindow::remote_configure);
++  connect (m_messageClient, &MessageClient::start_target_qso, this, &MainWindow::remote_start_target_qso);
+ 
+   // Hook up WSPR band hopping
+   connect (ui->band_hopping_schedule_push_button, &QPushButton::clicked
+@@ -15910,6 +15913,122 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
+   QApplication::alert (this);
+ }
+ 
++void MainWindow::remote_start_target_qso (QString const& payload_json)
++{
++  QJsonParseError parse_error;
++  auto doc = QJsonDocument::fromJson (payload_json.toUtf8 (), &parse_error);
++  if (QJsonParseError::NoError != parse_error.error || !doc.isObject ())
++    {
++      qDebug () << "OM0RX start target QSO ignored, invalid JSON:" << parse_error.errorString ();
++      return;
++    }
++
++  auto root = doc.object ();
++  auto target = root.value ("target").toObject ();
++  if (target.isEmpty ())
++    {
++      target = root;
++    }
++
++  auto text_value = [&target] (char const * name, QString const& fallback = QString {}) {
++    auto value = target.value (QLatin1String {name});
++    return value.isString () ? value.toString ().trimmed () : fallback;
++  };
++  auto bool_value = [&target] (char const * name, bool fallback) {
++    auto value = target.value (QLatin1String {name});
++    return value.isBool () ? value.toBool () : fallback;
++  };
++  auto uint_value = [&target] (char const * name, quint32 fallback) {
++    auto value = target.value (QLatin1String {name});
++    if (value.isDouble ())
++      {
++        auto number = value.toDouble ();
++        if (number >= 0.0 && number <= double (std::numeric_limits<quint32>::max ()))
++          {
++            return static_cast<quint32> (number);
++          }
++      }
++    return fallback;
++  };
++  auto frequency_value = [&target] (char const * name, Frequency fallback) {
++    auto value = target.value (QLatin1String {name});
++    if (value.isDouble ())
++      {
++        auto number = value.toDouble ();
++        if (number > 0.0)
++          {
++            return static_cast<Frequency> (number);
++          }
++      }
++    return fallback;
++  };
++
++  auto dx_call = text_value ("dxCall", text_value ("call")).toUpper ();
++  auto dx_grid = text_value ("dxGrid", text_value ("grid")).toUpper ();
++  auto mode = text_value ("mode").toUpper ();
++  auto submode = text_value ("submode").toUpper ();
++  auto frequency_tolerance = uint_value ("frequencyTolerance", quint32_max);
++  auto tr_period = uint_value ("trPeriod", quint32_max);
++  auto rx_df = uint_value ("rxDf", quint32_max);
++  auto tx_df = uint_value ("txDf", quint32_max);
++  auto fast_mode = bool_value ("fastMode", false);
++  auto generate_messages = bool_value ("generateMessages", true);
++  auto hold_tx_freq = bool_value ("holdTxFreq", true);
++  auto enable_tx = bool_value ("enableTx", true);
++  auto dial_frequency = frequency_value ("dialFrequency", 0u);
++  auto tx_message = uint_value ("txMessageNumber", 1);
++
++  if (dx_call.isEmpty ())
++    {
++      qDebug () << "OM0RX start target QSO ignored, missing target call";
++      return;
++    }
++
++  remote_configure (mode, frequency_tolerance, submode, fast_mode, tr_period, rx_df
++                    , dx_call, dx_grid, generate_messages);
++
++  if (dial_frequency)
++    {
++      setRig (dial_frequency);
++    }
++
++  if (tx_df != quint32_max && ui->TxFreqSpinBox->isVisible ())
++    {
++      ui->TxFreqSpinBox->setValue (tx_df);
++      ui->TxFreqSpinBox->interpretText ();
++      setXIT (ui->TxFreqSpinBox->value ());
++    }
++
++  if (ui->cbHoldTxFreq->isVisible () && ui->cbHoldTxFreq->isChecked () != hold_tx_freq)
++    {
++      ui->cbHoldTxFreq->click ();
++    }
++
++  if (target.contains ("txFirst") && ui->txFirstCheckBox->isVisible ())
++    {
++      ui->txFirstCheckBox->setChecked (bool_value ("txFirst", ui->txFirstCheckBox->isChecked ()));
++    }
++
++  switch (tx_message)
++    {
++    case 2: ui->txb2->click (); break;
++    case 3: ui->txb3->click (); break;
++    case 4: ui->txb4->click (); break;
++    case 5: ui->txb5->click (); break;
++    case 6: ui->txb6->click (); break;
++    default: ui->txb1->click (); break;
++    }
++
++  if (enable_tx && !ui->autoButton->isChecked ())
++    {
++      m_bDoubleClicked = true;
++      ui->autoButton->click ();
++    }
++
++  tx_watchdog (false);
++  QApplication::alert (this);
++}
++
+ QString MainWindow::WSPR_message()
+ {
+   QString sdBm,msg0,msg1,msg2;
+diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
+index 366e1a7..84c9f6c 100644
+--- a/widgets/mainwindow.h
++++ b/widgets/mainwindow.h
+@@ -462,6 +462,7 @@ private slots:
+   void remote_configure (QString const& mode, quint32 frequency_tolerance, QString const& submode
+                          , bool fast_mode, quint32 tr_period, quint32 rx_df, QString const& dx_call
+                          , QString const& dx_grid, bool generate_messages);
++  void remote_start_target_qso (QString const& payload_json);
+   void callSandP2(int nline);
+   void refreshHoundQueueDisplay();
+   void queueActiveWindowHound2(QString text);
+diff --git a/wsjtx_config.h.in b/wsjtx_config.h.in
+index de1b4c7..e2127ea 100644
+--- a/wsjtx_config.h.in
++++ b/wsjtx_config.h.in
+@@ -49,6 +49,7 @@ extern "C"  {
+ #cmakedefine01 WSJT_ENABLE_EXPERIMENTAL_FEATURES
+ #cmakedefine01 WSJT_RIG_NONE_CAN_SPLIT
+ #cmakedefine01 WSJT_TRACE_UDP
++#cmakedefine01 OM0RX_BUILD_WITH_OMNIRIG
+ 
+ /* consistent UNICODE behaviour */
+ #ifndef UNICODE

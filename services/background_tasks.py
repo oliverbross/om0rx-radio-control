@@ -6,6 +6,7 @@ Extracted from main.py - handles all background async operations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, time, timezone
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -39,6 +40,9 @@ class BackgroundTaskService:
     broadcast_spots: BroadcastSpots
     tasks: List[asyncio.Task] = field(default_factory=list)
     rbn_direct_task: Optional[asyncio.Task] = None
+    wsjtx_last_decode_key: Optional[str] = None
+    wsjtx_ingested_decodes: int = 0
+    wsjtx_ingest_last_error: Optional[str] = None
 
 
 _service: Optional[BackgroundTaskService] = None
@@ -495,6 +499,139 @@ async def poll_activity_intelligence():
             await asyncio.sleep(120.0)
 
 
+def _coerce_number(value: Any) -> Optional[float]:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _wsjtx_decode_key(decode: Dict[str, Any]) -> str:
+    return "|".join(
+        str(decode.get(key, ""))
+        for key in ("time", "message", "deltaFrequency", "dialFrequency", "frequency", "ts")
+    )
+
+
+def _mode_from_wsjtx_decode(decode: Dict[str, Any], status: Dict[str, Any]) -> str:
+    for candidate in (decode.get("mode"), status.get("mode")):
+        mode = str(candidate or "").strip().upper()
+        if mode in {"FT8", "FT4", "FT2"}:
+            return mode
+    return "FT8"
+
+
+def _timestamp_from_wsjtx_qtime(value: Any) -> str:
+    milliseconds = _coerce_number(value)
+    now = datetime.now(timezone.utc)
+    if milliseconds is None or milliseconds < 0:
+        return now.isoformat()
+    milliseconds = int(milliseconds) % 86_400_000
+    seconds, millis = divmod(milliseconds, 1000)
+    hour, remainder = divmod(seconds, 3600)
+    minute, second = divmod(remainder, 60)
+    decoded_time = time(hour=hour, minute=minute, second=second, microsecond=millis * 1000, tzinfo=timezone.utc)
+    return datetime.combine(now.date(), decoded_time).isoformat()
+
+
+def build_wsjtx_decode_automation_payload(status_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Convert bridge /wsjtx/status into a Digital automation decoded target."""
+    stats = status_payload.get("stats") if isinstance(status_payload.get("stats"), dict) else {}
+    decode = stats.get("lastDecode") if isinstance(stats.get("lastDecode"), dict) else {}
+    last_status = stats.get("lastStatus") if isinstance(stats.get("lastStatus"), dict) else {}
+    if not decode or not decode.get("message"):
+        return None
+    if decode.get("isNew") is False:
+        return None
+
+    dial_frequency = _coerce_number(decode.get("dialFrequency") or decode.get("frequency") or last_status.get("dialFrequency"))
+    payload: Dict[str, Any] = {
+        "source": "decoded",
+        "decoder_source": "wsjtx",
+        "heard": True,
+        "message": str(decode.get("message") or "").strip(),
+        "mode": _mode_from_wsjtx_decode(decode, last_status),
+        "timestamp": _timestamp_from_wsjtx_qtime(decode.get("time")),
+        "slot_start_utc": _timestamp_from_wsjtx_qtime(decode.get("time")),
+    }
+
+    delta_frequency = _coerce_number(decode.get("deltaFrequency"))
+    if delta_frequency is not None:
+        payload["freq"] = int(round(delta_frequency))
+        payload["audio_offset"] = int(round(delta_frequency))
+
+    snr = _coerce_number(decode.get("snr"))
+    if snr is not None:
+        payload["snr"] = snr
+
+    if dial_frequency is not None and dial_frequency > 0:
+        payload["dial_frequency"] = int(round(dial_frequency))
+        payload["frequency_mhz"] = float(dial_frequency) / 1_000_000
+        payload["base_frequency"] = float(dial_frequency) / 1_000_000
+        try:
+            payload["band"] = band_from_khz(float(dial_frequency) / 1000)
+        except Exception:
+            pass
+
+    return payload
+
+
+async def ingest_latest_wsjtx_decode_once() -> Optional[Dict[str, Any]]:
+    """Ingest one fresh bridge decode into the backend automation queue."""
+    service = require_background_task_service()
+    try:
+        from services.ft8_service import get_ft8_service
+        from services.wsjtx import get_wsjtx_service
+
+        bridge_status = await asyncio.to_thread(get_wsjtx_service().get_bridge_status)
+        stats = bridge_status.get("stats") if isinstance(bridge_status, dict) else {}
+        decode = stats.get("lastDecode") if isinstance(stats, dict) else None
+        if not isinstance(decode, dict):
+            return None
+        age_ms = _coerce_number(stats.get("lastDecodeAgeMs"))
+        if age_ms is None or age_ms > 90_000:
+            return None
+        key = _wsjtx_decode_key(decode)
+        if not key or key == service.wsjtx_last_decode_key:
+            return None
+
+        payload = build_wsjtx_decode_automation_payload(bridge_status)
+        if not payload:
+            service.wsjtx_last_decode_key = key
+            return None
+
+        ft8_service = get_ft8_service()
+        classifier = getattr(service.context, "classifier", None)
+        ft8_service.automation_controller.set_status_sources(
+            qso_status_store=getattr(classifier, "qso_status_store", None) if classifier else None,
+            cty_resolver=getattr(service.context, "cty_resolver", None),
+        )
+        target = ft8_service.automation_controller.ingest_target(payload)
+        service.wsjtx_last_decode_key = key
+        service.wsjtx_ingested_decodes += 1 if target else 0
+        service.wsjtx_ingest_last_error = None
+        return target.to_dict() if target else None
+    except Exception as exc:
+        service.wsjtx_ingest_last_error = str(exc)
+        logger.debug("WSJT-X decode ingest failed: %s", exc, exc_info=True)
+        return None
+
+
+async def poll_wsjtx_decode_ingest():
+    """Feed patched WSJT-X bridge decodes into the Digital automation ranker."""
+    while True:
+        try:
+            await ingest_latest_wsjtx_decode_once()
+            await asyncio.sleep(0.75)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("WSJT-X decode ingest loop error: %s", exc, exc_info=True)
+            await asyncio.sleep(2.0)
+
+
 async def start_background_tasks():
     """Start all background tasks"""
     service = require_background_task_service()
@@ -521,6 +658,10 @@ async def start_background_tasks():
         activity_task = asyncio.create_task(poll_activity_intelligence())
         tasks.append(activity_task)
         logger.info("✅ Activity Intelligence refresh task started")
+
+    wsjtx_ingest_task = asyncio.create_task(poll_wsjtx_decode_ingest())
+    tasks.append(wsjtx_ingest_task)
+    logger.info("✅ WSJT-X decode automation ingest task started")
 
     # Start Wavelog local read-cache sync if manager is available
     if service.context.wavelog_sync_manager:
@@ -579,6 +720,11 @@ def get_background_task_status():
         "total_tasks": len(tasks),
         "running_tasks": sum(1 for task in tasks if not task.done()),
         "completed_tasks": sum(1 for task in tasks if task.done()),
+        "wsjtx_decode_ingest": {
+            "last_decode_key": service.wsjtx_last_decode_key if service else None,
+            "ingested_decodes": service.wsjtx_ingested_decodes if service else 0,
+            "last_error": service.wsjtx_ingest_last_error if service else None,
+        },
         "tasks": [
             {
                 "name": task.get_name() if hasattr(task, 'get_name') else str(task),

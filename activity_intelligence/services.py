@@ -83,6 +83,7 @@ class ActivityIntelligenceService:
     def __init__(self, repository: ActivityRepository | None = None, qso_db_path: str | Path | None = None):
         self.settings = get_settings()
         self.repository = repository or ActivityRepository()
+        self._explicit_qso_db_path = qso_db_path is not None
         self.qso_db_path = Path(qso_db_path) if qso_db_path else config.DATA_DIR / "qso_log.duckdb"
         self.adapters = adapter_from_settings(self.settings)
         self._sync_lock = asyncio.Lock()
@@ -863,7 +864,7 @@ class ActivityIntelligenceService:
         reference = str(reference or "").upper().strip()
         if not reference:
             return {"worked": False, "count": 0, "status": "unknown"}
-        use_postgres = should_use_postgres()
+        use_postgres = should_use_postgres() and not self._explicit_qso_db_path
         if not use_postgres and not self.qso_db_path.exists():
             return {"worked": False, "count": 0, "status": "no-cache"}
         field = {"POTA": "pota_ref", "SOTA": "sota_ref", "WWFF": "wwff_ref"}.get(program)

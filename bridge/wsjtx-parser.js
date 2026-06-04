@@ -16,13 +16,19 @@ const MESSAGE_TYPES = {
   HEARTBEAT: 0,
   STATUS: 1,
   DECODE: 2,
-  LOGGED_ADIF: 5,
+  CLEAR: 3,
+  REPLY: 4,
+  QSO_LOGGED: 5,
   CLOSE: 6,
-  REPLY: 7,
+  REPLAY: 7,
   HALT_TX: 8,
   FREE_TEXT: 9,
   LOCATION: 11,
-  LOGGED_ADIF_V2: 14
+  LOGGED_ADIF: 12,
+  HIGHLIGHT_CALLSIGN: 13,
+  SWITCH_CONFIGURATION: 14,
+  CONFIGURE: 15,
+  ANNOTATION_INFO: 16
 };
 
 class WsjtxParser {
@@ -56,21 +62,28 @@ class WsjtxParser {
         case MESSAGE_TYPES.STATUS: // 1
           return this.parseStatus(buffer, offset, msg);
         
-        case MESSAGE_TYPES.LOGGED_ADIF: // 5
+        case MESSAGE_TYPES.QSO_LOGGED: // 5
+          return this.parseQsoLogged(buffer, offset, msg);
+
+        case MESSAGE_TYPES.LOGGED_ADIF: // 12
           return this.parseLoggedAdif(buffer, offset, msg);
-        
-        case MESSAGE_TYPES.LOGGED_ADIF_V2: // 14
-          return this.parseLoggedAdifV2(buffer, offset, msg);
         
         case MESSAGE_TYPES.DECODE: // 2
           return this.parseDecode(buffer, offset, msg);
         
         default:
+          this.parseMessageId(buffer, offset, msg);
           return msg;
       }
     } catch (e) {
       return null;
     }
+  }
+
+  parseMessageId(buffer, offset, msg) {
+    const result = this.readString(buffer, offset);
+    msg.id = result.str;
+    return msg;
   }
 
   readString(buffer, offset) {
@@ -99,6 +112,7 @@ class WsjtxParser {
       
       // 1. Id (utf8)
       let result = this.readString(buffer, offset);
+      msg.id = result.str;
       offset = result.offset;
 
       // 2. Dial Frequency (quint64 - Hz)
@@ -178,12 +192,13 @@ class WsjtxParser {
     }
   }
 
-  parseLoggedAdif(buffer, offset, msg) {
+  parseQsoLogged(buffer, offset, msg) {
     try {
       // Per NetworkMessage.hpp "QSO Logged" message format (type 5):
       
       // 1. Id (unique key) - utf8
       let result = this.readString(buffer, offset);
+      msg.id = result.str;
       offset = result.offset;
 
       // 2. Date & Time Off - QDateTime (complex: need to skip)
@@ -241,9 +256,42 @@ class WsjtxParser {
     }
   }
 
-  parseLoggedAdifV2(buffer, offset, msg) {
-    // V2 has the same structure as V1
-    return this.parseLoggedAdif(buffer, offset, msg);
+  parseLoggedAdif(buffer, offset, msg) {
+    try {
+      let result = this.readString(buffer, offset);
+      msg.id = result.str;
+      offset = result.offset;
+
+      result = this.readString(buffer, offset);
+      msg.adifText = result.str;
+      this.applyAdifFields(msg, msg.adifText);
+      return msg;
+    } catch (e) {
+      return msg;
+    }
+  }
+
+  applyAdifFields(msg, adifText) {
+    const fields = {};
+    const re = /<([^:>]+):(\d+)(?::[^>]*)?>([^<]*)/gi;
+    let match;
+    while ((match = re.exec(adifText || ''))) {
+      const name = String(match[1] || '').trim().toLowerCase();
+      const length = Number(match[2] || 0);
+      fields[name] = String(match[3] || '').slice(0, length).trim();
+    }
+
+    msg.dxCall = fields.call || msg.dxCall || '';
+    msg.dxGrid = fields.gridsquare || msg.dxGrid || '';
+    msg.mode = fields.mode || msg.mode || '';
+    msg.reportSent = fields.rst_sent || msg.reportSent || '';
+    msg.reportReceived = fields.rst_rcvd || msg.reportReceived || '';
+    if (fields.freq) {
+      const mhz = Number(fields.freq);
+      if (Number.isFinite(mhz)) {
+        msg.dialFrequency = Math.round(mhz * 1_000_000);
+      }
+    }
   }
 
   parseDecode(buffer, offset, msg) {
@@ -252,6 +300,7 @@ class WsjtxParser {
       
       // 1. Id (unique key) - utf8
       let result = this.readString(buffer, offset);
+      msg.id = result.str;
       offset = result.offset;
 
       // 2. New - bool

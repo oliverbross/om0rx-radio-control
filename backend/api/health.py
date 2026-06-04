@@ -13,6 +13,7 @@ from radio_control.postgres_store import get_postgres_dsn, should_use_postgres
 from radio_control.qso_outbox import get_qso_outbox
 from services.ft8_service import get_ft8_service
 from services.rotator import get_rotator_service
+from services.wsjtx import get_wsjtx_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -173,6 +174,22 @@ def _ft8_health() -> Dict[str, Any]:
         logger.debug("Digital health check failed: %s", exc)
         return _service("ft8", "Digital", "warn", "error", str(exc), "digital")
 
+
+def _wsjtx_health() -> Dict[str, Any]:
+    try:
+        health = get_wsjtx_service().get_health()
+        return _service(
+            "wsjtx",
+            "WSJT",
+            health.get("status") or "unknown",
+            health.get("value") or "",
+            health.get("detail") or "",
+            "wsjtx-config",
+        )
+    except Exception as exc:
+        logger.debug("WSJT health check failed: %s", exc)
+        return _service("wsjtx", "WSJT", "warn", "error", str(exc), "wsjtx-config")
+
 @router.get("/api/health")
 async def health_check(request: Request):
     """Health check"""
@@ -214,6 +231,7 @@ async def get_status(request: Request):
             logger.debug(f"Could not get cluster info: {e}")
     
     connected = bool(flex and flex.sock)
+    current_mox = getattr(flex, "current_mox", None)
     return {
         "frequency": getattr(flex, "current_freq", None) or 14.074,
         "mode": getattr(flex, "current_mode", None) or "USB",
@@ -223,6 +241,8 @@ async def get_status(request: Request):
         "drive": getattr(flex, "current_rfpower", None) or 31,
         "tune_power": getattr(flex, "current_tunepower", None) or 18,
         "mic_level": getattr(flex, "current_miclevel", None) or 32,
+        "mox": bool(current_mox) if current_mox is not None else False,
+        "interlock_state": getattr(flex, "current_interlock_state", None) or "",
         "vox_enabled": getattr(flex, "current_vox_enable", None) or False,
         "agc_mode": "med",
         "agc_threshold": 65,
@@ -344,6 +364,7 @@ async def get_service_health(request: Request):
         ))
 
     services.append(_ft8_health())
+    services.append(_wsjtx_health())
     services.append(await _rotor_health())
 
     browser_clients = len(context.websocket_clients or [])

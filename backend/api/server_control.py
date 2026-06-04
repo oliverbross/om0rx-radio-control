@@ -6,6 +6,7 @@ import signal
 from backend.core import get_app_context
 from radio_control import config
 from radio_control.lifecycle import reload_enabled, supervisor_enabled, write_lifecycle_request
+from radio_control.postgres_store import get_postgres_dsn_from_values, test_connection
 from radio_control.settings_store import public_config_from_module, save_config_updates
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,38 @@ async def save_config(request: Request):
         return {
             "success": False,
             "error": str(e)
+        }
+
+
+@router.post("/api/config/postgres/test")
+async def test_postgres_config(request: Request):
+    """Test PostgreSQL settings supplied by the config form without saving them."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    config_values = body.get("config", body) if isinstance(body, dict) else {}
+    dsn = get_postgres_dsn_from_values(config_values)
+    if not dsn:
+        dsn = None
+
+    try:
+        details = test_connection(dsn=dsn, timeout_seconds=5)
+        return {
+            "success": True,
+            "message": (
+                f"Connected to PostgreSQL {details.get('server_version')} "
+                f"as {details.get('user')} on {details.get('database')}"
+            ),
+            "details": details,
+        }
+    except Exception as e:
+        logger.warning("PostgreSQL connection test failed: %s", e)
+        return {
+            "success": False,
+            "message": f"PostgreSQL connection failed: {e}",
+            "details": {},
         }
 
 

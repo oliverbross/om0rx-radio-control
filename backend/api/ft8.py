@@ -3,8 +3,8 @@ FT8/FT4 API Endpoints
 """
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Request
-from pydantic import BaseModel
-from typing import Any, Optional, List
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Any, Optional
 import logging
 import asyncio
 from radio_control import config as app_config
@@ -17,6 +17,7 @@ from radio_control.settings_store import (
 
 from services.ft8_service import get_ft8_service, init_ft8_service
 from services.sounddevice_loader import get_sounddevice, sounddevice_unavailable_reason
+from services.soundcard_loader import get_soundcard, soundcard_unavailable_reason
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,11 @@ class FT8Config(BaseModel):
     auto_sequence: bool = False
     tx_enabled: bool = False
     networkServer: Optional[str] = '192.168.0.199:4992'
+    rigBackend: Optional[str] = 'auto'
+    hamlibRigctlPath: Optional[str] = None
+    hamlibModel: Optional[int] = None
+    hamlibRigPath: Optional[str] = None
+    hamlibTimeoutSeconds: Optional[float] = None
     pttMethod: Optional[str] = 'CAT'
     audioInput: Optional[str] = 'default'
     audioOutput: Optional[str] = 'default'
@@ -72,6 +78,11 @@ FT8_FIELD_TO_CONFIG_KEY = {
     "auto_sequence": "FT8_AUTO_SEQUENCE",
     "tx_enabled": "FT8_TX_ENABLED",
     "networkServer": "FT8_NETWORK_SERVER",
+    "rigBackend": "FT8_RIG_BACKEND",
+    "hamlibRigctlPath": "FT8_HAMLIB_RIGCTL_PATH",
+    "hamlibModel": "FT8_HAMLIB_MODEL",
+    "hamlibRigPath": "FT8_HAMLIB_RIG_PATH",
+    "hamlibTimeoutSeconds": "FT8_HAMLIB_TIMEOUT_SECONDS",
     "pttMethod": "FT8_PTT_METHOD",
     "audioInput": "FT8_AUDIO_INPUT",
     "audioOutput": "FT8_AUDIO_OUTPUT",
@@ -93,6 +104,11 @@ def _ft8_defaults():
         "auto_sequence": getattr(app_config, "FT8_AUTO_SEQUENCE", False),
         "tx_enabled": getattr(app_config, "FT8_TX_ENABLED", False),
         "networkServer": getattr(app_config, "FT8_NETWORK_SERVER", "192.168.0.199:4992"),
+        "rigBackend": getattr(app_config, "FT8_RIG_BACKEND", "auto"),
+        "hamlibRigctlPath": getattr(app_config, "FT8_HAMLIB_RIGCTL_PATH", ""),
+        "hamlibModel": getattr(app_config, "FT8_HAMLIB_MODEL", 23005),
+        "hamlibRigPath": getattr(app_config, "FT8_HAMLIB_RIG_PATH", ""),
+        "hamlibTimeoutSeconds": getattr(app_config, "FT8_HAMLIB_TIMEOUT_SECONDS", 3.0),
         "pttMethod": getattr(app_config, "FT8_PTT_METHOD", "CAT"),
         "audioInput": getattr(app_config, "FT8_AUDIO_INPUT", "default"),
         "audioOutput": getattr(app_config, "FT8_AUDIO_OUTPUT", "default"),
@@ -119,6 +135,67 @@ def _ft8_payload_to_config(payload: dict):
         for field, config_key in FT8_FIELD_TO_CONFIG_KEY.items()
         if field in payload
     }
+
+
+def _normalise_audio_config(config: FT8Config) -> FT8Config:
+    """Prefer Flex DAX when the Digital config asks to use FlexRadio audio."""
+    if not bool(config.useFlexRadioAudio):
+        return config
+
+    updates: dict[str, Any] = {}
+    if not config.audioInput or str(config.audioInput).strip().lower().startswith("default"):
+        updates["audioInput"] = "flexradio"
+    if not config.audioOutput or str(config.audioOutput).strip().lower().startswith("default"):
+        updates["audioOutput"] = "flexradio"
+    if not config.sampleRate or int(config.sampleRate or 0) < 48000:
+        updates["sampleRate"] = 48000
+    if updates:
+        config = config.model_copy(update=updates)
+    return config
+
+
+def _host_from_server(server: str | None) -> str:
+    value = str(server or "").strip()
+    if not value:
+        return ""
+    if value.startswith("[") and "]" in value:
+        return value[1:value.index("]")]
+    return value.rsplit(":", 1)[0] if ":" in value else value
+
+
+def _build_digital_ptt_device(config: FT8Config):
+    if str(config.pttMethod or "CAT").upper() != "CAT":
+        return None
+    backend = str(config.rigBackend or "auto").strip().lower()
+    if backend in {"", "auto", "direct", "flex", "smartsdr"}:
+        if backend == "auto":
+            logger.info("Using direct Flex DIGITAL PTT backend in auto mode")
+        return None
+    if backend not in {"hamlib", "rigctl"}:
+        logger.warning("Unknown FT8 rig backend %r; using direct Flex CAT fallback", config.rigBackend)
+        return None
+
+    from radio_control.hamlib_rig import create_hamlib_rig
+
+    model = config.hamlibModel or getattr(app_config, "FT8_HAMLIB_MODEL", 23005)
+    rig_path = str(config.hamlibRigPath or getattr(app_config, "FT8_HAMLIB_RIG_PATH", "") or "").strip()
+    if not rig_path:
+        network_host = _host_from_server(config.networkServer)
+        if int(model or 0) in range(23005, 23013) and network_host in {"127.0.0.1", "localhost", "::1"}:
+            rig_path = str(getattr(app_config, "FLEX_TCP_HOST", "") or "").strip()
+        else:
+            rig_path = str(config.networkServer or "").strip()
+    device = create_hamlib_rig(
+        rigctl_path=config.hamlibRigctlPath or getattr(app_config, "FT8_HAMLIB_RIGCTL_PATH", ""),
+        model=model,
+        rig_path=rig_path,
+        timeout_seconds=float(config.hamlibTimeoutSeconds or getattr(app_config, "FT8_HAMLIB_TIMEOUT_SECONDS", 3.0) or 3.0),
+    )
+    if device is not None:
+        logger.info("Using Hamlib DIGITAL PTT backend: model=%s rig_path=%s", model, rig_path)
+    elif backend in {"hamlib", "rigctl"}:
+        raise RuntimeError("Hamlib DIGITAL PTT backend was requested but rigctl or rig path is not available")
+    return device
 
 
 def _load_legacy_ft8_config():
@@ -174,57 +251,94 @@ async def _enrich_automation_target(target: dict[str, Any], request: Request) ->
             enriched.setdefault("cq_zone", cty_info.get("cq") or cty_info.get("cq_zone") or "")
             enriched.setdefault("itu_zone", cty_info.get("itu") or cty_info.get("itu_zone") or "")
 
-        if has_status:
-            return enriched
-
         classifier = getattr(request.app.state, "classifier", None)
         if not classifier:
             return enriched
 
-        call_worked, call_confirmed, call_new_band, call_new_mode, call_bandmode_confirmed = (
-            await classifier.call_status_flags(callsign, band, mode)
-        )
-        enriched["call_status"] = classify_call_status(
-            call_worked,
-            call_new_band,
-            call_new_mode,
-            call_bandmode_confirmed,
-        )
-        recent_call_status = await call_status_from_recent_qsos(callsign, band, mode)
-        if recent_call_status:
-            enriched["call_status"] = recent_call_status
-
-        dxcc = enriched.get("dxcc") or cty_info.get("dxcc")
-        if dxcc is not None:
-            dxcc_overall = await classifier.dxcc_overall(
-                dxcc,
-                callsign=callsign,
-                allow_unconfirmed_fallback=False,
-            )
-            dxcc_bandmode = await classifier.dxcc_bandmode_flags(
-                dxcc,
-                band,
-                mode,
-                callsign=callsign,
-                allow_unconfirmed_fallback=False,
-            )
-            if dxcc_overall is not None and dxcc_bandmode is not None:
-                dxcc_worked, dxcc_confirmed = dxcc_overall
-                dxcc_new_band, dxcc_new_mode, dxcc_bandmode_confirmed = dxcc_bandmode
-                dxcc_display = classify_dxcc_status(
-                    dxcc_worked,
-                    dxcc_confirmed,
-                    dxcc_new_band,
-                    dxcc_new_mode,
-                    dxcc_bandmode_confirmed,
-                )
-                enriched["dxcc_status"] = dxcc_display.status
-                enriched["dxcc_tag"] = dxcc_display.tag
+        if not has_status:
+            source = str(enriched.get("source") or "").strip().lower()
+            qso_status_store = getattr(classifier, "qso_status_store", None)
+            local_call_flags = None
+            if qso_status_store and hasattr(qso_status_store, "call_flags"):
+                local_call_flags = await asyncio.to_thread(qso_status_store.call_flags, callsign, band, mode)
+            if local_call_flags is not None:
+                call_worked, call_confirmed, call_new_band, call_new_mode, call_bandmode_confirmed = local_call_flags
             else:
-                enriched.setdefault("dxcc_status", "Unknown")
+                call_worked, call_confirmed, call_new_band, call_new_mode, call_bandmode_confirmed = (
+                    await classifier.call_status_flags(callsign, band, mode)
+                )
+            enriched["call_status"] = classify_call_status(
+                call_worked,
+                call_new_band,
+                call_new_mode,
+                call_bandmode_confirmed,
+            )
+            recent_call_status = None
+            if source != "decoded":
+                recent_call_status = await call_status_from_recent_qsos(callsign, band, mode)
+            if recent_call_status:
+                enriched["call_status"] = recent_call_status
+
+            dxcc = enriched.get("dxcc") or cty_info.get("dxcc")
+            if dxcc is not None:
+                if source == "decoded" and qso_status_store:
+                    dxcc_overall = await asyncio.to_thread(qso_status_store.dxcc_overall, dxcc)
+                    dxcc_bandmode = await asyncio.to_thread(qso_status_store.dxcc_bandmode_flags, dxcc, band, mode)
+                else:
+                    dxcc_overall = await classifier.dxcc_overall(
+                        dxcc,
+                        callsign=callsign,
+                        allow_unconfirmed_fallback=False,
+                    )
+                    dxcc_bandmode = await classifier.dxcc_bandmode_flags(
+                        dxcc,
+                        band,
+                        mode,
+                        callsign=callsign,
+                        allow_unconfirmed_fallback=False,
+                    )
+                if dxcc_overall is not None and dxcc_bandmode is not None:
+                    dxcc_worked, dxcc_confirmed = dxcc_overall
+                    dxcc_new_band, dxcc_new_mode, dxcc_bandmode_confirmed = dxcc_bandmode
+                    dxcc_display = classify_dxcc_status(
+                        dxcc_worked,
+                        dxcc_confirmed,
+                        dxcc_new_band,
+                        dxcc_new_mode,
+                        dxcc_bandmode_confirmed,
+                    )
+                    enriched["dxcc_status"] = dxcc_display.status
+                    enriched["dxcc_tag"] = dxcc_display.tag
+                else:
+                    enriched.setdefault("dxcc_status", "Unknown")
+
+        grid = str(enriched.get("grid") or enriched.get("gridsquare") or "").strip().upper()
+        if grid and hasattr(classifier, "grid_flags"):
+            grid_flags = await classifier.grid_flags(grid, band or "", mode)
+            if grid_flags is not None:
+                new_grid, new_grid_band, new_grid_mode = grid_flags
+                needed = dict(enriched.get("needed") or {})
+                needed_on_band = dict(enriched.get("needed_on_band") or enriched.get("neededOnBand") or {})
+                needed["grid"] = bool(needed.get("grid") or new_grid)
+                needed_on_band["grid"] = bool(needed_on_band.get("grid") or new_grid_band or new_grid_mode)
+                enriched["needed"] = needed
+                enriched["needed_on_band"] = needed_on_band
     except Exception as exc:
         logger.debug("Unable to enrich automation target %s: %s", callsign, exc, exc_info=True)
     return enriched
+
+
+def _configure_automation_status_sources(service: Any, request: Request) -> None:
+    """Give the automation controller fast local status sources from app state."""
+    classifier = getattr(request.app.state, "classifier", None)
+    qso_status_store = getattr(classifier, "qso_status_store", None) if classifier else None
+    cty_resolver = getattr(request.app.state, "cty_resolver", None)
+    controller = getattr(service, "automation_controller", None)
+    if controller and hasattr(controller, "set_status_sources"):
+        controller.set_status_sources(
+            qso_status_store=qso_status_store,
+            cty_resolver=cty_resolver,
+        )
 
 
 class TransmitRequest(BaseModel):
@@ -285,6 +399,12 @@ class AutomationTargetRequest(BaseModel):
     target: dict[str, Any]
 
 
+class AutomationTargetsRequest(BaseModel):
+    targets: list[dict[str, Any]] = Field(default_factory=list)
+    limit: int = Field(default=25, ge=1, le=100)
+    source: Optional[str] = "spot"
+
+
 class AutomationEngageRequest(BaseModel):
     source: Optional[str] = "manual_double_click"
     decode_id: Optional[str] = None
@@ -309,6 +429,25 @@ class AutomationAttemptRequest(BaseModel):
     key: str
 
 
+class AutomationTargetKeyRequest(BaseModel):
+    key: str
+    reason: Optional[str] = None
+
+
+class AutomationWsjtxPrepareRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    cq_only: bool = Field(default=True, alias="cqOnly")
+    auto_call_start_only: bool = Field(default=True, alias="autoCallStartOnly")
+    tx_df: Optional[int] = None
+    hold_tx_freq: bool = True
+    override_eligibility: bool = False
+
+
+class AutomationWsjtxPrepareTargetRequest(AutomationWsjtxPrepareRequest):
+    target: dict[str, Any]
+
+
 # === API Endpoints ===
 
 @router.get("/status")
@@ -319,10 +458,12 @@ async def get_status():
 
 
 @router.post("/start")
-async def start_service(config: FT8Config):
+async def start_service(config: FT8Config, request: Request):
     """Start FT8 service"""
     try:
+        config = _normalise_audio_config(config)
         logger.info(f"Starting FT8 service with audio device: {config.audioInput}")
+        ptt_device = _build_digital_ptt_device(config)
         
         # Initialize service with audio device configuration
         service = await init_ft8_service(
@@ -333,7 +474,10 @@ async def start_service(config: FT8Config):
             audio_output=config.audioOutput,
             audio_sample_rate=config.sampleRate or 12000,
             ptt_method=config.pttMethod or "CAT",
+            ptt_device=ptt_device,
         )
+        service.on_automation_target_enrich = lambda target: _enrich_automation_target(target, request)
+        _configure_automation_status_sources(service, request)
         service.set_config(mycall=config.mycall, mygrid=config.mygrid, mode=config.mode, operator_settings=config.operatorSettings)
         service.audio_stream_enabled = bool(config.waterfallEnabled)
         
@@ -342,7 +486,7 @@ async def start_service(config: FT8Config):
         
         await service.start()
         
-        logger.info(f"✅ FT8 service started successfully")
+        logger.info("✅ FT8 service started successfully")
         return {
             "status": "started",
             "mode": config.mode,
@@ -371,6 +515,7 @@ async def stop_service():
 async def update_config(config: FT8Config):
     """Update FT8 configuration"""
     try:
+        config = _normalise_audio_config(config)
         # Update service
         service = get_ft8_service()
         service.set_config(mycall=config.mycall, mygrid=config.mygrid, mode=config.mode, operator_settings=config.operatorSettings)
@@ -463,11 +608,57 @@ async def update_automation_settings(request: AutomationSettingsRequest):
 async def ingest_automation_target(target_request: AutomationTargetRequest, request: Request):
     """Ingest an enriched decoded station or spot into the backend target queue."""
     service = get_ft8_service()
+    _configure_automation_status_sources(service, request)
     enriched = await _enrich_automation_target(target_request.target, request)
     target = service.automation_controller.ingest_target(enriched)
     return {
         "status": "queued" if target else "ignored",
         "target": target.to_dict() if target else None,
+        "automation": service.automation_controller.status(),
+    }
+
+
+@router.post("/automation/targets")
+async def ingest_automation_targets(targets_request: AutomationTargetsRequest, request: Request):
+    """Batch queue digital spot candidates without preparing WSJT-X or enabling TX."""
+    service = get_ft8_service()
+    _configure_automation_status_sources(service, request)
+    queued: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    limit = max(1, min(int(targets_request.limit or 25), 100))
+
+    for raw_target in (targets_request.targets or [])[:limit]:
+        target_payload = dict(raw_target or {})
+        target_payload.setdefault("source", targets_request.source or "spot")
+        target_payload["enableTx"] = False
+        try:
+            enriched = await _enrich_automation_target(target_payload, request)
+            target = service.automation_controller.ingest_target(enriched)
+        except Exception as exc:
+            callsign = str(target_payload.get("callsign") or target_payload.get("call") or "").upper()
+            skipped.append({"call": callsign, "reason": str(exc), "status": "error"})
+            logger.debug("Digital target batch ingest failed for %s: %s", callsign, exc, exc_info=True)
+            continue
+
+        if target:
+            queued.append(target.to_dict())
+        else:
+            decision = dict(service.automation_controller.last_decision or {})
+            skipped.append(
+                {
+                    "call": str(target_payload.get("callsign") or target_payload.get("call") or "").upper(),
+                    "reason": decision.get("reason", "target-not-eligible"),
+                    "status": "ignored",
+                    "decision": decision,
+                }
+            )
+
+    return {
+        "status": "queued" if queued else "idle",
+        "queued_count": len(queued),
+        "skipped_count": len(skipped),
+        "queued": queued,
+        "skipped": skipped,
         "automation": service.automation_controller.status(),
     }
 
@@ -496,11 +687,154 @@ async def record_automation_attempt(request: AutomationAttemptRequest):
     }
 
 
+@router.post("/automation/promote")
+async def promote_automation_target(request: AutomationTargetKeyRequest):
+    """Promote a target to the top of the backend planner without preparing WSJT-X."""
+    service = get_ft8_service()
+    target = service.automation_controller.promote_target(request.key)
+    return {
+        "status": "promoted" if target else "missing",
+        "target": target.to_dict() if target else None,
+        "automation": service.automation_controller.status(),
+    }
+
+
+@router.post("/automation/skip")
+async def skip_automation_target(request: AutomationTargetKeyRequest):
+    """Remove a target from the active planner queue without deleting history."""
+    service = get_ft8_service()
+    target = service.automation_controller.skip_target(
+        request.key,
+        reason=request.reason or "operator-removed",
+    )
+    return {
+        "status": "skipped" if target else "missing",
+        "target": target.to_dict() if target else None,
+        "automation": service.automation_controller.status(),
+    }
+
+
+def _send_wsjtx_prepare_for_automation_target(target: Any, prepare_request: AutomationWsjtxPrepareRequest) -> dict[str, Any]:
+    """Prepare a ranked Digital target in patched WSJT-X without enabling TX."""
+    from services.wsjtx import get_wsjtx_service
+
+    wsjtx_service = get_wsjtx_service()
+    service = get_ft8_service()
+    target_payload = target.to_dict()
+    target_payload.update(
+        {
+            "enableTx": False,
+            "generateMessages": True,
+            "holdTxFreq": bool(prepare_request.hold_tx_freq),
+        }
+    )
+    if prepare_request.tx_df is not None:
+        target_payload["txDf"] = int(prepare_request.tx_df)
+        tx_df_plan = {
+            "tx_df": int(prepare_request.tx_df),
+            "reason": "operator-specified",
+            "occupied": [],
+        }
+    else:
+        controller = getattr(service, "automation_controller", None)
+        tx_df_plan = (
+            controller.choose_tx_audio_offset(target)
+            if controller and hasattr(controller, "choose_tx_audio_offset")
+            else {"tx_df": 1500, "reason": "default", "occupied": []}
+        )
+        target_payload["txDf"] = int(tx_df_plan["tx_df"])
+
+    wsjtx_target = wsjtx_service.build_target_from_automation_target(target_payload)
+    wsjtx_target["enableTx"] = False
+    policy = wsjtx_service.assess_target_policy(wsjtx_target, target_payload, action="prepare")
+    if not policy["eligible"] and not bool(prepare_request.override_eligibility):
+        return {
+            "status": "blocked",
+            "target": target.to_dict(),
+            "wsjtx_target": wsjtx_target,
+            "policy": policy,
+            "tx_df_plan": tx_df_plan,
+        }
+
+    result = wsjtx_service.send_bridge_command("start_target_qso", {"target": wsjtx_target})
+    return {
+        "status": "prepared",
+        "target": target.to_dict(),
+        "wsjtx_target": wsjtx_target,
+        "policy": policy,
+        "tx_df_plan": tx_df_plan,
+        "bridge": result,
+    }
+
+
+@router.post("/automation/wsjtx/prepare-next")
+async def prepare_next_wsjtx_automation_target(prepare_request: AutomationWsjtxPrepareRequest, request: Request):
+    """Prepare the next ranked target in patched WSJT-X without arming TX."""
+    service = get_ft8_service()
+    _configure_automation_status_sources(service, request)
+    target = service.automation_controller.next_target(
+        cq_only=bool(prepare_request.cq_only),
+        auto_call_start_only=bool(prepare_request.auto_call_start_only),
+    )
+    if not target:
+        return {
+            "status": "idle",
+            "reason": "no-eligible-targets",
+            "automation": service.automation_controller.status(),
+        }
+
+    result = _send_wsjtx_prepare_for_automation_target(target, prepare_request)
+    result["automation"] = service.automation_controller.status()
+    return result
+
+
+@router.post("/automation/wsjtx/prepare-target")
+async def prepare_wsjtx_automation_target(prepare_request: AutomationWsjtxPrepareTargetRequest, request: Request):
+    """Prepare a selected spot through backend ranker/Wavelog guardrails without arming TX."""
+    service = get_ft8_service()
+    _configure_automation_status_sources(service, request)
+    target_payload = dict(prepare_request.target or {})
+    target_payload.setdefault("source", "spot")
+    target_payload["enableTx"] = False
+    enriched = await _enrich_automation_target(target_payload, request)
+    target = service.automation_controller.ingest_target(enriched)
+    if not target:
+        return {
+            "status": "ignored",
+            "reason": service.automation_controller.last_decision.get("reason", "target-not-eligible"),
+            "enriched_target": enriched,
+            "automation": service.automation_controller.status(),
+        }
+
+    result = _send_wsjtx_prepare_for_automation_target(target, prepare_request)
+    if result.get("status") != "prepared":
+        result["enriched_target"] = enriched
+        result["automation"] = service.automation_controller.status()
+        return result
+
+    target.state = "selected"
+    service.automation_controller.active_target_key = target.key
+    service.automation_controller.last_decision = {
+        "decision": "selected",
+        "call": target.call,
+        "band": target.band,
+        "mode": target.mode,
+        "score": target.score,
+        "reason": target.reason,
+        "source": "selected-spot",
+    }
+    result["target"] = target.to_dict()
+    result["enriched_target"] = enriched
+    result["automation"] = service.automation_controller.status()
+    return result
+
+
 @router.post("/automation/engage")
 async def engage_automation_target(engage_request: AutomationEngageRequest, request: Request):
     """Atomically engage a decoded/manual target in the backend QSO state machine."""
     try:
         service = get_ft8_service()
+        _configure_automation_status_sources(service, request)
         target = dict(engage_request.target or {})
         direct_fields = engage_request.model_dump(exclude={"target"}, exclude_none=True)
         target.update(direct_fields)
@@ -528,7 +862,10 @@ async def engage_automation_target(engage_request: AutomationEngageRequest, requ
             "stage": "calling",
             "next_tx_message": message,
             "scheduled_slot_utc": (stats.get("pending_tx_intent") or {}).get("scheduled_slot_utc"),
-            "will_tx_now": bool(stats.get("slot_is_tx") and stats.get("cycle_position", 99) <= (7.0 if stats.get("mode") == "FT8" else 3.5)),
+            "will_tx_now": bool(
+                stats.get("slot_is_tx")
+                and stats.get("cycle_position", 99) <= (0.35 if stats.get("mode") == "FT8" else 0.2)
+            ),
             "reason": service.tx_status,
             "stats": stats,
             "automation": service.automation_controller.status(),
@@ -849,7 +1186,31 @@ async def get_audio_devices():
     """Get available audio input/output devices"""
     sd = get_sounddevice()
     if sd is None:
-        return {"input": [], "output": [], "error": sounddevice_unavailable_reason()}
+        sc = get_soundcard()
+        if sc is None:
+            return {
+                "input": [],
+                "output": [],
+                "error": f"{sounddevice_unavailable_reason()}; {soundcard_unavailable_reason()}",
+            }
+        try:
+            input_devices = [
+                f"{idx}: {getattr(device, 'name', f'soundcard input {idx}')}"
+                for idx, device in enumerate(sc.all_microphones(include_loopback=True))
+            ]
+            output_devices = [
+                f"{idx}: {getattr(device, 'name', f'soundcard output {idx}')}"
+                for idx, device in enumerate(sc.all_speakers())
+            ]
+            return {
+                "input": input_devices,
+                "output": output_devices,
+                "backend": "soundcard",
+                "warning": sounddevice_unavailable_reason(),
+            }
+        except Exception as e:
+            logger.error("Error querying soundcard audio devices: %s", e, exc_info=True)
+            return {"input": [], "output": [], "error": str(e), "backend": "soundcard"}
     
     try:
         devices = sd.query_devices()

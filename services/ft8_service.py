@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from math import gcd
 import re
+import time
 import uuid
 import numpy as np
 from scipy import signal
@@ -100,6 +101,7 @@ class FT8Service:
         audio_output: Optional[str] = None,
         audio_sample_rate: int = 12000,
         ptt_method: str = "CAT",
+        ptt_device: Any = None,
     ):
         """
         Initialize FT8/FT4 service
@@ -117,6 +119,7 @@ class FT8Service:
         self.decoder_sample_rate = 12000
         self.audio_output = audio_output
         self.ptt_method = str(ptt_method or "CAT").upper()
+        self.ptt_device = ptt_device
         
         self.audio_processor = FT8AudioProcessor(self.mode, sample_rate=self.decoder_sample_rate)
         
@@ -183,7 +186,14 @@ class FT8Service:
             "superfox_tx_min": 200,
             "superfox_tx_max": 3000,
         }
-        self.automation_controller = DigitalAutomationController(mycall=self.mycall)
+        target_store = None
+        try:
+            from radio_control.digital_target_store import get_digital_target_store
+
+            target_store = get_digital_target_store()
+        except Exception as exc:
+            logger.debug("Digital target persistence not attached: %s", exc)
+        self.automation_controller = DigitalAutomationController(mycall=self.mycall, target_store=target_store)
         
         # Decoded messages
         self.decoded_messages: List[Dict[str, Any]] = []
@@ -223,6 +233,7 @@ class FT8Service:
         self.on_qso_complete = None
         self.on_tx_message = None
         self.on_audio_stream = None  # Callback for streaming audio to frontend
+        self.on_automation_target_enrich = None
         
         # Audio streaming
         self.audio_stream_enabled = True  # Enable by default for the browser waterfall
@@ -276,6 +287,23 @@ class FT8Service:
     def _now(self) -> datetime:
         return datetime.now(timezone.utc)
 
+    def _clock_offset_seconds(self) -> float:
+        """Return NTP offset seconds to align FT8/FT4 slot timing."""
+        sync = self._get_cached_time_sync()
+        if not sync.get("ok"):
+            return 0.0
+        try:
+            offset = float(sync.get("offset_ms", 0.0)) / 1000.0
+        except (TypeError, ValueError):
+            return 0.0
+        # Ignore implausible values; the user should fix the OS clock in that case.
+        if abs(offset) > 10.0:
+            return 0.0
+        return offset
+
+    def _slot_now(self) -> datetime:
+        return self._now() + timedelta(seconds=self._clock_offset_seconds())
+
     def _attempt_is_current(self, attempt_id: Optional[str]) -> bool:
         if not attempt_id:
             return True
@@ -284,7 +312,22 @@ class FT8Service:
         return attempt_id == self.active_attempt_id
 
     def _max_safe_late_start_seconds(self, mode: Optional[str] = None) -> float:
-        return 7.0 if normalise_decode_mode(mode or self.mode) == "FT8" else 3.5
+        return 0.35 if normalise_decode_mode(mode or self.mode) == "FT8" else 0.2
+
+    def _pre_tx_key_window_seconds(self, mode: Optional[str] = None) -> float:
+        return 2.0 if normalise_decode_mode(mode or self.mode) == "FT8" else 1.2
+
+    def _protocol_tx_audio_seconds(self, mode: Optional[str] = None) -> float:
+        # The vendored encoder writes a full slot WAV with protocol leading
+        # silence. After trimming the quiet tail, the playable frames are
+        # about 13.9s for FT8 and 6.35s for FT4.
+        return 13.9 if normalise_decode_mode(mode or self.mode) == "FT8" else 6.35
+
+    def _same_slot_playback_delay_seconds(self, mode: Optional[str] = None) -> float:
+        # Use the scheduled playback path even for same-slot starts so Flex
+        # DAX audio can move the radio from PTT_REQUESTED to TRANSMITTING
+        # without spending the first half-second waiting for confirmation.
+        return 0.0
 
     def _should_handle_cycle(self, cycle_number: int, cycle_position: float, is_tx_cycle: bool) -> bool:
         if self.last_tx_slot == cycle_number:
@@ -292,6 +335,18 @@ class FT8Service:
         if is_tx_cycle:
             return cycle_position <= self._max_safe_late_start_seconds()
         return cycle_position < 0.5
+
+    def _should_prekey_next_tx_slot(self, cycle_number: int, cycle_position: float, slot_is_tx: bool) -> tuple[bool, float, int]:
+        has_pending_message = bool(self.tx_queue or self.active_tx_message)
+        if slot_is_tx or not self.tx_enabled or self.tx_in_progress or not has_pending_message:
+            return False, 0.0, cycle_number
+        next_cycle = cycle_number + 1
+        if self.last_tx_slot == next_cycle:
+            return False, 0.0, next_cycle
+        remaining = max(0.0, float(self._cycle_duration_seconds()) - float(cycle_position))
+        if remaining <= self._pre_tx_key_window_seconds():
+            return True, remaining, next_cycle
+        return False, remaining, next_cycle
 
     def _tx_message_priority(self, message: str) -> int:
         parts = self._message_tokens(str(message or "").upper())
@@ -430,6 +485,14 @@ class FT8Service:
             self.auto_sequence = False
         self._record_decision("attempt-cancelled", reason)
 
+    def _ptt_target(self) -> Any:
+        """Return the object that owns DIGITAL CAT PTT."""
+        if self.ptt_device is not None:
+            return self.ptt_device
+        from services.radio import get_radio_instance
+
+        return get_radio_instance()
+
     def _cycle_duration_seconds(self) -> float:
         """Return the timing slot duration for the active digital mode."""
         return decode_window_seconds(self.mode)
@@ -437,7 +500,7 @@ class FT8Service:
     def _live_cycle_state(self) -> tuple[float, float, int, bool]:
         """Return live slot timing and whether the current slot is ours to TX."""
         cycle_duration = self._cycle_duration_seconds()
-        now = self._now()
+        now = self._slot_now()
         cycle_position = now.timestamp() % cycle_duration if cycle_duration else 0.0
         cycle_number = int(now.timestamp() // cycle_duration) if cycle_duration else 0
         is_even_cycle = (cycle_number % 2) == 0
@@ -507,7 +570,7 @@ class FT8Service:
         try:
             while self.enabled:
                 cycle_duration = self._cycle_duration_seconds()
-                current_time = datetime.now(timezone.utc)
+                current_time = self._slot_now()
                 
                 epoch = current_time.timestamp()
                 cycle_number = int(epoch // cycle_duration)
@@ -519,6 +582,22 @@ class FT8Service:
                 self.cycle_position = cycle_position
                 self.slot_is_tx = bool(slot_is_tx)
                 self.is_tx_cycle = bool(slot_is_tx and self.tx_enabled)
+
+                should_prekey, prekey_delay, prekey_slot = self._should_prekey_next_tx_slot(
+                    cycle_number,
+                    cycle_position,
+                    bool(slot_is_tx),
+                )
+                if should_prekey:
+                    self.last_tx_slot = prekey_slot
+                    try:
+                        await self._handle_tx_cycle(playback_delay_seconds=prekey_delay)
+                    except Exception as exc:
+                        self.tx_status = f"pre-key TX failed: {exc}"
+                        self.tx_enabled = False
+                        logger.error("Digital pre-key TX failed; TX halted: %s", exc, exc_info=True)
+                    await asyncio.sleep(0.1)
+                    continue
                 
                 # Handle cycle transition. TX remains useful for a few seconds
                 # after slot start; do not miss the whole slot if the loop
@@ -630,7 +709,6 @@ class FT8Service:
             self.automation_status = "tx-queue-pending"
             self._record_decision("automation-skip", "tx-queue-or-message-pending", active_message=self.active_tx_message)
             return
-
         target = self.automation_controller.next_target(
             cq_only=self.auto_call_cq_only,
             auto_call_start_only=self.auto_call_enabled,
@@ -650,9 +728,7 @@ class FT8Service:
             self._record_decision("candidate-selected", "auto-call-disabled", call=target.call)
             return
         if self.auto_call_remaining <= 0:
-            self.automation_status = f"selected {target.call}; Auto Call watchdog exhausted"
-            self._record_decision("candidate-ignored", "auto-call-limit-exhausted", call=target.call)
-            return
+            self.auto_call_remaining = self._auto_call_attempt_budget()
 
         self.automation_controller.record_attempt(target.key)
         message = await self.engage_target(
@@ -663,6 +739,7 @@ class FT8Service:
                 "band": target.band,
                 "frequency_mhz": target.dial_frequency,
                 "freq": target.audio_offset,
+                "slot_start_utc": target.heard_slot_start_at,
                 "source": "auto_call",
             },
             source="auto_call",
@@ -697,6 +774,11 @@ class FT8Service:
             self.automation_status = f"radio tuned {frequency:.6f} MHz for {target.call}"
         else:
             self.automation_status = f"radio tune failed for {target.call}"
+
+    def _auto_call_attempt_budget(self) -> int:
+        configured = int(self.auto_call_limit or 0)
+        max_attempts = int(self.automation_controller.settings.max_attempts_per_target or 1)
+        return max(1, configured or max_attempts)
     
     async def _attempt_decode(self, audio_buffer: np.ndarray):
         """
@@ -709,7 +791,7 @@ class FT8Service:
             return None
 
         try:
-            now = self._now()
+            now = self._slot_now()
             cycle_duration = self._cycle_duration_seconds()
             within_slot = now.timestamp() % cycle_duration
             current_cycle = int(now.timestamp() // cycle_duration)
@@ -807,9 +889,10 @@ class FT8Service:
             self.decoded_messages.pop(0)
         
         self.stats['decoded_count'] += 1
-        self.automation_controller.ingest_decoded(message)
+        self.automation_controller.ingest_target(await self._automation_payload_from_decode(message))
         
         logger.info(f"Decoded: {message.message} (SNR: {message.snr:.1f} dB)")
+        self._backoff_active_target_if_busy_elsewhere(message)
         
         # Notify callback
         if self.on_message_decoded:
@@ -825,6 +908,110 @@ class FT8Service:
             and (self.auto_call_enabled or self.automation_controller.settings.spot_hunt_enabled)
         ):
             await self._automation_tick()
+
+    async def _automation_payload_from_decode(self, message) -> dict[str, Any]:
+        """Build a Wavelog-enriched automation target from one decoded message."""
+        payload = message.to_dict() if hasattr(message, "to_dict") else dict(message or {})
+        payload.setdefault("source", "decoded")
+        payload["heard"] = True
+        payload.setdefault("mode", self.mode)
+        call = extract_callsign(payload, self.mycall)
+        if call and not payload.get("callsign"):
+            payload["callsign"] = call
+
+        grid = self._grid_from_message(payload.get("message") or "")
+        if grid and not (payload.get("grid") or payload.get("gridsquare")):
+            payload["grid"] = grid
+
+        frequency = await self._current_radio_frequency_mhz()
+        if frequency and not payload.get("base_frequency") and not payload.get("frequency_mhz"):
+            payload["base_frequency"] = frequency
+            payload["frequency_mhz"] = frequency
+        if frequency and not payload.get("band"):
+            try:
+                from radio_control.spot_processor import band_from_khz
+
+                payload["band"] = band_from_khz(frequency * 1000)
+            except Exception:
+                pass
+
+        if (
+            self.on_automation_target_enrich
+            and (
+                self.auto_call_enabled
+                or self.automation_controller.settings.spot_hunt_enabled
+                or self.automation_controller.settings.enabled
+            )
+        ):
+            try:
+                started = time.perf_counter()
+                enriched = await self.on_automation_target_enrich(payload)
+                elapsed_ms = (time.perf_counter() - started) * 1000.0
+                if isinstance(enriched, dict):
+                    payload = enriched
+                if elapsed_ms > 250:
+                    self._record_decision(
+                        "automation-enrichment-slow",
+                        "decoded-target-status-lookup",
+                        call=call,
+                        elapsed_ms=round(elapsed_ms, 1),
+                        source=payload.get("source"),
+                    )
+            except Exception as exc:
+                logger.debug("Decoded automation target enrichment failed: %s", exc, exc_info=True)
+        return payload
+
+    @staticmethod
+    def _grid_from_message(text: str) -> str:
+        for token in reversed(str(text or "").upper().replace(";", " ").split()):
+            value = token.strip("<>,;")
+            if GRID_RE.match(value):
+                return value[:4]
+        return ""
+
+    def _backoff_active_target_if_busy_elsewhere(self, message: Any) -> None:
+        if not self.auto_call_enabled or not self.active_qsos:
+            return
+        text = str(getattr(message, "message", "") or "").upper()
+        parts = self._message_tokens(text)
+        if len(parts) < 2 or parts[0] == "CQ" or self.mycall in parts:
+            return
+        for qso in list(self.active_qsos.values()):
+            their_call = str(qso.their_call or "").upper()
+            if not their_call or their_call not in parts:
+                continue
+            if self.tx_in_progress:
+                self._record_decision(
+                    "target-busy-deferred",
+                    "tx-active",
+                    call=their_call,
+                    decoded_message=text,
+                )
+                return
+            self._cancel_current_attempt(
+                reason="target-busy-with-other-station",
+                backoff_active_target=True,
+                disable_tx=False,
+                pause_auto_engage=False,
+            )
+            self.auto_call_remaining = self._auto_call_attempt_budget()
+            self.tx_status = f"{their_call} is busy with another station; searching next target"
+            self._record_decision(
+                "attempt-cancelled",
+                "target-busy-with-other-station",
+                call=their_call,
+                decoded_message=text,
+            )
+            return
+
+    async def _current_radio_frequency_mhz(self) -> float:
+        try:
+            from services.radio import get_radio_instance
+
+            flex = get_radio_instance()
+            return float(getattr(flex, "current_freq", 0) or 0)
+        except Exception:
+            return 0.0
     
     async def _auto_sequence_handler(self, message):
         """Handle auto-sequencing logic"""
@@ -1001,9 +1188,34 @@ class FT8Service:
         sign = "+" if value >= 0 else "-"
         return f"{sign}{abs(value):02d}"
 
+    def _target_heard_slot_timestamp(self, target: Dict[str, Any]) -> Any:
+        for key in ("slot_start_utc", "heard_slot_start_at", "timestamp"):
+            value = target.get(key)
+            if value:
+                return value
+        return None
+
+    def _target_heard_slot_iso(self, target: Dict[str, Any]) -> Optional[str]:
+        value = self._target_heard_slot_timestamp(target)
+        if isinstance(value, datetime):
+            timestamp = value
+        elif value:
+            try:
+                timestamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                return str(value)
+        else:
+            return None
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return timestamp.astimezone(timezone.utc).isoformat()
+
+    def _desired_tx_cycle_parity(self) -> int:
+        return 0 if self.tx_even_first else 1
+
     def _infer_tx_slot_from_target(self, target: Dict[str, Any]) -> None:
         """Use the decoded receive slot to choose the opposite TX slot."""
-        timestamp = target.get("timestamp") or target.get("slot_start_utc")
+        timestamp = self._target_heard_slot_timestamp(target)
         if not timestamp:
             return
         try:
@@ -1017,25 +1229,38 @@ class FT8Service:
             station_cycle = int(decoded_at.timestamp() // cycle_duration) if cycle_duration else 0
             station_was_even = (station_cycle % 2) == 0
             self.tx_even_first = not station_was_even
+            self._record_decision(
+                "tx-slot-selected",
+                "opposite-heard-slot",
+                heard_slot_utc=decoded_at.isoformat(),
+                heard_cycle_parity=0 if station_was_even else 1,
+                tx_cycle_parity=self._desired_tx_cycle_parity(),
+            )
         except Exception:
             logger.debug("Unable to infer TX slot from target timestamp %r", timestamp, exc_info=True)
 
-    def _next_tx_slot_iso(self) -> Optional[str]:
-        cycle_duration, cycle_position, cycle_number, slot_is_tx = self._live_cycle_state()
+    def _next_tx_slot_start(self, desired_parity: Optional[int] = None) -> Optional[datetime]:
+        cycle_duration = self._cycle_duration_seconds()
         if not cycle_duration:
             return None
-        now = self._now()
+        parity = self._desired_tx_cycle_parity() if desired_parity is None else int(desired_parity) % 2
+        now = self._slot_now()
+        now_timestamp = now.timestamp()
+        cycle_number = int(now_timestamp // cycle_duration)
+        cycle_position = now_timestamp % cycle_duration
         max_safe_late_start = self._max_safe_late_start_seconds()
-        seconds_until = 0.0 if slot_is_tx and cycle_position <= max_safe_late_start else cycle_duration - cycle_position
-        if not slot_is_tx:
-            seconds_until = cycle_duration - cycle_position
-        elif cycle_position > max_safe_late_start:
-            seconds_until = cycle_duration - cycle_position + cycle_duration
-        slot_start = now + timedelta(seconds=seconds_until)
-        return datetime.fromtimestamp(
-            int(slot_start.timestamp() // cycle_duration) * cycle_duration,
-            timezone.utc,
-        ).isoformat()
+        for offset in range(6):
+            candidate_cycle = cycle_number + offset
+            if candidate_cycle % 2 != parity:
+                continue
+            if offset == 0 and cycle_position > max_safe_late_start:
+                continue
+            return datetime.fromtimestamp(candidate_cycle * cycle_duration, timezone.utc)
+        return datetime.fromtimestamp((cycle_number + 1) * cycle_duration, timezone.utc)
+
+    def _next_tx_slot_iso(self, desired_parity: Optional[int] = None) -> Optional[str]:
+        slot_start = self._next_tx_slot_start(desired_parity)
+        return slot_start.isoformat() if slot_start else None
 
     async def engage_target(
         self,
@@ -1066,6 +1291,10 @@ class FT8Service:
             frequency_mhz = float(frequency or 0)
         except (TypeError, ValueError):
             frequency_mhz = 0.0
+        try:
+            rx_audio_frequency = int(round(float(payload.get("freq", payload.get("audio_offset", 0)) or 0)))
+        except (TypeError, ValueError):
+            rx_audio_frequency = 0
 
         if replace_active:
             if self.tx_in_progress:
@@ -1104,10 +1333,13 @@ class FT8Service:
             "mode": self.mode,
             "band": payload.get("band") or "",
             "dial_frequency": frequency_mhz,
+            "rx_audio_frequency": rx_audio_frequency,
             "audio_frequency": self.tx_audio_frequency,
             "source": source,
             "reason": "manual target selected" if source.startswith("manual") else "automation target selected",
             "scheduled_slot_utc": self._next_tx_slot_iso(),
+            "tx_cycle_parity": self._desired_tx_cycle_parity(),
+            "heard_slot_utc": self._target_heard_slot_iso(payload),
         }
         self.tx_status = f"queued {message}"
         qso.status = "tx_pending"
@@ -1285,7 +1517,7 @@ class FT8Service:
             or settings.spot_hunt_enabled
         )
     
-    async def _handle_tx_cycle(self):
+    async def _handle_tx_cycle(self, playback_delay_seconds: Optional[float] = None):
         """Handle TX cycle"""
         logger.debug("TX cycle started")
 
@@ -1304,15 +1536,33 @@ class FT8Service:
                     disable_tx=False,
                     pause_auto_engage=False,
                 )
-                self.tx_status = f"max call attempts reached; backed off {active_qso.their_call}"
+                self.auto_call_remaining = self._auto_call_attempt_budget()
+                self.tx_status = f"max call attempts reached; backed off {active_qso.their_call}; searching next target"
                 return
+            if active_qso and self.auto_call_enabled and active_qso.rx_count == 0:
+                if self.auto_call_remaining <= 0:
+                    self._cancel_current_attempt(
+                        reason="auto-call-attempt-budget-expired",
+                        backoff_active_target=True,
+                        disable_tx=False,
+                        pause_auto_engage=False,
+                    )
+                    self.auto_call_remaining = self._auto_call_attempt_budget()
+                    self.tx_status = f"auto-call attempt budget expired; backed off {active_qso.their_call}; searching next target"
+                    return
+                self.auto_call_remaining -= 1
             self.tx_queue.append(self.active_tx_message)
+            if active_qso is not None:
+                self.tx_message_attempt_ids[self.active_tx_message] = active_qso.attempt_id
 
         if len(self.tx_queue) > 0:
             if self.tx_in_progress:
                 return
             message = self.tx_queue.pop(0)
             attempt_id = self.tx_message_attempt_ids.pop(message, None)
+            if attempt_id is None:
+                active_qso = self._active_qso_for_tx_message(message)
+                attempt_id = active_qso.attempt_id if active_qso else None
             if not self._attempt_is_current(attempt_id):
                 self._record_decision("tx-skipped", "stale-queued-intent", message=message, attempt_id=attempt_id, active_attempt_id=self.active_attempt_id)
                 return
@@ -1320,14 +1570,38 @@ class FT8Service:
             try:
                 self.tx_in_progress = True
                 self.pending_tx_intent = None
-                max_duration = max(0.5, float(self.cycle_duration or 0) - float(self.cycle_position or 0) - 0.25)
-                await self.transmit_message(message, max_duration_seconds=max_duration, attempt_id=attempt_id)
+                cycle_remaining = (
+                    self._protocol_tx_audio_seconds() + 0.2
+                    if playback_delay_seconds is not None
+                    else float(self.cycle_duration or 0) - float(self.cycle_position or 0)
+                )
+                max_duration = min(
+                    self._protocol_tx_audio_seconds(),
+                    max(0.5, cycle_remaining - 0.2),
+                )
+                await self.transmit_message(
+                    message,
+                    max_duration_seconds=max_duration,
+                    attempt_id=attempt_id,
+                    playback_delay_seconds=(
+                        playback_delay_seconds
+                        if playback_delay_seconds is not None
+                        else self._same_slot_playback_delay_seconds()
+                    ),
+                )
             except Exception as exc:
                 if "aborted" in str(exc).lower():
                     self.tx_status = "switching TX message" if self._restart_tx_after_abort else "halted"
                 else:
                     self.tx_status = f"TX failed: {exc}"
                 if not self._restart_tx_after_abort:
+                    self._cancel_current_attempt(
+                        reason="tx-audio-failed",
+                        backoff_active_target=True,
+                        disable_tx=True,
+                        pause_auto_engage=False,
+                        inhibit_reason="tx_audio_failed",
+                    )
                     self.tx_enabled = False
                 logger.error("Digital TX failed; TX halted: %s", exc, exc_info=True)
             finally:
@@ -1341,7 +1615,13 @@ class FT8Service:
         # Clear audio buffer at start of RX
         # (Keep recent audio for decoding)
     
-    async def transmit_message(self, message: str, max_duration_seconds: Optional[float] = None, attempt_id: Optional[str] = None):
+    async def transmit_message(
+        self,
+        message: str,
+        max_duration_seconds: Optional[float] = None,
+        attempt_id: Optional[str] = None,
+        playback_delay_seconds: Optional[float] = None,
+    ):
         """
         Transmit an FT8/FT4 message
         
@@ -1393,14 +1673,20 @@ class FT8Service:
             self.tx_enabled = False
             return
 
-        from services.radio import get_radio_instance
-
         self.tx_status = f"transmitting {message}"
         if active_qso:
             active_qso.status = "tx_active"
-        flex = get_radio_instance()
+        flex = self._ptt_target()
         loop = asyncio.get_running_loop()
         self.current_tx_message = message
+        if playback_delay_seconds is not None:
+            self._record_decision(
+                "tx-prekeyed",
+                "scheduled-playback-boundary",
+                message=message,
+                attempt_id=attempt_id,
+                playback_delay_seconds=round(float(playback_delay_seconds), 3),
+            )
         try:
             result = await loop.run_in_executor(
                 None,
@@ -1410,6 +1696,7 @@ class FT8Service:
                     audio_frequency=self.tx_audio_frequency,
                     flex=flex,
                     max_duration_seconds=max_duration_seconds,
+                    playback_delay_seconds=playback_delay_seconds,
                 ),
             )
         finally:
@@ -1465,6 +1752,9 @@ class FT8Service:
         remaining = max(0.0, float(cycle_duration or 0) - float(cycle_position or 0))
         message = self.tx_queue.pop(0)
         attempt_id = self.tx_message_attempt_ids.pop(message, None)
+        if attempt_id is None:
+            active_qso = self._active_qso_for_tx_message(message)
+            attempt_id = active_qso.attempt_id if active_qso else None
         if not self._attempt_is_current(attempt_id):
             self._record_decision("tx-skipped", "stale-queued-intent", message=message, attempt_id=attempt_id, active_attempt_id=self.active_attempt_id)
             return False
@@ -1472,12 +1762,21 @@ class FT8Service:
         try:
             self.tx_in_progress = True
             self.pending_tx_intent = None
-            max_duration = max(0.5, remaining - 0.25)
+            max_duration = min(self._protocol_tx_audio_seconds(mode), max(0.5, remaining - 0.2))
             self._record_decision("tx-started", "safe-slot-start", message=message, attempt_id=attempt_id, cycle_position=cycle_position)
             if attempt_id:
-                await self.transmit_message(message, max_duration_seconds=max_duration, attempt_id=attempt_id)
+                await self.transmit_message(
+                    message,
+                    max_duration_seconds=max_duration,
+                    attempt_id=attempt_id,
+                    playback_delay_seconds=self._same_slot_playback_delay_seconds(mode),
+                )
             else:
-                await self.transmit_message(message, max_duration_seconds=max_duration)
+                await self.transmit_message(
+                    message,
+                    max_duration_seconds=max_duration,
+                    playback_delay_seconds=self._same_slot_playback_delay_seconds(mode),
+                )
             return True
         except Exception as exc:
             if "aborted" in str(exc).lower():
@@ -1550,6 +1849,7 @@ class FT8Service:
                 "source": automation or "manual",
                 "reason": automation or "manual queue",
                 "scheduled_slot_utc": self._next_tx_slot_iso(),
+                "tx_cycle_parity": self._desired_tx_cycle_parity(),
             }
             if automation == "auto_call" and self.auto_call_remaining > 0:
                 self.auto_call_remaining -= 1
@@ -1749,9 +2049,7 @@ class FT8Service:
     async def transmit_tune_tone(self, duration_seconds: float = 5.0):
         if not self.tx_capability_enabled:
             raise RuntimeError(self.tx_engine.status.reason)
-        from services.radio import get_radio_instance
-
-        flex = get_radio_instance()
+        flex = self._ptt_target()
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
@@ -1831,10 +2129,10 @@ class FT8Service:
         """Get service statistics"""
         uptime = 0
         now = datetime.now(timezone.utc)
+        slot_now = self._slot_now()
         if self.enabled and self.started_at:
             uptime = int((now - self.started_at).total_seconds())
 
-        mode = normalise_decode_mode(self.mode)
         watchdog_limit_seconds = self._watchdog_limit_seconds()
         watchdog_elapsed = 0
         watchdog_remaining = 0
@@ -1844,13 +2142,33 @@ class FT8Service:
             watchdog_remaining = max(0, watchdog_limit_seconds - watchdog_elapsed)
 
         cycle_duration = self._cycle_duration_seconds()
-        live_cycle_position = now.timestamp() % cycle_duration if cycle_duration else 0.0
-        live_cycle = int(now.timestamp() // cycle_duration) if cycle_duration else 0
+        live_cycle_position = slot_now.timestamp() % cycle_duration if cycle_duration else 0.0
+        live_cycle = int(slot_now.timestamp() // cycle_duration) if cycle_duration else 0
         live_even_cycle = (live_cycle % 2) == 0
         live_slot_is_tx = live_even_cycle if self.tx_even_first else not live_even_cycle
         self.cycle_duration = cycle_duration
         self.cycle_position = live_cycle_position
         self.slot_is_tx = bool(live_slot_is_tx)
+        tx_ptt_command_active = bool(getattr(self.tx_engine, "ptt_on", self.tx_in_progress))
+        tx_radio_mox = None
+        tx_radio_interlock = None
+        tx_ptt_backend = getattr(self.ptt_device, "backend_name", "flex") if self.ptt_device is not None else "flex"
+        tx_ptt_backend_error = getattr(self.ptt_device, "last_error", None) if self.ptt_device is not None else None
+        tx_rf_active = bool(self.tx_in_progress)
+        if self.ptt_method == "CAT":
+            try:
+                ptt_target = self._ptt_target()
+                if ptt_target is not None:
+                    poll_ptt = getattr(ptt_target, "poll_ptt", None)
+                    if callable(poll_ptt):
+                        tx_radio_mox = poll_ptt(max_age_seconds=0.75)
+                    else:
+                        tx_radio_mox_value = getattr(ptt_target, "current_mox", None)
+                        tx_radio_mox = bool(tx_radio_mox_value) if tx_radio_mox_value is not None else None
+                    tx_radio_interlock = str(getattr(ptt_target, "current_interlock_state", "") or "").upper() or None
+            except Exception as exc:
+                logger.debug("Unable to read radio TX state for FT8 status: %s", exc, exc_info=True)
+            tx_rf_active = bool(tx_radio_mox or tx_radio_interlock == "TRANSMITTING")
         self.is_tx_cycle = bool((live_slot_is_tx and self.tx_enabled) or self.tx_in_progress)
         active_qso = next(iter(self.active_qsos.values()), None)
         if active_qso:
@@ -1868,6 +2186,13 @@ class FT8Service:
             active_state = "aborted_cancelled"
         else:
             active_state = "idle"
+
+        tx_engine_status = self.tx_engine.status.to_dict()
+        tx_engine_status.update({
+            "last_audio_output_device": getattr(self.tx_engine, "last_audio_output_device", None),
+            "last_audio_peak": getattr(self.tx_engine, "last_audio_peak", 0.0),
+            "last_audio_rms": getattr(self.tx_engine, "last_audio_rms", 0.0),
+        })
 
         return {
             **self.stats,
@@ -1890,6 +2215,12 @@ class FT8Service:
             'tx_queue_length': len(self.tx_queue),
             'is_tx_cycle': self.is_tx_cycle,
             'tx_in_progress': self.tx_in_progress,
+            'tx_ptt_command_active': tx_ptt_command_active,
+            'tx_radio_mox': tx_radio_mox,
+            'tx_radio_interlock': tx_radio_interlock,
+            'tx_rf_active': tx_rf_active,
+            'tx_ptt_backend': tx_ptt_backend,
+            'tx_ptt_backend_error': tx_ptt_backend_error,
             'slot_is_tx': self.slot_is_tx,
             'cycle_duration': cycle_duration,
             'cycle_position': live_cycle_position,
@@ -1898,7 +2229,8 @@ class FT8Service:
             'engine_license': 'MIT',
             'decoder_status': 'available' if self.rx_decoder.status.available else 'unavailable',
             'rx_decoder': get_ft8_rx_decoder_status(),
-            'tx_engine': self.tx_engine.status.to_dict(),
+            'rx_audio_capture': self.audio_capture.get_stats(),
+            'tx_engine': tx_engine_status,
             'transmit_status': self.tx_status,
             'automation_status': self.automation_status,
             'automation_last_error': self.automation_last_error,
@@ -1924,6 +2256,7 @@ class FT8Service:
             'automation_controller': self.automation_controller.status(),
             'automation_decisions': self.automation_decisions[-20:],
             'time_sync': self._get_cached_time_sync(),
+            'time_correction_seconds': self._clock_offset_seconds(),
             'capabilities': {
                 'waterfall': True,
                 'audio_stream': True,
@@ -1987,7 +2320,8 @@ def get_ft8_service() -> FT8Service:
 
 async def init_ft8_service(mode: str = 'FT8', mycall: str = 'OM0RX', mygrid: str = 'JN88',
                             audio_device: Optional[str] = None, audio_output: Optional[str] = None,
-                            audio_sample_rate: int = 12000, ptt_method: str = "CAT"):
+                            audio_sample_rate: int = 12000, ptt_method: str = "CAT",
+                            ptt_device: Any = None):
     """Initialize FT8 service with optional audio device"""
     global _ft8_service
     
@@ -2028,5 +2362,6 @@ async def init_ft8_service(mode: str = 'FT8', mycall: str = 'OM0RX', mygrid: str
         audio_output=output_to_use,
         audio_sample_rate=audio_sample_rate,
         ptt_method=ptt_method,
+        ptt_device=ptt_device,
     )
     return _ft8_service

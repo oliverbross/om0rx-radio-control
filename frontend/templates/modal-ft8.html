@@ -79,11 +79,27 @@
                             <input type="text" v-model="ft8.config.networkServer" placeholder="192.168.0.199:4992">
                         </div>
                         <div class="ft8-setting-item">
+                            <label>Rig Backend</label>
+                            <select v-model="ft8.config.rigBackend">
+                                <option value="auto">Auto</option>
+                                <option value="hamlib">Hamlib</option>
+                                <option value="flex">Direct Flex</option>
+                            </select>
+                        </div>
+                        <div class="ft8-setting-item">
                             <label>PTT Method</label>
                             <select v-model="ft8.config.pttMethod">
                                 <option value="CAT">CAT</option>
                                 <option value="VOX">VOX</option>
                             </select>
+                        </div>
+                        <div class="ft8-setting-item" v-if="ft8.config.rigBackend !== 'flex'">
+                            <label>Hamlib Model</label>
+                            <input type="number" v-model.number="ft8.config.hamlibModel" placeholder="23005">
+                        </div>
+                        <div class="ft8-setting-item" v-if="ft8.config.rigBackend !== 'flex'">
+                            <label>Hamlib Rig Path</label>
+                            <input type="text" v-model="ft8.config.hamlibRigPath" placeholder="Auto from Flex host">
                         </div>
                     </div>
                 </div>
@@ -295,8 +311,11 @@
                             <input type="checkbox" v-model="ft8.display.waterfall" @change="ft8WaterfallSettingChanged">
                             Waterfall
                         </label>
-                        <span class="ft8-cycle-indicator" :class="{ tx: ft8.isTxCycle }">
-                            {{ ft8.isTxCycle ? 'TX' : 'RX' }}
+                        <span
+                            class="ft8-cycle-indicator"
+                            :class="{ tx: ft8.txInProgress, armed: ft8.txPttCommandActive && !ft8.txInProgress }"
+                            :title="ft8.txRadioInterlock ? `Radio interlock: ${ft8.txRadioInterlock}` : ''">
+                            {{ ft8.txInProgress ? 'TX' : (ft8.txPttCommandActive ? 'PTT' : 'RX') }}
                         </span>
                     </div>
                     <canvas v-show="ft8.display.waterfall" ref="ft8Waterfall" class="ft8-waterfall" width="1200" height="86"></canvas>
@@ -340,8 +359,8 @@
                                     <span>{{ Number(msg.dt || 0).toFixed(1) }}</span>
                                     <span>{{ Number(msg.freq || 0).toFixed(0) }}</span>
                                     <span>{{ msg.message }}</span>
-                                    <span :style="ft8CallStatusStyle(msg.call_status)" :title="msg.call_status">{{ msg.call_status || '-' }}</span>
-                                    <span :style="ft8DxccStatusStyle(msg.dxcc_status)" :title="msg.dxcc_status">{{ msg.dxcc_status || '-' }}</span>
+                                    <span :style="ft8StatusCellStyle(msg, 'call_status', 'call')" :title="ft8StatusCellTitle(msg, 'call_status')">{{ ft8StatusCellLabel(msg, 'call_status') }}</span>
+                                    <span :style="ft8StatusCellStyle(msg, 'dxcc_status', 'dxcc')" :title="ft8StatusCellTitle(msg, 'dxcc_status')">{{ ft8StatusCellLabel(msg, 'dxcc_status') }}</span>
                                 </div>
                             </template>
                         </div>
@@ -374,8 +393,8 @@
                                     <span>{{ Number(msg.dt || 0).toFixed(1) }}</span>
                                     <span>{{ Number(msg.freq || 0).toFixed(0) }}</span>
                                     <span>{{ msg.message }}</span>
-                                    <span :style="ft8CallStatusStyle(msg.call_status)" :title="msg.call_status">{{ msg.call_status || '-' }}</span>
-                                    <span :style="ft8DxccStatusStyle(msg.dxcc_status)" :title="msg.dxcc_status">{{ msg.dxcc_status || '-' }}</span>
+                                    <span :style="ft8StatusCellStyle(msg, 'call_status', 'call')" :title="ft8StatusCellTitle(msg, 'call_status')">{{ ft8StatusCellLabel(msg, 'call_status') }}</span>
+                                    <span :style="ft8StatusCellStyle(msg, 'dxcc_status', 'dxcc')" :title="ft8StatusCellTitle(msg, 'dxcc_status')">{{ ft8StatusCellLabel(msg, 'dxcc_status') }}</span>
                                 </div>
                             </template>
                         </div>
@@ -402,7 +421,7 @@
                     <label><input type="checkbox" v-model="ft8.cqOnly"> CQ only</label>
                     <label><input type="checkbox" v-model="ft8.radioSyncEnabled"> Sync radio</label>
 
-                    <div class="ft8-cycle-meter" :class="{ tx: ft8.isTxCycle, armed: ft8.txEnabled }">
+                    <div class="ft8-cycle-meter" :class="{ tx: ft8.txInProgress, armed: ft8.txEnabled }">
                         <div class="ft8-cycle-fill" :style="ft8CycleProgressStyle()"></div>
                         <span>{{ ft8CyclePhaseLabel() }}</span>
                         <strong>{{ ft8CycleTimeLabel() }}</strong>
@@ -426,6 +445,22 @@
                     <span v-if="ft8.activeAttemptId">Attempt: {{ ft8.activeAttemptId.slice(0, 8) }}</span>
                     <span v-if="ft8.pendingTxIntent">Next: {{ ft8.pendingTxIntent.message }} @ {{ ft8.pendingTxIntent.scheduled_slot_utc || 'next slot' }}</span>
                     <span v-if="ft8.automationDecisions && ft8.automationDecisions.length">{{ ft8.automationDecisions[ft8.automationDecisions.length - 1].event }}: {{ ft8.automationDecisions[ft8.automationDecisions.length - 1].reason }}</span>
+                </div>
+
+                <div class="ft8-wsjtx-automation-strip">
+                    <span class="ft8-debug-label">WSJT-X</span>
+                    <strong>{{ ft8WsjtxQueueLabel() }}</strong>
+                    <span :class="['ft8-planner-db-badge', ft8WsjtxPersistenceClass()]"
+                          :title="ft8WsjtxPersistenceTitle()">
+                        {{ ft8WsjtxPersistenceLabel() }}
+                    </span>
+                    <span>{{ ft8WsjtxActiveTargetLabel() }}</span>
+                    <span>{{ ft8WsjtxDecisionLabel() }}</span>
+                    <button class="ft8-neutral-btn"
+                            @click="ft8PrepareNextWsjtxTarget({ autoCallStartOnly: false })"
+                            :disabled="ft8.wsjtxAutomation.preparing || !(ft8.automationController && ft8.automationController.queue_length)">
+                        {{ ft8.wsjtxAutomation.preparing ? 'Preparing' : 'Prepare WSJT-X' }}
+                    </button>
                 </div>
 
                 <div class="ft8-rx-control-deck">
@@ -584,6 +619,10 @@
                             <strong>{{ ft8.automationController.enabled ? 'armed' : 'standby' }}</strong>
                             <span>Queue {{ ft8.automationController.queue_length || 0 }}</span>
                             <span>Eligible {{ ft8.automationController.eligible_count || 0 }}</span>
+                            <span :class="['ft8-planner-db-badge', ft8WsjtxPersistenceClass()]"
+                                  :title="ft8WsjtxPersistenceTitle()">
+                                {{ ft8WsjtxPersistenceLabel() }}
+                            </span>
                             <span v-if="ft8.automationController.active_target">
                                 Active {{ ft8.automationController.active_target.call }} {{ ft8.automationController.active_target.band }} {{ ft8.automationController.active_target.mode }}
                             </span>

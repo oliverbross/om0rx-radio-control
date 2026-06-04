@@ -330,6 +330,19 @@ class ClassifierAPI:
         # caller explicitly accepts unsafe fallbacks.
         return (True, False, False) if allow_unconfirmed_fallback else None
 
+    async def grid_flags(self, grid: Optional[str], band: str, mode: str) -> Optional[Tuple[bool, bool, bool]]:
+        """Check whether a grid square is new overall, on this band, or on this mode."""
+        if not grid:
+            return False, False, False
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self.qso_status_store.grid_flags, grid, band, mode),
+                timeout=0.75,
+            )
+        except asyncio.TimeoutError:
+            logger.debug("Timed out reading grid status cache for %s %s %s", grid, band, mode)
+            return None
+
 
 # Global instance
 _classifier_instance: Optional[ClassifierAPI] = None

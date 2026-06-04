@@ -191,6 +191,12 @@ const ft8ModalMixin = {
                 menus: true,
                 mini: false,
                 isTxCycle: false,
+                txInProgress: false,
+                txPttCommandActive: false,
+                txRadioMox: false,
+                txRadioInterlock: '',
+                txPttBackend: 'flex',
+                txPttBackendError: '',
                 bandwidth: 50,
                 activeTab: 'operate',  // 'operate' or 'settings'
                 rxPanelTab: 'messages',
@@ -370,10 +376,15 @@ const ft8ModalMixin = {
                     mycall: 'OM0RX',
                     mygrid: 'JN88',
                     networkServer: '192.168.0.199:4992',
+                    rigBackend: 'auto',
+                    hamlibRigctlPath: '',
+                    hamlibModel: 23005,
+                    hamlibRigPath: '',
+                    hamlibTimeoutSeconds: 3,
                     pttMethod: 'CAT',
-                    audioInput: 'default',
-                    audioOutput: 'default',
-                    sampleRate: 12000,
+                    audioInput: 'flexradio',
+                    audioOutput: 'flexradio',
+                    sampleRate: 48000,
                     autoSequence: false,
                     txEnabled: false,
                     waterfallHeight: 100,
@@ -415,10 +426,16 @@ const ft8ModalMixin = {
                 waterfallCtx: null,
                 lastDecodedFetchCount: 0,
                 decodedRefreshInFlight: false,
+                decodedReceiveSequence: 0,
                 statusCache: {},
                 statusInflight: {},
                 automationController: null,
-                bridgeReady: false
+                bridgeReady: false,
+                wsjtxAutomation: {
+                    preparing: false,
+                    lastPrepared: null,
+                    lastError: ''
+                }
             },
 
             // WebSocket
@@ -480,7 +497,7 @@ const ft8ModalMixin = {
             }
 
             // Load configuration (includes audio devices)
-            this.ft8LoadSettings();
+            await this.ft8LoadSettings();
 
             // Initialize waterfall canvas
             this.$nextTick(() => {
@@ -1349,6 +1366,12 @@ const ft8ModalMixin = {
             const previousCompleted = Number(this.ft8.stats?.qso_completed || 0);
             this.ft8.connected = status.enabled;
             this.ft8.txEnabled = status.tx_enabled;
+            this.ft8.txInProgress = Boolean(status.tx_rf_active ?? status.tx_in_progress);
+            this.ft8.txPttCommandActive = Boolean(status.tx_ptt_command_active ?? status.tx_in_progress);
+            this.ft8.txRadioMox = Boolean(status.tx_radio_mox);
+            this.ft8.txRadioInterlock = String(status.tx_radio_interlock || '');
+            this.ft8.txPttBackend = String(status.tx_ptt_backend || this.ft8.txPttBackend || 'flex');
+            this.ft8.txPttBackendError = String(status.tx_ptt_backend_error || '');
             this.ft8.autoSequence = status.auto_sequence;
             this.ft8.isTxCycle = status.is_tx_cycle;
             this.ft8.slotIsTx = Boolean(status.slot_is_tx);
@@ -1364,6 +1387,23 @@ const ft8ModalMixin = {
             this.ft8.pendingTxIntent = status.pending_tx_intent || null;
             this.ft8.pendingMessage = String(status.pending_message || '');
             this.ft8.txInhibitReason = String(status.tx_inhibit_reason || status.tx_inhibit || '');
+            const backendTxOffset = Number(status.tx_audio_frequency || 0);
+            if (Number.isFinite(backendTxOffset) && backendTxOffset > 0) {
+                this.ft8SetTxOffset(backendTxOffset);
+            }
+            const activeAutomationTarget = status.automation_controller?.active_target || null;
+            const backendRxOffset = Number(
+                status.pending_tx_intent?.rx_audio_frequency ||
+                activeAutomationTarget?.audio_offset ||
+                0
+            );
+            if (
+                Number.isFinite(backendRxOffset) &&
+                backendRxOffset > 0 &&
+                (status.active_target || status.active_tx_message || status.pending_tx_intent || activeAutomationTarget)
+            ) {
+                this.ft8SetRxOffset(backendRxOffset);
+            }
             this.ft8.automationDecisions = Array.isArray(status.automation_decisions)
                 ? status.automation_decisions.slice(-8)
                 : [];
@@ -1474,16 +1514,20 @@ const ft8ModalMixin = {
 
         addDecodedMessage(message) {
             const normalized = this.ft8NormalizeDecodedMessage(message);
-            this.ft8AppendDecodedMessage(normalized);
-            this.ft8EvaluateAlert(normalized);
-            this.ft8EnrichDecodedMessage(normalized);
+            const result = this.ft8AppendDecodedMessage(normalized);
+            const row = result?.row || normalized;
+            if (!result?.created) {
+                return;
+            }
+            this.ft8EvaluateAlert(row);
+            this.ft8EnrichDecodedMessage(row);
             this.ft8.lastDecodedFetchCount = Math.max(
                 this.ft8.lastDecodedFetchCount,
                 this.ft8.stats.decoded_count || this.ft8.decodedMessages.length
             );
 
             // Play notification sound for CQ
-            if (normalized.message.includes('CQ')) {
+            if (String(row.message || '').includes('CQ')) {
                 // Could add audio notification here
             }
             this.ft8ScrollDecodePanesToBottom();
@@ -1491,13 +1535,66 @@ const ft8ModalMixin = {
 
         ft8AppendDecodedMessage(message) {
             const key = this.ft8DecodedMessageKey(message);
-            if (this.ft8.decodedMessages.some(row => this.ft8DecodedMessageKey(row) === key)) {
-                return;
+            const existing = this.ft8.decodedMessages.find(row => this.ft8DecodedMessageKey(row) === key);
+            if (existing) {
+                this.ft8MergeDecodedMessage(existing, message);
+                return { row: existing, created: false };
             }
+            message._receivedOrder = Number(message._receivedOrder || 0) || this.ft8NextDecodedOrder();
+            message._displayAccepted = this.ft8PassesStableDecodeFilters(message);
             this.ft8.decodedMessages.push(message);
             if (this.ft8.decodedMessages.length > 300) {
                 this.ft8.decodedMessages.shift();
             }
+            return { row: message, created: true };
+        },
+
+        ft8NextDecodedOrder() {
+            this.ft8.decodedReceiveSequence = Number(this.ft8.decodedReceiveSequence || 0) + 1;
+            return this.ft8.decodedReceiveSequence;
+        },
+
+        ft8MergeDecodedMessage(existing, incoming) {
+            if (!existing || !incoming) {
+                return existing;
+            }
+            const preserved = {
+                receivedOrder: Number(existing._receivedOrder || 0) || this.ft8NextDecodedOrder(),
+                displayAccepted: existing._displayAccepted,
+                statusLoading: Boolean(existing._statusLoading),
+                statusPending: Boolean(existing._statusPending),
+                callStatus: existing.call_status,
+                dxccStatus: existing.dxcc_status,
+                dxccTag: existing.dxcc_tag,
+                dxcc: existing.dxcc,
+                country: existing.country,
+                cqZone: existing.cq_zone,
+                ituZone: existing.itu_zone,
+                continent: existing.continent,
+                needed: existing.needed,
+                neededOnBand: existing.needed_on_band
+            };
+            Object.assign(existing, incoming);
+            existing._receivedOrder = preserved.receivedOrder;
+            existing._displayAccepted = preserved.displayAccepted !== undefined
+                ? preserved.displayAccepted
+                : this.ft8PassesStableDecodeFilters(existing);
+            existing._statusLoading = preserved.statusLoading || Boolean(incoming._statusLoading);
+            existing._statusPending = preserved.statusPending || Boolean(incoming._statusPending);
+            if (!incoming.call_status && preserved.callStatus) existing.call_status = preserved.callStatus;
+            if (!incoming.dxcc_status && preserved.dxccStatus) existing.dxcc_status = preserved.dxccStatus;
+            if (!incoming.dxcc_tag && preserved.dxccTag) existing.dxcc_tag = preserved.dxccTag;
+            if (incoming.dxcc === undefined && preserved.dxcc !== undefined) existing.dxcc = preserved.dxcc;
+            if (!incoming.country && preserved.country) existing.country = preserved.country;
+            if (!incoming.cq_zone && preserved.cqZone) existing.cq_zone = preserved.cqZone;
+            if (!incoming.itu_zone && preserved.ituZone) existing.itu_zone = preserved.ituZone;
+            if (!incoming.continent && preserved.continent) existing.continent = preserved.continent;
+            if (!incoming.needed && preserved.needed) existing.needed = preserved.needed;
+            if (!incoming.needed_on_band && preserved.neededOnBand) existing.needed_on_band = preserved.neededOnBand;
+            if (this.ft8HasResolvedStatus(existing.call_status) && this.ft8HasResolvedStatus(existing.dxcc_status)) {
+                existing._statusPending = false;
+            }
+            return existing;
         },
 
         ft8DecodedMessageKey(message) {
@@ -1543,9 +1640,17 @@ const ft8ModalMixin = {
                 }
                 const payload = await response.json();
                 const messages = Array.isArray(payload.messages) ? payload.messages : [];
-                this.ft8.decodedMessages = messages.map(message => this.ft8NormalizeDecodedMessage(message));
-                this.ft8.decodedMessages.slice(-20).forEach(message => this.ft8EvaluateAlert(message));
-                this.ft8.decodedMessages.forEach(message => {
+                const rowsForLookup = [];
+                messages.forEach(message => {
+                    const normalized = this.ft8NormalizeDecodedMessage(message);
+                    const result = this.ft8AppendDecodedMessage(normalized);
+                    const row = result?.row || normalized;
+                    if (result?.created) {
+                        this.ft8EvaluateAlert(row);
+                    }
+                    rowsForLookup.push(row);
+                });
+                rowsForLookup.slice(-20).forEach(message => {
                     this.ft8EnrichDecodedMessage(message);
                 });
                 this.ft8.lastDecodedFetchCount = Math.max(
@@ -1676,6 +1781,11 @@ const ft8ModalMixin = {
                         waterfallHeight: Number(config.waterfallHeight || 100),
                         waterfallEnabled: Boolean(this.ft8.display.waterfall),
                         networkServer: config.networkServer || '192.168.0.199:4992',
+                        rigBackend: config.rigBackend || 'auto',
+                        hamlibRigctlPath: config.hamlibRigctlPath || '',
+                        hamlibModel: Number(config.hamlibModel || 23005),
+                        hamlibRigPath: config.hamlibRigPath || '',
+                        hamlibTimeoutSeconds: Number(config.hamlibTimeoutSeconds || 3),
                         pttMethod: config.pttMethod || 'CAT',
                         useFlexRadioAudio: config.useFlexRadioAudio !== undefined ? config.useFlexRadioAudio : true,
                         operatorSettings: this.ft8OperatorSettingsPayload()
@@ -2059,6 +2169,17 @@ const ft8ModalMixin = {
                 if (!selected?.text) {
                     throw new Error('Select a decoded station or TX message first');
                 }
+                if (Number(selected.id) !== 6 && !this.ft8HasActiveQsoAttempt()) {
+                    const selectedMessage = this.ft8.selectedMessage || this.ft8FindSelectedDecodedMessage();
+                    if (!selectedMessage) {
+                        throw new Error('Select or double-click a decoded station before TX');
+                    }
+                    await this.ft8EngageBackendTarget(selectedMessage, {
+                        source: 'manual_tx_button',
+                        replace_active: true,
+                        expectedMessage: selected.text
+                    });
+                }
                 const response = await fetch('/api/ft8/tx/enable', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -2162,6 +2283,137 @@ const ft8ModalMixin = {
             }
         },
 
+        async ft8PrepareNextWsjtxTarget(options = {}) {
+            this.ft8.wsjtxAutomation.preparing = true;
+            this.ft8.wsjtxAutomation.lastError = '';
+            try {
+                const response = await fetch('/api/ft8/automation/wsjtx/prepare-next', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        cq_only: Boolean(options.cqOnly ?? this.ft8.cqOnly),
+                        auto_call_start_only: Boolean(options.autoCallStartOnly)
+                    })
+                });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(payload.detail || payload.error || `HTTP ${response.status}`);
+                }
+                if (payload.automation) {
+                    this.ft8.automationController = payload.automation;
+                }
+                if (payload.status !== 'prepared') {
+                    this.ft8.wsjtxAutomation.lastPrepared = null;
+                    this.ft8.wsjtxAutomation.lastError = payload.reason || 'No eligible WSJT-X target';
+                    this.ft8.radioSyncMessage = `WSJT-X prepare: ${this.ft8.wsjtxAutomation.lastError}`;
+                    return payload;
+                }
+                const target = payload.target || {};
+                this.ft8.wsjtxAutomation.lastPrepared = {
+                    call: target.call || '',
+                    band: target.band || '',
+                    mode: target.mode || '',
+                    reason: target.reason || '',
+                    txDf: payload.wsjtx_target?.txDf || '',
+                    rxDf: payload.wsjtx_target?.rxDf || '',
+                    txDfReason: payload.tx_df_plan?.reason || '',
+                    occupied: Array.isArray(payload.tx_df_plan?.occupied) ? payload.tx_df_plan.occupied : []
+                };
+                const txDf = this.ft8.wsjtxAutomation.lastPrepared.txDf;
+                const txSuffix = txDf ? ` TX ${txDf} Hz` : '';
+                this.ft8.radioSyncMessage = `WSJT-X prepared ${target.call || 'target'}${txSuffix}; TX not armed`;
+                return payload;
+            } catch (error) {
+                this.ft8.wsjtxAutomation.lastPrepared = null;
+                this.ft8.wsjtxAutomation.lastError = error.message;
+                this.ft8.errorMessage = `WSJT-X prepare failed: ${error.message}`;
+                return null;
+            } finally {
+                this.ft8.wsjtxAutomation.preparing = false;
+            }
+        },
+
+        ft8WsjtxQueueLabel() {
+            const controller = this.ft8.automationController || {};
+            const queue = Number(controller.queue_length || 0);
+            const eligible = Number(controller.eligible_count || 0);
+            return `${eligible}/${queue} targets`;
+        },
+
+        ft8WsjtxPersistenceLabel() {
+            const persistence = this.ft8.automationController?.persistence;
+            if (!persistence) {
+                return 'DB unknown';
+            }
+            if (persistence.error) {
+                return 'DB error';
+            }
+            if (persistence.enabled) {
+                const loaded = Number(persistence.loaded_count || 0);
+                return `DB PostgreSQL ${loaded} loaded`;
+            }
+            return 'DB memory only';
+        },
+
+        ft8WsjtxPersistenceTitle() {
+            const persistence = this.ft8.automationController?.persistence;
+            if (!persistence) {
+                return 'Digital planner persistence state has not been reported yet.';
+            }
+            if (persistence.error) {
+                return `Digital planner persistence error: ${persistence.error}`;
+            }
+            if (persistence.enabled) {
+                const loaded = Number(persistence.loaded_count || 0);
+                return `Digital planner target queue is backed by PostgreSQL; ${loaded} recent target${loaded === 1 ? '' : 's'} loaded at startup.`;
+            }
+            return 'Digital planner target queue is running in memory only for this session.';
+        },
+
+        ft8WsjtxPersistenceClass() {
+            const persistence = this.ft8.automationController?.persistence;
+            if (persistence?.error) {
+                return 'error';
+            }
+            if (persistence?.enabled) {
+                return 'postgres';
+            }
+            if (persistence) {
+                return 'memory';
+            }
+            return 'unknown';
+        },
+
+        ft8WsjtxActiveTargetLabel() {
+            const active = this.ft8.automationController?.active_target;
+            if (active?.call) {
+                return `${active.call} ${active.band || ''} ${active.mode || ''}`.trim();
+            }
+            const target = (this.ft8.automationController?.targets || [])[0];
+            if (target?.call) {
+                return `next ${target.call} ${target.band || ''} ${target.mode || ''}`.trim();
+            }
+            return 'no target';
+        },
+
+        ft8WsjtxDecisionLabel() {
+            const prepared = this.ft8.wsjtxAutomation.lastPrepared;
+            if (prepared?.call) {
+                const offsets = [
+                    prepared.rxDf ? `RX ${prepared.rxDf}` : '',
+                    prepared.txDf ? `TX ${prepared.txDf}` : '',
+                    prepared.txDfReason ? prepared.txDfReason.replace(/-/g, ' ') : '',
+                ].filter(Boolean).join(' / ');
+                return `prepared ${prepared.call}${offsets ? ` (${offsets})` : ''}`;
+            }
+            const error = this.ft8.wsjtxAutomation.lastError;
+            if (error) {
+                return error;
+            }
+            const decision = this.ft8.automationController?.last_decision || {};
+            return String(decision.reason || decision.decision || 'listening').replaceAll('-', ' ');
+        },
+
         async ft8ArmAutomationTx() {
             if (!this.ft8.connected) {
                 await this.ft8StartService();
@@ -2211,7 +2463,7 @@ const ft8ModalMixin = {
             const messages = Array.isArray(this.ft8.decodedMessages) ? this.ft8.decodedMessages : [];
             return this.ft8SortDigitalMessages(messages.filter(message => {
                 const isTx = message?.direction === 'tx' || message?.source === 'tx' || message?.direction === 'tx_pending' || message?.source === 'tx_pending';
-                return !isTx && this.ft8PassesDisplayFilters(message);
+                return !isTx && message?._displayAccepted !== false && this.ft8PassesStableDecodeFilters(message);
             }));
         },
 
@@ -2245,6 +2497,17 @@ const ft8ModalMixin = {
         },
 
         ft8SortDigitalMessages(messages) {
+            const timestampValue = message => new Date(message?.timestamp || 0).getTime() || 0;
+            const sorted = [...messages];
+            const orderValue = message => Number(message?._receivedOrder || 0);
+            return sorted.sort((a, b) =>
+                timestampValue(a) - timestampValue(b) ||
+                orderValue(a) - orderValue(b) ||
+                Number(a?.freq || 0) - Number(b?.freq || 0)
+            );
+        },
+
+        ft8SortAutomationMessages(messages) {
             const priority = String(this.ft8.automation.priority || 'last');
             const timestampValue = message => new Date(message?.timestamp || 0).getTime() || 0;
             const distanceValue = message => Number(message?.distance_km || message?.distance || 0);
@@ -2255,7 +2518,7 @@ const ft8ModalMixin = {
             if (priority === 'distance') {
                 return sorted.sort((a, b) => distanceValue(b) - distanceValue(a) || timestampValue(b) - timestampValue(a));
             }
-            return sorted.sort((a, b) => timestampValue(a) - timestampValue(b));
+            return sorted.sort((a, b) => timestampValue(b) - timestampValue(a));
         },
 
         ft8NormalizeDecodedMessage(message) {
@@ -2266,12 +2529,10 @@ const ft8ModalMixin = {
             normalized.callsign = normalized.callsign || normalized.call || this.getFT8MessageCall(normalized);
             normalized.grid = normalized.grid || normalized.gridsquare || this.getFT8MessageGrid(normalized);
             normalized.decode_pass_key = this.ft8DecodePassKey(normalized);
-            if (normalized.callsign && !this.ft8HasResolvedStatus(normalized.call_status)) {
-                normalized.call_status = 'Checking...';
-            }
-            if (normalized.callsign && !this.ft8HasResolvedStatus(normalized.dxcc_status)) {
-                normalized.dxcc_status = 'Checking...';
-            }
+            normalized._statusPending = Boolean(normalized.callsign && (
+                !this.ft8HasResolvedStatus(normalized.call_status) ||
+                !this.ft8HasResolvedStatus(normalized.dxcc_status)
+            ));
             return normalized;
         },
 
@@ -2361,6 +2622,33 @@ const ft8ModalMixin = {
                 return false;
             }
             return true;
+        },
+
+        ft8PassesStableDecodeFilters(message) {
+            if (message?.direction === 'tx' || message?.source === 'tx') {
+                return true;
+            }
+            const selectedCall = String(this.ft8.selectedCall || this.ft8ActiveTxCall() || '').toUpperCase();
+            const text = String(message?.message || '').toUpperCase();
+            if (selectedCall && this.ft8MessageIsCallingUs(message) && text.split(/\s+/).includes(selectedCall)) {
+                return true;
+            }
+            const meta = this.ft8AnalyzeMessage(message);
+            if (meta.snr < Number(this.ft8.automation.minSignal ?? -30)) {
+                return false;
+            }
+            if (this.ft8.cqOnly && !this.ft8IsCqOrClosingMessage(message)) {
+                return false;
+            }
+            if (meta.call && this.ft8IsIgnoredCall(meta.call)) {
+                return false;
+            }
+            return true;
+        },
+
+        ft8IsCqOrClosingMessage(message) {
+            const text = String(message?.message || '').trim().toUpperCase();
+            return text === 'CQ' || text.startsWith('CQ ') || /\b(RR73|73)\b/.test(text);
         },
 
         ft8PassesAutomationFilters(message, directedCaller = false) {
@@ -2944,7 +3232,7 @@ const ft8ModalMixin = {
             if (!this.ft8.connected) {
                 return 'Idle';
             }
-            if (this.ft8.isTxCycle) {
+            if (this.ft8.txInProgress) {
                 return 'TX';
             }
             return this.ft8.slotIsTx ? 'TX armed' : 'RX';
@@ -2987,8 +3275,11 @@ const ft8ModalMixin = {
             if (this.ft8.txInhibitReason) {
                 return `Stopped: ${this.ft8.txInhibitReason}. Re-arm TX before another automatic transmission.`;
             }
-            if (state === 'tx_active') {
+            if (state === 'tx_active' && this.ft8.txInProgress) {
                 return `Transmitting ${message || call || 'message'}; waiting for the current TX slot to finish.`;
+            }
+            if (state === 'tx_active') {
+                return `Preparing ${message || call || 'message'} for the next confirmed TX opportunity.`;
             }
             if (state === 'tx_pending') {
                 return `Queued ${message || call || 'message'} for the next safe TX opportunity.`;
@@ -3126,27 +3417,32 @@ const ft8ModalMixin = {
         },
 
         async ft8EngageQso(message) {
-            await this.ft8SelectMessage(message);
-            if (!this.ft8.selectedCall) {
-                this.ft8.errorMessage = 'Decoded row does not contain a workable callsign';
-                return;
+            try {
+                await this.ft8SelectMessage(message);
+                if (!this.ft8.selectedCall) {
+                    this.ft8.errorMessage = 'Decoded row does not contain a workable callsign';
+                    return;
+                }
+                if (!this.ft8.engine.transmit) {
+                    this.ft8.errorMessage = 'TX engine is not available';
+                    return;
+                }
+                this.ft8.selectedTxMessage = 1;
+                this.ft8GenerateMessages();
+                const firstMessage = this.ft8.txMessages.find(tx => tx.id === 1)?.text;
+                if (!firstMessage) {
+                    this.ft8.errorMessage = 'Unable to build first QSO message';
+                    return;
+                }
+                await this.ft8EngageBackendTarget(message, {
+                    source: 'manual_double_click',
+                    replace_active: true,
+                    expectedMessage: firstMessage
+                });
+                this.ft8.errorMessage = '';
+            } catch (error) {
+                this.ft8.errorMessage = `Engage failed: ${error.message}`;
             }
-            if (!this.ft8.engine.transmit) {
-                this.ft8.errorMessage = 'TX engine is not available';
-                return;
-            }
-            this.ft8.selectedTxMessage = 1;
-            this.ft8GenerateMessages();
-            const firstMessage = this.ft8.txMessages.find(tx => tx.id === 1)?.text;
-            if (!firstMessage) {
-                this.ft8.errorMessage = 'Unable to build first QSO message';
-                return;
-            }
-            await this.ft8EngageBackendTarget(message, {
-                source: 'manual_double_click',
-                replace_active: true,
-                expectedMessage: firstMessage
-            });
         },
 
         async ft8EngageBackendTarget(message, options = {}) {
@@ -3215,6 +3511,17 @@ const ft8ModalMixin = {
             if (!selected?.text) {
                 return false;
             }
+            if (Number(id) !== 6 && !this.ft8HasActiveQsoAttempt()) {
+                const selectedMessage = this.ft8.selectedMessage || this.ft8FindSelectedDecodedMessage();
+                if (!selectedMessage) {
+                    throw new Error('Select or double-click a decoded station before TX');
+                }
+                await this.ft8EngageBackendTarget(selectedMessage, {
+                    source: options.source || 'manual_tx_button',
+                    replace_active: true,
+                    expectedMessage: selected.text
+                });
+            }
             const response = await fetch('/api/ft8/tx/manual', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -3233,6 +3540,20 @@ const ft8ModalMixin = {
             this.ft8AddTxDisplayRow(payload.message || selected.text, { pending: true });
             this.ft8.radioSyncMessage = `Manual TX queued by backend: ${payload.message || selected.text}`;
             return true;
+        },
+
+        ft8FindSelectedDecodedMessage() {
+            const selectedCall = String(this.ft8.selectedCall || '').trim().toUpperCase();
+            if (!selectedCall) {
+                return null;
+            }
+            return (this.ft8.decodedMessages || []).find(message => {
+                if (message?.direction === 'tx' || message?.source === 'tx' || message?.source === 'tx_pending') {
+                    return false;
+                }
+                const call = String(this.getFT8MessageCall(message) || message?.callsign || message?.call || '').toUpperCase();
+                return call === selectedCall;
+            }) || null;
         },
 
         async ft8AutoCallChanged() {
@@ -3261,14 +3582,14 @@ const ft8ModalMixin = {
             if (this.ft8HasActiveQsoAttempt()) {
                 return false;
             }
-            const candidates = this.ft8VisibleBandActivity().filter(message => {
+            const candidates = this.ft8SortAutomationMessages(this.ft8VisibleBandActivity().filter(message => {
                 if (message?.direction === 'tx' || message?.source === 'tx') {
                     return false;
                 }
                 const meta = this.ft8AnalyzeMessage(message);
                 const spotTargetHeard = this.ft8IsActiveSpotTarget(meta.call, meta.band, meta.mode);
                 return Boolean(meta.call && this.ft8ShouldAutoRespond(message, meta, spotTargetHeard));
-            });
+            }));
             let submitted = false;
             for (const message of candidates) {
                 submitted = await this.ft8MaybeAutoCall(message) || submitted;
@@ -3335,13 +3656,8 @@ const ft8ModalMixin = {
                 return;
             }
             message.callsign = callsign;
-            if (!this.ft8HasResolvedStatus(message.call_status)) {
-                message.call_status = 'Checking...';
-            }
-            if (!this.ft8HasResolvedStatus(message.dxcc_status)) {
-                message.dxcc_status = 'Checking...';
-            }
             message._statusLoading = true;
+            message._statusPending = true;
             if (!this.ft8.statusInflight[cacheKey]) {
                 const params = new URLSearchParams();
                 if (band) params.set('band', band);
@@ -3366,6 +3682,7 @@ const ft8ModalMixin = {
                     if (!this.ft8HasResolvedStatus(message.dxcc_status)) {
                         message.dxcc_status = 'Unknown';
                     }
+                    message._statusPending = false;
                     return;
                 }
                 this.ft8.statusCache[cacheKey] = { payload, timestamp: Date.now() };
@@ -3380,6 +3697,7 @@ const ft8ModalMixin = {
                 if (!this.ft8HasResolvedStatus(message.dxcc_status)) {
                     message.dxcc_status = 'Unknown';
                 }
+                message._statusPending = false;
             } finally {
                 message._statusLoading = false;
             }
@@ -3395,6 +3713,7 @@ const ft8ModalMixin = {
             message.cq_zone = payload.cty?.cq || payload.cty?.cq_zone || message.cq_zone || '';
             message.itu_zone = payload.cty?.itu || payload.cty?.itu_zone || message.itu_zone || '';
             message.continent = payload.cty?.continent || payload.cty?.cont || message.continent || '';
+            message._statusPending = false;
             const callStatus = this.ft8NormalizeStatusKey(message.call_status);
             const dxccStatus = this.ft8NormalizeStatusKey(message.dxcc_status);
             message.needed = {
@@ -3465,7 +3784,7 @@ const ft8ModalMixin = {
 
         ft8StatusHasPriorCallWork(status) {
             const normalized = this.ft8NormalizeStatusKey(status).toLowerCase();
-            return ['worked', 'confirmed', 'new band', 'new mode', 'new band+mode'].includes(normalized);
+            return ['worked', 'confirmed'].includes(normalized);
         },
 
         ft8HasResolvedStatus(status) {
@@ -3545,6 +3864,32 @@ const ft8ModalMixin = {
         ft8DxccStatusStyle(status) {
             const color = this.ft8StatusColor('dxcc', status);
             return `font-weight: 700; color: ${color};`;
+        },
+
+        ft8StatusCellLabel(message, field) {
+            const value = String(message?.[field] || '').trim();
+            if (value) {
+                return value;
+            }
+            return (message?._statusLoading || message?._statusPending) ? '...' : '-';
+        },
+
+        ft8StatusCellTitle(message, field) {
+            const value = String(message?.[field] || '').trim();
+            if (value) {
+                return value;
+            }
+            return (message?._statusLoading || message?._statusPending) ? 'Checking Wavelog status' : '';
+        },
+
+        ft8StatusCellStyle(message, field, group) {
+            const value = String(message?.[field] || '').trim();
+            if (!value && (message?._statusLoading || message?._statusPending)) {
+                return 'font-weight: 700; color: #9ca3af;';
+            }
+            return group === 'dxcc'
+                ? this.ft8DxccStatusStyle(value)
+                : this.ft8CallStatusStyle(value);
         },
 
         ft8StatusColor(group, status) {

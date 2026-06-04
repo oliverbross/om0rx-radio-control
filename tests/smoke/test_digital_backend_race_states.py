@@ -211,7 +211,7 @@ def test_late_slot_cutoff_is_mode_specific_for_ft8_and_ft4():
     ft8 = service_with_tx("FT8")
     ft8.tx_enabled = True
     asyncio.run(ft8.queue_tx_message("EA1AA OM0RX JN88"))
-    ft8._live_cycle_state = lambda: (15.0, 4.2, 123, True)
+    ft8._live_cycle_state = lambda: (15.0, 0.3, 123, True)
 
     assert asyncio.run(ft8.transmit_queued_now_if_possible(force_current_slot=True)) is True
     assert ft8.tx_queue == []
@@ -219,7 +219,7 @@ def test_late_slot_cutoff_is_mode_specific_for_ft8_and_ft4():
     ft8_late = service_with_tx("FT8")
     ft8_late.tx_enabled = True
     asyncio.run(ft8_late.queue_tx_message("EA1AA OM0RX JN88"))
-    ft8_late._live_cycle_state = lambda: (15.0, 7.5, 123, True)
+    ft8_late._live_cycle_state = lambda: (15.0, 0.5, 123, True)
 
     assert asyncio.run(ft8_late.transmit_queued_now_if_possible(force_current_slot=True)) is False
     assert ft8_late.tx_queue == ["EA1AA OM0RX JN88"]
@@ -227,7 +227,7 @@ def test_late_slot_cutoff_is_mode_specific_for_ft8_and_ft4():
     ft4 = service_with_tx("FT4")
     ft4.tx_enabled = True
     asyncio.run(ft4.queue_tx_message("EA1AA OM0RX JN88"))
-    ft4._live_cycle_state = lambda: (7.5, 2.0, 123, True)
+    ft4._live_cycle_state = lambda: (7.5, 0.1, 123, True)
 
     assert asyncio.run(ft4.transmit_queued_now_if_possible(force_current_slot=True)) is True
     assert ft4.tx_queue == []
@@ -235,7 +235,7 @@ def test_late_slot_cutoff_is_mode_specific_for_ft8_and_ft4():
     ft4_late = service_with_tx("FT4")
     ft4_late.tx_enabled = True
     asyncio.run(ft4_late.queue_tx_message("EA1AA OM0RX JN88"))
-    ft4_late._live_cycle_state = lambda: (7.5, 4.0, 123, True)
+    ft4_late._live_cycle_state = lambda: (7.5, 1.0, 123, True)
 
     assert asyncio.run(ft4_late.transmit_queued_now_if_possible(force_current_slot=True)) is False
     assert ft4_late.tx_queue == ["EA1AA OM0RX JN88"]
@@ -369,9 +369,43 @@ def test_backend_log_completed_qso_uses_started_at_timestamp(monkeypatch):
     assert captured["date_time"].startswith("2026-05-27T12:34:56")
 
 
+def test_auto_call_limit_counts_repeated_unanswered_rf_attempts():
+    service = service_with_tx()
+    service.set_tx_options(auto_call=True, auto_call_limit=3)
+    service.automation_controller.settings.max_attempts_per_target = 3
+
+    asyncio.run(service.engage_target({"callsign": "EA1AA", "grid": "IN83", "mode": "FT8"}, source="auto_call"))
+
+    assert service.auto_call_remaining == 2
+
+    asyncio.run(service._handle_tx_cycle())
+    asyncio.run(service._handle_tx_cycle())
+    asyncio.run(service._handle_tx_cycle())
+
+    qso = service.active_qsos["EA1AA"]
+    assert service.stats["transmitted_count"] == 3
+    assert qso.tx_count == 3
+    assert qso.rx_count == 0
+    assert service.auto_call_remaining == 0
+
+    asyncio.run(service._handle_tx_cycle())
+
+    assert service.stats["transmitted_count"] == 3
+    assert service.tx_enabled is True
+    assert service.auto_call_enabled is True
+    assert service.auto_call_remaining == 3
+    assert service.active_qsos == {}
+    assert service.tx_queue == []
+    assert service.tx_status == "max call attempts reached; backed off EA1AA; searching next target"
+
+
 def test_backend_logging_dedupe_survives_restart(monkeypatch, tmp_path):
     import services.qso_logging as qlog
     from services.qso_logging import QSORequest
+
+    class FakeQRZ:
+        async def lookup(self, _callsign):
+            return {"success": False}
 
     class FakeWavelog:
         def __init__(self):
@@ -394,6 +428,7 @@ def test_backend_logging_dedupe_survives_restart(monkeypatch, tmp_path):
     monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
     monkeypatch.setattr(qlog, "wavelog_client", fake_wavelog)
     monkeypatch.setattr(qlog, "adif_handler", fake_adif)
+    monkeypatch.setattr(qlog, "qrz_client", FakeQRZ())
 
     qso = QSORequest(
         callsign="EA1AA",
@@ -412,6 +447,64 @@ def test_backend_logging_dedupe_survives_restart(monkeypatch, tmp_path):
     assert second["duplicate"] is True
     assert fake_wavelog.calls == 1
     assert fake_adif.calls == 1
+
+
+def test_qso_logging_enriches_missing_fields_from_qrz(monkeypatch):
+    import services.qso_logging as qlog
+    from services.qso_logging import QSORequest
+
+    captured = {}
+
+    class FakeQRZ:
+        async def lookup(self, callsign):
+            return {
+                "success": True,
+                "fname": "Example Operator",
+                "grid": "IN80",
+                "state": "MD",
+                "country": "Spain",
+                "cqzone": "14",
+                "ituzone": "37",
+                "email": f"{callsign.lower()}@example.invalid",
+                "lotw": True,
+            }
+
+    class FakeWavelog:
+        async def log_qso(self, qso):
+            captured["wavelog"] = qso
+            return {"success": True, "message": "ok"}
+
+    class FakeAdif:
+        def add_qso(self, qso):
+            captured["adif"] = qso
+            return True
+
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", None)
+    monkeypatch.setattr(qlog, "_dedupe_entry", lambda _key: None)
+    monkeypatch.setattr(qlog, "_record_dedupe_entry", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(qlog, "qrz_client", FakeQRZ())
+    monkeypatch.setattr(qlog, "wavelog_client", FakeWavelog())
+    monkeypatch.setattr(qlog, "adif_handler", FakeAdif())
+
+    qso = QSORequest(
+        callsign="EG53DMM",
+        frequency=7.074,
+        band="40m",
+        mode="FT8",
+        rst_sent="-12",
+        rst_received="+02",
+        date_time=datetime(2026, 6, 3, 1, 0, tzinfo=timezone.utc).isoformat(),
+    )
+
+    result = asyncio.run(qlog.log_qso(qso))
+
+    assert result["success"] is True
+    assert captured["wavelog"]["name"] == "Example Operator"
+    assert captured["wavelog"]["gridsquare"] == "IN80"
+    assert captured["wavelog"]["country"] == "Spain"
+    assert captured["wavelog"]["cq_zone"] == 14
+    assert captured["wavelog"]["itu_zone"] == 37
+    assert captured["wavelog"]["lotw_member"] is True
 
 
 def test_backend_logging_dedupe_handles_missing_and_corrupt_file(monkeypatch, tmp_path):
@@ -457,14 +550,14 @@ def test_ft4_uses_same_backend_engage_path_with_ft4_timing():
 def test_ft4_manual_tx_uses_mode_specific_cutoff():
     service = service_with_tx("FT4")
     asyncio.run(service.engage_target({"callsign": "EA1AA", "grid": "IN83", "mode": "FT4"}, source="manual_double_click"))
-    service._live_cycle_state = lambda: (7.5, 2.0, 123, True)
+    service._live_cycle_state = lambda: (7.5, 0.1, 123, True)
 
     assert asyncio.run(service.transmit_queued_now_if_possible(force_current_slot=True)) is True
     assert service.tx_queue == []
 
     late = service_with_tx("FT4")
     asyncio.run(late.engage_target({"callsign": "EA1AA", "grid": "IN83", "mode": "FT4"}, source="manual_double_click"))
-    late._live_cycle_state = lambda: (7.5, 4.0, 123, True)
+    late._live_cycle_state = lambda: (7.5, 1.0, 123, True)
 
     assert asyncio.run(late.transmit_queued_now_if_possible(force_current_slot=True)) is False
     assert late.tx_queue == ["EA1AA OM0RX JN88"]
@@ -473,15 +566,15 @@ def test_ft4_manual_tx_uses_mode_specific_cutoff():
 def test_timing_loop_does_not_miss_usable_tx_slot_after_half_second():
     service = service_with_tx("FT8")
 
-    assert service._should_handle_cycle(100, 6.8, True) is True
-    assert service._should_handle_cycle(100, 7.2, True) is False
+    assert service._should_handle_cycle(100, 0.3, True) is True
+    assert service._should_handle_cycle(100, 0.5, True) is False
 
     service.last_tx_slot = 100
     assert service._should_handle_cycle(100, 1.0, True) is False
 
     ft4 = service_with_tx("FT4")
-    assert ft4._should_handle_cycle(101, 3.4, True) is True
-    assert ft4._should_handle_cycle(101, 3.6, True) is False
+    assert ft4._should_handle_cycle(101, 0.1, True) is True
+    assert ft4._should_handle_cycle(101, 0.4, True) is False
 
 
 def test_settings_enabled_without_auto_call_does_not_select_or_queue_candidate():
@@ -506,7 +599,8 @@ def test_settings_enabled_without_auto_call_does_not_select_or_queue_candidate()
 
 def test_decode_uses_previous_slot_window_even_when_loop_wakes_late():
     service = service_with_tx()
-    service._now = lambda: datetime(2026, 5, 27, 12, 0, 10, tzinfo=timezone.utc)
+    service._now = lambda: datetime(2026, 5, 27, 12, 0, 11, 100000, tzinfo=timezone.utc)
+    service._clock_offset_seconds = lambda: -1.1
     calls = []
 
     class Decoder:

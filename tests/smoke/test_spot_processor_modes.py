@@ -18,6 +18,8 @@ def test_infer_mode_keeps_ft4_spots_visible():
 def test_infer_mode_detects_ft2_from_comment_and_frequency():
     assert infer_mode("Trying FT2", "6m", 50320.0) == "FT2"
     assert infer_mode("", "6m", 50320.0) == "FT2"
+    assert infer_mode("", "20m", 14084.0) == "FT2"
+    assert infer_mode("", "2m", 144177.0) == "FT2"
 
 
 def test_infer_mode_does_not_let_ft2_comment_override_explicit_ft8():

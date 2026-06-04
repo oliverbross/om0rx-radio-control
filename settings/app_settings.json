@@ -5,7 +5,7 @@
   "FT8_MODE": "FT8",
   "FT8_MYCALL": "OM0RX",
   "FT8_MYGRID": "JN88",
-  "FT8_NETWORK_SERVER": "192.168.0.199:4992",
+  "FT8_NETWORK_SERVER": "127.0.0.1:5005",
   "FT8_OPERATOR_SETTINGS": {
     "alerts": {
       "new": {

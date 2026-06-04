@@ -83,6 +83,29 @@ const dxSpotsData = {
     selectedSpotExplain: null,
     selectedSpotActivityDetail: null,
     selectedSpotActivityLoading: false,
+    wsjtxSpotPrepare: {
+        state: 'idle',
+        message: '',
+        call: '',
+        detail: '',
+        traceId: '',
+        updatedAt: null,
+    },
+    wsjtxCandidateQueue: {
+        busy: false,
+        queued: 0,
+        skipped: 0,
+        message: '',
+        updatedAt: null,
+    },
+    wsjtxPlanner: {
+        open: false,
+        loading: false,
+        actionKey: '',
+        message: '',
+        status: null,
+        updatedAt: null,
+    },
     spotExplainLoading: false,
     spotExplainError: '',
     visualSpotWindowMinutes: 60,
@@ -203,9 +226,7 @@ const dxSpotsMethods = {
         // Expand panel section when a spot is clicked
         this.loggingPanelSectionCollapsed = false;
         
-        // Backend stores frequency_mhz (float MHz) and frequency (string kHz from cluster)
-        // Use frequency_mhz for calculations (it's the float MHz version)
-        const freqMhz = spot.frequency_mhz || parseFloat(spot.frequency) / 1000;
+        const freqMhz = this.normalizeSpotFrequencyMhz(spot);
         if (!freqMhz || isNaN(freqMhz)) {
             console.error('Invalid spot frequency:', spot);
             this.showStatus('Invalid spot frequency', 'error');
@@ -376,13 +397,472 @@ const dxSpotsMethods = {
         return ['FT8', 'FT4', 'FT2'].includes(String(spot?.mode || '').toUpperCase());
     },
 
+    normalizeSpotFrequencyMhz(spot) {
+        const explicitMhz = Number(spot?.frequency_mhz ?? spot?.freq_mhz);
+        if (Number.isFinite(explicitMhz) && explicitMhz > 0) {
+            if (explicitMhz > 1000000) return explicitMhz / 1000000;
+            if (explicitMhz > 1000) return explicitMhz / 1000;
+            return explicitMhz;
+        }
+
+        const rawFrequency = spot?.frequency ?? spot?.freq ?? spot?.frequency_khz;
+        const value = Number(String(rawFrequency ?? '').replace(/,/g, '').trim());
+        if (!Number.isFinite(value) || value <= 0) return 0;
+        if (value > 1000000) return value / 1000000;
+        if (value > 1000) return value / 1000;
+        return value;
+    },
+
+    buildWsjtxSpotTargetPayload(spot, options = {}) {
+        const freqMhz = this.normalizeSpotFrequencyMhz(spot);
+        if (!freqMhz || isNaN(freqMhz)) {
+            throw new Error('Invalid spot frequency');
+        }
+        return {
+            callsign: spot.callsign,
+            frequency_mhz: freqMhz,
+            band: spot.band || '',
+            mode: String(spot.mode || '').toUpperCase(),
+            comment: spot.comment || '',
+            grid: spot.gridsquare || spot.grid || '',
+            rxDf: spot.rxDf || spot.audio_offset || null,
+            txDf: spot.txDf || null,
+            holdTxFreq: true,
+            enableTx: Boolean(options.enableTx),
+            generateMessages: true,
+            confirmArm: Boolean(options.confirmArm),
+            call_status: spot.call_status || '',
+            dxcc_status: spot.dxcc_status || '',
+            country: spot.country || spot.dxcc_entity || '',
+            dxcc: spot.dxcc || null,
+            continent: spot.continent || spot.spotter_continent || '',
+            cq_zone: spot.cq_zone || spot.cq || '',
+            itu_zone: spot.itu_zone || spot.itu || '',
+            snr: spot.rbl_snr ?? spot.snr ?? null,
+            score: this.getSpotScore(spot),
+            source: spot.spot_source || 'spot',
+            heard: false,
+        };
+    },
+
+    getVisibleWsjtxCandidates(limit = 25) {
+        const seen = new Set();
+        const candidates = [];
+        const spots = this.sortVisibleSpots(this.filteredSpots || []);
+        for (const spot of spots) {
+            if (!this.isDigitalSpotMode(spot)) continue;
+            if (!spot?.callsign) continue;
+            const key = `${String(spot.callsign).toUpperCase()}|${spot.band || ''}|${String(spot.mode || '').toUpperCase()}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            try {
+                candidates.push(this.buildWsjtxSpotTargetPayload(spot));
+            } catch (error) {
+                console.warn('Skipping invalid WSJT candidate spot:', spot, error);
+            }
+            if (candidates.length >= limit) break;
+        }
+        return candidates;
+    },
+
+    async queueVisibleWsjtxCandidates(limit = 25) {
+        if (this.wsjtxCandidateQueue.busy) return;
+        const candidates = this.getVisibleWsjtxCandidates(limit);
+        if (candidates.length === 0) {
+            this.wsjtxCandidateQueue = {
+                busy: false,
+                queued: 0,
+                skipped: 0,
+                message: 'No visible FT8/FT4/FT2 candidates',
+                updatedAt: new Date().toISOString(),
+            };
+            this.showStatus('No visible WSJT digital candidates to queue', 'warning');
+            return;
+        }
+
+        this.wsjtxCandidateQueue = {
+            busy: true,
+            queued: 0,
+            skipped: 0,
+            message: `Queueing ${candidates.length} WSJT candidates`,
+            updatedAt: new Date().toISOString(),
+        };
+
+        try {
+            const response = await fetch('/api/ft8/automation/targets', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    targets: candidates,
+                    limit: candidates.length,
+                    source: 'spot',
+                }),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || result.success === false) {
+                const detail = result.detail || result.error || response.statusText;
+                throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+            }
+            const queued = Number(result.queued_count || 0);
+            const skipped = Number(result.skipped_count || 0);
+            const message = queued > 0
+                ? `Queued ${queued} WSJT candidate${queued === 1 ? '' : 's'}`
+                : 'No eligible WSJT candidates';
+            this.wsjtxCandidateQueue = {
+                busy: false,
+                queued,
+                skipped,
+                message: skipped ? `${message}; ${skipped} skipped` : message,
+                updatedAt: new Date().toISOString(),
+            };
+            if (result.automation) {
+                this.updateWsjtxPlannerFromStatus(result.automation);
+            }
+            this.showStatus(this.wsjtxCandidateQueue.message, queued > 0 ? 'success' : 'warning');
+        } catch (error) {
+            console.error('WSJT candidate queue failed:', error);
+            this.wsjtxCandidateQueue = {
+                busy: false,
+                queued: 0,
+                skipped: 0,
+                message: error.message || 'WSJT candidate queue failed',
+                updatedAt: new Date().toISOString(),
+            };
+            this.showStatus(`WSJT candidate queue failed: ${this.wsjtxCandidateQueue.message}`, 'error');
+        }
+    },
+
+    updateWsjtxPlannerFromStatus(status) {
+        this.wsjtxPlanner.status = status || null;
+        this.wsjtxPlanner.updatedAt = new Date().toISOString();
+    },
+
+    async refreshWsjtxPlannerStatus(options = {}) {
+        if (this.wsjtxPlanner.loading && !options.force) return;
+        this.wsjtxPlanner.loading = true;
+        try {
+            const response = await fetch('/api/ft8/automation/status');
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(result.detail || result.error || response.statusText);
+            }
+            this.updateWsjtxPlannerFromStatus(result);
+            this.wsjtxPlanner.message = '';
+        } catch (error) {
+            console.error('WSJT planner refresh failed:', error);
+            this.wsjtxPlanner.message = error.message || 'Planner refresh failed';
+        } finally {
+            this.wsjtxPlanner.loading = false;
+        }
+    },
+
+    toggleWsjtxPlannerPanel() {
+        this.wsjtxPlanner.open = !this.wsjtxPlanner.open;
+        if (this.wsjtxPlanner.open) {
+            this.refreshWsjtxPlannerStatus({ force: true });
+        }
+    },
+
+    getWsjtxPlannerTargets() {
+        const status = this.wsjtxPlanner.status || {};
+        return (status.targets || []).filter(target => !['done', 'skipped'].includes(target.state));
+    },
+
+    getWsjtxPlannerSummaryText() {
+        const status = this.wsjtxPlanner.status || {};
+        const persistence = status.persistence || {};
+        const db = persistence.enabled
+            ? (persistence.error ? 'DB error' : 'DB PostgreSQL')
+            : 'DB memory';
+        const queueLength = Number(status.queue_length || 0);
+        const eligible = Number(status.eligible_count || 0);
+        return `${queueLength} queued · ${eligible} eligible · ${db}`;
+    },
+
+    getWsjtxPlannerTargetTitle(target) {
+        if (!target) return '';
+        const pieces = [
+            `${target.call || '-'}`,
+            `${target.band || '-'} ${target.mode || '-'}`,
+            `Score ${target.score || 0}`,
+            target.reason || '',
+            target.call_status || '',
+            target.dxcc_status || '',
+        ].filter(Boolean);
+        return pieces.join(' · ');
+    },
+
+    async postWsjtxPlannerAction(endpoint, payload, actionKey) {
+        this.wsjtxPlanner.actionKey = actionKey || '';
+        try {
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload || {}),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || result.success === false) {
+                const detail = result.detail || result.error || result.reason || response.statusText;
+                throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+            }
+            if (result.automation) {
+                this.updateWsjtxPlannerFromStatus(result.automation);
+            } else {
+                await this.refreshWsjtxPlannerStatus({ force: true });
+            }
+            return result;
+        } finally {
+            this.wsjtxPlanner.actionKey = '';
+        }
+    },
+
+    async promoteWsjtxPlannerTarget(target) {
+        if (!target?.key) return;
+        try {
+            const result = await this.postWsjtxPlannerAction(
+                '/api/ft8/automation/promote',
+                { key: target.key },
+                `promote:${target.key}`,
+            );
+            this.wsjtxPlanner.message = `${result.target?.call || target.call} promoted`;
+            this.showStatus(this.wsjtxPlanner.message, 'success');
+        } catch (error) {
+            this.wsjtxPlanner.message = error.message || 'Promote failed';
+            this.showStatus(`WSJT planner promote failed: ${this.wsjtxPlanner.message}`, 'error');
+        }
+    },
+
+    async skipWsjtxPlannerTarget(target) {
+        if (!target?.key) return;
+        try {
+            const result = await this.postWsjtxPlannerAction(
+                '/api/ft8/automation/skip',
+                { key: target.key, reason: 'operator-removed' },
+                `skip:${target.key}`,
+            );
+            this.wsjtxPlanner.message = `${result.target?.call || target.call} removed`;
+            this.showStatus(this.wsjtxPlanner.message, 'success');
+        } catch (error) {
+            this.wsjtxPlanner.message = error.message || 'Remove failed';
+            this.showStatus(`WSJT planner remove failed: ${this.wsjtxPlanner.message}`, 'error');
+        }
+    },
+
+    async prepareWsjtxPlannerTarget(target) {
+        if (!target?.call) return;
+        const payload = {
+            callsign: target.call,
+            frequency_mhz: target.dial_frequency || '',
+            band: target.band || '',
+            mode: target.mode || 'FT8',
+            comment: target.message || target.reason || '',
+            grid: target.grid || '',
+            rxDf: target.audio_offset || null,
+            txDf: null,
+            holdTxFreq: true,
+            enableTx: false,
+            generateMessages: true,
+            confirmArm: false,
+            call_status: target.call_status || '',
+            dxcc_status: target.dxcc_status || '',
+            country: target.country || '',
+            dxcc: target.dxcc || null,
+            continent: target.continent || '',
+            cq_zone: target.cq_zone || '',
+            itu_zone: target.itu_zone || '',
+            snr: target.snr ?? null,
+            score: target.score || 0,
+            source: target.source || 'spot',
+            heard: Boolean(target.heard),
+        };
+        try {
+            this.setWsjtxSpotPrepareState('preparing', `Preparing ${target.call}`, {
+                call: target.call,
+                detail: `${target.band || '-'} ${target.mode || '-'} from planner queue`,
+            });
+            const result = await this.postWsjtxPlannerAction(
+                '/api/ft8/automation/wsjtx/prepare-target',
+                {
+                    target: payload,
+                    cq_only: false,
+                    auto_call_start_only: false,
+                    hold_tx_freq: true,
+                },
+                `prepare:${target.key}`,
+            );
+            if (['blocked', 'ignored', 'idle'].includes(result.status)) {
+                const detail = result.reason || (result.policy?.reasons || []).join('; ') || 'target not eligible';
+                throw new Error(detail);
+            }
+            const traceId = this.extractWsjtxTraceId(result);
+            this.setWsjtxSpotPrepareState('prepared', `${target.call} prepared`, {
+                call: target.call,
+                detail: 'WSJT target ready; TX remains disabled until explicitly armed',
+                traceId,
+            });
+            this.wsjtxPlanner.message = `${target.call} prepared without TX`;
+            this.showStatus(this.wsjtxPlanner.message, 'success');
+        } catch (error) {
+            this.setWsjtxSpotPrepareState('error', error.message, { call: target.call });
+            this.wsjtxPlanner.message = error.message || 'Prepare failed';
+            this.showStatus(`WSJT planner prepare failed: ${this.wsjtxPlanner.message}`, 'error');
+        }
+    },
+
+    async startWsjtxTargetFromSpot(spot, options = {}) {
+        if (!this.isDigitalSpotMode(spot)) {
+            this.showStatus('Selected spot is not an FT8/FT4/FT2 target', 'warning');
+            this.setWsjtxSpotPrepareState('blocked', 'Not a WSJT digital mode', { call: spot?.callsign || '' });
+            return;
+        }
+
+        const arm = Boolean(options.arm);
+        if (arm) {
+            const confirmed = window.confirm(`Arm WSJT to call ${spot.callsign}? This can enable transmit in the patched WSJT engine.`);
+            if (!confirmed) {
+                return;
+            }
+        }
+
+        let payload;
+        let freqMhz;
+        try {
+            payload = this.buildWsjtxSpotTargetPayload(spot, { enableTx: arm, confirmArm: arm });
+            freqMhz = payload.frequency_mhz;
+        } catch (error) {
+            this.showStatus(error.message, 'error');
+            this.setWsjtxSpotPrepareState('error', error.message, { call: spot?.callsign || '' });
+            return;
+        }
+        const endpoint = arm ? '/api/wsjtx/arm-target-from-spot' : '/api/ft8/automation/wsjtx/prepare-target';
+        const requestBody = arm ? payload : {
+            target: payload,
+            cq_only: false,
+            auto_call_start_only: false,
+            hold_tx_freq: true,
+        };
+
+        try {
+            this.setWsjtxSpotPrepareState(arm ? 'arming' : 'preparing', `${arm ? 'Arming' : 'Preparing'} ${payload.callsign}`, {
+                call: payload.callsign,
+                detail: `${payload.band || '-'} ${payload.mode || '-'} ${this.formatFrequencyForDisplay(freqMhz)} MHz`,
+            });
+            this.showStatus(`${arm ? 'Arming' : 'Preparing'} WSJT target ${payload.callsign} on ${this.formatFrequencyForDisplay(freqMhz)} MHz`, 'info');
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || result.success === false) {
+                const detail = result.detail || result.error || result.reason || response.statusText;
+                throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+            }
+            if (['blocked', 'ignored', 'idle'].includes(result.status)) {
+                const detail = result.reason || (result.policy?.reasons || []).join('; ') || 'target not eligible';
+                this.setWsjtxSpotPrepareState(result.status === 'ignored' ? 'blocked' : result.status, detail, {
+                    call: payload.callsign,
+                    detail,
+                    traceId: this.extractWsjtxTraceId(result),
+                });
+                throw new Error(detail);
+            }
+            const preparedCall = result.target?.call || result.target?.callsign || payload.callsign;
+            const traceId = this.extractWsjtxTraceId(result);
+            const policyReason = (result.policy?.reasons || []).join('; ');
+            const safePrepareDetail = policyReason
+                ? `${policyReason}; TX remains disabled until explicitly armed`
+                : 'WSJT target ready; TX remains disabled until explicitly armed';
+            this.setWsjtxSpotPrepareState(arm ? 'armed' : 'prepared', `${preparedCall} ${arm ? 'armed' : 'prepared'}`, {
+                call: preparedCall,
+                detail: arm ? (policyReason || 'WSJT target armed by explicit operator action') : safePrepareDetail,
+                traceId,
+            });
+            this.showStatus(`WSJT target ${arm ? 'armed' : 'prepared'}: ${preparedCall}`, 'success');
+        } catch (error) {
+            console.error('WSJT target command failed:', error);
+            if (!['blocked', 'idle'].includes(this.wsjtxSpotPrepare?.state)) {
+                this.setWsjtxSpotPrepareState('error', error.message, { call: payload.callsign });
+            }
+            this.showStatus(`WSJT target failed: ${error.message}`, 'error');
+        }
+    },
+
+    setWsjtxSpotPrepareState(state, message, options = {}) {
+        this.wsjtxSpotPrepare = {
+            state: state || 'idle',
+            message: message || '',
+            call: options.call || this.wsjtxSpotPrepare?.call || '',
+            detail: options.detail || '',
+            traceId: options.traceId || '',
+            updatedAt: new Date().toISOString(),
+        };
+    },
+
+    clearWsjtxSpotPrepareState() {
+        this.wsjtxSpotPrepare = {
+            state: 'idle',
+            message: '',
+            call: '',
+            detail: '',
+            traceId: '',
+            updatedAt: null,
+        };
+    },
+
+    extractWsjtxTraceId(result) {
+        const candidates = [
+            result?.traceId,
+            result?.trace_id,
+            result?.bridge?.traceId,
+            result?.bridge?.trace_id,
+            result?.target?.traceId,
+            result?.target?.trace_id,
+            result?.wsjtx_target?.traceId,
+            result?.wsjtx_target?.trace_id,
+        ];
+        const traceId = candidates.find(value => typeof value === 'string' && value.trim());
+        return traceId ? traceId.trim() : '';
+    },
+
+    openWsjtxTraceInConfig(traceId) {
+        const cleanTraceId = String(traceId || '').trim();
+        if (!cleanTraceId) return;
+        this.wsjtxTimelineFilter = cleanTraceId;
+        if (typeof this.showConfigDialog === 'function') {
+            this.showConfigDialog('wsjtx');
+            return;
+        }
+        this.showStatus(`Open Config > WSJT-X and filter trace ${cleanTraceId}`, 'info');
+    },
+
+    getWsjtxSpotPrepareClass() {
+        const state = this.wsjtxSpotPrepare?.state || 'idle';
+        return `wsjtx-spot-status wsjtx-spot-status-${state}`;
+    },
+
+    getWsjtxSpotPrepareLabel() {
+        const state = this.wsjtxSpotPrepare?.state || 'idle';
+        const labels = {
+            preparing: 'Preparing',
+            prepared: 'Prepared',
+            arming: 'Arming',
+            armed: 'Armed',
+            blocked: 'Blocked',
+            ignored: 'Ignored',
+            idle: 'Idle',
+            error: 'Error',
+        };
+        return labels[state] || state;
+    },
+
     broadcastDigitalSpotSelection(spot, freqMhz) {
         if (!this.isDigitalSpotMode(spot)) {
             return;
         }
         const payload = {
             callsign: String(spot.callsign || '').toUpperCase(),
-            frequency_mhz: Number(freqMhz || spot.frequency_mhz || (parseFloat(spot.frequency) / 1000) || 0),
+            frequency_mhz: Number(freqMhz || this.normalizeSpotFrequencyMhz(spot) || 0),
             band: spot.band || '',
             mode: String(spot.mode || '').toUpperCase(),
             comment: spot.comment || '',
@@ -1998,7 +2478,7 @@ const dxSpotsMethods = {
             callsign: spot.callsign || '',
             band: spot.band || '',
             mode: spot.rbl_mode_group || spot.mode || '',
-            frequency: spot.frequency_mhz || parseFloat(spot.frequency || 0) / 1000,
+            frequency: this.normalizeSpotFrequencyMhz(spot),
             country: spot.country || '',
             score: this.getSpotScore(spot),
             snr: this.getRblSnr(spot),
@@ -2219,7 +2699,7 @@ const dxSpotsMethods = {
         if (source === 'rbl') {
             return `rbl:${callsign}:${band}:${mode}`;
         }
-        const freqMhz = spot.frequency_mhz || parseFloat(spot.frequency || 0) / 1000;
+        const freqMhz = this.normalizeSpotFrequencyMhz(spot);
         return `cluster:${callsign}:${Number(freqMhz || 0).toFixed(3)}`;
     },
 
@@ -2369,6 +2849,7 @@ const dxSpotsMethods = {
         this.selectedSpot = spot;
         this.selectedSpotExplain = null;
         this.selectedSpotActivityDetail = null;
+        this.clearWsjtxSpotPrepareState();
         this.spotExplainError = '';
         this.spotExplainLoading = true;
         this.selectedSpotActivityLoading = true;

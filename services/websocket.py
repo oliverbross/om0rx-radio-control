@@ -122,6 +122,7 @@ def register_websocket_endpoint(app, flex=None, dx_spots_cache=None, ws_clients=
                     "drive": flex.current_rfpower or levels.get("rfpower", 31),
                     "tune_power": flex.current_tunepower or levels.get("tunepower", 18),
                     "mic_level": flex.current_miclevel or levels.get("miclevel", 32),
+                    "mox": bool(flex.current_mox if flex.current_mox is not None else levels.get("mox", False)),
                     "monitor": levels.get("mon", 0),
                     "vox_enabled": flex.current_vox_enable or False,
                     "agc_mode": levels.get("agc_mode", "med"),

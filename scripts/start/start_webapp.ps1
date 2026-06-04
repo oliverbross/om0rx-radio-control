@@ -61,7 +61,7 @@ function Get-ProtectedProcessIds {
 # ============= KILL STALE RUNTIME PROCESSES =============
 Write-Host "🧹 Cleaning up ports..." -ForegroundColor Yellow
 $protectedProcessIds = @(Get-ProtectedProcessIds)
-$portsToClean = @(2237, 8091, 12166, $BackendPort, 8080, 8081) | Select-Object -Unique
+$portsToClean = @(2237, 8091, 8092, 12166, $BackendPort, 8080, 8081) | Select-Object -Unique
 foreach ($port in $portsToClean) {
     $processes = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
     if ($processes) {
@@ -181,10 +181,11 @@ $env:TCP_PORT = "12166"
 $env:WSJTX_UDP_PORT = "2237"
 $env:WSJTX_UDP_MULTICAST = "224.0.0.1"
 $env:WS_PORT = "8091"
+$env:WSJTX_COMMAND_PORT = "8092"
 $env:WSJTX_ENABLED = "true"
 
 $job = Start-Job -ScriptBlock {
-    param($script, $root, $tcp_host, $tcp_port, $wsjtx_udp_port, $wsjtx_multicast, $ws_port, $wsjtx_enabled)
+    param($script, $root, $tcp_host, $tcp_port, $wsjtx_udp_port, $wsjtx_multicast, $ws_port, $wsjtx_command_port, $wsjtx_enabled)
     
     # Set environment variables in the job context
     $env:TCP_HOST = $tcp_host
@@ -192,11 +193,12 @@ $job = Start-Job -ScriptBlock {
     $env:WSJTX_UDP_PORT = $wsjtx_udp_port
     $env:WSJTX_UDP_MULTICAST = $wsjtx_multicast
     $env:WS_PORT = $ws_port
+    $env:WSJTX_COMMAND_PORT = $wsjtx_command_port
     $env:WSJTX_ENABLED = $wsjtx_enabled
     
     Set-Location $root
     & node $script
-} -ArgumentList $bridgeScript, $ProjectRoot, $env:TCP_HOST, $env:TCP_PORT, $env:WSJTX_UDP_PORT, $env:WSJTX_UDP_MULTICAST, $env:WS_PORT, $env:WSJTX_ENABLED -Name "Bridge-Server"
+} -ArgumentList $bridgeScript, $ProjectRoot, $env:TCP_HOST, $env:TCP_PORT, $env:WSJTX_UDP_PORT, $env:WSJTX_UDP_MULTICAST, $env:WS_PORT, $env:WSJTX_COMMAND_PORT, $env:WSJTX_ENABLED -Name "Bridge-Server"
 
 # Give it a moment to start
 Start-Sleep -Seconds 2
@@ -207,6 +209,7 @@ if ($jobStatus -and $jobStatus.State -eq "Running") {
     Write-Host "✅ Multi-Protocol Bridge Server started (Job ID: $($jobStatus.Id))" -ForegroundColor Green
     Write-Host "   SDC WebSocket: ws://localhost:8091" -ForegroundColor Cyan
     Write-Host "   WSJT-X UDP: listening on port 2237" -ForegroundColor Cyan
+    Write-Host "   WSJT-X Command API: http://127.0.0.1:8092/wsjtx/command" -ForegroundColor Cyan
 } elseif ($jobStatus -and $jobStatus.State -eq "Failed") {
     Write-Host "⚠️  Bridge Server failed to start - check configuration" -ForegroundColor Yellow
     Write-Host "   (This is optional - the app will still work without it)" -ForegroundColor Yellow

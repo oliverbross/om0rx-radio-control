@@ -10,7 +10,7 @@
                 <div class="modal-tabs">
                     <div v-for="tab in configTabs" :key="tab.id"
                           :class="['modal-tab', { active: activeConfigTab === tab.id }]"
-                          @click="activeConfigTab = tab.id">
+                          @click="selectConfigTab(tab.id)">
                         {{ tab.name }}
                     </div>
                 </div>
@@ -270,6 +270,182 @@
 
                         <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
 
+                        <!-- Engine Diagnostics -->
+                        <div style="margin-bottom: 12px; padding: 10px; border: 1px solid #334155; border-radius: 6px; background: rgba(15, 23, 42, 0.82);">
+                            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
+                                <label style="font-size: 11px; color: #4a9eff; font-weight: 600;">WSJT Engine Health</label>
+                                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                                    <span :style="{ fontSize: '10px', color: getWsjtxHealthColor(), fontWeight: 700 }">
+                                        {{ wsjtxHealth ? ((wsjtxHealth.value || wsjtxHealth.status || 'unknown')) : 'not checked' }}
+                                    </span>
+                                    <button type="button" @click="loadWsjtxHealth" :disabled="wsjtxHealthLoading" style="padding: 4px 8px; font-size: 10px;">Refresh WSJT</button>
+                                    <button type="button" @click="testWsjtxLaunchPreflight" :disabled="wsjtxPreflightLoading || wsjtxHealthLoading" style="padding: 4px 8px; font-size: 10px; border-color: #60a5fa;">
+                                        {{ wsjtxPreflightLoading ? 'Testing...' : 'Self Test' }}
+                                    </button>
+                                    <button type="button" @click="launchPatchedWsjtxEngine" :disabled="wsjtxLaunchLoading || wsjtxPreflightLoading || wsjtxHealthLoading" title="Runs launch self-test first, then starts only if critical checks pass" style="padding: 4px 8px; font-size: 10px; border-color: #22c55e;">
+                                        {{ wsjtxLaunchLoading ? 'Starting...' : 'Preflight + Start' }}
+                                    </button>
+                                    <button type="button" @click="haltWsjtxTx" :disabled="wsjtxHealthLoading" style="padding: 4px 8px; font-size: 10px; border-color: #ef4444;">Halt TX</button>
+                                    <button type="button" @click="testWsjtxPrepareCommand" :disabled="wsjtxHealthLoading" style="padding: 4px 8px; font-size: 10px;">Test Prepare</button>
+                                </div>
+                            </div>
+                            <div v-if="wsjtxHealth" class="wsjtx-health-summary">
+                                <div>
+                                    <span :class="getWsjtxValidationClass()">{{ formatWsjtxValidationSummary() }}</span>
+                                    <small v-if="wsjtxHealth.detail">{{ wsjtxHealth.detail }}</small>
+                                </div>
+                                <div class="wsjtx-health-metrics">
+                                    <span><strong>Client:</strong> {{ formatWsjtxClient() }}</span>
+                                    <span><strong>Last decode:</strong> {{ formatWsjtxLastDecode() }}</span>
+                                    <span><strong>Decodes:</strong> {{ wsjtxHealth.bridge && wsjtxHealth.bridge.stats ? (wsjtxHealth.bridge.stats.decodes || 0) : 0 }}</span>
+                                    <span><strong>Command URL:</strong> {{ wsjtxHealth.bridge && wsjtxHealth.bridge.command_url ? wsjtxHealth.bridge.command_url : configData.WSJTX_BRIDGE_COMMAND_URL }}</span>
+                                </div>
+                            </div>
+                            <div class="wsjtx-automation-panel">
+                                <div class="wsjtx-preflight-header">
+                                    <span class="wsjtx-health-state wsjtx-health-state-warn">WSJT automation controls</span>
+                                    <small>WSJT-Z style CQ and reply command checks</small>
+                                </div>
+                                <div class="wsjtx-automation-grid">
+                                    <label>
+                                        <span>Auto CQ text</span>
+                                        <input type="text" v-model="configData.WSJTX_AUTO_CQ_TEXT" placeholder="CQ OM0RX JN88">
+                                    </label>
+                                    <label class="wsjtx-automation-check">
+                                        <input type="checkbox" v-model="configData.WSJTX_AUTO_CQ_SEND">
+                                        <span>Send CQ immediately</span>
+                                    </label>
+                                    <button type="button" @click="sendWsjtxAutoCqTest" :disabled="wsjtxHealthLoading">Queue Auto CQ</button>
+                                    <label>
+                                        <span>Auto Answer test CQ</span>
+                                        <input type="text" v-model="configData.WSJTX_AUTO_ANSWER_TEST_MESSAGE" placeholder="CQ EA1TEST IN80">
+                                    </label>
+                                    <label>
+                                        <span>Call</span>
+                                        <input type="text" v-model="configData.WSJTX_AUTO_ANSWER_TEST_CALL" placeholder="EA1TEST">
+                                    </label>
+                                    <label>
+                                        <span>Grid</span>
+                                        <input type="text" v-model="configData.WSJTX_AUTO_ANSWER_TEST_GRID" placeholder="IN80">
+                                    </label>
+                                    <label>
+                                        <span>RX DF</span>
+                                        <input type="number" min="200" max="3000" step="1" v-model.number="configData.WSJTX_AUTO_ANSWER_TEST_DF">
+                                    </label>
+                                    <button type="button" @click="sendWsjtxAutoAnswerTest" :disabled="wsjtxHealthLoading">Process Auto Answer</button>
+                                </div>
+                            </div>
+                            <div v-if="wsjtxHealth" class="wsjtx-health-checks">
+                                <div v-for="check in getWsjtxReadinessChecks()" :key="check.id" :class="getWsjtxCheckClass(check)">
+                                    <div class="wsjtx-health-check-header">
+                                        <span>{{ formatWsjtxCheckStatus(check) }}</span>
+                                        <strong>{{ check.label }}</strong>
+                                    </div>
+                                    <div class="wsjtx-health-check-detail">{{ check.detail }}</div>
+                                    <small v-if="check.value">{{ check.value }}</small>
+                                </div>
+                            </div>
+                            <div v-if="getWsjtxCommandErrorSummary()" class="wsjtx-command-error-panel">
+                                <strong>{{ getWsjtxCommandErrorSummary().count }} bridge command error{{ getWsjtxCommandErrorSummary().count === 1 ? '' : 's' }}</strong>
+                                <span>{{ getWsjtxCommandErrorSummary().title }}</span>
+                                <small>{{ getWsjtxCommandErrorSummary().detail }}</small>
+                                <button v-if="getWsjtxCommandErrorSummary().traceId"
+                                        type="button"
+                                        @click="focusWsjtxCommandErrorTrace">
+                                    Filter trace
+                                </button>
+                            </div>
+                            <div v-if="hasWsjtxBridgeTimeline()" class="wsjtx-timeline-panel">
+                                <div class="wsjtx-preflight-header">
+                                    <span class="wsjtx-health-state wsjtx-health-state-ok">Bridge timeline</span>
+                                    <small>recent WSJT commands and events</small>
+                                </div>
+                                <div class="wsjtx-timeline-toolbar">
+                                    <input type="search"
+                                           v-model.trim="wsjtxTimelineFilter"
+                                           placeholder="Filter by trace, call, command, mode">
+                                    <button type="button"
+                                            v-if="wsjtxTimelineFilter"
+                                            @click="clearWsjtxTimelineFilter">Clear</button>
+                                </div>
+                                <div v-if="getWsjtxBridgeTimeline().length" class="wsjtx-timeline-list">
+                                    <div v-for="event in getWsjtxBridgeTimeline()" :key="`${event.ts}-${event.command || event.type}`" :class="getWsjtxTimelineClass(event)">
+                                        <span>{{ event.direction === 'out' ? 'OUT' : 'IN' }}</span>
+                                        <strong>{{ formatWsjtxTimelineTitle(event) }}</strong>
+                                        <small>{{ event.age }} · {{ formatWsjtxTimelineDetail(event) }}</small>
+                                        <button v-if="getWsjtxTimelineTraceId(event)"
+                                                type="button"
+                                                class="wsjtx-timeline-copy"
+                                                @click="copyWsjtxTraceToClipboard(getWsjtxTimelineTraceId(event))"
+                                                title="Copy trace id">
+                                            Copy
+                                        </button>
+                                    </div>
+                                </div>
+                                <div v-else class="wsjtx-timeline-empty">No bridge events match this filter.</div>
+                            </div>
+                            <div v-if="wsjtxPreflight" class="wsjtx-preflight-panel">
+                                <div class="wsjtx-preflight-header">
+                                    <span :class="getWsjtxPreflightClass()">{{ formatWsjtxPreflightSummary() }}</span>
+                                    <small>{{ wsjtxPreflight.rig_name }} / {{ wsjtxPreflight.config_name }}</small>
+                                </div>
+                                <div class="wsjtx-health-checks">
+                                    <div v-for="check in getWsjtxPreflightChecks()" :key="`preflight-${check.id}`" :class="getWsjtxCheckClass(check)">
+                                        <div class="wsjtx-health-check-header">
+                                            <span>{{ formatWsjtxCheckStatus(check) }}</span>
+                                            <strong>{{ check.label }}</strong>
+                                        </div>
+                                        <div class="wsjtx-health-check-detail">{{ check.detail }}</div>
+                                        <small v-if="check.value">{{ check.value }}</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div v-if="wsjtxLaunchResult" class="wsjtx-launch-result-panel">
+                                <div class="wsjtx-preflight-header">
+                                    <span :class="getWsjtxLaunchResultClass()">{{ formatWsjtxLaunchSummary() }}</span>
+                                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                                        <small>{{ wsjtxLaunchResult.rig_name }} / {{ wsjtxLaunchResult.config_name }}</small>
+                                        <button type="button" @click="loadWsjtxLaunchLogs" :disabled="wsjtxLaunchLogsLoading" style="padding: 3px 8px; font-size: 10px;">
+                                            {{ wsjtxLaunchLogsLoading ? 'Reading logs...' : 'View logs' }}
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="wsjtx-launch-result-grid">
+                                    <div>
+                                        <strong>PID</strong>
+                                        <span>{{ formatWsjtxLaunchPids() }}</span>
+                                    </div>
+                                    <div>
+                                        <strong>Mode</strong>
+                                        <span>{{ wsjtxLaunchResult.already_running ? 'existing process' : (wsjtxLaunchResult.dry_run ? 'dry run' : 'launched') }}</span>
+                                    </div>
+                                    <div class="wide">
+                                        <strong>Command</strong>
+                                        <span>{{ formatWsjtxLaunchCommand() }}</span>
+                                    </div>
+                                    <div v-for="row in getWsjtxLaunchLogRows()" :key="row.label" class="wide">
+                                        <strong>{{ row.label }} log</strong>
+                                        <span>{{ row.path }}</span>
+                                    </div>
+                                </div>
+                                <div v-if="wsjtxLaunchLogs" class="wsjtx-launch-log-viewer">
+                                    <div v-for="section in getWsjtxLaunchLogSections()" :key="section.key" class="wsjtx-launch-log-section">
+                                        <div class="wsjtx-launch-log-header">
+                                            <strong>{{ section.label }}</strong>
+                                            <span>{{ section.exists ? (section.size + ' bytes') : 'not created yet' }}</span>
+                                        </div>
+                                        <small>{{ section.path }}</small>
+                                        <pre>{{ section.text }}</pre>
+                                    </div>
+                                </div>
+                            </div>
+                            <div v-if="wsjtxHealthMessage" class="wsjtx-health-message" :style="{ marginTop: '6px', fontSize: '10px', color: getWsjtxHealthMessageColor() }">
+                                {{ wsjtxHealthMessage.text }}
+                            </div>
+                        </div>
+
+                        <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
+
                         <!-- UDP Configuration -->
                         <div style="margin-bottom: 12px;">
                             <label style="font-size: 11px; color: #4a9eff; font-weight: 600; display: block; margin-bottom: 8px;">🔌 UDP Listener Configuration</label>
@@ -290,6 +466,12 @@
                                 <label>WebSocket Port (Bridge)</label>
                                 <input type="number" v-model.number="configData.WSJTX_WS_PORT" placeholder="8091" min="1024" max="65535">
                                 <span style="font-size: 9px; color: #888; display: block; margin-top: 2px;">Internal WebSocket port for bridge server communication</span>
+                            </div>
+
+                            <div class="config-field">
+                                <label>Bridge Command URL</label>
+                                <input type="text" v-model="configData.WSJTX_BRIDGE_COMMAND_URL" placeholder="http://127.0.0.1:8092/wsjtx/command">
+                                <span style="font-size: 9px; color: #888; display: block; margin-top: 2px;">Local bridge API used for WSJT-X control commands</span>
                             </div>
                         </div>
 

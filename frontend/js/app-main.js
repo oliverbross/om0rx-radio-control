@@ -2304,6 +2304,11 @@ function mountVueApp() {
                 return;
             }
 
+            if (service.action === 'wsjtx-config') {
+                this.showConfigDialog('wsjtx');
+                return;
+            }
+
             if (service.action === 'rotor-refresh') {
                 await this.loadRotorStatus();
                 await this.loadServiceHealth();

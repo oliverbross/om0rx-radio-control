@@ -206,6 +206,23 @@
                     </div>
                 </div>
                 <!-- @include templates/partials/spots-rbl-dropdown.html -->
+                <button @click="queueVisibleWsjtxCandidates(25)"
+                        :disabled="wsjtxCandidateQueue.busy"
+                        class="wsjtx-queue-btn"
+                        title="Queue the best visible FT8/FT4/FT2 cluster and RBL candidates in the backend planner only. This does not arm transmit.">
+                    {{ wsjtxCandidateQueue.busy ? 'Queueing...' : 'Queue WSJT' }}
+                </button>
+                <button @click="toggleWsjtxPlannerPanel"
+                        class="wsjtx-planner-toggle-btn"
+                        :class="{ active: wsjtxPlanner.open }"
+                        title="Show the backend WSJT planner queue">
+                    Planner
+                </button>
+                <span v-if="wsjtxCandidateQueue.message"
+                      class="wsjtx-queue-status"
+                      :title="wsjtxCandidateQueue.message">
+                    {{ wsjtxCandidateQueue.message }}
+                </span>
                 <a href="spots-database.html" target="_blank" class="spots-db-link">📊 Spots DB</a>
                 <button @click="clearAllFilters" class="clear-all-btn">🗑️ Clear All</button>
                 </div>
@@ -227,6 +244,60 @@
             </div>
 
             <!-- @include templates/partials/spots-source-monitor.html -->
+
+            <div v-if="wsjtxPlanner.open" class="wsjtx-planner-panel">
+                <div class="wsjtx-planner-header">
+                    <div>
+                        <strong>WSJT Planner</strong>
+                        <span>{{ getWsjtxPlannerSummaryText() }}</span>
+                    </div>
+                    <div class="wsjtx-planner-actions">
+                        <span v-if="wsjtxPlanner.message">{{ wsjtxPlanner.message }}</span>
+                        <button @click="refreshWsjtxPlannerStatus({ force: true })" :disabled="wsjtxPlanner.loading">
+                            {{ wsjtxPlanner.loading ? 'Refreshing...' : 'Refresh' }}
+                        </button>
+                        <button @click="wsjtxPlanner.open = false">Hide</button>
+                    </div>
+                </div>
+                <div v-if="getWsjtxPlannerTargets().length === 0" class="wsjtx-planner-empty">
+                    No queued WSJT targets. Use Queue WSJT from the current filtered spots.
+                </div>
+                <div v-else class="wsjtx-planner-list">
+                    <div v-for="target in getWsjtxPlannerTargets().slice(0, 8)"
+                         :key="target.key"
+                         class="wsjtx-planner-row"
+                         :title="getWsjtxPlannerTargetTitle(target)">
+                        <div class="wsjtx-planner-main">
+                            <strong>{{ target.call }}</strong>
+                            <span>{{ target.band || '-' }} {{ target.mode || '-' }}</span>
+                            <small>{{ target.reason || target.state }}</small>
+                        </div>
+                        <div class="wsjtx-planner-meta">
+                            <span>Score {{ target.score || 0 }}</span>
+                            <span>{{ target.call_status || 'Unknown' }}</span>
+                            <span>{{ target.dxcc_status || 'Unknown' }}</span>
+                            <span>{{ target.state }}</span>
+                        </div>
+                        <div class="wsjtx-planner-row-actions">
+                            <button @click="prepareWsjtxPlannerTarget(target)"
+                                    :disabled="wsjtxPlanner.actionKey === 'prepare:' + target.key"
+                                    title="Prepare this target in WSJT-X with TX disabled">
+                                Prepare
+                            </button>
+                            <button @click="promoteWsjtxPlannerTarget(target)"
+                                    :disabled="wsjtxPlanner.actionKey === 'promote:' + target.key"
+                                    title="Move this target to the top of the planner">
+                                Promote
+                            </button>
+                            <button @click="skipWsjtxPlannerTarget(target)"
+                                    :disabled="wsjtxPlanner.actionKey === 'skip:' + target.key"
+                                    title="Remove this target from the active planner queue">
+                                Remove
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
             <div v-if="selectedSpot" style="display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr); gap: 10px; padding: 10px 14px; background: #20242a; border-bottom: 1px solid #3f4652;">
                 <div>
@@ -256,7 +327,38 @@
                         <div>Band: <strong>{{ selectedSpotExplain.inputs.band || '-' }}</strong></div>
                         <div>Mode: <strong>{{ selectedSpotExplain.inputs.mode || '-' }}</strong></div>
                     </div>
-                    <button @click.stop="tuneToSpot(selectedSpot)" style="margin-top: 8px;">🎯 Tune</button>
+                    <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;">
+                        <button @click.stop="tuneToSpot(selectedSpot)">Tune</button>
+                        <button v-if="isDigitalSpotMode(selectedSpot)"
+                                @click.stop="startWsjtxTargetFromSpot(selectedSpot)"
+                                title="Send this FT8/FT4/FT2 spot to the patched WSJT engine">
+                            Prepare WSJT
+                        </button>
+                        <button v-if="isDigitalSpotMode(selectedSpot)"
+                                @click.stop="startWsjtxTargetFromSpot(selectedSpot, { arm: true })"
+                                title="Prepare and arm this target in the patched WSJT engine">
+                            Arm WSJT
+                        </button>
+                    </div>
+                    <div v-if="wsjtxSpotPrepare.message" :class="getWsjtxSpotPrepareClass()" aria-live="polite">
+                        <strong>WSJT {{ getWsjtxSpotPrepareLabel() }}</strong>
+                        <span>{{ wsjtxSpotPrepare.message }}</span>
+                        <small v-if="wsjtxSpotPrepare.detail">{{ wsjtxSpotPrepare.detail }}</small>
+                        <button v-if="wsjtxSpotPrepare.traceId"
+                                type="button"
+                                class="wsjtx-spot-trace-btn"
+                                @click.stop="openWsjtxTraceInConfig(wsjtxSpotPrepare.traceId)"
+                                title="Open WSJT bridge timeline filtered to this trace">
+                            Trace {{ wsjtxSpotPrepare.traceId }}
+                        </button>
+                        <button v-if="wsjtxSpotPrepare.traceId"
+                                type="button"
+                                class="wsjtx-spot-trace-btn wsjtx-spot-trace-copy-btn"
+                                @click.stop="copyWsjtxTraceToClipboard(wsjtxSpotPrepare.traceId)"
+                                title="Copy this WSJT bridge trace id">
+                            Copy
+                        </button>
+                    </div>
                 </div>
             </div>
 

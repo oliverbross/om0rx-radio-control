@@ -51,8 +51,10 @@ class FT8DecodedMessage:
     mode: str = "FT8"
 
     def to_dict(self) -> dict:
+        slot_start = self.timestamp.isoformat()
         return {
-            "timestamp": self.timestamp.isoformat(),
+            "timestamp": slot_start,
+            "slot_start_utc": slot_start,
             "message": self.message,
             "snr": self.snr,
             "dt": self.dt,

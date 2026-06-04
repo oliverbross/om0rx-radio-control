@@ -46,12 +46,13 @@ def test_dxcc_worked_status_comes_from_local_qso_log():
                 band VARCHAR,
                 mode VARCHAR,
                 submode VARCHAR,
-                lotw_qsl_rcvd VARCHAR
+                lotw_qsl_rcvd VARCHAR,
+                gridsquare VARCHAR
             )
             """
         )
         conn.execute(
-            "INSERT INTO qso_records VALUES (54, '17m', 'FT8', NULL, 'N')"
+            "INSERT INTO qso_records VALUES (54, '17m', 'FT8', NULL, 'N', 'KO85')"
         )
         conn.close()
 
@@ -98,16 +99,42 @@ def test_classifier_uses_qso_log_for_dxcc_worked_status():
                 band VARCHAR,
                 mode VARCHAR,
                 submode VARCHAR,
-                lotw_qsl_rcvd VARCHAR
+                lotw_qsl_rcvd VARCHAR,
+                gridsquare VARCHAR
             )
             """
         )
         conn.execute(
-            "INSERT INTO qso_records VALUES (54, '17m', 'FT8', NULL, 'N')"
+            "INSERT INTO qso_records VALUES (54, '17m', 'FT8', NULL, 'N', 'KO85')"
         )
         conn.close()
 
         assert asyncio.run(_classifier_dxcc_status(db_path)) == (True, False)
+
+
+def test_grid_worked_status_comes_from_local_qso_log():
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "qso_log.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE qso_records (
+                dxcc INTEGER,
+                band VARCHAR,
+                mode VARCHAR,
+                submode VARCHAR,
+                lotw_qsl_rcvd VARCHAR,
+                gridsquare VARCHAR
+            )
+            """
+        )
+        conn.execute("INSERT INTO qso_records VALUES (NULL, '20m', 'FT8', NULL, 'N', 'JN88TQ')")
+        conn.close()
+
+        store = DuckDBQSOStatusStore(db_path)
+        assert store.grid_flags("JN88AA", "20m", "FT8") == (False, False, False)
+        assert store.grid_flags("JN88AA", "15m", "FT8") == (False, True, False)
+        assert store.grid_flags("JO70", "20m", "FT8") == (True, True, True)
 
 
 class _UnavailableStatusStore:

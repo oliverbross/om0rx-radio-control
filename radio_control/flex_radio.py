@@ -1,6 +1,7 @@
 # flex_radio.py - FlexRadio SmartSDR TCP API client classes
 
 import logging
+import re
 import socket
 import time
 
@@ -81,6 +82,7 @@ class FlexCtl:
         self.current_miclevel = None
         self.current_vox_enable = None
         self.current_mox = None  # MOX state
+        self.current_interlock_state = None
         self.current_break_in = None
         # State change tracking (for UI updates)
         self.last_state_changed = {}
@@ -133,58 +135,84 @@ class FlexCtl:
             self.sock = None
             return False
 
+    def _record_basic_status_from_line(self, line: str) -> None:
+        """Update cached state from async status lines that arrive while sending commands."""
+        if "|slice" in line and f"slice {self.slice_id} " in line:
+            m_mode = re.search(r"\bmode=([A-Z]+)", line)
+            if m_mode:
+                self.current_mode = m_mode.group(1)
+
+            m_freq = re.search(r"\bRF_frequency=([\d.]+)", line)
+            if m_freq:
+                self.current_freq = float(m_freq.group(1))
+
+            m_flo = re.search(r"\bfilter_lo=(-?\d+)", line)
+            if m_flo:
+                self.current_filter_lo = int(m_flo.group(1))
+
+            m_fhi = re.search(r"\bfilter_hi=(-?\d+)", line)
+            if m_fhi:
+                self.current_filter_hi = int(m_fhi.group(1))
+
+        if "|interlock " in line:
+            m_state = re.search(r"\bstate=([A-Z_]+)", line)
+            if m_state:
+                self.current_interlock_state = m_state.group(1)
+                if self.current_interlock_state == "TRANSMITTING":
+                    self.current_mox = True
+                elif self.current_interlock_state in {"READY", "RECEIVE", "NOT_READY", "TIMEOUT", "TX_FAULT"}:
+                    self.current_mox = False
+
+        if "|transmit " in line or "|interlock " in line:
+            m_mox = re.search(r"\bmox=([01])", line)
+            if m_mox:
+                self.current_mox = bool(int(m_mox.group(1)))
+
     def _send(self, cmd: str) -> bool:
-        """Send command to radio, return True if successful."""
+        """Send command to radio and wait for the matching command response."""
         if not self.connect():
             return False
+        old_timeout = None
         try:
             self.seq += 1
-            wire = f"C{self.seq}|{cmd}\r"
+            seq = self.seq
+            wire = f"C{seq}|{cmd}\r"
             logging.debug(f"FlexCtl SEND: {cmd}")
             self.sock.sendall(wire.encode("ascii", errors="ignore"))
-            
-            # Try to read response
+
+            response_prefix = f"R{seq}|"
+            old_timeout = self.sock.gettimeout()
             try:
-                resp = self.sock.recv(512).decode(errors="ignore").strip()
-                if resp:
-                    logging.debug(f"FlexCtl RECV: {resp}")
-                    
-                    # Update mode, filter, and frequency tracking from status messages
-                    if "|slice" in resp and f"slice {self.slice_id} " in resp:
-                        import re as _re
-                        m_mode = _re.search(r"\bmode=([A-Z]+)", resp)
-                        if m_mode:
-                            self.current_mode = m_mode.group(1)
-                            logging.debug(f"FlexCtl: Updated current_mode={self.current_mode}")
-                        
-                        # Track frequency
-                        m_freq = _re.search(r"\bRF_frequency=([\d.]+)", resp)
-                        if m_freq:
-                            self.current_freq = float(m_freq.group(1))
-                            logging.debug(f"FlexCtl: Updated current_freq={self.current_freq} MHz")
-                        
-                        # Track filter changes
-                        m_flo = _re.search(r"\bfilter_lo=(-?\d+)", resp)
-                        if m_flo:
-                            self.current_filter_lo = int(m_flo.group(1))
-                            logging.debug(f"FlexCtl: Updated current_filter_lo={self.current_filter_lo}")
-                        
-                        m_fhi = _re.search(r"\bfilter_hi=(-?\d+)", resp)
-                        if m_fhi:
-                            self.current_filter_hi = int(m_fhi.group(1))
-                            logging.debug(f"FlexCtl: Updated current_filter_hi={self.current_filter_hi}")
-                    
-                    # Check for error responses
-                    if resp.startswith("R") and "|" in resp:
-                        parts = resp.split("|", 3)
-                        if len(parts) >= 2:
-                            hex_resp = parts[1]
-                            if hex_resp != "00000000" and hex_resp != "0":
-                                logging.warning(f"FlexCtl command '{cmd}' returned error: {hex_resp}")
-                                return False  # Return False on error!
+                self.sock.settimeout(0.25)
+            except Exception:
+                old_timeout = None
+            deadline = time.time() + 1.5
+            saw_anything = False
+            try:
+                while time.time() < deadline:
+                    try:
+                        resp = self.sock.recv(4096).decode(errors="ignore")
+                    except socket.timeout:
+                        continue
+                    if not resp:
+                        break
+                    saw_anything = True
+                    for line in [part.strip() for part in re.split(r"[\r\n]+", resp) if part.strip()]:
+                        logging.debug(f"FlexCtl RECV: {line}")
+                        self._record_basic_status_from_line(line)
+                        if not line.startswith(response_prefix):
+                            continue
+                        parts = line.split("|", 3)
+                        hex_resp = parts[1] if len(parts) >= 2 else ""
+                        if hex_resp in {"00000000", "0"}:
+                            return True
+                        logging.warning(f"FlexCtl command '{cmd}' returned error: {hex_resp}")
+                        return False
             except Exception as e:
                 logging.debug(f"FlexCtl recv exception (may be normal): {e}")
-            
+
+            if saw_anything:
+                logging.warning("FlexCtl command '%s' did not receive matching response %s", cmd, response_prefix)
             return True
         except Exception as e:
             logging.error(f"FlexCtl send FAILED for '{cmd}': {e}")
@@ -194,6 +222,12 @@ class FlexCtl:
                 pass
             self.sock = None
             return False
+        finally:
+            try:
+                if self.sock and old_timeout is not None:
+                    self.sock.settimeout(old_timeout)
+            except Exception:
+                pass
 
     def get_current_levels(self, timeout: float = 1.5):
         """
@@ -354,6 +388,12 @@ class FlexCtl:
                     
                     # Parse transmit status: S<handle>|transmit ... or S<handle>|interlock ...
                     if "|transmit " in line or "|interlock " in line:
+                        m_state = _re.search(r"\bstate=([A-Z_]+)", line)
+                        if m_state:
+                            levels["interlock_state"] = m_state.group(1)
+                            levels["mox"] = levels["interlock_state"] == "TRANSMITTING"
+                            logging.debug(f"  Parsed interlock_state={levels['interlock_state']}")
+
                         # rfpower
                         m_rf = _re.search(r"\brfpower=(\d+)", line)
                         if m_rf:
@@ -383,6 +423,12 @@ class FlexCtl:
                         if m_breakin:
                             levels["break_in"] = bool(int(m_breakin.group(1)))
                             logging.debug(f"  Parsed break_in={levels['break_in']}")
+
+                        # mox
+                        m_mox = _re.search(r"\bmox=([01])", line)
+                        if m_mox:
+                            levels["mox"] = bool(int(m_mox.group(1)))
+                            logging.debug(f"  Parsed mox={levels['mox']}")
                         
                         # monitor (mon)
                         m_mon = _re.search(r"\bmon=([01])", line)
@@ -407,6 +453,10 @@ class FlexCtl:
             self.current_freq = levels["freq"]
         if "mode" in levels:
             self.current_mode = levels["mode"]
+        if "mox" in levels:
+            self.current_mox = levels["mox"]
+        if "interlock_state" in levels:
+            self.current_interlock_state = levels["interlock_state"]
         
         logging.info(f"FlexCtl initial state: {levels}")
         return levels
@@ -541,10 +591,11 @@ class FlexCtl:
         return self._send(f"transmit tune {'on' if on else 'off'}")
 
     def set_mox(self, on: bool) -> bool:
-        """Toggle MOX (manual transmit). API command is 'xmit on' or 'xmit off'."""
+        """Toggle MOX (manual transmit)."""
         logging.info(f"FlexCtl set_mox: {'ON' if on else 'OFF'}")
         self._set_tx_slice()
-        # Use simple xmit command
+        if self._send(f"xmit {'1' if on else '0'}"):
+            return True
         return self._send(f"xmit {'on' if on else 'off'}")
 
     def set_vox(self, on: bool) -> bool:
@@ -816,6 +867,24 @@ class FlexCtl:
                     
                     # Parse transmit/interlock updates for mic/drive/tune power and MOX state
                     if "|transmit " in resp or "|interlock " in resp:
+                        m_state = _re.search(r"\bstate=([A-Z_]+)", resp)
+                        if m_state:
+                            new_state = m_state.group(1)
+                            if self.current_interlock_state is None or new_state != self.current_interlock_state:
+                                state_changed['interlock_state'] = new_state
+                                logging.info(f"FlexCtl: INTERLOCK STATE CHANGED: {self.current_interlock_state} → {new_state}")
+                            self.current_interlock_state = new_state
+                            if new_state == "TRANSMITTING":
+                                new_mox = True
+                            elif new_state in {"READY", "RECEIVE", "NOT_READY", "TIMEOUT", "TX_FAULT"}:
+                                new_mox = False
+                            else:
+                                new_mox = self.current_mox
+                            if new_mox is not None and (self.current_mox is None or new_mox != self.current_mox):
+                                state_changed['mox'] = new_mox
+                            if new_mox is not None:
+                                self.current_mox = new_mox
+
                         # MOX state (transmit on/off)
                         m_mox = _re.search(r"\bmox=([01])", resp)
                         if m_mox:

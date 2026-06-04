@@ -33,6 +33,14 @@ class DuckDBQSOStatusStore:
         self.dxcc_band_worked: set[tuple[int, str]] = set()
         self.dxcc_mode_worked: set[tuple[int, str]] = set()
         self.dxcc_bandmode_confirmed: set[tuple[int, str, str]] = set()
+        self.call_worked: set[str] = set()
+        self.call_confirmed: set[str] = set()
+        self.call_band_worked: set[tuple[str, str]] = set()
+        self.call_mode_worked: set[tuple[str, str]] = set()
+        self.call_bandmode_confirmed: set[tuple[str, str, str]] = set()
+        self.grid_worked: set[str] = set()
+        self.grid_band_worked: set[tuple[str, str]] = set()
+        self.grid_mode_worked: set[tuple[str, str]] = set()
 
     def available(self) -> bool:
         if self._use_duckdb:
@@ -52,7 +60,41 @@ class DuckDBQSOStatusStore:
             "dxcc_band_worked_count": len(self.dxcc_band_worked),
             "dxcc_mode_worked_count": len(self.dxcc_mode_worked),
             "dxcc_bandmode_confirmed_count": len(self.dxcc_bandmode_confirmed),
+            "call_worked_count": len(self.call_worked),
+            "call_confirmed_count": len(self.call_confirmed),
+            "call_band_worked_count": len(self.call_band_worked),
+            "call_mode_worked_count": len(self.call_mode_worked),
+            "call_bandmode_confirmed_count": len(self.call_bandmode_confirmed),
+            "grid_worked_count": len(self.grid_worked),
+            "grid_band_worked_count": len(self.grid_band_worked),
+            "grid_mode_worked_count": len(self.grid_mode_worked),
         }
+
+    def call_flags(
+        self,
+        callsign: str | None,
+        band: str | None,
+        mode: str | None,
+    ) -> Optional[tuple[bool, bool, bool, bool, bool]]:
+        """Return call worked/confirmed and band/mode slot flags from the local cache."""
+        call_value = self._normalise_call(callsign)
+        if not call_value:
+            return False, False, True, True, False
+        if not self._ensure_loaded():
+            return None
+
+        band_value = (band or "").strip()
+        mode_value = (mode or "").strip().upper()
+        call_worked = call_value in self.call_worked
+        call_confirmed = call_value in self.call_confirmed
+        new_band = bool(band_value) and (call_value, band_value) not in self.call_band_worked
+        new_mode = bool(mode_value) and (call_value, mode_value) not in self.call_mode_worked
+        bandmode_confirmed = (
+            bool(band_value)
+            and bool(mode_value)
+            and (call_value, band_value, mode_value) in self.call_bandmode_confirmed
+        )
+        return call_worked, call_confirmed, new_band, new_mode, bandmode_confirmed
 
     def dxcc_overall(self, dxcc: int | None) -> Optional[tuple[bool, bool]]:
         """Return (worked, confirmed) for a DXCC, or None when the DB is unavailable."""
@@ -89,6 +131,38 @@ class DuckDBQSOStatusStore:
         ) in self.dxcc_bandmode_confirmed
         return not band_worked, not mode_worked, bandmode_confirmed
 
+    def grid_flags(
+        self,
+        grid: str | None,
+        band: str | None,
+        mode: str | None,
+    ) -> Optional[tuple[bool, bool, bool]]:
+        """Return (new_grid, new_grid_band, new_grid_mode) for a Maidenhead square."""
+        grid_value = self._normalise_grid(grid)
+        if not grid_value:
+            return False, False, False
+        if not self._ensure_loaded():
+            return None
+
+        band_value = (band or "").strip()
+        mode_value = (mode or "").strip().upper()
+        new_grid = grid_value not in self.grid_worked
+        new_grid_band = bool(band_value) and (grid_value, band_value) not in self.grid_band_worked
+        new_grid_mode = bool(mode_value) and (grid_value, mode_value) not in self.grid_mode_worked
+        return new_grid, new_grid_band, new_grid_mode
+
+    @staticmethod
+    def _normalise_grid(grid: str | None) -> str:
+        value = "".join(str(grid or "").upper().split())
+        if len(value) < 4:
+            return ""
+        prefix = value[:4]
+        return prefix if prefix[:2].isalpha() and prefix[2:].isdigit() else ""
+
+    @staticmethod
+    def _normalise_call(callsign: str | None) -> str:
+        return "".join(str(callsign or "").upper().split())
+
     def _ensure_loaded(self) -> bool:
         if not self.available():
             if not self._unavailable_logged:
@@ -106,37 +180,51 @@ class DuckDBQSOStatusStore:
                     with conn.cursor() as cur:
                         cur.execute(
                             """
-                            SELECT dxcc, band, mode, submode, lotw_qsl_rcvd
+                            SELECT call, dxcc, band, mode, submode, lotw_qsl_rcvd, gridsquare
                             FROM qso_records
-                            WHERE dxcc IS NOT NULL
+                            WHERE NULLIF(call, '') IS NOT NULL
+                               OR dxcc IS NOT NULL
+                               OR NULLIF(gridsquare, '') IS NOT NULL
                             """
                         )
                         rows = [
                             {
+                                "call": call,
                                 "dxcc": dxcc,
                                 "band": band,
                                 "mode": mode,
                                 "submode": submode,
                                 "lotw_qsl_rcvd": lotw_qsl_rcvd,
+                                "gridsquare": gridsquare,
                             }
-                            for dxcc, band, mode, submode, lotw_qsl_rcvd in cur.fetchall()
+                            for call, dxcc, band, mode, submode, lotw_qsl_rcvd, gridsquare in cur.fetchall()
                         ]
             elif self._use_duckdb:
                 conn = duckdb.connect(str(self.db_path))
                 try:
+                    columns = {
+                        str(row[1]).lower()
+                        for row in conn.execute("PRAGMA table_info(qso_records)").fetchall()
+                    }
+                    call_expr = "call" if "call" in columns else "NULL AS call"
+                    call_where = "NULLIF(call, '') IS NOT NULL OR" if "call" in columns else ""
                     rows = [
                         {
+                            "call": call,
                             "dxcc": dxcc,
                             "band": band,
                             "mode": mode,
                             "submode": submode,
                             "lotw_qsl_rcvd": lotw_qsl_rcvd,
+                            "gridsquare": gridsquare,
                         }
-                        for dxcc, band, mode, submode, lotw_qsl_rcvd in conn.execute(
-                            """
-                            SELECT dxcc, band, mode, submode, lotw_qsl_rcvd
+                        for call, dxcc, band, mode, submode, lotw_qsl_rcvd, gridsquare in conn.execute(
+                            f"""
+                            SELECT {call_expr}, dxcc, band, mode, submode, lotw_qsl_rcvd, gridsquare
                             FROM qso_records
-                            WHERE dxcc IS NOT NULL
+                            WHERE {call_where}
+                               dxcc IS NOT NULL
+                               OR NULLIF(gridsquare, '') IS NOT NULL
                             """
                         ).fetchall()
                     ]
@@ -159,14 +247,20 @@ class DuckDBQSOStatusStore:
                     with conn.cursor() as cursor:
                         cursor.execute(
                             """
-                            SELECT COL_DXCC AS dxcc,
+                            SELECT COL_CALL AS call,
+                                   COL_DXCC AS dxcc,
                                    COL_BAND AS band,
                                    COL_MODE AS mode,
                                    COL_SUBMODE AS submode,
-                                   COL_LOTW_QSL_RCVD AS lotw_qsl_rcvd
+                                   COL_LOTW_QSL_RCVD AS lotw_qsl_rcvd,
+                                   COL_GRIDSQUARE AS gridsquare
                             FROM TABLE_HRD_CONTACTS_V01
                             WHERE station_id = %s
-                              AND COL_DXCC IS NOT NULL
+                              AND (
+                                  (COL_CALL IS NOT NULL AND COL_CALL <> '')
+                                  OR COL_DXCC IS NOT NULL
+                                  OR (COL_GRIDSQUARE IS NOT NULL AND COL_GRIDSQUARE <> '')
+                              )
                             """,
                             (int(getattr(config, "WAVELOG_STATION_ID", 1)),),
                         )
@@ -179,9 +273,16 @@ class DuckDBQSOStatusStore:
             dxcc_band_worked: set[tuple[int, str]] = set()
             dxcc_mode_worked: set[tuple[int, str]] = set()
             dxcc_bandmode_confirmed: set[tuple[int, str, str]] = set()
+            call_worked: set[str] = set()
+            call_confirmed: set[str] = set()
+            call_band_worked: set[tuple[str, str]] = set()
+            call_mode_worked: set[tuple[str, str]] = set()
+            call_bandmode_confirmed: set[tuple[str, str, str]] = set()
+            grid_worked: set[str] = set()
+            grid_band_worked: set[tuple[str, str]] = set()
+            grid_mode_worked: set[tuple[str, str]] = set()
 
             for row in rows:
-                dxcc_int = int(row.get("dxcc"))
                 band_value = (row.get("band") or "").strip()
                 mode_value = (row.get("submode") or row.get("mode") or "").strip().upper()
                 confirmed = str(row.get("lotw_qsl_rcvd") or "").strip().upper() in {
@@ -190,22 +291,51 @@ class DuckDBQSOStatusStore:
                     "TRUE",
                     "1",
                 }
+                grid_value = self._normalise_grid(row.get("gridsquare"))
+                call_value = self._normalise_call(row.get("call"))
 
-                dxcc_worked.add(dxcc_int)
-                if confirmed:
-                    dxcc_confirmed.add(dxcc_int)
-                if band_value:
-                    dxcc_band_worked.add((dxcc_int, band_value))
-                if mode_value:
-                    dxcc_mode_worked.add((dxcc_int, mode_value))
-                if band_value and mode_value and confirmed:
-                    dxcc_bandmode_confirmed.add((dxcc_int, band_value, mode_value))
+                if call_value:
+                    call_worked.add(call_value)
+                    if confirmed:
+                        call_confirmed.add(call_value)
+                    if band_value:
+                        call_band_worked.add((call_value, band_value))
+                    if mode_value:
+                        call_mode_worked.add((call_value, mode_value))
+                    if band_value and mode_value and confirmed:
+                        call_bandmode_confirmed.add((call_value, band_value, mode_value))
+
+                if row.get("dxcc") is not None:
+                    dxcc_int = int(row.get("dxcc"))
+                    dxcc_worked.add(dxcc_int)
+                    if confirmed:
+                        dxcc_confirmed.add(dxcc_int)
+                    if band_value:
+                        dxcc_band_worked.add((dxcc_int, band_value))
+                    if mode_value:
+                        dxcc_mode_worked.add((dxcc_int, mode_value))
+                    if band_value and mode_value and confirmed:
+                        dxcc_bandmode_confirmed.add((dxcc_int, band_value, mode_value))
+                if grid_value:
+                    grid_worked.add(grid_value)
+                    if band_value:
+                        grid_band_worked.add((grid_value, band_value))
+                    if mode_value:
+                        grid_mode_worked.add((grid_value, mode_value))
 
             self.dxcc_worked = dxcc_worked
             self.dxcc_confirmed = dxcc_confirmed
             self.dxcc_band_worked = dxcc_band_worked
             self.dxcc_mode_worked = dxcc_mode_worked
             self.dxcc_bandmode_confirmed = dxcc_bandmode_confirmed
+            self.call_worked = call_worked
+            self.call_confirmed = call_confirmed
+            self.call_band_worked = call_band_worked
+            self.call_mode_worked = call_mode_worked
+            self.call_bandmode_confirmed = call_bandmode_confirmed
+            self.grid_worked = grid_worked
+            self.grid_band_worked = grid_band_worked
+            self.grid_mode_worked = grid_mode_worked
             self._loaded_at = now
             self._loaded_mtime = now
             if should_use_postgres() and not self._use_duckdb:
@@ -215,13 +345,15 @@ class DuckDBQSOStatusStore:
             else:
                 source = "Wavelog DB"
             logger.info(
-                "Loaded QSO status sets from %s: dxcc=%d confirmed=%d band=%d mode=%d bandmode_cnf=%d",
+                "Loaded QSO status sets from %s: calls=%d dxcc=%d confirmed=%d band=%d mode=%d bandmode_cnf=%d grids=%d",
                 source,
+                len(self.call_worked),
                 len(self.dxcc_worked),
                 len(self.dxcc_confirmed),
                 len(self.dxcc_band_worked),
                 len(self.dxcc_mode_worked),
                 len(self.dxcc_bandmode_confirmed),
+                len(self.grid_worked),
             )
             return True
         except Exception as exc:
