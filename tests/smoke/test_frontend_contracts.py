@@ -421,6 +421,10 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "wsjtxCandidateQueue.message" in template
     assert "WSJT Planner" in template
     assert "toggleWsjtxPlannerPanel" in template
+    assert "Prepare best" in template
+    assert 'value="actionable"' in template
+    assert 'value="heard"' in template
+    assert 'value="backoff"' in template
     assert "prepareWsjtxPlannerTarget(target)" in template
     assert "promoteWsjtxPlannerTarget(target)" in template
     assert "skipWsjtxPlannerTarget(target)" in template
@@ -438,6 +442,10 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "wsjtxCandidateQueue.message" in section
     assert "WSJT Planner" in section
     assert "toggleWsjtxPlannerPanel" in section
+    assert "Prepare best" in section
+    assert 'value="actionable"' in section
+    assert 'value="heard"' in section
+    assert 'value="backoff"' in section
     assert "prepareWsjtxPlannerTarget(target)" in section
     assert "promoteWsjtxPlannerTarget(target)" in section
     assert "skipWsjtxPlannerTarget(target)" in section
@@ -455,6 +463,9 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "getVisibleWsjtxCandidates" in script
     assert "queueVisibleWsjtxCandidates" in script
     assert "refreshWsjtxPlannerStatus" in script
+    assert "getWsjtxPlannerFilterText" in script
+    assert "isWsjtxPlannerActionableTarget" in script
+    assert "prepareBestWsjtxPlannerTarget" in script
     assert "prepareWsjtxPlannerTarget" in script
     assert "promoteWsjtxPlannerTarget" in script
     assert "skipWsjtxPlannerTarget" in script
@@ -563,9 +574,9 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "getWsjtxTimelineTraceId(event)" in config_section
     assert "/api/wsjtx/free-text" in config_modal
     assert "/api/wsjtx/reply" in config_modal
-    assert "20260604-wsjtx-planner-panel-2" in index
-    assert "20260604-wsjtx-planner-panel-2" in visual_map
-    assert "20260604-wsjtx-planner-panel-2" in (root / "frontend" / "templates-loader.js").read_text(encoding="utf-8")
+    assert "20260604-wsjtx-planner-actions-1" in index
+    assert "20260604-wsjtx-planner-actions-1" in visual_map
+    assert "20260604-wsjtx-planner-actions-1" in (root / "frontend" / "templates-loader.js").read_text(encoding="utf-8")
 
 
 if __name__ == "__main__":

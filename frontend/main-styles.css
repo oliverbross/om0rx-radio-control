@@ -1874,6 +1874,17 @@
             white-space: nowrap;
         }
 
+        .wsjtx-planner-header small {
+            padding: 2px 6px;
+            border: 1px solid #34506f;
+            border-radius: 4px;
+            background: #0f172a;
+            color: #facc15;
+            font-size: 10px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
         .wsjtx-planner-actions,
         .wsjtx-planner-row-actions {
             display: flex;
@@ -1884,6 +1895,7 @@
         }
 
         .wsjtx-planner-actions button,
+        .wsjtx-planner-actions select,
         .wsjtx-planner-row-actions button {
             padding: 4px 8px;
             border: 1px solid #4b617e;
@@ -1893,6 +1905,11 @@
             font-size: 11px;
             font-weight: 700;
             cursor: pointer;
+        }
+
+        .wsjtx-planner-actions select {
+            min-height: 25px;
+            padding-right: 20px;
         }
 
         .wsjtx-planner-actions button:hover:not(:disabled),

@@ -104,6 +104,7 @@ const dxSpotsData = {
         actionKey: '',
         message: '',
         status: null,
+        filter: 'actionable',
         updatedAt: null,
     },
     spotExplainLoading: false,
@@ -565,7 +566,31 @@ const dxSpotsMethods = {
 
     getWsjtxPlannerTargets() {
         const status = this.wsjtxPlanner.status || {};
-        return (status.targets || []).filter(target => !['done', 'skipped'].includes(target.state));
+        const filter = this.wsjtxPlanner.filter || 'actionable';
+        return (status.targets || [])
+            .filter(target => !['done', 'skipped'].includes(target.state))
+            .filter(target => {
+                if (filter === 'all') return true;
+                if (filter === 'heard') return Boolean(target.heard);
+                if (filter === 'backoff') return target.state === 'backoff';
+                return this.isWsjtxPlannerActionableTarget(target);
+            });
+    },
+
+    isWsjtxPlannerActionableTarget(target) {
+        if (!target || ['done', 'skipped', 'backoff'].includes(target.state)) return false;
+        const reason = String(target.reason || '').toLowerCase();
+        const callStatus = String(target.call_status || '').toLowerCase();
+        const dxccStatus = String(target.dxcc_status || '').toLowerCase();
+        const score = Number(target.score || 0);
+        if (reason.includes('new') || reason.includes('atno')) return true;
+        if (callStatus.includes('new') || callStatus.includes('atno')) return true;
+        if (dxccStatus.includes('new') || dxccStatus.includes('atno')) return true;
+        return score >= 500;
+    },
+
+    setWsjtxPlannerFilter(filter) {
+        this.wsjtxPlanner.filter = filter || 'actionable';
     },
 
     getWsjtxPlannerSummaryText() {
@@ -577,6 +602,17 @@ const dxSpotsMethods = {
         const queueLength = Number(status.queue_length || 0);
         const eligible = Number(status.eligible_count || 0);
         return `${queueLength} queued · ${eligible} eligible · ${db}`;
+    },
+
+    getWsjtxPlannerFilterText() {
+        const count = this.getWsjtxPlannerTargets().length;
+        const labels = {
+            actionable: 'actionable',
+            all: 'active',
+            heard: 'heard',
+            backoff: 'backoff',
+        };
+        return `${count} ${labels[this.wsjtxPlanner.filter] || 'shown'}`;
     },
 
     getWsjtxPlannerTargetTitle(target) {
@@ -707,6 +743,16 @@ const dxSpotsMethods = {
             this.wsjtxPlanner.message = error.message || 'Prepare failed';
             this.showStatus(`WSJT planner prepare failed: ${this.wsjtxPlanner.message}`, 'error');
         }
+    },
+
+    async prepareBestWsjtxPlannerTarget() {
+        const target = this.getWsjtxPlannerTargets()[0];
+        if (!target) {
+            this.wsjtxPlanner.message = 'No planner target matches this filter';
+            this.showStatus(this.wsjtxPlanner.message, 'warning');
+            return;
+        }
+        await this.prepareWsjtxPlannerTarget(target);
     },
 
     async startWsjtxTargetFromSpot(spot, options = {}) {

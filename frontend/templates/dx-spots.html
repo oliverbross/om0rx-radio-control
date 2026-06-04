@@ -313,9 +313,21 @@
                         <div>
                             <strong>WSJT Planner</strong>
                             <span>{{ getWsjtxPlannerSummaryText() }}</span>
+                            <small>{{ getWsjtxPlannerFilterText() }}</small>
                         </div>
                         <div class="wsjtx-planner-actions">
                             <span v-if="wsjtxPlanner.message">{{ wsjtxPlanner.message }}</span>
+                            <button @click="prepareBestWsjtxPlannerTarget"
+                                    :disabled="wsjtxPlanner.actionKey.startsWith('prepare:') || getWsjtxPlannerTargets().length === 0"
+                                    title="Prepare the top shown planner target with TX disabled">
+                                Prepare best
+                            </button>
+                            <select v-model="wsjtxPlanner.filter" title="Planner target filter">
+                                <option value="actionable">Actionable</option>
+                                <option value="heard">Heard</option>
+                                <option value="backoff">Backoff</option>
+                                <option value="all">All active</option>
+                            </select>
                             <button @click="refreshWsjtxPlannerStatus({ force: true })" :disabled="wsjtxPlanner.loading">
                                 {{ wsjtxPlanner.loading ? 'Refreshing...' : 'Refresh' }}
                             </button>
