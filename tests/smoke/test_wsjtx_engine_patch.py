@@ -48,6 +48,7 @@ def test_wsjtx_engine_patch_contains_om0rx_hunting_controls():
     assert "backend_has_active_target" in text
     assert "ui->dxCallEntry->clear" in text
     assert "ui->dxGridEntry->clear" in text
+    assert "startup cleared stale target" in text
     assert "Call Status" in text
     assert "DXCC Status" in text
     assert "om0rx_status_format" in text
@@ -87,6 +88,7 @@ def test_wsjtx_engine_patch_contains_om0rx_hunting_controls():
     assert 'automation.insert ("ignoreList"' in text
     assert 'automation.insert ("autoLogToWavelog"' in text
     assert 'automation.insert ("hopIntervalSeconds"' in text
+    assert 'automation.insert ("currentMode", m_mode)' in text
     assert 'automation.insert ("needCall"' in text
     assert 'automation.insert ("needDxcc"' in text
     assert "ui->cbOm0rxAutoLog->isChecked ())" in text

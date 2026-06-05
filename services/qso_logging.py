@@ -42,6 +42,7 @@ _dedupe_lock = RLock()
 _dedupe_ledger_path = config.LOGS_DIR / "qso_log_dedupe.json"
 _pending_dedupe_claims: Dict[str, Dict[str, Any]] = {}
 _PENDING_DEDUPE_TTL_SECONDS = 600
+_WSJT_DIGITAL_MODES = {"FT8", "FT4", "FT2"}
 
 
 class QSORequest(BaseModel):
@@ -96,10 +97,41 @@ def build_qso_loose_dedupe_key(qso_data: Dict[str, Any]) -> str:
     return _build_qso_dedupe_key(qso_data, bucket_seconds=900, include_reports=False)
 
 
+def normalise_digital_qso_mode(qso_data: Dict[str, Any]) -> str:
+    """Return the logical FT mode for duplicate/status checks, not ADIF's raw family."""
+    mode = str(qso_data.get("mode") or "").strip().upper()
+    submode = str(qso_data.get("submode") or qso_data.get("mode_rx") or "").strip().upper()
+    if submode in _WSJT_DIGITAL_MODES:
+        return submode
+    if mode in _WSJT_DIGITAL_MODES:
+        return mode
+    if mode == "MFSK":
+        text = " ".join(
+            str(qso_data.get(field) or "").upper()
+            for field in ("notes", "comment", "comments")
+        )
+        for candidate in ("FT4", "FT8", "FT2"):
+            if candidate in text:
+                return candidate
+    return mode
+
+
+def _qso_modes_duplicate_compatible(requested_mode: str, existing_mode: str) -> bool:
+    requested = (requested_mode or "").strip().upper()
+    existing = (existing_mode or "").strip().upper()
+    if not requested or not existing or requested == existing:
+        return True
+    if requested in _WSJT_DIGITAL_MODES and existing == "MFSK":
+        return True
+    if requested == "MFSK" and existing in _WSJT_DIGITAL_MODES:
+        return True
+    return False
+
+
 def _build_qso_dedupe_key(qso_data: Dict[str, Any], *, bucket_seconds: int, include_reports: bool) -> str:
     callsign = str(qso_data.get("callsign") or qso_data.get("call") or "").strip().upper()
     own_call = str(qso_data.get("station_callsign") or config.MY_STATION or "").strip().upper()
-    mode = str(qso_data.get("mode") or "").strip().upper()
+    mode = normalise_digital_qso_mode(qso_data)
     frequency = float(qso_data.get("frequency") or qso_data.get("freq") or 0)
     band = str(qso_data.get("band") or "").strip().lower()
     if not band and frequency:
@@ -117,7 +149,7 @@ def _build_qso_dedupe_key(qso_data: Dict[str, Any], *, bucket_seconds: int, incl
     try:
         dt = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
     except Exception:
-        dt = datetime.utcnow()
+        dt = datetime.now(timezone.utc)
     bucket = int(dt.timestamp() // bucket_seconds)
 
     payload = {
@@ -254,7 +286,7 @@ def _claim_dedupe_keys(qso_keys: list[str], qso_data: Dict[str, Any]) -> Optiona
             "own_call": str(config.MY_STATION or "").upper(),
             "frequency": qso_data.get("frequency"),
             "band": qso_data.get("band") or "",
-            "mode": str(qso_data.get("mode") or "").upper(),
+            "mode": normalise_digital_qso_mode(qso_data),
             "date_time": qso_data.get("date_time") or "",
             "wavelog_success": False,
             "adif_saved": False,
@@ -284,7 +316,7 @@ def _record_dedupe_entry(qso_key: str, qso_data: Dict[str, Any], result: Dict[st
             "own_call": str(config.MY_STATION or "").upper(),
             "frequency": qso_data.get("frequency"),
             "band": qso_data.get("band") or "",
-            "mode": str(qso_data.get("mode") or "").upper(),
+            "mode": normalise_digital_qso_mode(qso_data),
             "date_time": qso_data.get("date_time") or "",
             "rst_sent": qso_data.get("rst_sent") or "",
             "rst_received": qso_data.get("rst_received") or "",
@@ -315,7 +347,7 @@ def _qso_data_from_adif_record(adif_record: str) -> Dict[str, Any]:
             frequency = float(fields["freq"])
     except (TypeError, ValueError):
         frequency = None
-    return {
+    qso_data = {
         "callsign": (fields.get("call") or "").upper(),
         "frequency": frequency,
         "band": fields.get("band") or "",
@@ -326,6 +358,8 @@ def _qso_data_from_adif_record(adif_record: str) -> Dict[str, Any]:
         "lotw_qsl_rcvd": fields.get("lotw_qsl_rcvd") or "",
         "qsl_rcvd": fields.get("qsl_rcvd") or "",
     }
+    qso_data["mode"] = normalise_digital_qso_mode(qso_data)
+    return qso_data
 
 
 def _enrich_qso_with_cty(qso_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -413,7 +447,7 @@ def write_qso_to_postgres_read_cache(qso_dict: Dict[str, Any]) -> bool:
         return False
 
     qso_date, time_on, time_off, qso_datetime = _parse_log_datetime(qso)
-    mode = str(qso.get("mode") or "").strip().upper() or None
+    mode = normalise_digital_qso_mode(qso) or None
     submode = str(qso.get("submode") or "").strip().upper() or None
     band = str(qso.get("band") or "").strip() or None
     try:
@@ -680,7 +714,7 @@ def _recent_wavelog_duplicate_entry(qso_dict: Dict[str, Any], *, window_seconds:
     if not call:
         return None
     requested_band = str(qso_dict.get("band") or "").strip().lower()
-    requested_mode = str(qso_dict.get("submode") or qso_dict.get("mode") or "").strip().upper()
+    requested_mode = normalise_digital_qso_mode(qso_dict)
     _, requested_dt, _, _ = _parse_log_datetime(qso_dict)
     if requested_dt is None:
         return None
@@ -695,12 +729,12 @@ def _recent_wavelog_duplicate_entry(qso_dict: Dict[str, Any], *, window_seconds:
     for existing in recent:
         existing_call = str(existing.get("call") or existing.get("callsign") or "").strip().upper()
         existing_band = str(existing.get("band") or "").strip().lower()
-        existing_mode = str(existing.get("submode") or existing.get("mode") or "").strip().upper()
+        existing_mode = normalise_digital_qso_mode(existing)
         if existing_call and existing_call != call:
             continue
         if requested_band and existing_band and existing_band != requested_band:
             continue
-        if requested_mode and existing_mode and existing_mode != requested_mode:
+        if not _qso_modes_duplicate_compatible(requested_mode, existing_mode):
             continue
         existing_dt = _recent_qso_datetime(existing)
         if existing_dt is None:

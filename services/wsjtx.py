@@ -512,7 +512,10 @@ class WSJTXService:
             call = (req.get("call") or adif_fields.get("call") or "").strip().upper()
             if not call:
                 raise HTTPException(status_code=400, detail="Missing callsign")
-            mode = (req.get("mode") or adif_fields.get("mode") or "FT8").strip().upper()
+            submode = (adif_fields.get("submode") or req.get("submode") or "").strip().upper()
+            mode = (req.get("mode") or submode or adif_fields.get("mode") or "FT8").strip().upper()
+            if mode == "MFSK" and submode in WSJT_TARGET_MODES:
+                mode = submode
             frequency_hz = _frequency_hz_from_payload(req) or _frequency_hz_from_adif(adif_fields)
 
             # Fetch QRZ data if not already provided
@@ -542,7 +545,7 @@ class WSJTXService:
             # Build QSO data from WSJT-X and QRZ
             # Match the standard QSORequest structure to ensure consistency with regular QSO logging
             band = adif_fields.get("band") or (band_from_khz(frequency_hz / 1000) if frequency_hz else "Unknown")
-            date_time = _iso_from_adif_datetime(
+            date_time = req.get("date_time") or _iso_from_adif_datetime(
                 adif_fields.get("qso_date", ""),
                 adif_fields.get("time_on") or adif_fields.get("time_off", ""),
             )
@@ -552,6 +555,7 @@ class WSJTXService:
                 "callsign": call,
                 "frequency": frequency_hz / 1_000_000 if frequency_hz else None,
                 "mode": mode,
+                "submode": submode if submode in WSJT_TARGET_MODES else "",
                 "band": band,  # Include band for ADIF saving
                 
                 # RST values: keep as-is or use defaults (wavelog_api.py handles conversion)
@@ -559,8 +563,8 @@ class WSJTXService:
                 "rst_received": req.get('rst_received') or adif_fields.get("rst_rcvd"),
                 
                 # Date/Time fields
-                "date": adif_fields.get("qso_date") or None,
-                "time_off": adif_fields.get("time_off") or adif_fields.get("time_on") or None,
+                "date": req.get("date") or adif_fields.get("qso_date") or None,
+                "time_off": req.get("time_off") or adif_fields.get("time_off") or adif_fields.get("time_on") or None,
                 "date_time": date_time,
                 
                 # Station info (enriched from QRZ/CTY)
@@ -1764,6 +1768,10 @@ def _normalise_wsjtx_automation_policy(req: Dict[str, Any]) -> Dict[str, Any]:
     watchdog_ft8 = _coerce_int(_first_present(automation, "watchdogFT8", "watchdog_ft8"))
     watchdog_ft4 = _coerce_int(_first_present(automation, "watchdogFT4", "watchdog_ft4"))
     hop_interval_seconds = _coerce_int(_first_present(automation, "hopIntervalSeconds", "hop_interval_seconds"))
+    mode_switching = _coerce_bool(_first_present(automation, "modeSwitching", "mode_switching"), False)
+    current_mode = str(_first_present(automation, "currentMode", "current_mode", "mode") or "").strip().upper()
+    if current_mode not in {"FT8", "FT4", "FT2"}:
+        current_mode = ""
     priority = str(_first_present(automation, "priority") or "last").strip() or "last"
     priority_aliases = {
         "last_decoded": "last",
@@ -1776,7 +1784,7 @@ def _normalise_wsjtx_automation_policy(req: Dict[str, Any]) -> Dict[str, Any]:
         "enabled": auto_call or auto_cq or _coerce_bool(_first_present(automation, "enabled"), False),
         "spotHuntEnabled": _coerce_bool(_first_present(automation, "spotHuntEnabled", "spot_hunt_enabled"), auto_call),
         "bandHopping": _coerce_bool(_first_present(automation, "bandHopping", "band_hopping"), False),
-        "modeSwitching": _coerce_bool(_first_present(automation, "modeSwitching", "mode_switching"), False),
+        "modeSwitching": mode_switching,
         "treat73AsCQ": _coerce_bool(_first_present(automation, "treat73AsCQ", "treat_73_as_cq"), False),
         "avoidLogged": _coerce_bool(_first_present(automation, "avoidLogged", "avoid_logged"), True),
         "requireHeardBeforeCall": _coerce_bool(_first_present(automation, "requireHeardBeforeCall", "require_heard_before_call"), True),
@@ -1791,6 +1799,8 @@ def _normalise_wsjtx_automation_policy(req: Dict[str, Any]) -> Dict[str, Any]:
         "dryRun": _coerce_bool(_first_present(automation, "dryRun", "dry_run"), False),
         "priority": priority,
     }
+    if not mode_switching and current_mode:
+        operator_automation["allowedModes"] = {current_mode: True}
     if hop_interval_seconds is not None:
         operator_automation["hopIntervalSeconds"] = max(30, min(7200, hop_interval_seconds))
     band_plan = _first_present(automation, "bandPlan", "band_plan")

@@ -334,6 +334,54 @@ def test_wsjtx_adif_and_backend_completion_race_logs_once(monkeypatch, tmp_path)
     assert len(wsjtx_backup.records) + len(backend_backup.records) == 1
 
 
+def test_wsjtx_mfsk_submode_ft4_and_backend_ft4_log_once(monkeypatch, tmp_path):
+    import services.qso_logging as qlog
+    from services.qso_logging import QSORequest
+
+    wavelog = _FakeAdifWavelog()
+    wsjtx_backup = _FakeAdifBackup()
+    backend_backup = _FakeAdifBackup()
+    service = WSJTXService()
+    service.set_dependencies(
+        wavelog,
+        None,
+        None,
+        cty_resolver=_FakeCtyResolver(),
+        adif_handler=wsjtx_backup,
+    )
+
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+    monkeypatch.setattr(qlog, "_pending_dedupe_claims", {})
+    monkeypatch.setattr(qlog, "wavelog_client", wavelog)
+    monkeypatch.setattr(qlog, "adif_handler", backend_backup)
+    monkeypatch.setattr(qlog, "qrz_client", None)
+
+    first = asyncio.run(service.log_qso({
+        "source": "wsjtx-bridge",
+        "adif_text": (
+            "<call:5>9A4AA <gridsquare:4>JN75 <freq:6>7.0475 "
+            "<band:3>40m <mode:4>MFSK <submode:3>FT4 <qso_date:8>20260605 "
+            "<time_on:6>225000 <rst_sent:3>-03 <rst_rcvd:3>-12 <eor>"
+        ),
+    }))
+    second = asyncio.run(qlog.log_qso(QSORequest(
+        callsign="9A4AA",
+        frequency=7.0475,
+        band="40m",
+        mode="FT4",
+        rst_sent="-03",
+        rst_received="-12",
+        gridsquare="JN75",
+        date_time="2026-06-05T22:51:00+00:00",
+    )))
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert second["duplicate"] is True
+    assert len(wavelog.adif_calls) + len(wavelog.qso_calls) == 1
+    assert len(wsjtx_backup.records) + len(backend_backup.records) == 1
+
+
 def test_wsjtx_logged_adif_skips_when_recent_wavelog_row_exists(monkeypatch, tmp_path):
     import services.qso_logging as qlog
 
@@ -374,6 +422,50 @@ def test_wsjtx_logged_adif_skips_when_recent_wavelog_row_exists(monkeypatch, tmp
     assert result["success"] is True
     assert result["duplicate"] is True
     assert wavelog.adif_calls == []
+    assert backup.records == []
+
+
+def test_wsjtx_structured_ft4_skips_recent_mfsk_wavelog_row(monkeypatch, tmp_path):
+    import services.qso_logging as qlog
+
+    service = WSJTXService()
+    wavelog = _FakeAdifWavelog()
+    backup = _FakeAdifBackup()
+    service.set_dependencies(
+        wavelog,
+        None,
+        None,
+        cty_resolver=_FakeCtyResolver(),
+        adif_handler=backup,
+    )
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+    monkeypatch.setattr(qlog, "_pending_dedupe_claims", {})
+    monkeypatch.setattr(qlog, "_get_recent_qsos_from_duckdb", lambda _call, _limit: [])
+    monkeypatch.setattr(
+        qlog,
+        "_get_recent_qsos_from_wavelog_db",
+        lambda _call, _limit: [{
+            "call": "9A4AA",
+            "qso_date": "20260605",
+            "time_on": "225000",
+            "band": "40m",
+            "mode": "MFSK",
+        }],
+    )
+
+    result = asyncio.run(service.log_qso({
+        "call": "9A4AA",
+        "frequency_hz": 7_047_500,
+        "mode": "FT4",
+        "grid": "JN75",
+        "rst_sent": "-03",
+        "rst_received": "-12",
+        "date_time": "2026-06-05T22:51:00+00:00",
+    }))
+
+    assert result["success"] is True
+    assert result["duplicate"] is True
+    assert wavelog.qso_calls == []
     assert backup.records == []
 
 
@@ -507,6 +599,36 @@ def test_wsjtx_native_automation_policy_clamps_signal_and_counts():
     assert automation["minSignal"] == -40
     assert automation["autoCallCount"] == 99
     assert automation["autoCQCount"] == 0
+
+
+def test_wsjtx_native_automation_policy_locks_current_mode_when_mode_switching_off():
+    policy = _normalise_wsjtx_automation_policy({
+        "automation": {
+            "autoCall": True,
+            "modeSwitching": False,
+            "currentMode": "FT8",
+        },
+    })
+
+    automation = policy["operatorSettings"]["automation"]
+
+    assert automation["modeSwitching"] is False
+    assert automation["allowedModes"] == {"FT8": True}
+
+
+def test_wsjtx_native_automation_policy_keeps_all_modes_when_mode_switching_on():
+    policy = _normalise_wsjtx_automation_policy({
+        "automation": {
+            "autoCall": True,
+            "modeSwitching": True,
+            "currentMode": "FT8",
+        },
+    })
+
+    automation = policy["operatorSettings"]["automation"]
+
+    assert automation["modeSwitching"] is True
+    assert "allowedModes" not in automation
 
 
 def test_wsjtx_native_automation_policy_allows_clearing_ignore_list():
