@@ -115,6 +115,15 @@ def test_wsjtx_engine_patch_refreshes_backend_even_when_status_label_is_cached()
     assert "+      return;" not in cached_block
 
 
+def test_wsjtx_engine_patch_does_not_repaint_active_cached_status_as_checking():
+    text = PATCH_PATH.read_text(encoding="utf-8")
+    cache_pos = text.index("+  if (m_om0rx_status_cache.contains (cache_key))")
+    inflight_pos = text.index("+  if (m_om0rx_status_inflight.contains (cache_key))")
+    pending_pos = text.index("+      set_om0rx_active_status_pending (call);", inflight_pos)
+
+    assert cache_pos < inflight_pos < pending_pos
+
+
 def test_wsjtx_engine_patch_applies_to_downloaded_source(tmp_path):
     if not SOURCE_ARCHIVE.exists():
         return

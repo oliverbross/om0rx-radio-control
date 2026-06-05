@@ -323,7 +323,7 @@ index 6fcadb8..77d20e2 100644
 @@ -58,0 +62 @@ public:
 +  Q_SLOT void annotate_callsign (QString const& callsign, QString const& annotation, QColor const& fg);
 diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
-index c75aa42..5e3c08f 100644
+index c75aa42..42d81b2 100644
 --- a/widgets/mainwindow.cpp
 +++ b/widgets/mainwindow.cpp
 @@ -52,0 +53,3 @@
@@ -903,10 +903,6 @@ index c75aa42..5e3c08f 100644
 +  auto status_base = Radio::base_callsign (call).toUpper ();
 +  auto status_is_active_qso = active_call == call
 +      || (!active_base.isEmpty () && active_base == status_base);
-+  if (status_is_active_qso)
-+    {
-+      set_om0rx_active_status_pending (call);
-+    }
 +  auto band = m_currentBand.trimmed ();
 +  auto mode = m_mode.trimmed ().toUpper ();
 +  auto cache_key = QString {"%1|%2|%3"}.arg (call, band, mode);
@@ -937,6 +933,10 @@ index c75aa42..5e3c08f 100644
 +  if (m_om0rx_status_inflight.contains (cache_key))
 +    {
 +      return;
++    }
++  if (status_is_active_qso)
++    {
++      set_om0rx_active_status_pending (call);
 +    }
 +  m_om0rx_status_inflight.insert (cache_key);
 +
