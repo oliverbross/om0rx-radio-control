@@ -45,6 +45,9 @@ def test_wsjtx_engine_patch_contains_om0rx_hunting_controls():
     assert "DXCC Checking" in text
     assert "entity checking" in text
     assert "previous_call != dx_call" in text
+    assert "backend_has_active_target" in text
+    assert "ui->dxCallEntry->clear" in text
+    assert "ui->dxGridEntry->clear" in text
     assert "Call Status" in text
     assert "DXCC Status" in text
     assert "om0rx_status_format" in text

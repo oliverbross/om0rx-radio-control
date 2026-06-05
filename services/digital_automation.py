@@ -9,7 +9,7 @@ radio state from one place.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields as dataclass_fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
@@ -1200,17 +1200,20 @@ class DigitalAutomationController:
 
         active = self.targets.get(self.active_target_key) if self.active_target_key else None
         if active and active.state not in {"done", "skipped", "expired", "backoff"}:
-            self._set_decision({
-                "decision": "hold",
-                "reason": "active-qso-in-progress",
-                "call": active.call,
-                "band": active.band,
-                "mode": active.mode,
-                "state": active.state,
-                "active_state": active.active_state,
-                "attempts": active.attempts,
-            })
-            return None
+            if self._expire_stale_active_target(active, now):
+                active = None
+            else:
+                self._set_decision({
+                    "decision": "hold",
+                    "reason": "active-qso-in-progress",
+                    "call": active.call,
+                    "band": active.band,
+                    "mode": active.mode,
+                    "state": active.state,
+                    "active_state": active.active_state,
+                    "attempts": active.attempts,
+                })
+                return None
         candidates = []
         rejected: dict[str, int] = {}
 
@@ -1218,7 +1221,7 @@ class DigitalAutomationController:
             rejected[reason] = rejected.get(reason, 0) + 1
 
         for target in self.targets.values():
-            if target.state in {"done", "skipped", "expired"}:
+            if target.state in {"done", "skipped", "expired", "backoff"}:
                 reject(target.state)
                 continue
             if (
@@ -1360,6 +1363,50 @@ class DigitalAutomationController:
         })
         return chosen
 
+    def _expire_stale_active_target(self, target: DigitalTarget, now: datetime) -> bool:
+        protected_states = {
+            "reply_received",
+            "report_sent",
+            "rr73_seen",
+            "logged",
+            "completed",
+        }
+        if target.active_state in protected_states:
+            return False
+        if target.active_state not in {"candidate_selected", "command_sent", "waiting_for_tx", "calling"}:
+            return False
+        markers = [
+            marker
+            for marker in (target.last_command_at, target.last_attempt_at, target.last_heard_at)
+            if marker is not None
+        ]
+        if not markers:
+            return False
+        last_progress_at = max(markers)
+        stale_after = max(30, int(self.settings.dwell_seconds or 0))
+        if (now - last_progress_at).total_seconds() < stale_after:
+            return False
+        target.sync_state("backoff", active_state="failed")
+        target.reason = "stale-active-no-progress"
+        target.completion_reason = "stale-active-no-progress"
+        target.backoff_until = now + timedelta(minutes=max(1, int(self.settings.retry_backoff_minutes or 1)))
+        target.updated_at = now
+        self.active_target_key = None
+        self.active_qso_state = "idle"
+        self._persist_target(target)
+        self._set_decision({
+            "decision": "expired",
+            "reason": "stale-active-no-progress",
+            "call": target.call,
+            "band": target.band,
+            "mode": target.mode,
+            "state": target.state,
+            "active_state": target.active_state,
+            "attempts": target.attempts,
+            "backoff_until": target.backoff_until.isoformat(),
+        })
+        return True
+
     def next_listen_target(self, now: Optional[datetime] = None) -> Optional[DigitalTarget]:
         """Select an unheard external digital spot for a temporary listen-only QSY."""
         now = now or utc_now()
@@ -1372,16 +1419,18 @@ class DigitalAutomationController:
 
         active = self.targets.get(self.active_target_key) if self.active_target_key else None
         if active and active.state not in {"done", "skipped", "expired", "backoff"}:
-            self._set_decision({
-                "decision": "hold",
-                "reason": "active-qso-in-progress",
-                "call": active.call,
-                "band": active.band,
-                "mode": active.mode,
-                "state": active.state,
-            })
-            return None
-
+            if self._expire_stale_active_target(active, now):
+                active = None
+            else:
+                self._set_decision({
+                    "decision": "hold",
+                    "reason": "active-qso-in-progress",
+                    "call": active.call,
+                    "band": active.band,
+                    "mode": active.mode,
+                    "state": active.state,
+                })
+                return None
         listening = self._active_listen_target(now)
         if listening:
             self._set_decision({
@@ -1969,10 +2018,28 @@ class DigitalAutomationController:
             target = _target_from_mapping(row)
             if not target:
                 continue
+            self._normalise_loaded_target(target)
             self.targets[target.key] = target
             loaded += 1
         self.persistence_loaded_count = loaded
         self.persistence_error = None
+
+    def _normalise_loaded_target(self, target: DigitalTarget) -> None:
+        active_states = {"candidate_selected", "command_sent", "waiting_for_tx", "calling"}
+        active_lifecycles = {"selected", "command_sent", "active", "in_progress"}
+        loaded_as_active = (
+            target.active_state in active_states
+            or target.lifecycle in active_lifecycles
+            or target.state in {"selected", "calling"}
+        )
+        if not loaded_as_active:
+            return
+        target.sync_state("backoff", active_state="failed")
+        target.reason = "backend-restarted-active-target"
+        target.completion_reason = target.completion_reason or "backend-restarted-active-target"
+        target.backoff_until = utc_now() + timedelta(minutes=max(1, int(self.settings.retry_backoff_minutes or 1)))
+        target.updated_at = utc_now()
+        self._persist_target(target)
 
     def _persist_target(self, target: DigitalTarget) -> None:
         if not self.target_store:

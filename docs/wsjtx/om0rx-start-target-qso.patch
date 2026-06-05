@@ -323,7 +323,7 @@ index 6fcadb8..77d20e2 100644
 @@ -58,0 +62 @@ public:
 +  Q_SLOT void annotate_callsign (QString const& callsign, QString const& annotation, QColor const& fg);
 diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
-index c75aa42..42d81b2 100644
+index c75aa42..9ba9ea4 100644
 --- a/widgets/mainwindow.cpp
 +++ b/widgets/mainwindow.cpp
 @@ -52,0 +53,3 @@
@@ -725,7 +725,7 @@ index c75aa42..42d81b2 100644
 +        {
 +          set_om0rx_active_status_pending (dx_call);
 +        }
-@@ -15912,0 +16090,553 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
+@@ -15912,0 +16090,571 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
 +void MainWindow::send_om0rx_automation_policy (bool planner_tick)
 +{
 +  auto auto_call = ui->cbOm0rxAutoCall->isChecked ();
@@ -799,15 +799,19 @@ index c75aa42..42d81b2 100644
 +        text = reason.isEmpty () ? QString {"OM0RX %1"}.arg (action) : QString {"OM0RX %1: %2"}.arg (action, reason);
 +        tooltip_text = text;
 +        QStringList detail;
++        bool backend_has_active_target {false};
++        QString panel_state;
 +        auto automation = root.value ("automation").toObject ();
 +        auto panel = automation.value ("reason_panel").toObject ();
 +        if (!panel.isEmpty ())
 +          {
-+            detail << QString {"State: %1"}.arg (panel.value ("state").toString ());
++            panel_state = panel.value ("state").toString ();
++            detail << QString {"State: %1"}.arg (panel_state);
 +            auto target = panel.value ("target").toObject ();
 +            auto target_call = target.value ("call").toString ();
 +            if (!target_call.isEmpty ())
 +              {
++                backend_has_active_target = true;
 +                detail << QString {"Target: %1 %2 %3 score %4"}.arg (
 +                    target_call,
 +                    target.value ("band").toString (),
@@ -846,6 +850,20 @@ index c75aa42..42d81b2 100644
 +                  }
 +                detail << QString {"Rejected: %1"}.arg (counts.join (", "));
 +              }
++          }
++        if (!backend_has_active_target
++            && (ui->cbOm0rxAutoCall->isChecked () || ui->cbOm0rxAutoCQ->isChecked ())
++            && !m_transmitting
++            && !m_tune
++            && !ui->dxCallEntry->text ().trimmed ().isEmpty ()
++            && (panel_state.isEmpty ()
++                || panel_state == "idle"
++                || panel_state == "aborted"
++                || panel_state == "failed"
++                || panel_state == "completed"))
++          {
++            ui->dxCallEntry->clear ();
++            ui->dxGridEntry->clear ();
 +          }
 +        if (!detail.isEmpty ())
 +          {
@@ -1279,7 +1297,7 @@ index c75aa42..42d81b2 100644
 +  QApplication::alert (this);
 +}
 +
-@@ -16073,0 +16804,274 @@ void MainWindow::on_pb60E_clicked()
+@@ -16073,0 +16822,274 @@ void MainWindow::on_pb60E_clicked()
 +QStringList MainWindow::om0rx_current_band_plan () const
 +{
 +  struct PlanEntry

@@ -391,7 +391,7 @@ def test_treat_73_as_cq_disabled_keeps_73_lines_out_of_auto_call():
     assert controller.last_decision["reason"] == "not-auto-call-start-message"
 
 
-def test_stale_command_sent_target_holds_until_watchdog_or_explicit_abort():
+def test_stale_command_sent_target_expires_and_rotates_to_next_candidate():
     controller = DigitalAutomationController(
         mycall="OM0RX",
         settings=DigitalAutomationSettings(dwell_seconds=120),
@@ -424,18 +424,22 @@ def test_stale_command_sent_target_holds_until_watchdog_or_explicit_abort():
     assert second is not None
     first.last_command_at = now - timedelta(seconds=121)
     first.last_attempt_at = first.last_command_at
+    first.last_heard_at = first.last_command_at
     first.sync_state("calling", active_state="command_sent")
     controller.active_target_key = first.key
     controller.active_qso_state = "command_sent"
+    second.last_heard_at = now
+    second.updated_at = now
 
     selected = controller.next_target(now=now, auto_call_start_only=True, cq_only=True)
 
-    assert selected is None
-    assert controller.active_target_key == first.key
-    assert first.state == "calling"
-    assert first.reason != "active-target-stale-no-progress"
-    assert second.state == "heard"
-    assert controller.status()["last_decision"]["reason"] == "active-qso-in-progress"
+    assert selected is not None
+    assert selected.key == second.key
+    assert controller.active_target_key == second.key
+    assert first.state == "backoff"
+    assert first.active_state == "failed"
+    assert first.reason == "stale-active-no-progress"
+    assert first.backoff_until is not None
 
 
 def test_cluster_target_is_not_rejected_as_non_cq_decode():
@@ -935,6 +939,47 @@ def test_controller_loads_persisted_targets_and_persists_state_changes():
     assert store.saved[-1]["state"] == "calling"
 
 
+def test_controller_backoffs_persisted_active_target_on_restart():
+    now = datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc)
+    store = _FakeTargetStore(
+        rows=[
+            {
+                "key": "HB9PAE|15m|FT8",
+                "call": "HB9PAE",
+                "band": "15m",
+                "mode": "FT8",
+                "source": "decoded",
+                "message": "HB9PAE OM0RX JN88",
+                "grid": "JN47",
+                "call_status": "New Call",
+                "dxcc_status": "Confirmed",
+                "score": 750,
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+                "last_heard_at": now.isoformat(),
+                "last_attempt_at": now.isoformat(),
+                "last_command_at": now.isoformat(),
+                "heard": True,
+                "attempts": 1,
+                "state": "calling",
+                "lifecycle": "command_sent",
+                "active_state": "command_sent",
+            }
+        ]
+    )
+
+    controller = DigitalAutomationController(mycall="OM0RX", target_store=store)
+
+    target = controller.targets["HB9PAE|15m|FT8"]
+    assert controller.active_target_key is None
+    assert controller.active_qso_state == "idle"
+    assert target.state == "backoff"
+    assert target.active_state == "failed"
+    assert target.reason == "backend-restarted-active-target"
+    assert target.backoff_until is not None
+    assert store.saved[-1]["state"] == "backoff"
+
+
 def test_controller_persists_ingested_targets():
     store = _FakeTargetStore()
     controller = DigitalAutomationController(mycall="OM0RX", target_store=store)
@@ -1144,7 +1189,7 @@ def test_planner_tick_does_not_clear_live_attempt_while_waiting_for_reply():
     assert status["last_decision"]["reason"] == "active-qso-in-progress"
 
 
-def test_active_attempt_is_not_released_by_dwell_timeout_without_watchdog_or_abort():
+def test_active_attempt_with_real_progress_is_not_released_by_dwell_timeout():
     now = datetime(2026, 6, 5, 12, 30, tzinfo=timezone.utc)
     controller = DigitalAutomationController(mycall="OM0RX")
     first = controller.ingest_target({
@@ -1176,6 +1221,7 @@ def test_active_attempt_is_not_released_by_dwell_timeout_without_watchdog_or_abo
     assert selected is not None
     controller.record_attempt(selected.key)
     controller.record_attempt(selected.key)
+    controller.transition_active_qso("reply_received", target=selected)
 
     late = controller.next_target(
         now=now + timedelta(minutes=4),
