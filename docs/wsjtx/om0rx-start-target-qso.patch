@@ -2,86 +2,43 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 index f701940..267acc1 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -167,6 +167,9 @@ if you want a console application instead then set this option to OFF.
- If you just want to see the debug output from the application then the easiest way is to
- attach a debugger which will then receive the console output inside its console." ON
-   "WIN32" OFF)
+@@ -169,0 +170,3 @@ attach a debugger which will then receive the console output inside its console.
 +option (OM0RX_BUILD_WITH_OMNIRIG
 +  "Build optional Windows OmniRig COM transceiver support."
 +  OFF)
- 
- #
- # install locations
-@@ -358,12 +361,14 @@ if (WIN32)
-     ${wsjt_CXXSRCS}
-     killbyname.cpp
-     )
+@@ -360,0 +364 @@ if (WIN32)
 +endif (WIN32)
- 
+@@ -361,0 +366 @@ if (WIN32)
 +if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
-   set (wsjt_qt_CXXSRCS
-     ${wsjt_qt_CXXSRCS}
-     Transceiver/OmniRigTransceiver.cpp
-     )
+@@ -366 +371 @@ if (WIN32)
 -endif (WIN32)
 +endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
- 
- set (wsjt_FSRCS
-   # put module sources first in the hope that they get rebuilt before use
-@@ -939,7 +944,7 @@ set_source_files_properties (lib/filbig.f90 PROPERTIES COMPILE_FLAGS "-Wno-alias
- set_property (SOURCE ${all_C_and_CXXSRCS} APPEND_STRING PROPERTY COMPILE_FLAGS " -include wsjtx_config.h")
- set_property (SOURCE ${all_C_and_CXXSRCS} APPEND PROPERTY OBJECT_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/wsjtx_config.h)
- 
+@@ -942 +947 @@ set_property (SOURCE ${all_C_and_CXXSRCS} APPEND PROPERTY OBJECT_DEPENDS ${CMAKE
 -if (WIN32)
 +if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
-   # generate the OmniRig COM interface source
-   find_program (DUMPCPP dumpcpp)
-   if (DUMPCPP-NOTFOUND)
-@@ -1062,8 +1067,10 @@ find_package (Qt5 COMPONENTS Widgets SerialPort Multimedia PrintSupport Sql Ling
- 
- if (WIN32)
-   add_definitions (-DQT_NEEDS_QTMAIN)
+@@ -1065 +1069,0 @@ if (WIN32)
 -  find_package (Qt5AxContainer REQUIRED)
- endif (WIN32)
+@@ -1066,0 +1071,3 @@ endif (WIN32)
 +if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
 +  find_package (Qt5AxContainer REQUIRED)
 +endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
- 
- #
- # Library building setup
-@@ -1546,10 +1553,10 @@ qt5_add_resources (wsjtx_RESOURCES_RCC
-   )
- 
- # AX COM servers
+@@ -1549 +1556 @@ qt5_add_resources (wsjtx_RESOURCES_RCC
 -if (WIN32)
 +if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
-   include (QtAxMacros)
-   wrap_ax_server (GENAXSRCS ${AXSERVERSRCS})
+@@ -1552 +1559 @@ if (WIN32)
 -endif (WIN32)
 +endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
- 
- #
- # targets dependent on Qt
-@@ -1565,9 +1572,9 @@ add_library (wsjt_qt STATIC ${wsjt_qt_CXXSRCS} ${wsjt_qt_GENUISRCS} ${GENAXSRCS}
- # set wsjtx_udp exports to static variants
- target_compile_definitions (wsjt_qt PUBLIC UDP_STATIC_DEFINE)
- target_link_libraries (wsjt_qt Hamlib::Hamlib Boost::log qcp Qt5::Widgets Qt5::Network Qt5::Sql Qt5::WebSockets)
+@@ -1568 +1575 @@ target_link_libraries (wsjt_qt Hamlib::Hamlib Boost::log qcp Qt5::Widgets Qt5::N
 -if (WIN32)
 +if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
-   target_link_libraries (wsjt_qt Qt5::AxContainer Qt5::AxBase)
+@@ -1570 +1577 @@ if (WIN32)
 -endif (WIN32)
 +endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
- 
- # build a library of package Qt functionality used in Fortran utilities
- add_library (fort_qt STATIC ${fort_qt_CXXSRCS})
 diff --git a/Network/MessageClient.cpp b/Network/MessageClient.cpp
 index dbcbe06..3852f52 100644
 --- a/Network/MessageClient.cpp
 +++ b/Network/MessageClient.cpp
-@@ -407,6 +407,18 @@ void MessageClient::impl::parse_message (QByteArray const& msg)
-             }
-             break;
- 
+@@ -409,0 +410,12 @@ void MessageClient::impl::parse_message (QByteArray const& msg)
 +            case NetworkMessage::OM0RXStartTargetQSO:
 +              {
 +                QByteArray payload;
@@ -94,31 +51,19 @@ index dbcbe06..3852f52 100644
 +              }
 +              break;
 +
-             default:
-               // Ignore
-               //
 diff --git a/Network/MessageClient.hpp b/Network/MessageClient.hpp
 index 28dc5a9..0301804 100644
 --- a/Network/MessageClient.hpp
 +++ b/Network/MessageClient.hpp
-@@ -127,6 +127,9 @@ public:
-   // this signal is emitted if the server has sent information about a callsign
-   Q_SIGNAL void annotation_info (QString const& dx_call, bool sort_order_provided, quint32 sort_order);
- 
+@@ -129,0 +130,3 @@ public:
 +  // OM0RX local extension: a trusted controller has requested a target QSO.
 +  Q_SIGNAL void start_target_qso (QString const& payload_json);
 +
-   // this signal is emitted when network errors occur or if a host
-   // lookup fails
-   Q_SIGNAL void error (QString const&) const;
 diff --git a/Network/NetworkMessage.hpp b/Network/NetworkMessage.hpp
 index 8665305..6a29c02 100644
 --- a/Network/NetworkMessage.hpp
 +++ b/Network/NetworkMessage.hpp
-@@ -530,6 +530,16 @@
-  *      ffffffff will remove the sort-order value from the internal table.
-  *      Callsigns without a sort order will be valued at zero for sorting purposes
-  *      in the hound display.
+@@ -532,0 +533,10 @@
 + *
 + * OM0RX Start Target QSO In 17                   quint32
 + *                         Id (target unique key) utf8
@@ -129,73 +74,1095 @@ index 8665305..6a29c02 100644
 + *      requiring the target to already exist as a CQ/QRZ decode. The JSON
 + *      payload is intentionally self-describing so future OM0RX automation
 + *      fields can be added without changing the binary protocol again.
-  */
- 
- #include <QDataStream>
-@@ -562,6 +572,7 @@ namespace NetworkMessage
-       SwitchConfiguration,
-       Configure,
-       AnnotationInfo,
+@@ -564,0 +575 @@ namespace NetworkMessage
 +      OM0RXStartTargetQSO,
-       maximum_message_type_     // ONLY add new message types
-                                 // immediately before here
-     };
 diff --git a/Transceiver/TransceiverFactory.cpp b/Transceiver/TransceiverFactory.cpp
 index 323a882..36741a5 100644
 --- a/Transceiver/TransceiverFactory.cpp
 +++ b/Transceiver/TransceiverFactory.cpp
-@@ -8,7 +8,7 @@
- #include "HRDTransceiver.hpp"
- #include "EmulateSplitTransceiver.hpp"
- 
+@@ -11 +11 @@
 -#if defined (WIN32)
 +#if OM0RX_BUILD_WITH_OMNIRIG
- #include "OmniRigTransceiver.hpp"
- #endif
- 
-@@ -42,7 +42,7 @@ TransceiverFactory::TransceiverFactory ()
-   DXLabSuiteCommanderTransceiver::register_transceivers (&logger_, &transceivers_, CommanderId);
-   HRDTransceiver::register_transceivers (&logger_, &transceivers_, HRDId);
-   
+@@ -45 +45 @@ TransceiverFactory::TransceiverFactory ()
 -#if defined (WIN32)
 +#if OM0RX_BUILD_WITH_OMNIRIG
-   // OmniRig is ActiveX/COM server so only on Windows
-   OmniRigTransceiver::register_transceivers (&logger_, &transceivers_, OmniRigOneId, OmniRigTwoId);
- #endif
-@@ -160,7 +160,7 @@ std::unique_ptr<Transceiver> TransceiverFactory::create (ParameterPack const& pa
-       }
-       break;
- 
+@@ -163 +163 @@ std::unique_ptr<Transceiver> TransceiverFactory::create (ParameterPack const& pa
 -#if defined (WIN32)
 +#if OM0RX_BUILD_WITH_OMNIRIG
-     case OmniRigOneId:
-       {
-         std::unique_ptr<TransceiverBase> basic_transceiver;
+diff --git a/widgets/displaytext.cpp b/widgets/displaytext.cpp
+index 965f6fe..3ffe091 100644
+--- a/widgets/displaytext.cpp
++++ b/widgets/displaytext.cpp
+@@ -18,0 +19 @@
++#include <QFont>
+@@ -149,0 +151,48 @@ namespace
++
++  void normalize_om0rx_decode_colours (QColor * bg, QColor * fg)
++  {
++    if (!bg || !bg->isValid ())
++      {
++        if (fg && (!fg->isValid () || fg->lightness () < 80))
++          {
++            *fg = QColor {226, 232, 240};
++          }
++        return;
++      }
++
++    auto const red = bg->red ();
++    auto const green = bg->green ();
++    auto const blue = bg->blue ();
++    if (green > 180 && red < 130 && blue < 130)
++      {
++        *bg = QColor {24, 64, 39};
++        if (fg)
++          {
++            *fg = QColor {224, 255, 235};
++          }
++      }
++    else if (red > 180 && green < 140 && blue < 140)
++      {
++        *bg = QColor {93, 34, 38};
++        if (fg)
++          {
++            *fg = QColor {255, 232, 232};
++          }
++      }
++    else if (red > 180 && green > 170 && blue < 120)
++      {
++        *bg = QColor {78, 66, 22};
++        if (fg)
++          {
++            *fg = QColor {255, 241, 166};
++          }
++      }
++    else if (bg->lightness () > 170)
++      {
++        *bg = QColor {42, 49, 58};
++        if (fg)
++          {
++            *fg = QColor {226, 232, 240};
++          }
++      }
++  }
+@@ -154,0 +204 @@ void DisplayText::insertText(QString const& text, QColor bg, QColor fg
++  normalize_om0rx_decode_colours (&bg, &fg);
+@@ -549 +599,4 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
+-                         static_cast<int>(decodedText.timeInSeconds()));
++                         static_cast<int>(decodedText.timeInSeconds()),
++                         dxGrid,
++                         decodedText.string(),
++                         decodedText.snr());
+@@ -591 +644 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
+-  
++
+@@ -861,0 +915,41 @@ namespace
++
++  QTextCharFormat om0rx_status_format (QString const& status)
++  {
++    auto normalized = status.toLower ();
++    QColor foreground {226, 232, 240};
++    if (normalized.contains ("atno") || normalized.contains ("new call"))
++      {
++        foreground = QColor {255, 103, 56};
++      }
++    else if (normalized.contains ("new band") || normalized.contains ("new mode"))
++      {
++        foreground = QColor {0, 194, 255};
++      }
++    else if (normalized.contains ("worked"))
++      {
++        foreground = QColor {203, 213, 225};
++      }
++    else if (normalized.contains ("confirmed"))
++      {
++        foreground = QColor {0, 214, 129};
++      }
++
++    QTextCharFormat format;
++    format.setForeground (foreground);
++    format.setBackground (QColor {28, 34, 42});
++    format.setFontWeight (QFont::Bold);
++    return format;
++  }
++
++  QString om0rx_status_label (QString const& status)
++  {
++    auto label = status.trimmed ();
++    if (label.compare ("New Band+Mode", Qt::CaseInsensitive) == 0
++        || label.compare ("NewBand+Mode", Qt::CaseInsensitive) == 0
++        || (label.contains ("New Band", Qt::CaseInsensitive)
++            && label.contains ("New Mode", Qt::CaseInsensitive)))
++      {
++        label = "NewB+Mode";
++      }
++    return label.left (12).leftJustified (12);
++  }
+@@ -974,0 +1069,109 @@ void DisplayText::highlight_callsign (QString const& callsign, QColor const& bg,
++void DisplayText::annotate_callsign (QString const& callsign, QString const& annotation,
++                                     QColor const& fg)
++{
++  Q_UNUSED (fg);
++  if (callsign.trimmed ().isEmpty () || annotation.trimmed ().isEmpty ())
++    {
++      return;
++    }
++
++  auto escaped = callsign.trimmed ().toUpper ();
++  escaped.replace (QLatin1Char {'+'}, QLatin1String {"\\+"})
++      .replace (QLatin1Char {'.'}, QLatin1String {"\\."})
++      .replace (QLatin1Char {'?'}, QLatin1String {"\\?"});
++  QRegularExpression target {QString {"<?%1>?"}.arg (escaped),
++                             QRegularExpression::DontCaptureOption};
++  QRegularExpression existing_om0rx {QString {R"(\s+\[OM0RX:[^\]]+\])"}};
++  QRegularExpression status_columns {QString {R"(\s+(?:Checking|New Call|New Band\+Mode|New Band|New Mode|NewB\+Mode|NewCall|NewBand|NewMode|Confirmed|Worked|ATNO|Unknown|Cfm|Wkd).*$)"}};
++  QRegularExpression parsed_status {QString {R"(^\s*([^|]+?)\s*\|\s*([^|]+?)\s*$)"}};
++  auto status_match = parsed_status.match (annotation);
++  auto call_status = status_match.hasMatch () ? status_match.captured (1).trimmed () : annotation.trimmed ();
++  auto dxcc_status = status_match.hasMatch () ? status_match.captured (2).trimmed () : QString {};
++  QTextCharFormat old_format {currentCharFormat ()};
++  QTextCursor cursor {document ()};
++
++  while (!cursor.isNull ())
++    {
++      cursor = document ()->find (target, cursor, QTextDocument::FindWholeWords);
++      if (!cursor.isNull () && cursor.hasSelection ())
++        {
++          QTextCursor line {cursor};
++          line.movePosition (QTextCursor::StartOfLine);
++          line.movePosition (QTextCursor::EndOfLine, QTextCursor::KeepAnchor);
++          auto text = line.selectedText ();
++          auto match = existing_om0rx.match (text);
++          auto column_match = status_columns.match (text);
++          auto appendage_start = text.indexOf (QChar::Nbsp);
++          int suffix_start {-1};
++          int suffix_end {text.size ()};
++          auto remember_suffix_start = [&suffix_start, &text] (int start) {
++            if (start < 0)
++              {
++                return;
++              }
++            while (start > 0 && text.at (start - 1).isSpace ())
++              {
++                --start;
++              }
++            if (suffix_start < 0 || start < suffix_start)
++              {
++                suffix_start = start;
++              }
++          };
++          if (column_match.hasMatch ())
++            {
++              remember_suffix_start (column_match.capturedStart ());
++            }
++          if (appendage_start >= 0)
++            {
++              remember_suffix_start (appendage_start);
++            }
++          if (match.hasMatch ())
++            {
++              remember_suffix_start (match.capturedStart ());
++            }
++
++          auto base_length = suffix_start >= 0 ? suffix_start : text.size ();
++          constexpr int status_column = 40;
++          auto status_padding = std::max (1, status_column - base_length);
++          auto call_format = om0rx_status_format (call_status);
++          auto dxcc_format = om0rx_status_format (dxcc_status);
++          auto call_label = om0rx_status_label (call_status);
++          auto dxcc_label = om0rx_status_label (dxcc_status);
++          QTextCharFormat separator_format {old_format};
++          separator_format.setForeground (QColor {148, 163, 184});
++          separator_format.setBackground (QColor {28, 34, 42});
++          separator_format.setFontWeight (QFont::Bold);
++          if (suffix_start >= 0)
++            {
++              QTextCursor suffix {line};
++              suffix.setPosition (line.selectionStart () + suffix_start);
++              suffix.setPosition (line.selectionStart () + suffix_end, QTextCursor::KeepAnchor);
++              suffix.removeSelectedText ();
++              suffix.insertText (QString {status_padding, QChar {' '}} + QChar::Nbsp, separator_format);
++              suffix.insertText (call_label, call_format);
++              if (!dxcc_status.isEmpty ())
++                {
++                  suffix.insertText (QString {" "}, separator_format);
++                  suffix.insertText (dxcc_label, dxcc_format);
++                }
++            }
++          else
++            {
++              QTextCursor suffix {line};
++              suffix.clearSelection ();
++              suffix.movePosition (QTextCursor::EndOfLine);
++              suffix.insertText (QString {status_padding, QChar {' '}} + QChar::Nbsp, separator_format);
++              suffix.insertText (call_label, call_format);
++              if (!dxcc_status.isEmpty ())
++                {
++                  suffix.insertText (QString {" "}, separator_format);
++                  suffix.insertText (dxcc_label, dxcc_format);
++                }
++            }
++        }
++    }
++
++  setCurrentCharFormat (old_format);
++}
++
+diff --git a/widgets/displaytext.h b/widgets/displaytext.h
+index 6fcadb8..77d20e2 100644
+--- a/widgets/displaytext.h
++++ b/widgets/displaytext.h
+@@ -50 +50,2 @@ public:
+-  // appears as a label on the waterfall at its audio offset.
++  // appears as a label on the waterfall at its audio offset, and to the
++  // OM0RX enrichment lookup for local Wavelog status.
+@@ -53 +54,3 @@ public:
+-                                 bool is_cq, int time_sec);
++                                 bool is_cq, int time_sec,
++                                 QString const& grid, QString const& message,
++                                 int snr);
+@@ -58,0 +62 @@ public:
++  Q_SLOT void annotate_callsign (QString const& callsign, QString const& annotation, QColor const& fg);
 diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
-index c75aa42..140cefb 100644
+index c75aa42..5e3c08f 100644
 --- a/widgets/mainwindow.cpp
 +++ b/widgets/mainwindow.cpp
-@@ -50,6 +50,8 @@
- #include <QUdpSocket>
- #include <QAbstractItemView>
- #include <QInputDialog>
+@@ -52,0 +53,3 @@
 +#include <QJsonDocument>
 +#include <QJsonObject>
- #include <QSound> // TCI
- #include <QtMath> // TCI
- #if QT_VERSION >= QT_VERSION_CHECK (5, 15, 0)
-@@ -834,6 +836,7 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
-   connect (m_messageClient, &MessageClient::highlight_callsign, ui->decodedTextBrowser, &DisplayText::highlight_callsign);
-   connect (m_messageClient, &MessageClient::switch_configuration, m_multi_settings, &MultiSettings::select_configuration);
-   connect (m_messageClient, &MessageClient::configure, this, &MainWindow::remote_configure);
++#include <QJsonArray>
+@@ -116,0 +120,15 @@
++namespace
++{
++QString om0rx_decode_heading (QString const& prefix = QString {})
++{
++  return prefix + QString {"UTC   dB   DT Freq    Message"}.leftJustified (40)
++      + QObject::tr ("Call Status  DXCC Status");
++}
++
++QString om0rx_fast_decode_heading (QString const& prefix = QString {})
++{
++  return prefix + QString {"UTC   dB    T Freq    Message"}.leftJustified (40)
++      + QObject::tr ("Call Status  DXCC Status");
++}
++}
++
+@@ -579,0 +598,21 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
++  auto decoded_pane_style = QString {
++      "DisplayText {"
++      "background: #111820;"
++      "color: #e5edf6;"
++      "border: 1px solid #2f3b49;"
++      "selection-background-color: #1f6feb;"
++      "selection-color: #ffffff;"
++      "}"
++      "QScrollBar {background: #17212b;}"
++      "QScrollBar::handle {background: #3b4a5a;}"};
++  auto decoded_heading_style = QString {
++      "QLabel {"
++      "background: #202a35;"
++      "color: #e5edf6;"
++      "border: 1px solid #2f3b49;"
++      "font-weight: 700;"
++      "}"};
++  ui->decodedTextBrowser->setStyleSheet (decoded_pane_style);
++  ui->decodedTextBrowser2->setStyleSheet (decoded_pane_style);
++  ui->lh_decodes_headings_label->setStyleSheet (decoded_heading_style);
++  ui->rh_decodes_headings_label->setStyleSheet (decoded_heading_style);
+@@ -655 +694,7 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+-          m_wideGraph.data (), &WideGraph::addDecodeLabel);
++          m_wideGraph.data (),
++          [this] (double freq_hz, QString const& callsign, bool is_cq, int time_sec,
++                  QString const&, QString const&, int) {
++            m_wideGraph->addDecodeLabel (freq_hz, callsign, is_cq, time_sec);
++          });
++  connect(ui->decodedTextBrowser, &DisplayText::decodedCallsign,
++          this, &MainWindow::request_om0rx_decode_status);
+@@ -660 +705,7 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+-          m_wideGraph.data (), &WideGraph::addDecodeLabel);
++          m_wideGraph.data (),
++          [this] (double freq_hz, QString const& callsign, bool is_cq, int time_sec,
++                  QString const&, QString const&, int) {
++            m_wideGraph->addDecodeLabel (freq_hz, callsign, is_cq, time_sec);
++          });
++  connect(ui->decodedTextBrowser2, &DisplayText::decodedCallsign,
++          this, &MainWindow::request_om0rx_decode_status);
+@@ -836,0 +888,46 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
 +  connect (m_messageClient, &MessageClient::start_target_qso, this, &MainWindow::remote_start_target_qso);
- 
-   // Hook up WSPR band hopping
-   connect (ui->band_hopping_schedule_push_button, &QPushButton::clicked
-@@ -15910,6 +15913,122 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
-   QApplication::alert (this);
- }
- 
++  auto send_om0rx_policy = [this] {send_om0rx_automation_policy ();};
++  auto stop_om0rx_when_disabled = [this] (bool checked) {
++    send_om0rx_automation_policy ();
++    if (!checked && !ui->cbOm0rxAutoCQ->isChecked () && !ui->cbOm0rxAutoCall->isChecked ())
++      {
++        m_om0rx_automation_timer.stop ();
++        if (ui->autoButton->isChecked ())
++          {
++            ui->autoButton->click ();
++          }
++        on_stopTxButton_clicked ();
++        clearDX ();
++        ui->dxGridEntry->clear ();
++        ui->labOm0rxAutomation->setText (tr ("OM0RX automation stopped"));
++        ui->labOm0rxAutomation->setToolTip (tr ("Auto CQ and Auto Call are off; TX was halted and the active DX target was cleared."));
++      }
++  };
++  connect (ui->cbOm0rxAutoCQ, &QCheckBox::toggled, this, stop_om0rx_when_disabled);
++  connect (ui->cbOm0rxAutoCall, &QCheckBox::toggled, this, stop_om0rx_when_disabled);
++  connect (ui->cbCQonly, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbHoldTxFreq, &QCheckBox::clicked, this, send_om0rx_policy);
++  connect (ui->txFirstCheckBox, &QCheckBox::stateChanged, this, [this] (int) {send_om0rx_automation_policy ();});
++  connect (ui->TxFreqSpinBox, static_cast<void (QSpinBox::*) (int)> (&QSpinBox::valueChanged), this, [this] (int) {send_om0rx_automation_policy ();});
++  connect (ui->sbOm0rxMinSignal, static_cast<void (QSpinBox::*) (int)> (&QSpinBox::valueChanged), this, [this] (int) {send_om0rx_automation_policy ();});
++  connect (ui->sbOm0rxAutoCallLimit, static_cast<void (QSpinBox::*) (int)> (&QSpinBox::valueChanged), this, [this] (int) {send_om0rx_automation_policy ();});
++  connect (ui->sbOm0rxAutoCQCount, static_cast<void (QSpinBox::*) (int)> (&QSpinBox::valueChanged), this, [this] (int) {send_om0rx_automation_policy ();});
++  connect (ui->sbOm0rxWatchdogFT8, static_cast<void (QSpinBox::*) (int)> (&QSpinBox::valueChanged), this, [this] (int) {send_om0rx_automation_policy ();});
++  connect (ui->sbOm0rxWatchdogFT4, static_cast<void (QSpinBox::*) (int)> (&QSpinBox::valueChanged), this, [this] (int) {send_om0rx_automation_policy ();});
++  connect (ui->sbOm0rxHopInterval, static_cast<void (QSpinBox::*) (int)> (&QSpinBox::valueChanged), this, [this] (int) {send_om0rx_automation_policy ();});
++  connect (ui->cbOm0rxBandHopping, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxModeSwitching, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxTreat73AsCQ, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxAvoidLogged, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxRequireHeard, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxAutoLog, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxNeedCall, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxNeedDxcc, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxNeedBand, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxNeedMode, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxNeedGrid, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxPriority, static_cast<void (QComboBox::*) (int)> (&QComboBox::currentIndexChanged), this, [this] (int) {send_om0rx_automation_policy ();});
++  connect (ui->teOm0rxBandPlan, &QPlainTextEdit::textChanged, this, send_om0rx_policy);
++  connect (ui->teOm0rxIgnoreList, &QPlainTextEdit::textChanged, this, send_om0rx_policy);
++  connect (&m_om0rx_automation_timer, &QTimer::timeout, this, &MainWindow::pulse_om0rx_automation);
++  m_om0rx_automation_timer.setInterval (750);
+@@ -1193 +1290 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+-  auto t = "UTC   dB   DT Freq    " + tr ("Message");
++  auto t = om0rx_decode_heading ();
+@@ -1270 +1367 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+-  
++
+@@ -1513,2 +1610,5 @@ void MainWindow::on_the_minute ()
+-  if (m_config.watchdog () && m_mode!="WSPR" && m_mode!="FST4W") {
+-    if (m_idleMinutes < m_config.watchdog ()) ++m_idleMinutes;
++  om0rx_band_hopping_tick ();
++
++  auto watchdog_minutes = om0rx_watchdog_minutes ();
++  if (watchdog_minutes && m_mode!="WSPR" && m_mode!="FST4W") {
++    if (m_idleMinutes < watchdog_minutes) ++m_idleMinutes;
+@@ -1654,0 +1755,22 @@ void MainWindow::writeSettings()
++  m_settings->setValue ("Om0rxAutoCQ", ui->cbOm0rxAutoCQ->isChecked ());
++  m_settings->setValue ("Om0rxAutoCall", ui->cbOm0rxAutoCall->isChecked ());
++  m_settings->setValue ("Om0rxMinSignal", ui->sbOm0rxMinSignal->value ());
++  m_settings->setValue ("Om0rxAutoCallLimit", ui->sbOm0rxAutoCallLimit->value ());
++  m_settings->setValue ("Om0rxAutoCQCount", ui->sbOm0rxAutoCQCount->value ());
++  m_settings->setValue ("Om0rxWatchdogFT8", ui->sbOm0rxWatchdogFT8->value ());
++  m_settings->setValue ("Om0rxWatchdogFT4", ui->sbOm0rxWatchdogFT4->value ());
++  m_settings->setValue ("Om0rxHopInterval", ui->sbOm0rxHopInterval->value ());
++  m_settings->setValue ("Om0rxBandHopping", ui->cbOm0rxBandHopping->isChecked ());
++  m_settings->setValue ("Om0rxModeSwitching", ui->cbOm0rxModeSwitching->isChecked ());
++  m_settings->setValue ("Om0rxTreat73AsCQ", ui->cbOm0rxTreat73AsCQ->isChecked ());
++  m_settings->setValue ("Om0rxAvoidLogged", ui->cbOm0rxAvoidLogged->isChecked ());
++  m_settings->setValue ("Om0rxRequireHeard", ui->cbOm0rxRequireHeard->isChecked ());
++  m_settings->setValue ("Om0rxAutoLog", ui->cbOm0rxAutoLog->isChecked ());
++  m_settings->setValue ("Om0rxNeedCall", ui->cbOm0rxNeedCall->isChecked ());
++  m_settings->setValue ("Om0rxNeedDxcc", ui->cbOm0rxNeedDxcc->isChecked ());
++  m_settings->setValue ("Om0rxNeedBand", ui->cbOm0rxNeedBand->isChecked ());
++  m_settings->setValue ("Om0rxNeedMode", ui->cbOm0rxNeedMode->isChecked ());
++  m_settings->setValue ("Om0rxNeedGrid", ui->cbOm0rxNeedGrid->isChecked ());
++  m_settings->setValue ("Om0rxPriority", ui->cbOm0rxPriority->currentIndex ());
++  m_settings->setValue ("Om0rxBandPlan", ui->teOm0rxBandPlan->toPlainText ());
++  m_settings->setValue ("Om0rxIgnoreList", ui->teOm0rxIgnoreList->toPlainText ());
+@@ -2115,0 +2238,23 @@ void MainWindow::readSettings()
++  ui->cbOm0rxAutoCQ->setChecked (m_settings->value ("Om0rxAutoCQ", false).toBool ());
++  ui->cbOm0rxAutoCall->setChecked (m_settings->value ("Om0rxAutoCall", false).toBool ());
++  ui->sbOm0rxMinSignal->setValue (m_settings->value ("Om0rxMinSignal", -30).toInt ());
++  ui->sbOm0rxAutoCallLimit->setValue (m_settings->value ("Om0rxAutoCallLimit", 5).toInt ());
++  ui->sbOm0rxAutoCQCount->setValue (m_settings->value ("Om0rxAutoCQCount", 5).toInt ());
++  ui->sbOm0rxWatchdogFT8->setValue (m_settings->value ("Om0rxWatchdogFT8", 2).toInt ());
++  ui->sbOm0rxWatchdogFT4->setValue (m_settings->value ("Om0rxWatchdogFT4", 2).toInt ());
++  ui->sbOm0rxHopInterval->setValue (m_settings->value ("Om0rxHopInterval", 2).toInt ());
++  ui->cbOm0rxBandHopping->setChecked (m_settings->value ("Om0rxBandHopping", false).toBool ());
++  ui->cbOm0rxModeSwitching->setChecked (m_settings->value ("Om0rxModeSwitching", false).toBool ());
++  ui->cbOm0rxTreat73AsCQ->setChecked (m_settings->value ("Om0rxTreat73AsCQ", false).toBool ());
++  ui->cbOm0rxAvoidLogged->setChecked (m_settings->value ("Om0rxAvoidLogged", true).toBool ());
++  ui->cbOm0rxRequireHeard->setChecked (m_settings->value ("Om0rxRequireHeard", true).toBool ());
++  ui->cbOm0rxAutoLog->setChecked (m_settings->value ("Om0rxAutoLog", true).toBool ());
++  ui->cbOm0rxNeedCall->setChecked (m_settings->value ("Om0rxNeedCall", true).toBool ());
++  ui->cbOm0rxNeedDxcc->setChecked (m_settings->value ("Om0rxNeedDxcc", true).toBool ());
++  ui->cbOm0rxNeedBand->setChecked (m_settings->value ("Om0rxNeedBand", true).toBool ());
++  ui->cbOm0rxNeedMode->setChecked (m_settings->value ("Om0rxNeedMode", true).toBool ());
++  ui->cbOm0rxNeedGrid->setChecked (m_settings->value ("Om0rxNeedGrid", true).toBool ());
++  ui->cbOm0rxPriority->setCurrentIndex (m_settings->value ("Om0rxPriority", 0).toInt ());
++  ui->teOm0rxBandPlan->setPlainText (
++    m_settings->value ("Om0rxBandPlan", "05:20m,17m,15m,12m,10m\n20:30m,40m,80m,160m").toString ());
++  ui->teOm0rxIgnoreList->setPlainText (m_settings->value ("Om0rxIgnoreList", "").toString ());
+@@ -2502 +2647 @@ void MainWindow::dataSink(qint64 frames)
+-  
++
+@@ -2616 +2761 @@ void MainWindow::dataSink(qint64 frames)
+-    dec_data.params.nagainfil=0;	
++    dec_data.params.nagainfil=0;
+@@ -2710 +2855 @@ QString MainWindow::save_wave_file (QString const& name, short const * data, int
+-    }  
++    }
+@@ -4571 +4716 @@ void MainWindow::setup_status_bar (bool vhf)
+-  } 
++  }
+@@ -5560,2 +5705,2 @@ void MainWindow::decode()                                       //decode()
+-    dec_data.params.lapcqonly= (isecs_since_tx > 300); 
+-  } else { 
++    dec_data.params.lapcqonly= (isecs_since_tx > 300);
++  } else {
+@@ -5686 +5831 @@ void MainWindow::decode()                                       //decode()
+-    
++
+@@ -5713 +5858 @@ void MainWindow::decode()                                       //decode()
+-    dec_data.params.lcommonft8b=m_commonFT8b;    
++    dec_data.params.lcommonft8b=m_commonFT8b;
+@@ -5761 +5906 @@ void MainWindow::decode()                                       //decode()
+-  
++
+@@ -5764 +5909 @@ void MainWindow::decode()                                       //decode()
+-  if(hisCall.length()<3) { 
++  if(hisCall.length()<3) {
+@@ -5766 +5911 @@ void MainWindow::decode()                                       //decode()
+-    ::memcpy(dec_data.params.hisbcall,(hisCall+"            ").toLatin1(),12); 
++    ::memcpy(dec_data.params.hisbcall,(hisCall+"            ").toLatin1(),12);
+@@ -5770 +5915 @@ void MainWindow::decode()                                       //decode()
+-  ::memcpy(dec_data.params.hisgrid,(hisGrid+"      ").toLatin1(),6);    
++  ::memcpy(dec_data.params.hisgrid,(hisGrid+"      ").toLatin1(),6);
+@@ -5772 +5917 @@ void MainWindow::decode()                                       //decode()
+-  
++
+@@ -7780 +7925 @@ void MainWindow::pskPost (DecodedText const& decodedtext)
+-    qSpotTime = QDateTime(QDateTime::currentDateTimeUtc().date(), time2, Qt::UTC); 
++    qSpotTime = QDateTime(QDateTime::currentDateTimeUtc().date(), time2, Qt::UTC);
+@@ -7783,2 +7928,2 @@ void MainWindow::pskPost (DecodedText const& decodedtext)
+-    qSpotTime = QDateTime((QDateTime::currentDateTimeUtc().addDays(-1)).date(), time2, Qt::UTC); 
+-  }    
++    qSpotTime = QDateTime((QDateTime::currentDateTimeUtc().addDays(-1)).date(), time2, Qt::UTC);
++  }
+@@ -7992,2 +8137,3 @@ void MainWindow::guiUpdate()
+-    if (m_config.watchdog() && m_mode!="WSPR" && m_mode!="FST4W"
+-        && m_idleMinutes >= m_config.watchdog ()) {
++    auto watchdog_minutes = om0rx_watchdog_minutes ();
++    if (watchdog_minutes && m_mode!="WSPR" && m_mode!="FST4W"
++        && m_idleMinutes >= watchdog_minutes) {
+@@ -8046 +8192 @@ void MainWindow::guiUpdate()
+-      
++
+@@ -8394 +8540 @@ void MainWindow::guiUpdate()
+-    if(m_config.watchdog () && m_mode!="WSPR" && m_mode!="FST4W"
++    if(om0rx_watchdog_minutes () && m_mode!="WSPR" && m_mode!="FST4W"
+@@ -8733 +8879 @@ void MainWindow::startTx2()
+-{    
++{
+@@ -10829 +10975 @@ void MainWindow::on_genStdMsgsPushButton_clicked()          //genStdMsgs button
+-      
++
+@@ -10917,0 +11064,4 @@ void MainWindow::on_logQSOButton_clicked()                 //Log QSO button
++  if (ui->cbOm0rxAutoLog->isChecked ())
++    {
++      QTimer::singleShot (0, m_logDlg.data (), SLOT (accept ()));
++    }
+@@ -10962,0 +11113,5 @@ void MainWindow::acceptQSO (QDateTime const& QSO_date_off, QString const& call,
++  if (ui->cbOm0rxAutoLog->isChecked () || ui->cbOm0rxAutoCall->isChecked () || ui->cbOm0rxAutoCQ->isChecked ())
++    {
++      clearDX ();
++      ui->dxGridEntry->clear ();
++    }
+@@ -11149 +11304 @@ void MainWindow::on_actionFST4_triggered()
+-  m_FFTSize = m_nsps / 2;  
++  m_FFTSize = m_nsps / 2;
+@@ -11262 +11417 @@ void MainWindow::on_actionFT4_triggered()
+-  ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+@@ -11272 +11427 @@ void MainWindow::on_actionFT4_triggered()
+-  ui->lh_decodes_headings_label->setText( "  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+@@ -11331 +11486 @@ void MainWindow::on_actionFT2_triggered()
+-  ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+@@ -11341 +11496 @@ void MainWindow::on_actionFT2_triggered()
+-  ui->lh_decodes_headings_label->setText( "  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+@@ -11403 +11558 @@ void MainWindow::on_actionFT8_triggered()
+-  ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+@@ -11417 +11572 @@ void MainWindow::on_actionFT8_triggered()
+-    ui->lh_decodes_headings_label->setText( "  UTC   dB   DT Freq    " + tr ("Message"));
++    ui->lh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+@@ -11419 +11574 @@ void MainWindow::on_actionFT8_triggered()
+-	
++
+@@ -11570,2 +11725,2 @@ void MainWindow::on_actionJT4_triggered()
+-  ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
+-  ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
+@@ -11645,2 +11800,2 @@ void MainWindow::on_actionJT9_triggered()
+-    ui->lh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
+-    ui->rh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
++    ui->lh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
++    ui->rh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
+@@ -11652,2 +11807,2 @@ void MainWindow::on_actionJT9_triggered()
+-        ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
+-        ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++        ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
++        ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
+@@ -11795,2 +11950,2 @@ void MainWindow::on_actionQ65_triggered()
+-  ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
+-  ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
+@@ -11889,2 +12044,2 @@ void MainWindow::on_actionMSK144_triggered()
+-  ui->lh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
+-  ui->rh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
++  ui->rh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
+@@ -13302,23 +13457,23 @@ void MainWindow::on_actionShort_list_of_add_on_prefixes_and_suffixes_triggered()
+- 1A    1S    3A    3B6   3B8   3B9   3C    3C0   3D2   3D2C  3D2R  3DA   3V    3W    3X   
+- 3Y    3YB   3YP   4J    4L    4S    4U1I  4U1U  4W    4X    5A    5B    5H    5N    5R   
+- 5T    5U    5V    5W    5X    5Z    6W    6Y    7O    7P    7Q    7X    8P    8Q    8R   
+- 9A    9G    9H    9J    9K    9L    9M2   9M6   9N    9Q    9U    9V    9X    9Y    A2   
+- A3    A4    A5    A6    A7    A9    AP    BS7   BV    BV9   BY    C2    C3    C5    C6   
+- C9    CE    CE0X  CE0Y  CE0Z  CE9   CM    CN    CP    CT    CT3   CU    CX    CY0   CY9  
+- D2    D4    D6    DL    DU    E3    E4    EA    EA6   EA8   EA9   EI    EK    EL    EP   
+- ER    ES    ET    EU    EX    EY    EZ    F     FG    FH    FJ    FK    FKC   FM    FO   
+- FOA   FOC   FOM   FP    FR    FRG   FRJ   FRT   FT5W  FT5X  FT5Z  FW    FY    M     MD   
+- MI    MJ    MM    MU    MW    H4    H40   HA    HB    HB0   HC    HC8   HH    HI    HK   
+- HK0A  HK0M  HL    HM    HP    HR    HS    HV    HZ    I     IS    IS0   J2    J3    J5   
+- J6    J7    J8    JA    JDM   JDO   JT    JW    JX    JY    K     KG4   KH0   KH1   KH2  
+- KH3   KH4   KH5   KH5K  KH6   KH7   KH8   KH9   KL    KP1   KP2   KP4   KP5   LA    LU   
+- LX    LY    LZ    OA    OD    OE    OH    OH0   OJ0   OK    OM    ON    OX    OY    OZ   
+- P2    P4    PA    PJ2   PJ7   PY    PY0F  PT0S  PY0T  PZ    R1F   R1M   S0    S2    S5   
+- S7    S9    SM    SP    ST    SU    SV    SVA   SV5   SV9   T2    T30   T31   T32   T33  
+- T5    T7    T8    T9    TA    TF    TG    TI    TI9   TJ    TK    TL    TN    TR    TT   
+- TU    TY    TZ    UA    UA2   UA9   UK    UN    UR    V2    V3    V4    V5    V6    V7   
+- V8    VE    VK    VK0H  VK0M  VK9C  VK9L  VK9M  VK9N  VK9W  VK9X  VP2E  VP2M  VP2V  VP5  
+- VP6   VP6D  VP8   VP8G  VP8H  VP8O  VP8S  VP9   VQ9   VR    VU    VU4   VU7   XE    XF4  
+- XT    XU    XW    XX9   XZ    YA    YB    YI    YJ    YK    YL    YN    YO    YS    YU   
+- YV    YV0   Z2    Z3    ZA    ZB    ZC4   ZD7   ZD8   ZD9   ZF    ZK1N  ZK1S  ZK2   ZK3  
+- ZL    ZL7   ZL8   ZL9   ZP    ZS    ZS8   KC4   E5   
++ 1A    1S    3A    3B6   3B8   3B9   3C    3C0   3D2   3D2C  3D2R  3DA   3V    3W    3X
++ 3Y    3YB   3YP   4J    4L    4S    4U1I  4U1U  4W    4X    5A    5B    5H    5N    5R
++ 5T    5U    5V    5W    5X    5Z    6W    6Y    7O    7P    7Q    7X    8P    8Q    8R
++ 9A    9G    9H    9J    9K    9L    9M2   9M6   9N    9Q    9U    9V    9X    9Y    A2
++ A3    A4    A5    A6    A7    A9    AP    BS7   BV    BV9   BY    C2    C3    C5    C6
++ C9    CE    CE0X  CE0Y  CE0Z  CE9   CM    CN    CP    CT    CT3   CU    CX    CY0   CY9
++ D2    D4    D6    DL    DU    E3    E4    EA    EA6   EA8   EA9   EI    EK    EL    EP
++ ER    ES    ET    EU    EX    EY    EZ    F     FG    FH    FJ    FK    FKC   FM    FO
++ FOA   FOC   FOM   FP    FR    FRG   FRJ   FRT   FT5W  FT5X  FT5Z  FW    FY    M     MD
++ MI    MJ    MM    MU    MW    H4    H40   HA    HB    HB0   HC    HC8   HH    HI    HK
++ HK0A  HK0M  HL    HM    HP    HR    HS    HV    HZ    I     IS    IS0   J2    J3    J5
++ J6    J7    J8    JA    JDM   JDO   JT    JW    JX    JY    K     KG4   KH0   KH1   KH2
++ KH3   KH4   KH5   KH5K  KH6   KH7   KH8   KH9   KL    KP1   KP2   KP4   KP5   LA    LU
++ LX    LY    LZ    OA    OD    OE    OH    OH0   OJ0   OK    OM    ON    OX    OY    OZ
++ P2    P4    PA    PJ2   PJ7   PY    PY0F  PT0S  PY0T  PZ    R1F   R1M   S0    S2    S5
++ S7    S9    SM    SP    ST    SU    SV    SVA   SV5   SV9   T2    T30   T31   T32   T33
++ T5    T7    T8    T9    TA    TF    TG    TI    TI9   TJ    TK    TL    TN    TR    TT
++ TU    TY    TZ    UA    UA2   UA9   UK    UN    UR    V2    V3    V4    V5    V6    V7
++ V8    VE    VK    VK0H  VK0M  VK9C  VK9L  VK9M  VK9N  VK9W  VK9X  VP2E  VP2M  VP2V  VP5
++ VP6   VP6D  VP8   VP8G  VP8H  VP8O  VP8S  VP9   VQ9   VR    VU    VU4   VU7   XE    XF4
++ XT    XU    XW    XX9   XZ    YA    YB    YI    YJ    YK    YL    YN    YO    YS    YU
++ YV    YV0   Z2    Z3    ZA    ZB    ZC4   ZD7   ZD8   ZD9   ZF    ZK1N  ZK1S  ZK2   ZK3
++ ZL    ZL7   ZL8   ZL9   ZP    ZS    ZS8   KC4   E5
+@@ -13450 +13605 @@ void MainWindow::on_sbTR_valueChanged(int value)
+-            ui->lh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++            ui->lh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+@@ -13453 +13608 @@ void MainWindow::on_sbTR_valueChanged(int value)
+-                ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++                ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+@@ -13458 +13613 @@ void MainWindow::on_sbTR_valueChanged(int value)
+-            ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++            ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
+@@ -13461 +13616 @@ void MainWindow::on_sbTR_valueChanged(int value)
+-                ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++                ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
+@@ -14499 +14654 @@ void MainWindow::tx_watchdog (bool triggered)
+-      if (m_config.watchdog () && m_mode!="WSPR" && m_mode!="FST4W") {
++      if (om0rx_watchdog_minutes () && m_mode!="WSPR" && m_mode!="FST4W") {
+@@ -14515,0 +14671,16 @@ void MainWindow::tx_watchdog (bool triggered)
++int MainWindow::om0rx_watchdog_minutes () const
++{
++  if (ui)
++    {
++      if (m_mode == "FT4" && ui->sbOm0rxWatchdogFT4)
++        {
++          return ui->sbOm0rxWatchdogFT4->value ();
++        }
++      if ((m_mode == "FT8" || m_mode == "FT2") && ui->sbOm0rxWatchdogFT8)
++        {
++          return ui->sbOm0rxWatchdogFT8->value ();
++        }
++    }
++  return m_config.watchdog ();
++}
++
+@@ -14519 +14690,2 @@ void MainWindow::update_watchdog_label ()
+-  if (m_config.watchdog () && m_mode!="WSPR" && m_mode!="FST4W")
++  auto watchdog_minutes = om0rx_watchdog_minutes ();
++  if (watchdog_minutes && m_mode!="WSPR" && m_mode!="FST4W")
+@@ -14521 +14693 @@ void MainWindow::update_watchdog_label ()
+-      watchdog_label.setText (tr (" WD:%1m ").arg (m_config.watchdog () - m_idleMinutes));
++      watchdog_label.setText (tr (" WD:%1m ").arg (watchdog_minutes - m_idleMinutes));
+@@ -14524 +14696 @@ void MainWindow::update_watchdog_label ()
+-      if ((m_config.watchdog() - m_idleMinutes == 1) && (m_auto or m_tune))
++      if ((watchdog_minutes - m_idleMinutes == 1) && (m_auto or m_tune))
+@@ -14526 +14698 @@ void MainWindow::update_watchdog_label ()
+-      if (m_config.watchdog() - m_idleMinutes > 1) watchdog_label.setStyleSheet ("");
++      if (watchdog_minutes - m_idleMinutes > 1) watchdog_label.setStyleSheet ("");
+@@ -14606 +14778 @@ void MainWindow::readWidebandDecodes()
+-      qSpotTime = QDateTime(QDateTime::currentDateTimeUtc().date(), time2, Qt::UTC); 
++      qSpotTime = QDateTime(QDateTime::currentDateTimeUtc().date(), time2, Qt::UTC);
+@@ -14609,2 +14781,2 @@ void MainWindow::readWidebandDecodes()
+-      qSpotTime = QDateTime((QDateTime::currentDateTimeUtc().addDays(-1)).date(), time2, Qt::UTC); 
+-    }        
++      qSpotTime = QDateTime((QDateTime::currentDateTimeUtc().addDays(-1)).date(), time2, Qt::UTC);
++    }
+@@ -15887,0 +16060 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
++      auto previous_call = ui->dxCallEntry->text ().trimmed ().toUpper ();
+@@ -15888,0 +16062,4 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
++      if (previous_call != dx_call)
++        {
++          set_om0rx_active_status_pending (dx_call);
++        }
+@@ -15912,0 +16090,553 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
++void MainWindow::send_om0rx_automation_policy (bool planner_tick)
++{
++  auto auto_call = ui->cbOm0rxAutoCall->isChecked ();
++  auto auto_cq = ui->cbOm0rxAutoCQ->isChecked ();
++  if (planner_tick && !auto_call && !auto_cq)
++    {
++      return;
++    }
++
++  QJsonObject automation;
++  automation.insert ("autoCall", auto_call);
++  automation.insert ("autoCQ", auto_cq);
++  automation.insert ("cqOnly", ui->cbCQonly->isVisible () && ui->cbCQonly->isChecked ());
++  automation.insert ("minSignal", ui->sbOm0rxMinSignal->value ());
++  automation.insert ("autoCallLimit", ui->sbOm0rxAutoCallLimit->value ());
++  automation.insert ("autoCQLimit", ui->sbOm0rxAutoCQCount->value ());
++  automation.insert ("txDf", ui->TxFreqSpinBox->value ());
++  automation.insert ("txEvenFirst", ui->txFirstCheckBox->isChecked ());
++  automation.insert ("holdTxFreq", ui->cbHoldTxFreq->isChecked ());
++  automation.insert ("watchdogFT8", ui->sbOm0rxWatchdogFT8->value ());
++  automation.insert ("watchdogFT4", ui->sbOm0rxWatchdogFT4->value ());
++  automation.insert ("hopIntervalSeconds", ui->sbOm0rxHopInterval->value () * 60);
++  automation.insert ("bandHopping", ui->cbOm0rxBandHopping->isChecked ());
++  automation.insert ("modeSwitching", ui->cbOm0rxModeSwitching->isChecked ());
++  automation.insert ("treat73AsCQ", ui->cbOm0rxTreat73AsCQ->isChecked ());
++  automation.insert ("avoidLogged", ui->cbOm0rxAvoidLogged->isChecked ());
++  automation.insert ("requireHeardBeforeCall", ui->cbOm0rxRequireHeard->isChecked ());
++  automation.insert ("autoLogToWavelog", ui->cbOm0rxAutoLog->isChecked ());
++  automation.insert ("needCall", ui->cbOm0rxNeedCall->isChecked ());
++  automation.insert ("needDxcc", ui->cbOm0rxNeedDxcc->isChecked ());
++  automation.insert ("needBand", ui->cbOm0rxNeedBand->isChecked ());
++  automation.insert ("needMode", ui->cbOm0rxNeedMode->isChecked ());
++  automation.insert ("needGrid", ui->cbOm0rxNeedGrid->isChecked ());
++  QString priority {"last"};
++  if (1 == ui->cbOm0rxPriority->currentIndex ())
++    {
++      priority = "signal";
++    }
++  else if (2 == ui->cbOm0rxPriority->currentIndex ())
++    {
++      priority = "distance";
++    }
++  automation.insert ("priority", priority);
++  automation.insert ("bandPlan", ui->teOm0rxBandPlan->toPlainText ());
++  automation.insert ("ignoreList", ui->teOm0rxIgnoreList->toPlainText ());
++  automation.insert ("force", false);
++  automation.insert ("enableTx", auto_call);
++
++  QJsonObject root;
++  root.insert ("source", "native-wsjtx");
++  root.insert ("automation", automation);
++
++  auto path = planner_tick ? QString {"/api/wsjtx/automation/tick"} : QString {"/api/wsjtx/automation/settings"};
++  QNetworkRequest request {QUrl {QString {"http://127.0.0.1:8080%1"}.arg (path)}};
++  request.setHeader (QNetworkRequest::ContentTypeHeader, "application/json");
++  auto reply = m_network_manager.post (request, QJsonDocument {root}.toJson (QJsonDocument::Compact));
++  connect (reply, &QNetworkReply::finished, this, [this, reply, planner_tick] {
++    auto status_code = reply->attribute (QNetworkRequest::HttpStatusCodeAttribute).toInt ();
++    QString text;
++    QString tooltip_text;
++    if (QNetworkReply::NoError != reply->error ())
++      {
++        text = QString {"OM0RX error: %1"}.arg (reply->errorString ());
++      }
++    else if (planner_tick)
++      {
++        auto doc = QJsonDocument::fromJson (reply->readAll ());
++        auto root = doc.object ();
++        auto action = root.value ("action").toString ("ok");
++        auto reason = root.value ("reason").toString ();
++        text = reason.isEmpty () ? QString {"OM0RX %1"}.arg (action) : QString {"OM0RX %1: %2"}.arg (action, reason);
++        tooltip_text = text;
++        QStringList detail;
++        auto automation = root.value ("automation").toObject ();
++        auto panel = automation.value ("reason_panel").toObject ();
++        if (!panel.isEmpty ())
++          {
++            detail << QString {"State: %1"}.arg (panel.value ("state").toString ());
++            auto target = panel.value ("target").toObject ();
++            auto target_call = target.value ("call").toString ();
++            if (!target_call.isEmpty ())
++              {
++                detail << QString {"Target: %1 %2 %3 score %4"}.arg (
++                    target_call,
++                    target.value ("band").toString (),
++                    target.value ("mode").toString (),
++                    QString::number (target.value ("score").toInt ()));
++              }
++            auto why_selected = panel.value ("why_selected").toString ();
++            if (!why_selected.isEmpty ())
++              {
++                detail << QString {"Why selected: %1"}.arg (why_selected);
++              }
++            auto why_not_tx = panel.value ("why_not_tx_now");
++            if (why_not_tx.isString () && !why_not_tx.toString ().isEmpty ())
++              {
++                detail << QString {"Why not TX: %1"}.arg (why_not_tx.toString ());
++              }
++            else if (why_not_tx.isArray ())
++              {
++                QStringList reasons;
++                for (auto const& value: why_not_tx.toArray ())
++                  {
++                    reasons << value.toString ();
++                  }
++                if (!reasons.isEmpty ())
++                  {
++                    detail << QString {"Why not TX: %1"}.arg (reasons.join (", "));
++                  }
++              }
++            auto rejected = panel.value ("eligibility").toObject ().value ("rejected").toObject ();
++            if (!rejected.isEmpty ())
++              {
++                QStringList counts;
++                for (auto const& key: rejected.keys ())
++                  {
++                    counts << QString {"%1=%2"}.arg (key).arg (rejected.value (key).toInt ());
++                  }
++                detail << QString {"Rejected: %1"}.arg (counts.join (", "));
++              }
++          }
++        if (!detail.isEmpty ())
++          {
++            tooltip_text = text + QString {"\n\n%1"}.arg (detail.join ("\n"));
++          }
++      }
++    else
++      {
++        text = status_code >= 200 && status_code < 300 ? "OM0RX policy ok" : QString {"OM0RX HTTP %1"}.arg (status_code);
++      }
++    auto label_width = ui->labOm0rxAutomation->width ();
++    if (label_width < 80)
++      {
++        label_width = 360;
++      }
++    if (tooltip_text.isEmpty ())
++      {
++        tooltip_text = text;
++      }
++    ui->labOm0rxAutomation->setText (ui->labOm0rxAutomation->fontMetrics ().elidedText (text, Qt::ElideRight, label_width - 8));
++    ui->labOm0rxAutomation->setToolTip (tooltip_text);
++    reply->deleteLater ();
++  });
++
++  if (auto_call || auto_cq)
++    {
++      if (!m_om0rx_automation_timer.isActive ())
++        {
++          m_om0rx_automation_timer.start ();
++        }
++    }
++  else
++    {
++      m_om0rx_automation_timer.stop ();
++    }
++}
++
++void MainWindow::pulse_om0rx_automation ()
++{
++  send_om0rx_automation_policy (true);
++}
++
++void MainWindow::request_om0rx_decode_status (double freq_hz, QString const& callsign,
++                                              bool, int,
++                                              QString const& grid, QString const& message,
++                                              int snr)
++{
++  auto call = callsign.trimmed ().toUpper ();
++  if (call.isEmpty () || call.startsWith ('<'))
++    {
++      return;
++    }
++  auto active_call = ui->dxCallEntry->text ().trimmed ().toUpper ();
++  auto active_base = Radio::base_callsign (active_call).toUpper ();
++  auto status_base = Radio::base_callsign (call).toUpper ();
++  auto status_is_active_qso = active_call == call
++      || (!active_base.isEmpty () && active_base == status_base);
++  if (status_is_active_qso)
++    {
++      set_om0rx_active_status_pending (call);
++    }
++  auto band = m_currentBand.trimmed ();
++  auto mode = m_mode.trimmed ().toUpper ();
++  auto cache_key = QString {"%1|%2|%3"}.arg (call, band, mode);
++  if (m_om0rx_status_cache.contains (cache_key))
++    {
++      auto parts = m_om0rx_status_cache.value (cache_key).split ('|');
++      QJsonObject cached;
++      if (parts.size () >= 3)
++        {
++          cached.insert ("call_status", parts.value (0));
++          cached.insert ("dxcc_status", parts.value (1));
++          cached.insert ("country", parts.value (2));
++          if (parts.size () >= 6)
++            {
++              cached.insert ("dxcc_tag", parts.value (3));
++              cached.insert ("cq_zone", parts.value (4));
++              cached.insert ("itu_zone", parts.value (5));
++            }
++      QTimer::singleShot (0, this, [this, call, cached] {
++        apply_om0rx_decode_status (call, cached);
++      });
++    }
++    }
++  QTimer::singleShot (0, this, [this, call] {
++    ui->decodedTextBrowser->annotate_callsign (call, QString {"Checking | Checking"}, QColor {});
++    ui->decodedTextBrowser2->annotate_callsign (call, QString {"Checking | Checking"}, QColor {});
++  });
++  if (m_om0rx_status_inflight.contains (cache_key))
++    {
++      return;
++    }
++  m_om0rx_status_inflight.insert (cache_key);
++
++  QJsonObject payload;
++  payload.insert ("call", call);
++  payload.insert ("band", band);
++  payload.insert ("mode", mode);
++  payload.insert ("frequency_hz", static_cast<double> (m_freqNominal));
++  payload.insert ("audioOffset", static_cast<int> (freq_hz));
++  payload.insert ("grid", grid.trimmed ().toUpper ());
++  payload.insert ("message", message.trimmed ());
++  payload.insert ("snr", snr);
++
++  QNetworkRequest request {QUrl {"http://127.0.0.1:8080/api/wsjtx/decode-status"}};
++  request.setHeader (QNetworkRequest::ContentTypeHeader, "application/json");
++  auto reply = m_network_manager.post (request, QJsonDocument {payload}.toJson (QJsonDocument::Compact));
++  connect (reply, &QNetworkReply::finished, this, [this, reply, call, cache_key] {
++    m_om0rx_status_inflight.remove (cache_key);
++    if (QNetworkReply::NoError == reply->error ())
++      {
++        auto doc = QJsonDocument::fromJson (reply->readAll ());
++        auto status = doc.object ();
++        if (status.value ("success").toBool ())
++          {
++            auto call_status = status.value ("call_status").toString ("Unknown");
++            auto dxcc_status = status.value ("dxcc_status").toString ("Unknown");
++            auto country = status.value ("country").toString ();
++            auto dxcc_tag = status.value ("dxcc_tag").toString ();
++            auto cq_zone = status.value ("cq_zone").toString ();
++            auto itu_zone = status.value ("itu_zone").toString ();
++            m_om0rx_status_cache.insert (
++                cache_key,
++                QString {"%1|%2|%3|%4|%5|%6"}.arg (
++                    call_status, dxcc_status, country, dxcc_tag, cq_zone, itu_zone));
++            QTimer::singleShot (0, this, [this, call, status] {
++              apply_om0rx_decode_status (call, status);
++            });
++          }
++      }
++    reply->deleteLater ();
++  });
++}
++
++void MainWindow::set_om0rx_active_status_pending (QString const& callsign)
++{
++  auto call = callsign.trimmed ().toUpper ();
++  if (call.isEmpty ())
++    {
++      return;
++    }
++  auto pending_style = QString {
++      "QLabel {"
++      "background: #2f3a44;"
++      "border: 1px solid #465360;"
++      "border-radius: 3px;"
++      "color: #ffffff;"
++      "font-weight: 700;"
++      "padding: 3px 8px;"
++      "}"};
++  ui->labOm0rxCallStatus->setText (tr ("CALL Checking"));
++  ui->labOm0rxCallStatus->setToolTip (tr ("%1 call status lookup is pending").arg (call));
++  ui->labOm0rxCallStatus->setStyleSheet (pending_style);
++  ui->labOm0rxDxccStatus->setText (tr ("DXCC Checking"));
++  ui->labOm0rxDxccStatus->setToolTip (tr ("%1 DXCC status lookup is pending").arg (call));
++  ui->labOm0rxDxccStatus->setStyleSheet (pending_style);
++
++  auto entity_width = ui->labOm0rxEntityStatus->width ();
++  if (entity_width < 80)
++    {
++      entity_width = 180;
++    }
++  auto entity_text = tr ("%1 entity checking").arg (call);
++  ui->labOm0rxEntityStatus->setText (
++      ui->labOm0rxEntityStatus->fontMetrics ().elidedText (entity_text, Qt::ElideRight, entity_width - 8));
++  ui->labOm0rxEntityStatus->setToolTip (tr ("%1 entity lookup is pending").arg (call));
++  ui->labOm0rxEntityStatus->setStyleSheet (pending_style);
++}
++
++void MainWindow::apply_om0rx_decode_status (QString const& callsign, QJsonObject const& status)
++{
++  auto call_status = status.value ("call_status").toString ("Unknown");
++  auto dxcc_status = status.value ("dxcc_status").toString ("Unknown");
++  auto country = status.value ("country").toString ();
++  auto dxcc_tag = status.value ("dxcc_tag").toString ();
++  auto cq_zone = status.value ("cq_zone").toString ();
++  auto itu_zone = status.value ("itu_zone").toString ();
++  auto compact_call = call_status;
++  compact_call.replace ("Confirmed", "Cfm");
++  compact_call.replace ("Worked", "Wkd");
++  compact_call.replace ("New Call", "NewCall");
++  compact_call.replace ("New Band", "NewBand");
++  compact_call.replace ("New Mode", "NewMode");
++  auto compact_dxcc = dxcc_status;
++  compact_dxcc.replace ("Confirmed", "Cfm");
++  compact_dxcc.replace ("Worked", "Wkd");
++  compact_dxcc.replace ("New Band", "NewBand");
++  compact_dxcc.replace ("New Mode", "NewMode");
++  auto active_call = ui->dxCallEntry->text ().trimmed ().toUpper ();
++  auto active_base = Radio::base_callsign (active_call).toUpper ();
++  auto status_base = Radio::base_callsign (callsign).toUpper ();
++  auto status_is_active_qso = active_call.isEmpty ()
++      || active_call == callsign
++      || (!active_base.isEmpty () && active_base == status_base);
++
++  auto status_colours = [] (QString const& text) {
++    auto normalized = text.toLower ();
++    QColor bg {95, 107, 118};
++    QColor fg {255, 255, 255};
++    if (normalized.contains ("atno") || normalized.contains ("new call"))
++      {
++        bg = QColor {210, 68, 18};
++        fg = QColor {255, 255, 255};
++      }
++    else if (normalized.contains ("new band") || normalized.contains ("new mode"))
++      {
++        bg = QColor {0, 95, 168};
++        fg = QColor {255, 255, 255};
++      }
++    else if (normalized.contains ("worked"))
++      {
++        bg = QColor {92, 95, 102};
++        fg = QColor {255, 231, 117};
++      }
++    else if (normalized.contains ("confirmed"))
++      {
++        bg = QColor {0, 132, 78};
++        fg = QColor {255, 255, 255};
++      }
++    return qMakePair (bg, fg);
++  };
++  auto badge_style = [] (QColor const& bg, QColor const& fg) {
++    auto border = bg.darker (125);
++    return QString {
++        "QLabel {"
++        "background: %1;"
++        "border: 1px solid %2;"
++        "border-radius: 3px;"
++        "color: %3;"
++        "font-weight: 700;"
++        "padding: 3px 8px;"
++        "}"}.arg (bg.name (), border.name (), fg.name ());
++  };
++  auto call_colours = status_colours (call_status);
++  auto dxcc_colours = status_colours (dxcc_status);
++
++  auto entity_text = country;
++  if (entity_text.isEmpty ())
++    {
++      entity_text = dxcc_tag.isEmpty () ? QString {"Entity unknown"} : dxcc_tag;
++    }
++  auto zone_text = QStringList {};
++  if (!cq_zone.isEmpty ())
++    {
++      zone_text << QString {"CQ %1"}.arg (cq_zone);
++    }
++  if (!itu_zone.isEmpty ())
++    {
++      zone_text << QString {"ITU %1"}.arg (itu_zone);
++    }
++  auto entity_summary = zone_text.isEmpty ()
++      ? entity_text
++      : QString {"%1 | %2"}.arg (entity_text, zone_text.join (" / "));
++  auto entity_width = ui->labOm0rxEntityStatus->width ();
++  if (entity_width < 80)
++    {
++      entity_width = 180;
++    }
++  if (status_is_active_qso)
++    {
++      auto status_text = QString {"%1  CALL %2  DXCC %3"}.arg (callsign, compact_call, compact_dxcc);
++      auto label_width = ui->labOm0rxAutomation->width ();
++      if (label_width < 80)
++        {
++          label_width = 360;
++        }
++      ui->labOm0rxAutomation->setText (
++          ui->labOm0rxAutomation->fontMetrics ().elidedText (status_text, Qt::ElideRight, label_width - 8));
++      ui->labOm0rxAutomation->setToolTip (
++          QString {"%1: call %2 | DXCC %3%4%5%6"}.arg (
++              callsign,
++              call_status,
++              dxcc_status,
++              country.isEmpty () ? QString {} : QString {" | %1"}.arg (country),
++              cq_zone.isEmpty () ? QString {} : QString {" | CQ %1"}.arg (cq_zone),
++              itu_zone.isEmpty () ? QString {} : QString {" | ITU %1"}.arg (itu_zone)));
++      ui->labOm0rxCallStatus->setText (QString {"CALL %1"}.arg (compact_call));
++      ui->labOm0rxCallStatus->setToolTip (QString {"%1 call status: %2"}.arg (callsign, call_status));
++      ui->labOm0rxCallStatus->setStyleSheet (badge_style (call_colours.first, call_colours.second));
++      ui->labOm0rxDxccStatus->setText (QString {"DXCC %1"}.arg (compact_dxcc));
++      ui->labOm0rxDxccStatus->setToolTip (QString {"%1 DXCC status: %2"}.arg (callsign, dxcc_status));
++      ui->labOm0rxDxccStatus->setStyleSheet (badge_style (dxcc_colours.first, dxcc_colours.second));
++      ui->labOm0rxEntityStatus->setText (
++          ui->labOm0rxEntityStatus->fontMetrics ().elidedText (entity_summary, Qt::ElideRight, entity_width - 8));
++      ui->labOm0rxEntityStatus->setToolTip (QString {"%1 entity: %2"}.arg (callsign, entity_summary));
++    }
++
++  auto combined = QString {"%1 %2"}.arg (call_status, dxcc_status).toLower ();
++  QColor bg {88, 88, 88};
++  QColor fg {255, 255, 255};
++  if (combined.contains ("atno") || combined.contains ("new call"))
++    {
++      bg = QColor {225, 75, 0};
++      fg = QColor {255, 255, 255};
++    }
++  else if (combined.contains ("new band") || combined.contains ("new mode"))
++    {
++      bg = QColor {0, 100, 255};
++      fg = QColor {255, 255, 255};
++    }
++  else if (combined.contains ("worked"))
++    {
++      bg = QColor {110, 110, 110};
++      fg = QColor {255, 255, 0};
++    }
++  else if (combined.contains ("confirmed"))
++    {
++      bg = QColor {0, 130, 65};
++      fg = QColor {255, 255, 255};
++    }
++
++  ui->decodedTextBrowser->highlight_callsign (callsign, bg, fg, false);
++  ui->decodedTextBrowser2->highlight_callsign (callsign, bg, fg, false);
++  ui->decodedTextBrowser->annotate_callsign (callsign, QString {"%1 | %2"}.arg (call_status, dxcc_status), fg);
++  ui->decodedTextBrowser2->annotate_callsign (callsign, QString {"%1 | %2"}.arg (call_status, dxcc_status), fg);
++}
++
 +void MainWindow::remote_start_target_qso (QString const& payload_json)
 +{
 +  QJsonParseError parse_error;
@@ -312,30 +1279,934 @@ index c75aa42..140cefb 100644
 +  QApplication::alert (this);
 +}
 +
- QString MainWindow::WSPR_message()
- {
-   QString sdBm,msg0,msg1,msg2;
+@@ -16073,0 +16804,274 @@ void MainWindow::on_pb60E_clicked()
++QStringList MainWindow::om0rx_current_band_plan () const
++{
++  struct PlanEntry
++  {
++    int hour;
++    QStringList bands;
++  };
++
++  QVector<PlanEntry> entries;
++  auto const lines = ui->teOm0rxBandPlan->toPlainText ().split (QRegularExpression {R"(\r?\n)"}, Qt::SkipEmptyParts);
++  for (auto line: lines)
++    {
++      auto comment_at = line.indexOf (QChar {'#'});
++      if (comment_at >= 0)
++        {
++          line = line.left (comment_at);
++        }
++      line = line.trimmed ();
++      if (line.isEmpty () || !line.contains (QChar {':'}))
++        {
++          continue;
++        }
++      auto const hour_text = line.section (QChar {':'}, 0, 0).trimmed ();
++      bool ok {false};
++      auto hour = hour_text.toInt (&ok);
++      if (!ok || hour < 0 || hour > 23)
++        {
++          continue;
++        }
++      auto const band_text = line.section (QChar {':'}, 1).trimmed ();
++      QStringList bands;
++      for (auto band: band_text.split (QRegularExpression {R"([,\s]+)"}, Qt::SkipEmptyParts))
++        {
++          band = band.trimmed ().toLower ();
++          if (QRegularExpression {R"(^\d{1,3}m$)"}.match (band).hasMatch ())
++            {
++              bands.append (band);
++            }
++        }
++      if (!bands.isEmpty ())
++        {
++          entries.append ({hour, bands});
++        }
++    }
++
++  if (entries.isEmpty ())
++    {
++      return {};
++    }
++
++  auto const current_hour = QDateTime::currentDateTimeUtc ().time ().hour ();
++  int selected {-1};
++  int selected_delta {24};
++  for (auto index = 0; index < entries.size (); ++index)
++    {
++      auto delta = (current_hour - entries[index].hour + 24) % 24;
++      if (delta < selected_delta)
++        {
++          selected = index;
++          selected_delta = delta;
++        }
++    }
++  return selected >= 0 ? entries[selected].bands : QStringList {};
++}
++
++namespace
++{
++struct Om0rxHuntSlot
++{
++  QString band;
++  QString mode;
++};
++
++qint64 om0rx_hunting_frequency_hz (QString const& band, QString const& mode)
++{
++  auto normalized = band.trimmed ().toLower ();
++  auto normalized_mode = mode.trimmed ().toUpper ();
++
++  if (normalized_mode == "FT4")
++    {
++      if (normalized == "80m") return 3575000;
++      if (normalized == "40m") return 7047500;
++      if (normalized == "30m") return 10140000;
++      if (normalized == "20m") return 14080000;
++      if (normalized == "17m") return 18104000;
++      if (normalized == "15m") return 21140000;
++      if (normalized == "12m") return 24919000;
++      if (normalized == "10m") return 28180000;
++      return 0;
++    }
++
++  if (normalized_mode == "FT8")
++    {
++      if (normalized == "160m") return 1840000;
++      if (normalized == "80m") return 3573000;
++      if (normalized == "60m") return 5357000;
++      if (normalized == "40m") return 7074000;
++      if (normalized == "30m") return 10136000;
++      if (normalized == "20m") return 14074000;
++      if (normalized == "17m") return 18100000;
++      if (normalized == "15m") return 21074000;
++      if (normalized == "12m") return 24915000;
++      if (normalized == "10m") return 28074000;
++      if (normalized == "6m") return 50313000;
++      if (normalized == "2m") return 144174000;
++      if (normalized == "70m" || normalized == "70cm") return 432174000;
++    }
++
++  return 0;
++}
++
++QVector<Om0rxHuntSlot> om0rx_hunting_sequence (QStringList const& plan,
++                                               QString const& current_mode,
++                                               bool mode_switching)
++{
++  QVector<Om0rxHuntSlot> sequence;
++  auto normalized_current_mode = current_mode.trimmed ().toUpper ();
++  if (normalized_current_mode != "FT4")
++    {
++      normalized_current_mode = "FT8";
++    }
++  for (auto band: plan)
++    {
++      band = band.trimmed ().toLower ();
++      if (band.isEmpty ())
++        {
++          continue;
++        }
++      if (mode_switching)
++        {
++          if (om0rx_hunting_frequency_hz (band, "FT8") > 0)
++            {
++              sequence.append ({band, "FT8"});
++            }
++          if (om0rx_hunting_frequency_hz (band, "FT4") > 0)
++            {
++              sequence.append ({band, "FT4"});
++            }
++        }
++      else if (om0rx_hunting_frequency_hz (band, normalized_current_mode) > 0)
++        {
++          sequence.append ({band, normalized_current_mode});
++        }
++    }
++  return sequence;
++}
++}
++
++bool MainWindow::om0rx_qsy_to_band_mode (QString const& band, QString const& mode)
++{
++  auto target_mode = mode.trimmed ().toUpper ();
++  auto const hz = om0rx_hunting_frequency_hz (band, target_mode);
++
++  if (hz <= 0)
++    {
++      return false;
++    }
++
++  if (target_mode == "FT4" && m_mode != "FT4")
++    {
++      on_actionFT4_triggered ();
++    }
++  else if (target_mode == "FT8" && m_mode != "FT8")
++    {
++      on_actionFT8_triggered ();
++    }
++
++  auto const& row = m_config.frequencies ()->best_working_frequency (hz);
++  if (row >= 0)
++    {
++      ui->bandComboBox->setCurrentIndex (row);
++      on_bandComboBox_activated (row);
++    }
++  else
++    {
++      setRig (hz);
++    }
++  return true;
++}
++
++void MainWindow::om0rx_band_hopping_tick ()
++{
++  if (!ui->cbOm0rxBandHopping->isChecked ())
++    {
++      return;
++    }
++  if (m_transmitting || m_tune || ui->tuneButton->isChecked ())
++    {
++      return;
++    }
++  if (!ui->dxCallEntry->text ().trimmed ().isEmpty () || (m_auto && !m_hisCall.trimmed ().isEmpty ()))
++    {
++      return;
++    }
++
++  static QDateTime last_hop_at;
++  static QDateTime last_decode_activity_at;
++  static QDateTime last_workable_seen_at;
++  static QString last_decode_signature;
++  auto const now = QDateTime::currentDateTimeUtc ();
++  auto const interval_seconds = qMax (60, ui->sbOm0rxHopInterval->value () * 60);
++  auto const no_decode_seconds = qMin (interval_seconds, 120);
++  auto const no_workable_seconds = qMin (interval_seconds, 180);
++  auto const decode_signature =
++      (ui->decodedTextBrowser->toPlainText ().right (4096)
++       + ui->decodedTextBrowser2->toPlainText ().right (4096));
++  if (!last_decode_activity_at.isValid () || decode_signature != last_decode_signature)
++    {
++      last_decode_activity_at = now;
++      last_decode_signature = decode_signature;
++    }
++  auto const has_workable_label =
++      decode_signature.contains ("New Call", Qt::CaseInsensitive)
++      || decode_signature.contains ("ATNO", Qt::CaseInsensitive);
++  if (!last_workable_seen_at.isValid () || has_workable_label)
++    {
++      last_workable_seen_at = now;
++    }
++  if (!last_hop_at.isValid ())
++    {
++      last_hop_at = now;
++      return;
++    }
++  auto const fixed_interval_due = last_hop_at.secsTo (now) >= interval_seconds;
++  auto const no_decodes_due =
++      last_decode_activity_at.isValid () && last_decode_activity_at.secsTo (now) >= no_decode_seconds;
++  auto const no_workable_due =
++      last_workable_seen_at.isValid () && last_workable_seen_at.secsTo (now) >= no_workable_seconds;
++  if (!fixed_interval_due && !no_decodes_due && !no_workable_due)
++    {
++      return;
++    }
++
++  auto const plan = om0rx_current_band_plan ();
++  if (plan.isEmpty ())
++    {
++      return;
++    }
++
++  auto current = m_currentBand.trimmed ().toLower ();
++  auto current_mode = m_mode.trimmed ().toUpper ();
++  auto mode_switching = ui->cbOm0rxModeSwitching->isChecked ();
++  auto const sequence = om0rx_hunting_sequence (plan, current_mode, mode_switching);
++  if (sequence.isEmpty ())
++    {
++      last_hop_at = now;
++      return;
++    }
++  auto current_slot_index = -1;
++  for (auto index = 0; index < sequence.size (); ++index)
++    {
++      if (sequence[index].band == current && sequence[index].mode == current_mode)
++        {
++          current_slot_index = index;
++          break;
++        }
++    }
++  auto const target_slot = sequence.value ((current_slot_index + 1 + sequence.size ()) % sequence.size ());
++  if (target_slot.band.isEmpty () || target_slot.mode.isEmpty ())
++    {
++      last_hop_at = now;
++      return;
++    }
++
++  if (om0rx_qsy_to_band_mode (target_slot.band, target_slot.mode))
++    {
++      last_hop_at = now;
++      last_decode_activity_at = now;
++      last_workable_seen_at = now;
++      last_decode_signature = decode_signature;
++      showStatusMessage (tr ("OM0RX hunt hop: %1 %2").arg (target_slot.band, target_slot.mode));
++    }
++}
++
 diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
-index 366e1a7..84c9f6c 100644
+index 366e1a7..76998c9 100644
 --- a/widgets/mainwindow.h
 +++ b/widgets/mainwindow.h
-@@ -462,6 +462,7 @@ private slots:
-   void remote_configure (QString const& mode, quint32 frequency_tolerance, QString const& submode
-                          , bool fast_mode, quint32 tr_period, quint32 rx_df, QString const& dx_call
-                          , QString const& dx_grid, bool generate_messages);
+@@ -24,0 +25 @@
++#include <QHash>
+@@ -84,0 +86 @@ class QHostInfo;
++class QJsonObject;
+@@ -464,0 +467,9 @@ private slots:
 +  void remote_start_target_qso (QString const& payload_json);
-   void callSandP2(int nline);
-   void refreshHoundQueueDisplay();
-   void queueActiveWindowHound2(QString text);
++  void send_om0rx_automation_policy (bool planner_tick = false);
++  void pulse_om0rx_automation ();
++  void request_om0rx_decode_status (double freq_hz, QString const& callsign,
++                                    bool is_cq, int time_sec,
++                                    QString const& grid, QString const& message,
++                                    int snr);
++  void set_om0rx_active_status_pending (QString const& callsign);
++  void apply_om0rx_decode_status (QString const& callsign, QJsonObject const& status);
+@@ -519,0 +531,2 @@ private:
++  QSet<QString> m_om0rx_status_inflight;
++  QHash<QString, QString> m_om0rx_status_cache;
+@@ -821,0 +835 @@ private:
++  QTimer m_om0rx_automation_timer;
+@@ -1049,0 +1064,4 @@ private:
++  int om0rx_watchdog_minutes () const;
++  QStringList om0rx_current_band_plan () const;
++  void om0rx_band_hopping_tick ();
++  bool om0rx_qsy_to_band_mode (QString const& band, QString const& mode);
+diff --git a/widgets/mainwindow.ui b/widgets/mainwindow.ui
+index c7cfaa2..6cd4e04 100644
+--- a/widgets/mainwindow.ui
++++ b/widgets/mainwindow.ui
+@@ -1566,0 +1567,168 @@ When not checked you can view the calibration results.</string>
++                  <item row="4" column="0" colspan="2">
++                   <layout class="QVBoxLayout" name="verticalLayoutOm0rxAutomation">
++                    <property name="spacing">
++                     <number>3</number>
++                    </property>
++                    <item>
++                     <layout class="QHBoxLayout" name="horizontalLayoutOm0rxAutomationControls">
++                      <property name="spacing">
++                       <number>6</number>
++                      </property>
++                      <item>
++                     <widget class="QLabel" name="labOm0rxAutomationTitle">
++                      <property name="styleSheet">
++                       <string notr="true">QLabel {
++	font-weight: 700;
++	color: #10345b;
++	padding: 2px 4px;
++}</string>
++                      </property>
++                      <property name="text">
++                       <string>OM0RX:</string>
++                      </property>
++                      <property name="alignment">
++                       <set>Qt::AlignCenter</set>
++                      </property>
++                     </widget>
++                    </item>
++                    <item>
++                     <widget class="QCheckBox" name="cbOm0rxAutoCQ">
++                      <property name="toolTip">
++                       <string>Enable OM0RX backend Auto CQ policy for the patched WSJT-X engine.</string>
++                      </property>
++                      <property name="text">
++                       <string>CQ</string>
++                      </property>
++                     </widget>
++                    </item>
++                    <item>
++                     <widget class="QCheckBox" name="cbOm0rxAutoCall">
++                      <property name="toolTip">
++                       <string>Enable OM0RX backend Auto Call hunting using local Wavelog status and target ranking.</string>
++                      </property>
++                      <property name="text">
++                       <string>Call</string>
++                      </property>
++                     </widget>
++                    </item>
++                    <item>
++                     <widget class="QLabel" name="labOm0rxAutomation">
++                      <property name="sizePolicy">
++                       <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
++                        <horstretch>1</horstretch>
++                        <verstretch>0</verstretch>
++                       </sizepolicy>
++                      </property>
++                      <property name="minimumSize">
++                       <size>
++                        <width>210</width>
++                        <height>24</height>
++                       </size>
++                      </property>
++                      <property name="styleSheet">
++                       <string notr="true">QLabel {
++	background: #eef4fb;
++	border: 1px solid #b6c6d8;
++	border-radius: 3px;
++	color: #12263a;
++	font-weight: 700;
++	padding: 3px 8px;
++}</string>
++                      </property>
++                      <property name="text">
++                       <string>Idle</string>
++                      </property>
++                      <property name="alignment">
++                       <set>Qt::AlignCenter</set>
++                      </property>
++                     </widget>
++                    </item>
++                    </layout>
++                    </item>
++                    <item>
++                     <layout class="QHBoxLayout" name="horizontalLayoutOm0rxStatusBadges">
++                      <property name="spacing">
++                       <number>4</number>
++                      </property>
++                      <item>
++                     <widget class="QLabel" name="labOm0rxCallStatus">
++                      <property name="minimumSize">
++                       <size>
++                        <width>105</width>
++                        <height>24</height>
++                       </size>
++                      </property>
++                      <property name="styleSheet">
++                       <string notr="true">QLabel {
++	background: #5f6b76;
++	border: 1px solid #44505b;
++	border-radius: 3px;
++	color: white;
++	font-weight: 700;
++	padding: 3px 8px;
++}</string>
++                      </property>
++                      <property name="text">
++                       <string>Call idle</string>
++                      </property>
++                      <property name="alignment">
++                       <set>Qt::AlignCenter</set>
++                      </property>
++                     </widget>
++                    </item>
++                    <item>
++                     <widget class="QLabel" name="labOm0rxDxccStatus">
++                      <property name="minimumSize">
++                       <size>
++                        <width>105</width>
++                        <height>24</height>
++                       </size>
++                      </property>
++                      <property name="styleSheet">
++                       <string notr="true">QLabel {
++	background: #5f6b76;
++	border: 1px solid #44505b;
++	border-radius: 3px;
++	color: white;
++	font-weight: 700;
++	padding: 3px 8px;
++}</string>
++                      </property>
++                      <property name="text">
++                       <string>DXCC idle</string>
++                      </property>
++                      <property name="alignment">
++                       <set>Qt::AlignCenter</set>
++                      </property>
++                     </widget>
++                    </item>
++                    <item>
++                     <widget class="QLabel" name="labOm0rxEntityStatus">
++                      <property name="minimumSize">
++                       <size>
++                        <width>130</width>
++                        <height>24</height>
++                       </size>
++                      </property>
++                      <property name="styleSheet">
++                       <string notr="true">QLabel {
++	background: #f4f0e8;
++	border: 1px solid #d7c7a7;
++	border-radius: 3px;
++	color: #3b3020;
++	font-weight: 700;
++	padding: 3px 8px;
++}</string>
++                      </property>
++                      <property name="text">
++                       <string>Entity waiting</string>
++                      </property>
++                      <property name="alignment">
++                       <set>Qt::AlignCenter</set>
++                      </property>
++                     </widget>
++                    </item>
++                    </layout>
++                    </item>
++                   </layout>
++                  </item>
+@@ -3594,3 +3762,445 @@ Double-click to reset to the standard 73 message</string>
+-                 </widget>
+-                </item>
+-               </layout>
++                  <widget class="QWidget" name="tabOm0rxAutomation">
++                   <attribute name="title">
++                    <string>OM0RX</string>
++                   </attribute>
++                   <layout class="QGridLayout" name="gridLayoutOm0rxAutomation">
++                    <property name="leftMargin">
++                     <number>4</number>
++                    </property>
++                    <property name="topMargin">
++                     <number>4</number>
++                    </property>
++                    <property name="rightMargin">
++                     <number>4</number>
++                    </property>
++                    <property name="bottomMargin">
++                     <number>4</number>
++                    </property>
++                    <property name="horizontalSpacing">
++                     <number>8</number>
++                    </property>
++                    <property name="verticalSpacing">
++                     <number>6</number>
++                    </property>
++                    <item row="0" column="0">
++                     <widget class="QGroupBox" name="gbOm0rxHunting">
++                      <property name="title">
++                       <string>Hunting</string>
++                      </property>
++                      <layout class="QGridLayout" name="gridLayoutOm0rxHunting">
++                       <property name="leftMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="topMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="rightMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="bottomMargin">
++                        <number>6</number>
++                       </property>
++                       <item row="0" column="0">
++                        <widget class="QCheckBox" name="cbOm0rxBandHopping">
++                         <property name="toolTip">
++                          <string>Allow OM0RX automation to change band according to the band plan when hunting is idle.</string>
++                         </property>
++                         <property name="text">
++                          <string>Band hopping</string>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="0" column="1">
++                        <widget class="QCheckBox" name="cbOm0rxModeSwitching">
++                         <property name="toolTip">
++                          <string>Allow OM0RX automation to switch between Auto Call and Auto CQ after the configured attempt counts.</string>
++                         </property>
++                         <property name="text">
++                          <string>Mode switching</string>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="1" column="0">
++                        <widget class="QCheckBox" name="cbOm0rxTreat73AsCQ">
++                         <property name="toolTip">
++                          <string>Treat 73 and RR73 messages as callable activity when CQ-only hunting is enabled.</string>
++                         </property>
++                         <property name="text">
++                          <string>Treat 73 as CQ</string>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="1" column="1">
++                        <widget class="QCheckBox" name="cbOm0rxAvoidLogged">
++                         <property name="toolTip">
++                          <string>Skip calls already worked unless Wavelog marks a new band, mode, grid, or DXCC need.</string>
++                         </property>
++                         <property name="text">
++                          <string>Avoid logged</string>
++                         </property>
++                         <property name="checked">
++                          <bool>true</bool>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="2" column="0">
++                        <widget class="QCheckBox" name="cbOm0rxRequireHeard">
++                         <property name="toolTip">
++                          <string>Require the target to be decoded locally before OM0RX starts a QSO.</string>
++                         </property>
++                         <property name="text">
++                          <string>Require heard</string>
++                         </property>
++                         <property name="checked">
++                          <bool>true</bool>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="2" column="1">
++                        <widget class="QCheckBox" name="cbOm0rxAutoLog">
++                         <property name="toolTip">
++                          <string>Let OM0RX upload completed WSJT QSOs to Wavelog automatically.</string>
++                         </property>
++                         <property name="text">
++                          <string>Auto log</string>
++                         </property>
++                         <property name="checked">
++                          <bool>true</bool>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="3" column="0">
++                        <widget class="QCheckBox" name="cbOm0rxNeedCall">
++                         <property name="toolTip">
++                          <string>Allow Auto Call to work callsigns Wavelog marks as new or needed.</string>
++                         </property>
++                         <property name="text">
++                          <string>Need call</string>
++                         </property>
++                         <property name="checked">
++                          <bool>true</bool>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="3" column="1">
++                        <widget class="QCheckBox" name="cbOm0rxNeedDxcc">
++                         <property name="toolTip">
++                          <string>Allow Auto Call to work new or needed DXCC entities.</string>
++                         </property>
++                         <property name="text">
++                          <string>Need DXCC</string>
++                         </property>
++                         <property name="checked">
++                          <bool>true</bool>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="4" column="0">
++                        <widget class="QCheckBox" name="cbOm0rxNeedBand">
++                         <property name="toolTip">
++                          <string>Allow Auto Call to work new band slots.</string>
++                         </property>
++                         <property name="text">
++                          <string>Need band</string>
++                         </property>
++                         <property name="checked">
++                          <bool>true</bool>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="4" column="1">
++                        <widget class="QCheckBox" name="cbOm0rxNeedMode">
++                         <property name="toolTip">
++                          <string>Allow Auto Call to work new mode slots.</string>
++                         </property>
++                         <property name="text">
++                          <string>Need mode</string>
++                         </property>
++                         <property name="checked">
++                          <bool>true</bool>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="5" column="0">
++                        <widget class="QCheckBox" name="cbOm0rxNeedGrid">
++                         <property name="toolTip">
++                          <string>Allow Auto Call to work needed grid squares.</string>
++                         </property>
++                         <property name="text">
++                          <string>Need grid</string>
++                         </property>
++                         <property name="checked">
++                          <bool>true</bool>
++                         </property>
++                        </widget>
++                       </item>
++                      </layout>
++                     </widget>
++                    </item>
++                    <item row="0" column="1">
++                     <widget class="QGroupBox" name="gbOm0rxLimits">
++                      <property name="title">
++                       <string>Limits</string>
++                      </property>
++                      <layout class="QGridLayout" name="gridLayoutOm0rxLimits">
++                       <property name="leftMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="topMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="rightMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="bottomMargin">
++                        <number>6</number>
++                       </property>
++                       <item row="0" column="0">
++                        <widget class="QLabel" name="labOm0rxMinSignal">
++                         <property name="text">
++                          <string>Min signal</string>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="0" column="1">
++                        <widget class="QSpinBox" name="sbOm0rxMinSignal">
++                         <property name="toolTip">
++                          <string>Minimum signal for OM0RX Auto Call candidate selection.</string>
++                         </property>
++                         <property name="prefix">
++                          <string>dB </string>
++                         </property>
++                         <property name="minimum">
++                          <number>-40</number>
++                         </property>
++                         <property name="maximum">
++                          <number>30</number>
++                         </property>
++                         <property name="value">
++                          <number>-30</number>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="1" column="0">
++                        <widget class="QLabel" name="labOm0rxAutoCallCount">
++                         <property name="text">
++                          <string>AutoCall #</string>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="1" column="1">
++                        <widget class="QSpinBox" name="sbOm0rxAutoCallLimit">
++                         <property name="toolTip">
++                          <string>Maximum OM0RX Auto Call attempts per target before backoff.</string>
++                         </property>
++                         <property name="minimum">
++                          <number>0</number>
++                         </property>
++                         <property name="maximum">
++                          <number>99</number>
++                         </property>
++                         <property name="value">
++                          <number>5</number>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="2" column="0">
++                        <widget class="QLabel" name="labOm0rxAutoCQCount">
++                         <property name="text">
++                          <string>Auto CQ #</string>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="2" column="1">
++                        <widget class="QSpinBox" name="sbOm0rxAutoCQCount">
++                         <property name="minimum">
++                          <number>0</number>
++                         </property>
++                         <property name="maximum">
++                          <number>99</number>
++                         </property>
++                         <property name="value">
++                          <number>5</number>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="3" column="0">
++                        <widget class="QLabel" name="labOm0rxWatchdogFT8">
++                         <property name="text">
++                          <string>WD FT8</string>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="3" column="1">
++                        <widget class="QSpinBox" name="sbOm0rxWatchdogFT8">
++                         <property name="suffix">
++                          <string> min</string>
++                         </property>
++                         <property name="minimum">
++                          <number>0</number>
++                         </property>
++                         <property name="maximum">
++                          <number>30</number>
++                         </property>
++                         <property name="value">
++                          <number>2</number>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="4" column="0">
++                        <widget class="QLabel" name="labOm0rxWatchdogFT4">
++                         <property name="text">
++                          <string>WD FT4</string>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="4" column="1">
++                        <widget class="QSpinBox" name="sbOm0rxWatchdogFT4">
++                         <property name="suffix">
++                          <string> min</string>
++                         </property>
++                         <property name="minimum">
++                          <number>0</number>
++                         </property>
++                         <property name="maximum">
++                          <number>30</number>
++                         </property>
++                         <property name="value">
++                          <number>2</number>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="5" column="0">
++                        <widget class="QLabel" name="labOm0rxHopInterval">
++                         <property name="text">
++                          <string>Hop every</string>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="5" column="1">
++                        <widget class="QSpinBox" name="sbOm0rxHopInterval">
++                         <property name="toolTip">
++                          <string>Minimum idle time before OM0RX band hopping moves to the next band in the current UTC band plan.</string>
++                         </property>
++                         <property name="suffix">
++                          <string> min</string>
++                         </property>
++                         <property name="minimum">
++                          <number>1</number>
++                         </property>
++                         <property name="maximum">
++                          <number>60</number>
++                         </property>
++                         <property name="value">
++                          <number>2</number>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="6" column="0">
++                        <widget class="QLabel" name="labOm0rxPriority">
++                         <property name="text">
++                          <string>Priority</string>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="6" column="1">
++                        <widget class="QComboBox" name="cbOm0rxPriority">
++                         <item>
++                          <property name="text">
++                           <string>Last decoded</string>
++                          </property>
++                         </item>
++                         <item>
++                          <property name="text">
++                           <string>Signal strength</string>
++                          </property>
++                         </item>
++                         <item>
++                          <property name="text">
++                           <string>Distance</string>
++                          </property>
++                         </item>
++                        </widget>
++                       </item>
++                      </layout>
++                     </widget>
++                    </item>
++                    <item row="1" column="0" colspan="3">
++                     <widget class="QGroupBox" name="gbOm0rxBandPlan">
++                      <property name="title">
++                       <string>Band plan</string>
++                      </property>
++                      <layout class="QVBoxLayout" name="verticalLayoutOm0rxBandPlan">
++                       <property name="leftMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="topMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="rightMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="bottomMargin">
++                        <number>6</number>
++                       </property>
++                       <item>
++                        <widget class="QPlainTextEdit" name="teOm0rxBandPlan">
++                         <property name="toolTip">
++                          <string>UTC band hopping plan. Example: 05:20m,17m,15m,12m,10m</string>
++                         </property>
++                         <property name="maximumSize">
++                          <size>
++                           <width>16777215</width>
++                           <height>120</height>
++                          </size>
++                         </property>
++                         <property name="minimumSize">
++                          <size>
++                           <width>360</width>
++                           <height>95</height>
++                          </size>
++                         </property>
++                        </widget>
++                       </item>
++                      </layout>
++                     </widget>
++                    </item>
++                    <item row="0" column="2">
++                     <widget class="QGroupBox" name="gbOm0rxIgnoreList">
++                      <property name="title">
++                       <string>Ignore</string>
++                      </property>
++                      <layout class="QVBoxLayout" name="verticalLayoutOm0rxIgnore">
++                       <property name="leftMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="topMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="rightMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="bottomMargin">
++                        <number>6</number>
++                       </property>
++                       <item>
++                        <widget class="QPlainTextEdit" name="teOm0rxIgnoreList">
++                         <property name="toolTip">
++                          <string>Calls ignored by OM0RX Auto Call. Use one call per line or comma-separated calls.</string>
++                         </property>
++                         <property name="maximumSize">
++                          <size>
++                           <width>16777215</width>
++                           <height>85</height>
++                          </size>
++                         </property>
++                        </widget>
++                       </item>
++                      </layout>
++                     </widget>
++                    </item>
++                   </layout>
++                  </widget>
++                  </widget>
++                 </item>
++                </layout>
 diff --git a/wsjtx_config.h.in b/wsjtx_config.h.in
 index de1b4c7..e2127ea 100644
 --- a/wsjtx_config.h.in
 +++ b/wsjtx_config.h.in
-@@ -49,6 +49,7 @@ extern "C"  {
- #cmakedefine01 WSJT_ENABLE_EXPERIMENTAL_FEATURES
- #cmakedefine01 WSJT_RIG_NONE_CAN_SPLIT
- #cmakedefine01 WSJT_TRACE_UDP
+@@ -51,0 +52 @@ extern "C"  {
 +#cmakedefine01 OM0RX_BUILD_WITH_OMNIRIG
- 
- /* consistent UNICODE behaviour */
- #ifndef UNICODE

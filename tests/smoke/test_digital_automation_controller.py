@@ -6,7 +6,12 @@ from types import SimpleNamespace
 
 import _bootstrap  # noqa: F401
 
-from services.digital_automation import DigitalAutomationController, score_payload
+from services.digital_automation import (
+    DigitalAutomationController,
+    DigitalAutomationSettings,
+    payload_matches_need_filters,
+    score_payload,
+)
 from services.wsjtx import WSJTXService
 
 
@@ -60,11 +65,36 @@ class _FakeTargetStore:
 def test_goal_scoring_prioritises_dxcc_band_grid_mode_call():
     assert score_payload({"dxcc_status": "ATNO"}) == 1000
     assert score_payload({"dxcc_status": "C/New Band"}) == 800
+    assert score_payload({"call_status": "New Call", "continent": "AS"}) == 750
     assert score_payload({"call_status": "New Band"}) == 650
+    assert score_payload({"references": [{"type": "POTA", "id": "K-0001", "status": "needed"}]}) == 600
     assert score_payload({"needed": {"grid": True}}) == 500
     assert score_payload({"call_status": "New Mode"}) == 350
     assert score_payload({"call_status": "New Call"}) == 200
     assert score_payload({"call_status": "Confirmed", "dxcc_status": "Confirmed"}) == 0
+
+
+def test_reference_targets_are_carried_but_filter_gated():
+    payload = {
+        "callsign": "K1POTA",
+        "band": "20m",
+        "mode": "FT8",
+        "message": "CQ K1POTA FN42",
+        "pota": "K-1234",
+        "pota_status": "needed",
+    }
+
+    assert not payload_matches_need_filters(payload, DigitalAutomationSettings(need_reference=False))
+    assert payload_matches_need_filters(payload, DigitalAutomationSettings(need_reference=True))
+
+    controller = DigitalAutomationController(mycall="OM0RX", settings=DigitalAutomationSettings(need_reference=True))
+    target = controller.ingest_target(payload)
+
+    assert target is not None
+    assert target.to_dict()["reference_items"] == [
+        {"type": "POTA", "id": "K-1234", "status": "needed", "need_reason": ""}
+    ]
+    assert {"reference", "pota"}.issubset(target.need_reasons)
 
 
 def test_controller_filters_disabled_modes_and_logged_duplicates():
@@ -95,16 +125,99 @@ def test_controller_filters_disabled_modes_and_logged_duplicates():
     }) is None
     assert controller.last_decision["reason"] == "already-worked-call"
 
-    new_band_target = controller.ingest_target({
-        "callsign": "K2ABC",
-        "band": "10m",
+
+def test_controller_status_exposes_reason_panel_timeline_and_worked_flags():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    target = controller.ingest_target({
+        "callsign": "E51ABC",
+        "band": "20m",
+        "mode": "FT8",
+        "message": "CQ E51ABC BG08",
+        "grid": "BG08",
+        "heard": True,
+        "call_status": "New Call",
+        "dxcc_status": "ATNO",
+    })
+
+    assert target is not None
+    selected = controller.next_target(auto_call_start_only=True, cq_only=True)
+    status = controller.status()
+
+    assert selected is not None
+    assert status["reason_panel"]["target"]["call"] == "E51ABC"
+    assert status["reason_panel"]["why_selected"] == "new-dxcc"
+    assert status["event_timeline"][-1]["event"] == "selected"
+    assert status["eligibility_summary"]["eligible"] >= 1
+    assert status["active_target"]["worked_flags"]["new_dxcc"] is True
+    assert status["active_target"]["worked_flags"]["new_call"] is True
+
+
+def test_treat_73_as_cq_allows_non_direct_73_activity_to_seed_auto_call():
+    disabled = DigitalAutomationController(
+        mycall="OM0RX",
+        settings=DigitalAutomationSettings(treat_73_as_cq=False),
+    )
+    assert disabled.ingest_target({
+        "source": "decoded",
+        "message": "EA1AA K1ABC 73",
+        "band": "20m",
+        "mode": "FT8",
+        "heard": True,
+        "call_status": "New Call",
+        "dxcc_status": "ATNO",
+    }) is None
+    assert disabled.last_decision["reason"] == "not-auto-call-start-message"
+
+    enabled = DigitalAutomationController(
+        mycall="OM0RX",
+        settings=DigitalAutomationSettings(treat_73_as_cq=True),
+    )
+    target = enabled.ingest_target({
+        "source": "decoded",
+        "message": "EA1AA K1ABC 73",
+        "band": "20m",
+        "mode": "FT8",
+        "heard": True,
+        "call_status": "New Call",
+        "dxcc_status": "ATNO",
+    })
+
+    assert target is not None
+    assert target.call == "EA1AA"
+    assert enabled.next_target(auto_call_start_only=True, cq_only=True).call == "EA1AA"
+
+
+def test_controller_ignores_calls_from_native_wsjtz_style_policy():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "ignoreList": "K1ABC\nK2ABC, k3abc",
+            "autoCallCount": 7,
+            "bandPlan": "06:20m,15m\n20:40m,80m",
+            "allowedModes": {"FT8": True},
+        }
+    })
+
+    assert controller.settings.max_attempts_per_target == 7
+    assert controller.settings.band_plan == "06:20m,15m\n20:40m,80m"
+
+    assert controller.ingest_target({
+        "callsign": "k2abc",
+        "band": "20m",
         "mode": "FT8",
         "call_status": "New Band",
-        "dxcc_status": "Confirmed",
+        "heard": True,
+    }) is None
+    assert controller.last_decision["reason"] == "ignored-call"
+
+    target = controller.ingest_target({
+        "callsign": "K4ABC",
+        "band": "20m",
+        "mode": "FT8",
+        "call_status": "New Band",
         "heard": True,
     })
-    assert new_band_target is not None
-    assert new_band_target.reason == "new-band-slot"
+    assert target is not None
 
 
 def test_controller_requires_heard_spot_before_calling():
@@ -167,6 +280,192 @@ def test_controller_rejects_non_cq_decodes_as_auto_call_starters():
     assert controller.last_decision["reason"] == "not-auto-call-start-message"
 
 
+def test_treat_73_as_cq_allows_auto_call_selection():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "avoidLogged": True,
+            "treat73AsCQ": True,
+            "requireHeardBeforeCall": False,
+        }
+    })
+
+    target = controller.ingest_target({
+        "message": "EA1AA F4ABC 73",
+        "callsign": "EA1AA",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": 10,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+
+    assert target is not None
+    selected = controller.next_target(auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert selected.call == "EA1AA"
+
+
+def test_raw_wsjtx_decode_row_is_normalized_before_auto_call_filter():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "avoidLogged": True,
+            "requireHeardBeforeCall": False,
+        }
+    })
+
+    target = controller.ingest_target({
+        "message": "101130 -14 -0.2 1393 ~ CQ G7UAK IO84",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": -14,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+
+    assert target is not None
+    assert target.call == "G7UAK"
+    assert target.message == "CQ G7UAK IO84"
+    selected = controller.next_target(auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert selected.call == "G7UAK"
+
+
+def test_raw_wsjtx_73_row_is_eligible_when_treat_73_as_cq_enabled():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "avoidLogged": True,
+            "treat73AsCQ": True,
+            "requireHeardBeforeCall": False,
+        }
+    })
+
+    target = controller.ingest_target({
+        "message": "101145 -9 0.2 1337 ~ BA5AW PY1SX RR73",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": -9,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+
+    assert target is not None
+    assert target.call == "BA5AW"
+    assert target.message == "BA5AW PY1SX RR73"
+    selected = controller.next_target(auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert selected.call == "BA5AW"
+
+
+def test_treat_73_as_cq_disabled_keeps_73_lines_out_of_auto_call():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "avoidLogged": True,
+            "treat73AsCQ": False,
+            "requireHeardBeforeCall": False,
+        }
+    })
+
+    target = controller.ingest_target({
+        "message": "EA1AA F4ABC RR73",
+        "callsign": "EA1AA",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": 10,
+        "call_status": "New Band",
+        "dxcc_status": "Confirmed",
+    })
+
+    assert target is None
+    assert controller.last_decision["reason"] == "not-auto-call-start-message"
+
+
+def test_stale_command_sent_target_holds_until_watchdog_or_explicit_abort():
+    controller = DigitalAutomationController(
+        mycall="OM0RX",
+        settings=DigitalAutomationSettings(dwell_seconds=120),
+    )
+    now = datetime(2026, 6, 5, 10, 0, tzinfo=timezone.utc)
+    first = controller.ingest_target({
+        "message": "CQ CS2TU IN61",
+        "callsign": "CS2TU",
+        "band": "15m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": -18,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+    second = controller.ingest_target({
+        "message": "CQ A93MO LL56",
+        "callsign": "A93MO",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": -2,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+
+    assert first is not None
+    assert second is not None
+    first.last_command_at = now - timedelta(seconds=121)
+    first.last_attempt_at = first.last_command_at
+    first.sync_state("calling", active_state="command_sent")
+    controller.active_target_key = first.key
+    controller.active_qso_state = "command_sent"
+
+    selected = controller.next_target(now=now, auto_call_start_only=True, cq_only=True)
+
+    assert selected is None
+    assert controller.active_target_key == first.key
+    assert first.state == "calling"
+    assert first.reason != "active-target-stale-no-progress"
+    assert second.state == "heard"
+    assert controller.status()["last_decision"]["reason"] == "active-qso-in-progress"
+
+
+def test_cluster_target_is_not_rejected_as_non_cq_decode():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "avoidLogged": True,
+            "requireHeardBeforeCall": False,
+        }
+    })
+
+    target = controller.ingest_target({
+        "message": "Cluster spot",
+        "callsign": "ZD9DX",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "cluster",
+        "heard": False,
+        "snr": 0,
+        "call_status": "New Call",
+        "dxcc_status": "ATNO",
+        "score": 100,
+    })
+
+    assert target is not None
+    selected = controller.next_target(auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert selected.call == "ZD9DX"
+
+
 def test_selection_rechecks_worked_before_status_for_existing_target():
     controller = DigitalAutomationController(mycall="OM0RX")
     controller.apply_operator_settings({"automation": {"avoidLogged": True}})
@@ -190,7 +489,7 @@ def test_selection_rechecks_worked_before_status_for_existing_target():
     assert target.reason == "already-worked-call"
 
 
-def test_avoid_logged_allows_needed_band_and_mode_slots():
+def test_avoid_logged_rejects_prior_work_even_when_band_or_mode_needed():
     controller = DigitalAutomationController(mycall="OM0RX")
     controller.apply_operator_settings({"automation": {"avoidLogged": True}})
 
@@ -217,9 +516,221 @@ def test_avoid_logged_allows_needed_band_and_mode_slots():
         "dxcc_status": "Confirmed",
     })
 
+    assert band_target is None
+    assert mode_target is None
+    assert controller.status()["eligible_count"] == 0
+    assert controller.last_decision["reason"] == "already-worked-call"
+
+
+def test_prior_work_band_and_mode_slots_remain_available_when_avoid_logged_is_off():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({"automation": {"avoidLogged": False}})
+
+    band_target = controller.ingest_target({
+        "message": "CQ EA1EQ IN83",
+        "callsign": "EA1EQ",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": 12,
+        "call_status": "New Band",
+        "dxcc_status": "Confirmed",
+    })
+    mode_target = controller.ingest_target({
+        "message": "CQ EA2EQ IN83",
+        "callsign": "EA2EQ",
+        "band": "20m",
+        "mode": "FT4",
+        "source": "decoded",
+        "heard": True,
+        "snr": 10,
+        "call_status": "New Mode",
+        "dxcc_status": "Confirmed",
+    })
+
     assert band_target is not None
+    assert band_target.call_status == "Worked"
+    assert "band" in band_target.need_reasons
     assert mode_target is not None
+    assert mode_target.call_status == "Worked"
+    assert "mode" in mode_target.need_reasons
     assert controller.status()["eligible_count"] == 2
+
+
+def test_spot_hunt_listens_for_unconfirmed_dxcc_before_calling():
+    now = datetime(2026, 6, 5, 10, 15, tzinfo=timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "enabled": True,
+            "spotHuntEnabled": True,
+            "avoidLogged": True,
+            "bandPlan": "05:20m,17m,15m,12m,10m\n20:40m,80m",
+            "spotListenSeconds": 30,
+        }
+    })
+
+    spot = controller.ingest_target({
+        "callsign": "M6OTU",
+        "grid": "IO84",
+        "band": "12m",
+        "mode": "FT8",
+        "source": "rbl",
+        "frequency_mhz": 24.915,
+        "call_status": "Worked",
+        "dxcc_status": "Worked",
+    })
+
+    assert spot is not None
+    assert spot.state == "listening"
+    assert "dxcc" in spot.need_reasons
+    assert controller.next_target(now=now, auto_call_start_only=True, cq_only=True) is None
+
+    listen = controller.next_listen_target(now=now)
+    assert listen is not None
+    assert listen.call == "M6OTU"
+    assert listen.dial_frequency == 24.915
+    assert controller.listen_target_key == listen.key
+    assert controller.next_target(now=now + timedelta(seconds=5), auto_call_start_only=True, cq_only=True) is None
+    assert controller.last_decision["reason"] == "spot-listen-in-progress"
+
+    heard = controller.ingest_target({
+        "message": "CQ M6OTU IO84",
+        "callsigns": "M6OTU",
+        "callsign": "M6OTU",
+        "grid": "IO84",
+        "band": "12m",
+        "mode": "FT8",
+        "source": "wsjtx-decode-status",
+        "heard": True,
+        "snr": -9,
+        "freq": 1346,
+        "frequency_mhz": 24.915,
+        "call_status": "Worked",
+        "dxcc_status": "Worked",
+    })
+
+    assert heard is not None
+    assert heard.heard is True
+    assert controller.status()["listen_target"] is None
+    selected = controller.next_target(now=now + timedelta(seconds=10), auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert selected.call == "M6OTU"
+    assert selected.reason == "needed"
+
+
+def test_spot_hunt_probe_expires_when_not_heard():
+    now = datetime(2026, 6, 5, 10, 15, tzinfo=timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "enabled": True,
+            "spotHuntEnabled": True,
+            "bandPlan": "05:12m",
+            "spotListenSeconds": 30,
+        }
+    })
+    target = controller.ingest_target({
+        "callsign": "P29ABC",
+        "band": "12m",
+        "mode": "FT8",
+        "source": "cluster",
+        "frequency_mhz": 24.915,
+        "call_status": "New Call",
+        "dxcc_status": "ATNO",
+    })
+    assert target is not None
+    assert controller.next_listen_target(now=now) is not None
+
+    assert controller.next_listen_target(now=now + timedelta(seconds=31)) is None
+    assert target.state == "expired"
+    assert target.reason == "spot-listen-not-heard"
+
+
+def test_need_filters_can_limit_auto_call_to_dxcc_slots():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "needCall": False,
+            "needDxcc": True,
+            "needBand": False,
+            "needMode": False,
+            "needGrid": False,
+        }
+    })
+
+    new_call = controller.ingest_target({
+        "message": "CQ EA1EQ IN83",
+        "callsign": "EA1EQ",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": 12,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+    atno = controller.ingest_target({
+        "message": "CQ ZD9DX IE59",
+        "callsign": "ZD9DX",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": 8,
+        "call_status": "New Call",
+        "dxcc_status": "ATNO",
+    })
+
+    assert new_call is None
+    assert atno is not None
+    selected = controller.next_target(auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert selected.call == "ZD9DX"
+
+
+def test_need_filters_can_limit_auto_call_to_grid_slots():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "needCall": False,
+            "needDxcc": False,
+            "needBand": False,
+            "needMode": False,
+            "needGrid": True,
+        }
+    })
+
+    band_target = controller.ingest_target({
+        "message": "CQ EA1EQ IN83",
+        "callsign": "EA1EQ",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": 12,
+        "call_status": "New Band",
+        "dxcc_status": "Confirmed",
+    })
+    grid_target = controller.ingest_target({
+        "message": "CQ EA2EQ IN84",
+        "callsign": "EA2EQ",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": 11,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+        "needed": {"grid": True},
+    })
+
+    assert band_target is None
+    assert grid_target is not None
+    selected = controller.next_target(auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert selected.call == "EA2EQ"
 
 
 def test_controller_records_attempts_and_backoff():
@@ -276,7 +787,7 @@ def test_auto_call_ignores_stale_decoded_cq_targets():
         "mode": "FT8",
         "message": "CQ OLD1AA JO10",
         "heard": True,
-        "call_status": "New Band",
+        "call_status": "New Call",
         "dxcc_status": "Confirmed",
     })
     fresh = controller.ingest_target({
@@ -444,9 +955,343 @@ def test_controller_persists_ingested_targets():
     assert store.saved[-1]["state"] == "heard"
 
 
+def test_controller_queues_multiple_direct_callers_without_overwrite():
+    now = datetime.now(timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "avoidLogged": True,
+            "requireHeardBeforeCall": True,
+            "answerDirectCallers": True,
+        }
+    })
+
+    first = controller.ingest_target({
+        "message": "OM0RX K1ABC -12",
+        "callsign": "K1ABC",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "timestamp": now.isoformat(),
+        "call_status": "Confirmed",
+        "dxcc_status": "Confirmed",
+        "snr": -12,
+    })
+    second = controller.ingest_target({
+        "message": "OM0RX JA1XYZ -08",
+        "callsign": "JA1XYZ",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "timestamp": now.isoformat(),
+        "call_status": "Worked",
+        "dxcc_status": "Confirmed",
+        "snr": -8,
+    })
+
+    assert first is not None
+    assert second is not None
+    assert first.direct_caller is True
+    assert second.direct_caller is True
+    assert controller.status()["queue_length"] == 2
+
+    selected = controller.next_target(now=now, auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert selected.call == "JA1XYZ"
+    assert selected.reason == "direct-caller"
+
+    controller.mark_done(selected.key, reason="logged")
+    next_selected = controller.next_target(now=now + timedelta(seconds=1), auto_call_start_only=True, cq_only=True)
+    assert next_selected is not None
+    assert next_selected.call == "K1ABC"
+
+
+def test_controller_decision_log_explains_skip_queue_and_selection():
+    controller = DigitalAutomationController(mycall="OM0RX")
+
+    assert controller.ingest_target({
+        "message": "CQ LOW1AA AA00",
+        "callsign": "LOW1AA",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": -35,
+        "call_status": "New Call",
+    }) is None
+
+    target = controller.ingest_target({
+        "message": "CQ E51ABC BG08",
+        "callsign": "E51ABC",
+        "grid": "BG08",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": -8,
+        "dxcc_status": "ATNO",
+    })
+    assert target is not None
+    assert controller.next_target(auto_call_start_only=True, cq_only=True) is not None
+
+    decisions = controller.status()["decision_log"]
+    assert any(entry["reason"] == "below-min-signal" for entry in decisions)
+    assert any(entry["decision"] == "queued" and entry["call"] == "E51ABC" for entry in decisions)
+    assert any(entry["decision"] == "selected" and entry["call"] == "E51ABC" for entry in decisions)
+
+
+def test_controller_attempt_records_idempotent_command_metadata():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    target = controller.ingest_target({
+        "message": "CQ E51ABC BG08",
+        "callsign": "E51ABC",
+        "grid": "BG08",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": -8,
+        "dxcc_status": "ATNO",
+    })
+    assert target is not None
+    selected = controller.next_target()
+    assert selected is not None
+
+    attempted = controller.record_attempt(selected.key)
+
+    assert attempted is not None
+    assert attempted.command_id.startswith("cmd-")
+    assert attempted.target_id
+    assert attempted.state == "calling"
+    assert attempted.lifecycle == "command_sent"
+    assert attempted.active_state == "command_sent"
+    assert controller.status()["active_qso_state"] == "command_sent"
+
+
+def test_controller_replay_harness_runs_decode_select_attempt_complete_flow():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    results = controller.replay_events([
+        {
+            "type": "decode",
+            "message": "CQ E51ABC BG08",
+            "callsign": "E51ABC",
+            "grid": "BG08",
+            "band": "20m",
+            "mode": "FT8",
+            "snr": -8,
+            "dxcc_status": "ATNO",
+        },
+        {"type": "select", "cq_only": True, "auto_call_start_only": True},
+        {"type": "attempt", "key": "E51ABC|20m|FT8"},
+        {"type": "logged", "call": "E51ABC", "band": "20m", "mode": "FT8"},
+    ])
+
+    assert [result["status"] for result in results] == ["queued", "selected", "updated", "completed"]
+    assert controller.status()["eligible_count"] == 0
+    assert controller.status()["active_qso_state"] == "completed"
+
+
+def test_wsjtx_status_tx_active_advances_active_qso_state():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    target = controller.ingest_target({
+        "callsign": "E51ABC",
+        "grid": "BG08",
+        "band": "20m",
+        "mode": "FT8",
+        "message": "CQ E51ABC BG08",
+        "dxcc_status": "ATNO",
+        "frequency_mhz": 14.074,
+        "heard": True,
+    })
+    assert target is not None
+    selected = controller.next_target()
+    assert selected is not None
+    controller.record_attempt(selected.key)
+
+    result = controller.handle_wsjtx_status({"dxCall": "E51ABC", "mode": "FT8", "band": "20m", "tx": True})
+
+    assert result["status"] == "calling"
+    assert controller.status()["active_qso_state"] == "calling"
+    assert controller.status()["active_target"]["active_state"] == "calling"
+
+
+def test_planner_tick_does_not_clear_live_attempt_while_waiting_for_reply():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    target = controller.ingest_target({
+        "callsigns": "E51ABC",
+        "callsign": "E51ABC",
+        "grid": "BG08",
+        "band": "20m",
+        "mode": "FT8",
+        "message": "CQ E51ABC BG08",
+        "dxcc_status": "ATNO",
+        "frequency_mhz": 14.074,
+        "heard": True,
+    })
+    assert target is not None
+    selected = controller.next_target(auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    attempted = controller.record_attempt(selected.key)
+    assert attempted is not None
+
+    assert controller.next_target(auto_call_start_only=True, cq_only=True) is None
+
+    status = controller.status()
+    assert status["active_target"]["call"] == "E51ABC"
+    assert status["active_qso_state"] == "command_sent"
+    assert status["last_decision"]["reason"] == "active-qso-in-progress"
+
+
+def test_active_attempt_is_not_released_by_dwell_timeout_without_watchdog_or_abort():
+    now = datetime(2026, 6, 5, 12, 30, tzinfo=timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    first = controller.ingest_target({
+        "callsign": "OZ9TAN",
+        "grid": "JO65",
+        "band": "20m",
+        "mode": "FT8",
+        "message": "CQ OZ9TAN JO65",
+        "dxcc_status": "ATNO",
+        "frequency_mhz": 14.09,
+        "heard": True,
+        "timestamp": now.isoformat(),
+    })
+    second = controller.ingest_target({
+        "callsign": "3G0Z",
+        "grid": "FF06",
+        "band": "20m",
+        "mode": "FT8",
+        "message": "CQ 3G0Z FF06",
+        "dxcc_status": "ATNO",
+        "frequency_mhz": 14.09,
+        "heard": True,
+        "timestamp": now.isoformat(),
+    })
+    assert first is not None
+    assert second is not None
+
+    selected = controller.next_target(now=now, auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    controller.record_attempt(selected.key)
+    controller.record_attempt(selected.key)
+
+    late = controller.next_target(
+        now=now + timedelta(minutes=4),
+        auto_call_start_only=True,
+        cq_only=True,
+    )
+
+    assert late is None
+    assert controller.active_target_key == selected.key
+    assert controller.targets[selected.key].state == "calling"
+    assert controller.status()["active_target"]["call"] == selected.call
+    assert controller.status()["last_decision"]["reason"] == "active-qso-in-progress"
+
+
+def test_wsjtx_status_manual_dx_call_change_abandons_active_target():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    target = controller.ingest_target({
+        "callsign": "E51ABC",
+        "grid": "BG08",
+        "band": "20m",
+        "mode": "FT8",
+        "message": "CQ E51ABC BG08",
+        "dxcc_status": "ATNO",
+        "frequency_mhz": 14.074,
+        "heard": True,
+    })
+    assert target is not None
+    selected = controller.next_target()
+    assert selected is not None
+    controller.record_attempt(selected.key)
+
+    result = controller.handle_wsjtx_status({
+        "dxCall": "K2MAN",
+        "mode": "FT8",
+        "band": "20m",
+        "manual": True,
+    })
+
+    assert result["status"] == "abandoned"
+    assert result["target"]["state"] == "backoff"
+    assert result["decision"]["reason"] == "manual-dx-call-change"
+    assert controller.status()["active_target"] is None
+    assert controller.status()["active_qso_state"] == "failed"
+
+
+def test_wsjtx_status_unrelated_dx_call_does_not_abandon_auto_qso():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    target = controller.ingest_target({
+        "callsign": "E51ABC",
+        "grid": "BG08",
+        "band": "20m",
+        "mode": "FT8",
+        "message": "CQ E51ABC BG08",
+        "dxcc_status": "ATNO",
+        "frequency_mhz": 14.074,
+        "heard": True,
+    })
+    assert target is not None
+    selected = controller.next_target()
+    assert selected is not None
+    controller.record_attempt(selected.key)
+
+    result = controller.handle_wsjtx_status({"dxCall": "K2MAN", "mode": "FT8", "band": "20m"})
+
+    assert result["status"] == "observed"
+    assert result["decision"]["reason"] == "stale-or-unrelated-dx-call"
+    assert controller.status()["active_target"]["call"] == "E51ABC"
+    assert controller.status()["active_qso_state"] == "command_sent"
+
+
+def test_prepare_wsjtx_target_dry_run_does_not_send_bridge_command(monkeypatch):
+    from backend.api import ft8 as ft8_api
+    import services.wsjtx as wsjtx_module
+
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({"automation": {"dryRun": True}})
+    fake_ft8_service = SimpleNamespace(automation_controller=controller)
+    monkeypatch.setattr(ft8_api, "get_ft8_service", lambda: fake_ft8_service)
+
+    class FakeWsjtxService(WSJTXService):
+        def send_bridge_command(self, command, payload=None):
+            raise AssertionError("dry-run prepare must not send a bridge command")
+
+    monkeypatch.setattr(wsjtx_module, "get_wsjtx_service", lambda: FakeWsjtxService())
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(classifier=None, cty_resolver=None)))
+
+    result = asyncio.run(
+        ft8_api.prepare_wsjtx_automation_target(
+            ft8_api.AutomationWsjtxPrepareTargetRequest(
+                target={
+                    "callsign": "E51ABC",
+                    "grid": "BG08",
+                    "band": "20m",
+                    "mode": "FT8",
+                    "source": "spot",
+                    "frequency_mhz": 14.074,
+                    "dxcc_status": "ATNO",
+                    "score": 1000,
+                },
+                cq_only=False,
+                auto_call_start_only=False,
+            ),
+            request,
+        )
+    )
+
+    assert result["status"] == "dry-run"
+    assert result["bridge"]["sent"] is False
+    assert controller.status()["last_decision"]["decision"] == "dry-run"
+    assert any(entry["decision"] == "dry-run" for entry in controller.status()["decision_log"])
+
+
 def test_controller_enriches_unknown_decode_from_local_status_cache():
     controller = DigitalAutomationController(
         mycall="OM0RX",
+        settings=DigitalAutomationSettings(avoid_logged=False),
         qso_status_store=_FakeQsoStatusStore(
             call_flags={("E51ABC", "20m", "FT8"): (True, False, True, False, False)},
             dxcc_overall={191: (False, False)},
@@ -476,8 +1321,9 @@ def test_controller_enriches_unknown_decode_from_local_status_cache():
     })
 
     assert target is not None
-    assert target.call_status == "New Band"
+    assert target.call_status == "Worked"
     assert target.dxcc_status == "ATNO"
+    assert "band" in target.need_reasons
     assert target.reason == "new-dxcc"
     assert target.score == 1000
     assert target.dxcc == 191
@@ -589,7 +1435,7 @@ def test_controller_chooses_clear_wsjtx_tx_offset_from_recent_decodes():
             "snr": -5,
             "freq": offset,
             "frequency_mhz": 14.074,
-            "call_status": "New Band",
+            "call_status": "New Call",
             "dxcc_status": "Confirmed",
         })
 
@@ -633,7 +1479,7 @@ def test_prepare_next_wsjtx_endpoint_uses_clear_tx_offset(monkeypatch):
             "snr": -5,
             "freq": offset,
             "frequency_mhz": 14.074,
-            "call_status": "New Band",
+            "call_status": "New Call",
             "dxcc_status": "Confirmed",
         })
 

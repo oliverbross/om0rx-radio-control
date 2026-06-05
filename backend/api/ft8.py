@@ -267,6 +267,13 @@ async def _enrich_automation_target(target: dict[str, Any], request: Request) ->
                 call_worked, call_confirmed, call_new_band, call_new_mode, call_bandmode_confirmed = (
                     await classifier.call_status_flags(callsign, band, mode)
                 )
+            needed = dict(enriched.get("needed") or {})
+            needed_on_band = dict(enriched.get("needed_on_band") or enriched.get("neededOnBand") or {})
+            needed["call"] = bool(needed.get("call") or not call_worked)
+            needed_on_band["call"] = bool(needed_on_band.get("call") or call_new_band)
+            needed_on_band["mode"] = bool(needed_on_band.get("mode") or call_new_mode)
+            enriched["needed"] = needed
+            enriched["needed_on_band"] = needed_on_band
             enriched["call_status"] = classify_call_status(
                 call_worked,
                 call_new_band,
@@ -403,6 +410,11 @@ class AutomationTargetsRequest(BaseModel):
     targets: list[dict[str, Any]] = Field(default_factory=list)
     limit: int = Field(default=25, ge=1, le=100)
     source: Optional[str] = "spot"
+
+
+class AutomationReplayRequest(BaseModel):
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    limit: int = Field(default=100, ge=1, le=1000)
 
 
 class AutomationEngageRequest(BaseModel):
@@ -663,6 +675,20 @@ async def ingest_automation_targets(targets_request: AutomationTargetsRequest, r
     }
 
 
+@router.post("/automation/replay")
+async def replay_automation_events(replay_request: AutomationReplayRequest):
+    """Replay recorded automation events through the planner without radio TX."""
+    service = get_ft8_service()
+    events = (replay_request.events or [])[: max(1, min(int(replay_request.limit or 100), 1000))]
+    results = service.automation_controller.replay_events(events)
+    return {
+        "status": "replayed",
+        "count": len(results),
+        "results": results,
+        "automation": service.automation_controller.status(),
+    }
+
+
 @router.post("/automation/next")
 async def select_next_automation_target():
     """Select the next eligible target without transmitting."""
@@ -756,6 +782,31 @@ def _send_wsjtx_prepare_for_automation_target(target: Any, prepare_request: Auto
             "tx_df_plan": tx_df_plan,
         }
 
+    controller = getattr(service, "automation_controller", None)
+    if controller and getattr(controller.settings, "dry_run", False):
+        controller._set_decision({
+            "decision": "dry-run",
+            "reason": "would-prepare-wsjtx-target",
+            "call": target.call,
+            "band": target.band,
+            "mode": target.mode,
+            "score": target.score,
+            "need_reasons": sorted(target.need_reasons),
+        })
+        return {
+            "status": "dry-run",
+            "target": target.to_dict(),
+            "wsjtx_target": wsjtx_target,
+            "policy": policy,
+            "tx_df_plan": tx_df_plan,
+            "bridge": {
+                "success": True,
+                "dry_run": True,
+                "sent": False,
+                "command": "start_target_qso",
+            },
+        }
+
     result = wsjtx_service.send_bridge_command("start_target_qso", {"target": wsjtx_target})
     return {
         "status": "prepared",
@@ -812,17 +863,19 @@ async def prepare_wsjtx_automation_target(prepare_request: AutomationWsjtxPrepar
         result["automation"] = service.automation_controller.status()
         return result
 
-    target.state = "selected"
+    target.sync_state("selected")
     service.automation_controller.active_target_key = target.key
-    service.automation_controller.last_decision = {
-        "decision": "selected",
-        "call": target.call,
-        "band": target.band,
-        "mode": target.mode,
-        "score": target.score,
-        "reason": target.reason,
-        "source": "selected-spot",
-    }
+    service.automation_controller._set_decision(
+        {
+            "decision": "selected",
+            "call": target.call,
+            "band": target.band,
+            "mode": target.mode,
+            "score": target.score,
+            "reason": target.reason,
+            "source": "selected-spot",
+        }
+    )
     result["target"] = target.to_dict()
     result["enriched_target"] = enriched
     result["automation"] = service.automation_controller.status()

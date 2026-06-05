@@ -35,6 +35,23 @@ def test_cty_csv_prefix_tokens_do_not_misclassify_u_prefix():
     assert ri0sp["exact_match"] is True
 
 
+def test_cty_kg4_three_letter_suffix_is_us_not_guantanamo():
+    resolver = CtyDatResolver(
+        config.CTY_DAT_PATH,
+        csv_path=config.CTY_CSV_PATH,
+        ignore_suffixes=config.CTY_IGNORE_SUFFIXES,
+    )
+
+    us_call = resolver.lookup("KG4OJT")
+    guantanamo_call = resolver.lookup("KG4AB")
+
+    assert us_call["country"] == "United States"
+    assert us_call["dxcc"] == 291
+    assert us_call["prefix"] == "K"
+    assert guantanamo_call["country"] == "Guantanamo Bay"
+    assert guantanamo_call["dxcc"] == 105
+
+
 def test_dxcc_worked_status_comes_from_local_qso_log():
     with TemporaryDirectory() as temp_dir:
         db_path = Path(temp_dir) / "qso_log.duckdb"
@@ -69,6 +86,51 @@ def test_dxcc_worked_status_comes_from_local_qso_log():
         )
         assert display.status == "Worked"
         assert display.tag == "Need LoTW"
+
+
+def test_dxcc_confirmed_status_accepts_eqsl_and_paper_qsl():
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "qso_log.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE qso_records (
+                call VARCHAR,
+                dxcc INTEGER,
+                band VARCHAR,
+                mode VARCHAR,
+                submode VARCHAR,
+                lotw_qsl_rcvd VARCHAR,
+                eqsl_qsl_rcvd VARCHAR,
+                qsl_rcvd VARCHAR,
+                gridsquare VARCHAR
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO qso_records VALUES ('HB9AA', 287, '17m', 'FT4', NULL, 'N', 'Y', 'N', 'JN47')"
+        )
+        conn.execute(
+            "INSERT INTO qso_records VALUES ('DL1AA', 230, '20m', 'FT8', NULL, 'N', 'N', 'Y', 'JO62')"
+        )
+        conn.close()
+
+        store = DuckDBQSOStatusStore(db_path)
+        assert store.dxcc_overall(287) == (True, True)
+        assert store.dxcc_overall(230) == (True, True)
+        assert store.dxcc_bandmode_flags(287, "17m", "FT4") == (False, False, True)
+        assert store.call_flags("HB9AA", "17m", "FT4") == (True, True, False, False, True)
+
+
+def test_special_extraction_requires_reliable_reference_patterns():
+    from radio_control.spot_processor import extract_special
+
+    assert extract_special("Walk for the Beacon 1041Z") == ""
+    assert extract_special("WFF generic text without a reference") == ""
+    assert extract_special("LH copy weak abbreviation") == ""
+    assert extract_special("POTA K-1234") == "POTA"
+    assert extract_special("WWFF VKFF-1000") == "WWFF"
+    assert extract_special("SOTA OM/BA-001") == "SOTA"
 
 
 def test_private_lookup_dxcc_fields_are_confirmation_only():
@@ -137,6 +199,24 @@ def test_grid_worked_status_comes_from_local_qso_log():
         assert store.grid_flags("JO70", "20m", "FT8") == (True, True, True)
 
 
+def test_qso_status_store_records_new_logged_qso_in_memory():
+    store = DuckDBQSOStatusStore()
+
+    changed = store.record_qso({
+        "callsign": " ea1aa ",
+        "band": "20m",
+        "mode": "FT8",
+        "gridsquare": "IN80aa",
+        "dxcc": 281,
+    })
+
+    assert changed is True
+    assert store.call_flags("EA1AA", "20m", "FT8") == (True, False, False, False, False)
+    assert store.dxcc_overall(281) == (True, False)
+    assert store.dxcc_bandmode_flags(281, "20m", "FT8") == (False, False, False)
+    assert store.grid_flags("IN80ZZ", "20m", "FT8") == (False, False, False)
+
+
 class _UnavailableStatusStore:
     def dxcc_overall(self, dxcc):
         return None
@@ -178,8 +258,8 @@ def test_digital_status_recent_qso_overrides_false_new_band(monkeypatch):
     monkeypatch.setattr(qlog, "_get_recent_qsos_from_wavelog_db", fake_wavelog_db)
 
     assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "20m", "FT8")) == "Worked"
-    assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "20m", "SSB")) == "New Mode"
-    assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "15m", "FT8")) == "New Band"
+    assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "20m", "SSB")) == "Worked"
+    assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "15m", "FT8")) == "Worked"
 
 
 if __name__ == "__main__":

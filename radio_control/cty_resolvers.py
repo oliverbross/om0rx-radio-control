@@ -251,6 +251,11 @@ class CtyDatResolver:
         token = raw.lstrip("*=")
         token = re.sub(r"\([^)]*\)|\[[^\]]*\]|<[^>]*>", "", token).strip()
         return (token, exact_match) if token else None
+
+    @staticmethod
+    def _is_us_kg4_three_letter_suffix(callsign: str) -> bool:
+        """KG4 + three letters is a normal US call, not Guantanamo Bay."""
+        return bool(re.fullmatch(r"KG4[A-Z]{3}", callsign or ""))
     
     def _load_dxcc_from_csv(self, csv_path: str):
         """Load DXCC codes from CSV to create prefix->DXCC mappings"""
@@ -404,6 +409,13 @@ class CtyDatResolver:
                 pfx_upper = pfx.upper()
                 if (exact_match and candidate != pfx_upper) or (
                     not exact_match and not candidate.startswith(pfx_upper)
+                ):
+                    continue
+                if (
+                    not exact_match
+                    and pfx_upper == "KG4"
+                    and self._is_us_kg4_three_letter_suffix(candidate)
+                    and "guantanamo" in str(meta.get("country") or "").lower()
                 ):
                     continue
                 result = {

@@ -658,7 +658,17 @@ const dxSpotsMethods = {
         const active = status.enabled === false ? 'off' : 'on';
         const wd = settings.watchdog_seconds || settings.max_call_attempts || status.max_call_attempts || 'guarded';
         const avoid = settings.avoid_logged === false ? 'duplicates allowed' : 'needed-first';
-        return `Automation ${active} · ${avoid} · WD ${wd}`;
+        const dryRun = settings.dry_run ? ' · dry-run' : '';
+        return `Automation ${active} · ${avoid} · WD ${wd}${dryRun}`;
+    },
+
+    getWsjtxPlannerStateText() {
+        const status = this.wsjtxPlanner.status || {};
+        const active = status.active_target || {};
+        const state = status.active_qso_state || active.active_state || 'idle';
+        const call = active.call ? ` · ${active.call}` : '';
+        const command = active.command_id ? ` · ${active.command_id}` : '';
+        return `State ${state}${call}${command}`;
     },
 
     getWsjtxPlannerTargets() {
@@ -676,6 +686,7 @@ const dxSpotsMethods = {
 
     isWsjtxPlannerActionableTarget(target) {
         if (!target || ['done', 'skipped', 'backoff'].includes(target.state)) return false;
+        if (target.direct_caller) return true;
         const reason = String(target.reason || '').toLowerCase();
         const callStatus = String(target.call_status || '').toLowerCase();
         const dxccStatus = String(target.dxcc_status || '').toLowerCase();
@@ -721,6 +732,40 @@ const dxSpotsMethods = {
             target.reason || '',
             target.call_status || '',
             target.dxcc_status || '',
+            target.source || '',
+            target.lifecycle || target.state || '',
+            target.command_id || '',
+            target.direct_caller ? 'direct caller' : '',
+        ].filter(Boolean);
+        return pieces.join(' · ');
+    },
+
+    getWsjtxPlannerDecisionLog() {
+        const status = this.wsjtxPlanner.status || {};
+        const log = Array.isArray(status.decision_log) ? status.decision_log : [];
+        return log.slice().reverse();
+    },
+
+    formatWsjtxPlannerDecisionTime(timestamp) {
+        if (!timestamp) return '--:--:--';
+        const date = new Date(timestamp);
+        if (Number.isNaN(date.getTime())) return String(timestamp).slice(11, 19) || '--:--:--';
+        return date.toISOString().slice(11, 19);
+    },
+
+    getWsjtxPlannerDecisionTitle(entry) {
+        if (!entry) return '';
+        const pieces = [
+            entry.timestamp || '',
+            entry.call || '',
+            entry.band || '',
+            entry.mode || '',
+            entry.decision || '',
+            entry.reason || '',
+            entry.score !== undefined ? `score ${entry.score}` : '',
+            entry.queue_position !== undefined ? `queue ${entry.queue_position}` : '',
+            entry.attempts !== undefined ? `attempts ${entry.attempts}` : '',
+            entry.active_qso_state ? `state ${entry.active_qso_state}` : '',
         ].filter(Boolean);
         return pieces.join(' · ');
     },

@@ -7,7 +7,7 @@ import logging
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from radio_control import config
 from radio_control.wavelog_api import WavelogClient
@@ -47,9 +47,14 @@ class QSOOutbox:
             if not normalized:
                 return False
 
-            existing = set(self.records())
+            existing_records = self.records()
+            existing = set(existing_records)
             if normalized in existing:
                 logger.info("QSO already exists in Wavelog outbox; skipping duplicate")
+                return True
+            identity = self._loose_identity(normalized)
+            if identity and identity in {self._loose_identity(record) for record in existing_records}:
+                logger.info("QSO already exists in Wavelog outbox by call/date/band/mode; skipping duplicate")
                 return True
 
             self._ensure_file()
@@ -90,6 +95,7 @@ class QSOOutbox:
         self,
         wavelog_client: Optional[WavelogClient] = None,
         max_records: int = 20,
+        on_resolved_record: Optional[Callable[[str], None]] = None,
     ) -> dict[str, Any]:
         """Try to upload queued records to Wavelog and remove successes."""
         client = wavelog_client or WavelogClient()
@@ -109,10 +115,12 @@ class QSOOutbox:
             if result.get("success"):
                 uploaded += 1
                 remaining.remove(record)
+                self._notify_resolved(record, on_resolved_record)
                 logger.info("Uploaded queued Wavelog outbox record (%d/%d)", uploaded, attempted)
             elif self._is_duplicate_upload_result(result):
                 duplicates += 1
                 remaining.remove(record)
+                self._notify_resolved(record, on_resolved_record)
                 logger.info("Removed queued Wavelog outbox record already present in Wavelog (%d/%d)", duplicates, attempted)
             else:
                 failures.append(result.get("message") or result.get("error") or "Unknown error")
@@ -133,11 +141,16 @@ class QSOOutbox:
         wavelog_client: Optional[WavelogClient] = None,
         interval_seconds: int = 60,
         max_records: int = 20,
+        on_resolved_record: Optional[Callable[[str], None]] = None,
     ):
         """Background retry loop for queued Wavelog uploads."""
         while True:
             try:
-                await self.replay(wavelog_client, max_records=max_records)
+                await self.replay(
+                    wavelog_client,
+                    max_records=max_records,
+                    on_resolved_record=on_resolved_record,
+                )
             except Exception as exc:
                 logger.warning("Wavelog outbox replay failed: %s", exc)
             await asyncio.sleep(interval_seconds)
@@ -165,12 +178,44 @@ class QSOOutbox:
         return record + "\n<eor>"
 
     @staticmethod
+    def _adif_fields(adif_record: str) -> Dict[str, str]:
+        fields: Dict[str, str] = {}
+        for match in re.finditer(r"<([^:/>\s]+):(\d+)(?::[^>]*)?>", adif_record or "", flags=re.IGNORECASE):
+            name = match.group(1).strip().lower()
+            try:
+                length = int(match.group(2))
+            except ValueError:
+                continue
+            fields[name] = (adif_record[match.end():match.end() + length] or "").strip()
+        return fields
+
+    @classmethod
+    def _loose_identity(cls, adif_record: str) -> str:
+        fields = cls._adif_fields(adif_record)
+        call = fields.get("call", "").upper()
+        qso_date = fields.get("qso_date", "")
+        band = fields.get("band", "").lower()
+        mode = (fields.get("submode") or fields.get("mode") or "").upper()
+        if not call or not qso_date or not band or not mode:
+            return ""
+        return "|".join((call, qso_date, band, mode))
+
+    @staticmethod
     def _is_duplicate_upload_result(result: Dict[str, Any]) -> bool:
         text = " ".join(
             str(result.get(key) or "")
             for key in ("message", "error")
         ).lower()
         return "duplicate" in text
+
+    @staticmethod
+    def _notify_resolved(adif_record: str, callback: Optional[Callable[[str], None]]) -> None:
+        if callback is None:
+            return
+        try:
+            callback(adif_record)
+        except Exception as exc:
+            logger.debug("Wavelog outbox resolved-record callback failed: %s", exc, exc_info=True)
 
     @staticmethod
     def _add_app_note(adif_record: str, note: str) -> str:

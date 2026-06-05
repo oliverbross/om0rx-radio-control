@@ -317,6 +317,30 @@ def test_enrich_spot_adds_dxpedition_portable_and_propagation(tmp_path):
     assert enriched["priority_score"] >= 70
 
 
+def test_enrich_spot_does_not_badge_broad_contest_context(tmp_path):
+    repo = ActivityRepository(tmp_path / "ai.duckdb")
+    service = ActivityIntelligenceService(repository=repo)
+    service.contest_context = lambda band=None, mode=None: {
+        "candidates": [{"name": "Walk for the Beacon QSO Party", "source_id": "WA7BNM", "id": "contest-1"}]
+    }
+
+    enriched = service.enrich_spot(
+        {
+            "callsign": "HB9TIH",
+            "frequency_mhz": 18.1027,
+            "band": "17m",
+            "mode": "FT4",
+            "comment": "1041Z",
+            "dxcc_status": "Confirmed",
+        }
+    )
+
+    labels = {tag["label"] for tag in enriched["activity_tags"]}
+    types = {tag["type"] for tag in enriched["activity_tags"]}
+    assert "Walk for the Beacon QSO Party" not in labels
+    assert "CONTEST_ACTIVE" not in types
+
+
 def test_propagation_uses_extended_swpc_fields_for_poor_warning(tmp_path):
     repo = ActivityRepository(tmp_path / "ai.duckdb")
     repo.upsert_space_weather(

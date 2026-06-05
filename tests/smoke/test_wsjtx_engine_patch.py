@@ -27,6 +27,94 @@ def test_wsjtx_engine_patch_contains_target_qso_extension():
     assert "TransceiverFactory.cpp" in text
 
 
+def test_wsjtx_engine_patch_contains_om0rx_hunting_controls():
+    text = PATCH_PATH.read_text(encoding="utf-8")
+
+    assert "tabOm0rxAutomation" in text
+    assert "cbOm0rxBandHopping" in text
+    assert "cbOm0rxModeSwitching" in text
+    assert "cbOm0rxTreat73AsCQ" in text
+    assert "teOm0rxBandPlan" in text
+    assert "teOm0rxIgnoreList" in text
+    assert "annotate_callsign" in text
+    assert "labOm0rxCallStatus" in text
+    assert "labOm0rxDxccStatus" in text
+    assert "labOm0rxEntityStatus" in text
+    assert "set_om0rx_active_status_pending" in text
+    assert "CALL Checking" in text
+    assert "DXCC Checking" in text
+    assert "entity checking" in text
+    assert "previous_call != dx_call" in text
+    assert "Call Status" in text
+    assert "DXCC Status" in text
+    assert "om0rx_status_format" in text
+    assert "om0rx_status_label" in text
+    assert "normalize_om0rx_decode_colours" in text
+    assert "Checking | Checking" in text
+    assert "status_column = 40" in text
+    assert "leftJustified (40)" in text
+    assert "left (12).leftJustified (12)" in text
+    assert "QTimer::singleShot (0, this, [this, call, cached]" in text
+    assert "NewB+Mode" in text
+    assert "cbOm0rxNeedCall" in text
+    assert "cbOm0rxNeedDxcc" in text
+    assert "cbOm0rxNeedBand" in text
+    assert "cbOm0rxNeedMode" in text
+    assert "cbOm0rxNeedGrid" in text
+    assert "sbOm0rxHopInterval" in text
+    assert "om0rx_watchdog_minutes" in text
+    assert "om0rx_current_band_plan" in text
+    assert "om0rx_band_hopping_tick" in text
+    assert "om0rx_qsy_to_band_mode" in text
+    assert "struct Om0rxHuntSlot" in text
+    assert "om0rx_hunting_sequence" in text
+    assert 'sequence.append ({band, "FT8"})' in text
+    assert 'sequence.append ({band, "FT4"})' in text
+    assert "current_slot_index" in text
+    assert "target_slot = sequence.value" in text
+    assert "om0rx_hunting_frequency_hz" in text
+    assert "OM0RX hunt hop: %1 %2" in text
+    assert "24919000" in text
+    assert "28180000" in text
+    assert "background: #111820" in text
+    assert 'payload.insert ("grid"' in text
+    assert 'payload.insert ("message"' in text
+    assert 'payload.insert ("snr"' in text
+    assert 'automation.insert ("bandPlan"' in text
+    assert 'automation.insert ("ignoreList"' in text
+    assert 'automation.insert ("autoLogToWavelog"' in text
+    assert 'automation.insert ("hopIntervalSeconds"' in text
+    assert 'automation.insert ("needCall"' in text
+    assert 'automation.insert ("needDxcc"' in text
+    assert "ui->cbOm0rxAutoLog->isChecked ())" in text
+    assert "ui->cbOm0rxAutoLog->isChecked () && m_logDlg->isVisible ()" not in text
+    assert "OM0RX automation stopped" in text
+    assert "Auto CQ and Auto Call are off; TX was halted" in text
+    assert 'SLOT (accept ())' in text
+
+
+def test_wsjtx_engine_patch_contains_runtime_reason_panel_contract():
+    text = PATCH_PATH.read_text(encoding="utf-8")
+
+    assert "m_om0rx_automation_timer.setInterval (750)" in text
+    assert "QJsonArray" in text
+    assert 'automation.value ("reason_panel").toObject ()' in text
+    assert "Why selected: %1" in text
+    assert "Why not TX: %1" in text
+    assert "Rejected: %1" in text
+    assert "setToolTip (tooltip_text)" in text
+
+
+def test_wsjtx_engine_patch_refreshes_backend_even_when_status_label_is_cached():
+    text = PATCH_PATH.read_text(encoding="utf-8")
+    cached_block_start = text.index("+  if (m_om0rx_status_cache.contains (cache_key))")
+    inflight_block_start = text.index("+  if (m_om0rx_status_inflight.contains (cache_key))")
+    cached_block = text[cached_block_start:inflight_block_start]
+
+    assert "apply_om0rx_decode_status (call, cached)" in cached_block
+    assert "+      return;" not in cached_block
+
+
 def test_wsjtx_engine_patch_applies_to_downloaded_source(tmp_path):
     if not SOURCE_ARCHIVE.exists():
         return
@@ -44,7 +132,7 @@ def test_wsjtx_engine_patch_applies_to_downloaded_source(tmp_path):
               archive.extract(member, source_root)
 
     subprocess.run(
-        ["git", "-C", str(source_root), "apply", "--check", str(PATCH_PATH)],
+        ["git", "-C", str(source_root), "apply", "--unidiff-zero", "--check", str(PATCH_PATH)],
         check=True,
         text=True,
         capture_output=True,

@@ -192,10 +192,10 @@ SPECIAL_PATTERNS = {
     "POTA":      r"\bPOTA\b|\bPOTA\s*[-:]?\s*[A-Z]{1,3}-?\d+",
     "SOTA":      r"\bSOTA\b|\bSOTA\s*[A-Z]{2}/[A-Z]-\d+",
     "IOTA":      r"\bIOTA\b|\b[Ii]OTA\s*[A-Z]{1,2}-\d{3}",
-    "WWFF":      r"\bWWFF\b|\bWFF\b|\b[A-Z]{2}FF-\d{4}",
-    "CASTLE":    r"\bWCA\b|\bCASTLE\b",
-    "LIGHTHOUSE":r"\bLH\b|\bLGT\b|\bLIGHTHOUSE\b",
-    "CONTEST":   r"\bTEST\b|\bCONTEST\b|\bCWT\b",
+    "WWFF":      r"\bWWFF\b|\b[A-Z0-9]{1,4}FF-\d{3,5}\b",
+    "CASTLE":    r"\bWCA\b|\bCASTLE\b|\b[A-Z]{1,3}-\d{5}\b",
+    "LIGHTHOUSE":r"\bLIGHTHOUSE\b|\bARLHS\b",
+    "CONTEST":   r"\bCONTEST\b",
     "IARU":      r"\bIARU\b"
 }
 

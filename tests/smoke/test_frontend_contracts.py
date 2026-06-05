@@ -30,6 +30,7 @@ GET_ROUTES = [
     "/api/rotor/auto/status",
     "/api/wsjtx/config",
     "/api/wsjtx/health",
+    "/api/wsjtx/automation/status",
     "/api/wsjtx/launch-logs",
     "/api/ft8/status",
     "/api/ft8/config",
@@ -113,6 +114,9 @@ POST_ROUTES = [
     "/api/wsjtx/log-qso",
     "/api/wsjtx/auto-rotate",
     "/api/wsjtx/command",
+    "/api/wsjtx/automation/settings",
+    "/api/wsjtx/automation/tick",
+    "/api/wsjtx/decode-status",
     "/api/wsjtx/halt-tx",
     "/api/wsjtx/free-text",
     "/api/wsjtx/configure",
@@ -274,6 +278,7 @@ def test_safe_frontend_read_contracts(tmp_path):
     assert_response_has_keys("GET", "/api/rotor/config", {"ok", "enabled", "host"})
     assert_response_has_keys("GET", "/api/rotor/auto/status", {"ok", "auto_enabled", "home_grid"})
     assert_response_has_keys("GET", "/api/wsjtx/health", {"success", "enabled", "status", "bridge", "processes", "engine", "decode_fresh", "last_decode", "checks", "validation", "timeline"})
+    assert_response_has_keys("GET", "/api/wsjtx/automation/status", {"success", "automation", "stats", "status_sources"})
     assert_response_has_keys("GET", "/api/wsjtx/launch-logs?rigName=OM0RX-AUTO&lines=5", {"success", "rig_name", "lines", "logs"})
     assert_response_has_keys("GET", "/api/ft8/status", {"enabled", "mode"})
     assert_response_has_keys("GET", "/api/ft8/config", {"mode", "mycall", "mygrid"})
@@ -330,6 +335,55 @@ def test_safe_frontend_post_contracts(tmp_path):
         "POST",
         "/api/cluster/reconnect",
         {"success", "message"},
+    )
+    assert_response_has_keys(
+        "POST",
+        "/api/wsjtx/automation/settings",
+        {"success", "source", "automation", "stats", "status_sources"},
+        json={
+            "source": "contract-test",
+            "automation": {
+                "autoCall": False,
+                "autoCQ": False,
+                "cqOnly": True,
+                "minSignal": -24,
+                "txDf": 1500,
+            },
+        },
+    )
+    assert_response_has_keys(
+        "POST",
+        "/api/wsjtx/automation/tick",
+        {"success", "action", "reason", "automation", "stats", "status_sources"},
+        json={
+            "source": "contract-test",
+            "automation": {
+                "autoCall": False,
+                "autoCQ": False,
+                "cqOnly": True,
+            },
+        },
+    )
+    assert_response_has_keys(
+        "POST",
+        "/api/wsjtx/decode-status",
+        {
+            "success",
+            "call",
+            "band",
+            "mode",
+            "call_status",
+            "dxcc_status",
+            "automation_target",
+            "automation_decision",
+            "status_sources",
+        },
+        json={
+            "call": "OK1ABC",
+            "band": "20m",
+            "mode": "FT8",
+            "frequency_hz": 14074000,
+        },
     )
 
 

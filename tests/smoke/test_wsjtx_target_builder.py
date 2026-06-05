@@ -1,4 +1,6 @@
 import json
+import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -6,7 +8,55 @@ import _bootstrap  # noqa: F401
 
 from fastapi import HTTPException
 
-from services.wsjtx import WSJTXService
+from services.digital_automation import DigitalAutomationController
+from services.wsjtx import WSJTXService, _normalise_wsjtx_automation_policy
+
+
+class _FakeAdifWavelog:
+    def __init__(self):
+        self.adif_calls = []
+        self.qso_calls = []
+
+    async def submit_adif_string(self, adif_text):
+        self.adif_calls.append(adif_text)
+        return {"success": True, "message": "ok", "data": {"id": 123}}
+
+    async def log_qso(self, qso):
+        self.qso_calls.append(qso)
+        return {"success": True, "message": "ok", "data": {"id": 456}}
+
+
+class _FakeAdifBackup:
+    def __init__(self):
+        self.records = []
+
+    def add_qso(self, qso):
+        self.records.append(qso)
+        return True
+
+
+class _FakeQsoStatusStore:
+    def __init__(self):
+        self.records = []
+
+    def record_qso(self, qso):
+        self.records.append(dict(qso))
+        return True
+
+
+class _FakeCtyResolver:
+    def lookup(self, callsign):
+        if callsign == "EA1AA":
+            return {"dxcc": 281, "continent": "EU"}
+        return {}
+
+
+@pytest.fixture(autouse=True)
+def _disable_real_recent_wavelog_lookup(monkeypatch):
+    import services.qso_logging as qlog
+
+    monkeypatch.setattr(qlog, "_get_recent_qsos_from_duckdb", lambda _call, _limit: [])
+    monkeypatch.setattr(qlog, "_get_recent_qsos_from_wavelog_db", lambda _call, _limit: [])
 
 
 class _FakeResponse:
@@ -42,6 +92,427 @@ def test_wsjtx_target_builder_normalizes_cluster_ft2_spot():
     assert target["txDf"] == 1500
     assert target["holdTxFreq"] is True
     assert target["enableTx"] is False
+
+
+def test_wsjtx_logged_adif_is_submitted_to_wavelog_as_adif(monkeypatch, tmp_path):
+    import services.qso_logging as qlog
+
+    service = WSJTXService()
+    wavelog = _FakeAdifWavelog()
+    backup = _FakeAdifBackup()
+    qso_status = _FakeQsoStatusStore()
+    service.set_dependencies(
+        wavelog,
+        None,
+        None,
+        cty_resolver=_FakeCtyResolver(),
+        adif_handler=backup,
+        qso_status_store=qso_status,
+    )
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+
+    result = asyncio.run(service.log_qso({
+        "source": "wsjtx-bridge",
+        "adif_text": (
+            "<call:5>EA1AA <gridsquare:4>IN80 <freq:6>14.074 "
+            "<band:3>20m <mode:3>FT8 <qso_date:8>20260604 "
+            "<time_on:6>112530 <rst_sent:3>-10 <rst_rcvd:3>-07 <eor>"
+        ),
+    }))
+
+    assert result["success"] is True
+    assert len(wavelog.adif_calls) == 1
+    assert wavelog.qso_calls == []
+    assert "<qso_date:8>20260604" in wavelog.adif_calls[0]
+    assert backup.records[0]["callsign"] == "EA1AA"
+    assert backup.records[0]["frequency"] == 14.074
+    assert backup.records[0]["band"] == "20m"
+    assert backup.records[0]["rst_sent"] == "-10"
+    assert backup.records[0]["rst_received"] == "-07"
+    assert backup.records[0]["date_time"] == "2026-06-04T11:25:30+00:00"
+    assert backup.records[0]["dxcc"] == 281
+    assert result["qso_data"]["gridsquare"] == "IN80"
+    assert qso_status.records[0]["callsign"] == "EA1AA"
+    assert qso_status.records[0]["band"] == "20m"
+    assert qso_status.records[0]["mode"] == "FT8"
+    assert qso_status.records[0]["gridsquare"] == "IN80"
+
+
+def test_wsjtx_logged_adif_marks_automation_target_complete(monkeypatch, tmp_path):
+    import services.ft8_service as ft8_module
+    import services.qso_logging as qlog
+
+    controller = DigitalAutomationController(mycall="OM0RX")
+    target = controller.ingest_target({
+        "message": "CQ CS2TU IN61",
+        "callsign": "CS2TU",
+        "band": "15m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": -18,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+    assert target is not None
+    controller.active_target_key = target.key
+    controller.record_attempt(target.key)
+    assert controller.active_target_key == target.key
+
+    service = WSJTXService()
+    service.set_dependencies(
+        _FakeAdifWavelog(),
+        None,
+        None,
+        cty_resolver=_FakeCtyResolver(),
+        adif_handler=_FakeAdifBackup(),
+        qso_status_store=_FakeQsoStatusStore(),
+    )
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+    monkeypatch.setattr(
+        ft8_module,
+        "get_ft8_service",
+        lambda: SimpleNamespace(automation_controller=controller),
+    )
+
+    result = asyncio.run(service.log_qso({
+        "source": "wsjtx-bridge",
+        "adif_text": (
+            "<call:5>CS2TU <gridsquare:4>IN61 <freq:6>21.074 "
+            "<band:3>15m <mode:3>FT8 <qso_date:8>20260605 "
+            "<time_on:6>100515 <rst_sent:3>-18 <rst_rcvd:3>-24 <eor>"
+        ),
+    }))
+
+    assert result["success"] is True
+    assert controller.active_target_key is None
+    assert target.state == "done"
+    assert target.completion_reason == "wsjtx-logged-qso"
+
+
+def test_wsjtx_logged_adif_duplicate_is_ignored(monkeypatch, tmp_path):
+    import services.qso_logging as qlog
+
+    service = WSJTXService()
+    wavelog = _FakeAdifWavelog()
+    backup = _FakeAdifBackup()
+    qso_status = _FakeQsoStatusStore()
+    service.set_dependencies(
+        wavelog,
+        None,
+        None,
+        cty_resolver=_FakeCtyResolver(),
+        adif_handler=backup,
+        qso_status_store=qso_status,
+    )
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+
+    payload = {
+        "source": "wsjtx-bridge",
+        "adif_text": (
+            "<call:5>EA1AA <gridsquare:4>IN80 <freq:6>14.074 "
+            "<band:3>20m <mode:3>FT8 <qso_date:8>20260604 "
+            "<time_on:6>112530 <rst_sent:3>-10 <rst_rcvd:3>-07 <eor>"
+        ),
+    }
+
+    first = asyncio.run(service.log_qso(payload))
+    second = asyncio.run(service.log_qso(payload))
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert second["duplicate"] is True
+    assert len(wavelog.adif_calls) == 1
+    assert len(backup.records) == 1
+    assert qso_status.records[-1]["callsign"] == "EA1AA"
+
+
+def test_wsjtx_logged_adif_duplicate_with_shifted_time_and_reports_is_ignored(monkeypatch, tmp_path):
+    import services.qso_logging as qlog
+
+    service = WSJTXService()
+    wavelog = _FakeAdifWavelog()
+    backup = _FakeAdifBackup()
+    service.set_dependencies(
+        wavelog,
+        None,
+        None,
+        cty_resolver=_FakeCtyResolver(),
+        adif_handler=backup,
+    )
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+
+    first = asyncio.run(service.log_qso({
+        "source": "wsjtx-bridge",
+        "adif_text": (
+            "<call:5>EA1AA <gridsquare:4>IN80 <freq:6>14.074 "
+            "<band:3>20m <mode:3>FT8 <qso_date:8>20260604 "
+            "<time_on:6>112530 <rst_sent:3>-10 <rst_rcvd:3>-07 <eor>"
+        ),
+    }))
+    second = asyncio.run(service.log_qso({
+        "source": "wsjtx-bridge",
+        "adif_text": (
+            "<call:5>EA1AA <gridsquare:4>IN80 <freq:6>14.074 "
+            "<band:3>20m <mode:3>FT8 <qso_date:8>20260604 "
+            "<time_on:6>112830 <rst_sent:3>-13 <rst_rcvd:3>-12 <eor>"
+        ),
+    }))
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert second["duplicate"] is True
+    assert len(wavelog.adif_calls) == 1
+    assert len(backup.records) == 1
+
+
+def test_wsjtx_adif_and_backend_completion_race_logs_once(monkeypatch, tmp_path):
+    import services.qso_logging as qlog
+    from services.qso_logging import QSORequest
+
+    class SlowSharedWavelog:
+        def __init__(self):
+            self.adif_calls = []
+            self.qso_calls = []
+
+        async def submit_adif_string(self, adif_text):
+            self.adif_calls.append(adif_text)
+            await asyncio.sleep(0.05)
+            return {"success": True, "message": "ok", "data": {"id": 123}}
+
+        async def log_qso(self, qso):
+            self.qso_calls.append(dict(qso))
+            await asyncio.sleep(0.05)
+            return {"success": True, "message": "ok", "data": {"id": 456}}
+
+    wavelog = SlowSharedWavelog()
+    wsjtx_backup = _FakeAdifBackup()
+    backend_backup = _FakeAdifBackup()
+    service = WSJTXService()
+    service.set_dependencies(
+        wavelog,
+        None,
+        None,
+        cty_resolver=_FakeCtyResolver(),
+        adif_handler=wsjtx_backup,
+    )
+
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+    monkeypatch.setattr(qlog, "_pending_dedupe_claims", {})
+    monkeypatch.setattr(qlog, "wavelog_client", wavelog)
+    monkeypatch.setattr(qlog, "adif_handler", backend_backup)
+    monkeypatch.setattr(qlog, "qrz_client", None)
+
+    async def run_race():
+        return await asyncio.gather(
+            service.log_qso({
+                "source": "wsjtx-bridge",
+                "adif_text": (
+                    "<call:5>M6OTU <gridsquare:4>IO84 <freq:6>24.915 "
+                    "<band:3>12m <mode:3>FT8 <qso_date:8>20260605 "
+                    "<time_on:6>104216 <rst_sent:3>-10 <rst_rcvd:3>-07 <eor>"
+                ),
+            }),
+            qlog.log_qso(QSORequest(
+                callsign="M6OTU",
+                frequency=24.915,
+                band="12m",
+                mode="FT8",
+                rst_sent="-10",
+                rst_received="-07",
+                gridsquare="IO84",
+                date_time="2026-06-05T10:43:00+00:00",
+            )),
+        )
+
+    first, second = asyncio.run(run_race())
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert first.get("duplicate") or second.get("duplicate")
+    assert len(wavelog.adif_calls) + len(wavelog.qso_calls) == 1
+    assert len(wsjtx_backup.records) + len(backend_backup.records) == 1
+
+
+def test_wsjtx_logged_adif_skips_when_recent_wavelog_row_exists(monkeypatch, tmp_path):
+    import services.qso_logging as qlog
+
+    service = WSJTXService()
+    wavelog = _FakeAdifWavelog()
+    backup = _FakeAdifBackup()
+    service.set_dependencies(
+        wavelog,
+        None,
+        None,
+        cty_resolver=_FakeCtyResolver(),
+        adif_handler=backup,
+    )
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+    monkeypatch.setattr(qlog, "_pending_dedupe_claims", {})
+    monkeypatch.setattr(qlog, "_get_recent_qsos_from_duckdb", lambda _call, _limit: [])
+    monkeypatch.setattr(
+        qlog,
+        "_get_recent_qsos_from_wavelog_db",
+        lambda _call, _limit: [{
+            "call": "M6OTU",
+            "qso_date": "20260605",
+            "time_on": "104216",
+            "band": "12m",
+            "mode": "FT8",
+        }],
+    )
+
+    result = asyncio.run(service.log_qso({
+        "source": "wsjtx-bridge",
+        "adif_text": (
+            "<call:5>M6OTU <gridsquare:4>IO84 <freq:6>24.915 "
+            "<band:3>12m <mode:3>FT8 <qso_date:8>20260605 "
+            "<time_on:6>104300 <rst_sent:3>-10 <rst_rcvd:3>-07 <eor>"
+        ),
+    }))
+
+    assert result["success"] is True
+    assert result["duplicate"] is True
+    assert wavelog.adif_calls == []
+    assert backup.records == []
+
+
+def test_wsjtx_log_qso_without_adif_uses_structured_wavelog_payload(monkeypatch, tmp_path):
+    import services.qso_logging as qlog
+
+    service = WSJTXService()
+    wavelog = _FakeAdifWavelog()
+    backup = _FakeAdifBackup()
+    service.set_dependencies(wavelog, None, None, adif_handler=backup)
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+
+    result = asyncio.run(service.log_qso({
+        "call": "ea1aa",
+        "frequency_hz": 14_074_000,
+        "mode": "FT8",
+        "grid": "IN80",
+        "rst_sent": "-10",
+        "rst_received": "-07",
+    }))
+
+    assert result["success"] is True
+    assert wavelog.adif_calls == []
+    assert len(wavelog.qso_calls) == 1
+    assert wavelog.qso_calls[0]["callsign"] == "EA1AA"
+    assert wavelog.qso_calls[0]["band"] == "20m"
+    assert backup.records[0]["gridsquare"] == "IN80"
+
+
+def test_wsjtx_duplicate_log_response_still_updates_status_cache():
+    class DuplicateWavelog(_FakeAdifWavelog):
+        async def submit_adif_string(self, adif_text):
+            self.adif_calls.append(adif_text)
+            return {"success": False, "message": "Duplicate QSO"}
+
+    service = WSJTXService()
+    wavelog = DuplicateWavelog()
+    qso_status = _FakeQsoStatusStore()
+    service.set_dependencies(
+        wavelog,
+        None,
+        None,
+        cty_resolver=_FakeCtyResolver(),
+        qso_status_store=qso_status,
+    )
+
+    result = asyncio.run(service.log_qso({
+        "adif_text": (
+            "<call:5>EA1AA <gridsquare:4>IN80 <freq:6>14.074 "
+            "<band:3>20m <mode:3>FT8 <qso_date:8>20260604 <time_on:6>112530 <eor>"
+        ),
+    }))
+
+    assert result["success"] is True
+    assert result["duplicate"] is True
+    assert qso_status.records[0]["callsign"] == "EA1AA"
+    assert qso_status.records[0]["dxcc"] == 281
+
+
+def test_wsjtx_native_automation_policy_maps_wsjtz_controls():
+    policy = _normalise_wsjtx_automation_policy({
+        "source": "native-test",
+        "automation": {
+            "autoCall": True,
+            "autoCQ": False,
+            "cqOnly": True,
+            "minSignal": -27,
+            "autoCallLimit": 7,
+            "autoCQLimit": 3,
+            "watchdogFT8": 2,
+            "watchdogFT4": 1,
+            "hopIntervalSeconds": 180,
+            "txDf": 1570,
+            "txEvenFirst": True,
+            "bandHopping": True,
+            "bandPlan": "06:20m,15m\n20:40m,80m",
+            "modeSwitching": True,
+            "treat73AsCQ": True,
+            "autoLogToWavelog": False,
+            "needCall": False,
+            "needDxcc": True,
+            "needBand": False,
+            "needMode": True,
+            "needGrid": False,
+            "priority": "Signal strength",
+            "ignoreList": "K1ABC\nK2ABC",
+        },
+    })
+
+    automation = policy["operatorSettings"]["automation"]
+    tx_options = policy["txOptions"]
+
+    assert policy["source"] == "native-test"
+    assert automation["enabled"] is True
+    assert automation["spotHuntEnabled"] is True
+    assert automation["bandHopping"] is True
+    assert automation["modeSwitching"] is True
+    assert automation["treat73AsCQ"] is True
+    assert automation["autoLogToWavelog"] is False
+    assert automation["needCall"] is False
+    assert automation["needDxcc"] is True
+    assert automation["needBand"] is False
+    assert automation["needMode"] is True
+    assert automation["needGrid"] is False
+    assert automation["minSignal"] == -27
+    assert automation["autoCallCount"] == 7
+    assert automation["autoCQCount"] == 3
+    assert automation["hopIntervalSeconds"] == 180
+    assert automation["priority"] == "signal"
+    assert automation["bandPlan"] == "06:20m,15m\n20:40m,80m"
+    assert automation["ignoreList"] == "K1ABC\nK2ABC"
+    assert tx_options["auto_call"] is True
+    assert tx_options["auto_cq"] is False
+    assert tx_options["cq_only"] is True
+    assert tx_options["tx_audio_frequency"] == 1570
+    assert tx_options["tx_even_first"] is True
+    assert tx_options["watchdog_ft8"] == 2
+    assert tx_options["watchdog_ft4"] == 1
+
+
+def test_wsjtx_native_automation_policy_clamps_signal_and_counts():
+    policy = _normalise_wsjtx_automation_policy({
+        "autoCall": True,
+        "minSignal": -99,
+        "autoCallLimit": 200,
+        "autoCQLimit": -4,
+    })
+
+    automation = policy["operatorSettings"]["automation"]
+
+    assert automation["minSignal"] == -40
+    assert automation["autoCallCount"] == 99
+    assert automation["autoCQCount"] == 0
+
+
+def test_wsjtx_native_automation_policy_allows_clearing_ignore_list():
+    policy = _normalise_wsjtx_automation_policy({"automation": {"ignoreList": ""}})
+
+    assert policy["operatorSettings"]["automation"]["ignoreList"] == ""
 
 
 def test_wsjtx_target_builder_accepts_khz_frequency():

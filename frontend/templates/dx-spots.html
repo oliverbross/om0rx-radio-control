@@ -334,6 +334,7 @@
                             <strong>WSJT Planner</strong>
                             <span>{{ getWsjtxPlannerSummaryText() }}</span>
                             <small>{{ getWsjtxPlannerFilterText() }}</small>
+                            <small class="wsjtx-planner-state">{{ getWsjtxPlannerStateText() }}</small>
                         </div>
                         <div class="wsjtx-planner-actions">
                             <span v-if="wsjtxPlanner.message">{{ wsjtxPlanner.message }}</span>
@@ -369,9 +370,11 @@
                             </div>
                             <div class="wsjtx-planner-meta">
                                 <span>Score {{ target.score || 0 }}</span>
+                                <span>{{ target.source || '-' }}</span>
+                                <span>{{ target.lifecycle || target.state }}</span>
                                 <span>{{ target.call_status || 'Unknown' }}</span>
                                 <span>{{ target.dxcc_status || 'Unknown' }}</span>
-                                <span>{{ target.state }}</span>
+                                <span v-if="target.direct_caller" class="wsjtx-direct-caller">Direct</span>
                             </div>
                             <div class="wsjtx-planner-row-actions">
                                 <button @click="prepareWsjtxPlannerTarget(target)"
@@ -390,6 +393,18 @@
                                     Remove
                                 </button>
                             </div>
+                        </div>
+                    </div>
+                    <div class="wsjtx-decision-log" v-if="getWsjtxPlannerDecisionLog().length">
+                        <strong>Decision Log</strong>
+                        <div v-for="entry in getWsjtxPlannerDecisionLog().slice(0, 6)"
+                             :key="`${entry.timestamp}-${entry.call || entry.reason || entry.decision}`"
+                             class="wsjtx-decision-row"
+                             :title="getWsjtxPlannerDecisionTitle(entry)">
+                            <span>{{ formatWsjtxPlannerDecisionTime(entry.timestamp) }}</span>
+                            <b>{{ entry.call || entry.decision || '-' }}</b>
+                            <em>{{ entry.decision || '-' }}</em>
+                            <small>{{ entry.reason || entry.state || '-' }}</small>
                         </div>
                     </div>
                 </div>

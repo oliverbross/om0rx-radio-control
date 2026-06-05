@@ -39,8 +39,8 @@ New-Item -ItemType Directory -Path $sourceRoot | Out-Null
 tar -xzf $sourceArchive -C $sourceRoot --strip-components=1
 
 $relativeSource = "data/build/wsjtx-improved-om0rx/src"
-git -C $ProjectRoot apply --check --directory=$relativeSource $patchPath
-git -C $ProjectRoot apply --directory=$relativeSource $patchPath
+git -C $ProjectRoot apply --unidiff-zero --check --directory=$relativeSource $patchPath
+git -C $ProjectRoot apply --unidiff-zero --directory=$relativeSource $patchPath
 
 Write-Host "Prepared patched WSJT-X Improved source:"
 Write-Host "  $sourceRoot"

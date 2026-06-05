@@ -252,7 +252,7 @@ async def _refresh_uncertain_spot_classifications(
     spots: List[Dict[str, Any]],
     max_rechecks: int = 25,
 ) -> None:
-    """Repair stale ATNO/Unknown DXCC status rows before returning cached spots."""
+    """Repair stale or unsafe DXCC status rows before returning cached spots."""
     classifier = getattr(app_state, "classifier", None)
     cty_resolver = getattr(app_state, "cty_resolver", None)
     if not classifier:
@@ -266,7 +266,8 @@ async def _refresh_uncertain_spot_classifications(
             return
         if spot.get("dxcc_status_source") == "verified":
             continue
-        if spot.get("dxcc_status") not in {"ATNO", "Unknown", None, ""}:
+        status = str(spot.get("dxcc_status") or "").strip()
+        if status not in {"", "ATNO", "Unknown", "Worked", "W/New Band", "W/New Mode", "W/New Band+Mode"}:
             continue
 
         callsign = (spot.get("callsign") or "").strip().upper()

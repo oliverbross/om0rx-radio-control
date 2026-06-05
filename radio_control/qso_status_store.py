@@ -17,6 +17,8 @@ from radio_control.postgres_store import should_use_postgres
 
 logger = logging.getLogger(__name__)
 
+CONFIRMED_VALUES = {"Y", "YES", "TRUE", "1", "CONFIRMED"}
+
 
 class DuckDBQSOStatusStore:
     """Small cached query layer for spot classification against Wavelog QSOs."""
@@ -151,6 +153,58 @@ class DuckDBQSOStatusStore:
         new_grid_mode = bool(mode_value) and (grid_value, mode_value) not in self.grid_mode_worked
         return new_grid, new_grid_band, new_grid_mode
 
+    def record_qso(self, qso_data: dict[str, object] | None) -> bool:
+        """Record one newly logged QSO in the hot in-memory status sets."""
+        if not isinstance(qso_data, dict):
+            return False
+
+        call_value = self._normalise_call(
+            qso_data.get("callsign") or qso_data.get("call")
+        )
+        band_value = str(qso_data.get("band") or "").strip()
+        mode_value = str(qso_data.get("submode") or qso_data.get("mode") or "").strip().upper()
+        grid_value = self._normalise_grid(
+            qso_data.get("gridsquare") or qso_data.get("grid")
+        )
+        confirmed = self._row_confirmed(qso_data)
+
+        changed = False
+        if call_value:
+            changed |= self._add(self.call_worked, call_value)
+            if confirmed:
+                changed |= self._add(self.call_confirmed, call_value)
+            if band_value:
+                changed |= self._add(self.call_band_worked, (call_value, band_value))
+            if mode_value:
+                changed |= self._add(self.call_mode_worked, (call_value, mode_value))
+            if band_value and mode_value and confirmed:
+                changed |= self._add(self.call_bandmode_confirmed, (call_value, band_value, mode_value))
+
+        dxcc_value = self._coerce_dxcc(qso_data.get("dxcc") or qso_data.get("dxcc_id"))
+        if dxcc_value is not None:
+            changed |= self._add(self.dxcc_worked, dxcc_value)
+            if confirmed:
+                changed |= self._add(self.dxcc_confirmed, dxcc_value)
+            if band_value:
+                changed |= self._add(self.dxcc_band_worked, (dxcc_value, band_value))
+            if mode_value:
+                changed |= self._add(self.dxcc_mode_worked, (dxcc_value, mode_value))
+            if band_value and mode_value and confirmed:
+                changed |= self._add(self.dxcc_bandmode_confirmed, (dxcc_value, band_value, mode_value))
+
+        if grid_value:
+            changed |= self._add(self.grid_worked, grid_value)
+            if band_value:
+                changed |= self._add(self.grid_band_worked, (grid_value, band_value))
+            if mode_value:
+                changed |= self._add(self.grid_mode_worked, (grid_value, mode_value))
+
+        if changed:
+            now = time.monotonic()
+            self._loaded_at = now
+            self._loaded_mtime = now
+        return changed
+
     @staticmethod
     def _normalise_grid(grid: str | None) -> str:
         value = "".join(str(grid or "").upper().split())
@@ -162,6 +216,39 @@ class DuckDBQSOStatusStore:
     @staticmethod
     def _normalise_call(callsign: str | None) -> str:
         return "".join(str(callsign or "").upper().split())
+
+    @staticmethod
+    def _coerce_dxcc(dxcc: object) -> int | None:
+        try:
+            if dxcc is None or dxcc == "":
+                return None
+            return int(dxcc)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _confirmed_value(value: object) -> bool:
+        return str(value or "").strip().upper() in CONFIRMED_VALUES
+
+    @classmethod
+    def _row_confirmed(cls, row: dict[str, object]) -> bool:
+        return any(
+            cls._confirmed_value(row.get(field))
+            for field in (
+                "lotw_qsl_rcvd",
+                "lotw_qsl",
+                "eqsl_qsl_rcvd",
+                "eqsl_qsl",
+                "qsl_rcvd",
+            )
+        )
+
+    @staticmethod
+    def _add(values: set, value: object) -> bool:
+        if value in values:
+            return False
+        values.add(value)
+        return True
 
     def _ensure_loaded(self) -> bool:
         if not self.available():
@@ -180,7 +267,9 @@ class DuckDBQSOStatusStore:
                     with conn.cursor() as cur:
                         cur.execute(
                             """
-                            SELECT call, dxcc, band, mode, submode, lotw_qsl_rcvd, gridsquare
+                            SELECT call, dxcc, band, mode, submode,
+                                   lotw_qsl_rcvd, eqsl_qsl_rcvd, qsl_rcvd,
+                                   gridsquare
                             FROM qso_records
                             WHERE NULLIF(call, '') IS NOT NULL
                                OR dxcc IS NOT NULL
@@ -195,9 +284,21 @@ class DuckDBQSOStatusStore:
                                 "mode": mode,
                                 "submode": submode,
                                 "lotw_qsl_rcvd": lotw_qsl_rcvd,
+                                "eqsl_qsl_rcvd": eqsl_qsl_rcvd,
+                                "qsl_rcvd": qsl_rcvd,
                                 "gridsquare": gridsquare,
                             }
-                            for call, dxcc, band, mode, submode, lotw_qsl_rcvd, gridsquare in cur.fetchall()
+                            for (
+                                call,
+                                dxcc,
+                                band,
+                                mode,
+                                submode,
+                                lotw_qsl_rcvd,
+                                eqsl_qsl_rcvd,
+                                qsl_rcvd,
+                                gridsquare,
+                            ) in cur.fetchall()
                         ]
             elif self._use_duckdb:
                 conn = duckdb.connect(str(self.db_path))
@@ -208,6 +309,8 @@ class DuckDBQSOStatusStore:
                     }
                     call_expr = "call" if "call" in columns else "NULL AS call"
                     call_where = "NULLIF(call, '') IS NOT NULL OR" if "call" in columns else ""
+                    eqsl_expr = "eqsl_qsl_rcvd" if "eqsl_qsl_rcvd" in columns else "NULL AS eqsl_qsl_rcvd"
+                    qsl_expr = "qsl_rcvd" if "qsl_rcvd" in columns else "NULL AS qsl_rcvd"
                     rows = [
                         {
                             "call": call,
@@ -216,11 +319,14 @@ class DuckDBQSOStatusStore:
                             "mode": mode,
                             "submode": submode,
                             "lotw_qsl_rcvd": lotw_qsl_rcvd,
+                            "eqsl_qsl_rcvd": eqsl_qsl_rcvd,
+                            "qsl_rcvd": qsl_rcvd,
                             "gridsquare": gridsquare,
                         }
-                        for call, dxcc, band, mode, submode, lotw_qsl_rcvd, gridsquare in conn.execute(
+                        for call, dxcc, band, mode, submode, lotw_qsl_rcvd, eqsl_qsl_rcvd, qsl_rcvd, gridsquare in conn.execute(
                             f"""
-                            SELECT {call_expr}, dxcc, band, mode, submode, lotw_qsl_rcvd, gridsquare
+                            SELECT {call_expr}, dxcc, band, mode, submode,
+                                   lotw_qsl_rcvd, {eqsl_expr}, {qsl_expr}, gridsquare
                             FROM qso_records
                             WHERE {call_where}
                                dxcc IS NOT NULL
@@ -253,6 +359,8 @@ class DuckDBQSOStatusStore:
                                    COL_MODE AS mode,
                                    COL_SUBMODE AS submode,
                                    COL_LOTW_QSL_RCVD AS lotw_qsl_rcvd,
+                                   COL_EQSL_QSL_RCVD AS eqsl_qsl_rcvd,
+                                   COL_QSL_RCVD AS qsl_rcvd,
                                    COL_GRIDSQUARE AS gridsquare
                             FROM TABLE_HRD_CONTACTS_V01
                             WHERE station_id = %s
@@ -285,12 +393,7 @@ class DuckDBQSOStatusStore:
             for row in rows:
                 band_value = (row.get("band") or "").strip()
                 mode_value = (row.get("submode") or row.get("mode") or "").strip().upper()
-                confirmed = str(row.get("lotw_qsl_rcvd") or "").strip().upper() in {
-                    "Y",
-                    "YES",
-                    "TRUE",
-                    "1",
-                }
+                confirmed = self._row_confirmed(row)
                 grid_value = self._normalise_grid(row.get("gridsquare"))
                 call_value = self._normalise_call(row.get("call"))
 

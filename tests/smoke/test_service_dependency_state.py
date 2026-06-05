@@ -2,6 +2,7 @@
 """Smoke checks for explicit service dependency state."""
 
 import asyncio
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import _bootstrap  # noqa: F401
@@ -132,6 +133,7 @@ def test_wsjtx_decode_ingest_feeds_automation_ranker(monkeypatch):
         sync_status={},
     )
     background_tasks.configure_background_tasks(context, noop_status, noop_spots)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
     controller = DigitalAutomationController(mycall="OM0RX")
     fake_ft8_service = SimpleNamespace(automation_controller=controller)
@@ -148,7 +150,7 @@ def test_wsjtx_decode_ingest_feeds_automation_ranker(monkeypatch):
                     "snr": -8,
                     "message": "CQ E51ABC BG08",
                     "dialFrequency": 14_074_000,
-                    "ts": 999,
+                    "ts": now_ms,
                 },
             },
         }
@@ -165,6 +167,66 @@ def test_wsjtx_decode_ingest_feeds_automation_ranker(monkeypatch):
     assert target["source"] == "decoded"
     assert target["message"] == "CQ E51ABC BG08"
     assert controller.status()["eligible_count"] == 1
+
+
+def test_wsjtx_decode_ingest_drains_recent_decode_buffer(monkeypatch):
+    import services.ft8_service as ft8_service_module
+    import services.wsjtx as wsjtx_module
+
+    context = SimpleNamespace(
+        flex=None,
+        dx_spots_cache=[],
+        cluster_client=None,
+        cluster_connected=False,
+        cty_resolver=None,
+        classifier=None,
+        wavelog_sync_manager=None,
+        sync_status={},
+    )
+    service = background_tasks.configure_background_tasks(context, noop_status, noop_spots)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({"automation": {"treat73AsCQ": True}})
+    fake_ft8_service = SimpleNamespace(automation_controller=controller)
+    fake_wsjtx_service = SimpleNamespace(
+        get_bridge_status=lambda: {
+            "success": True,
+            "stats": {
+                "lastDecodeAgeMs": 500,
+                "lastStatus": {"dialFrequency": 14_074_000, "mode": "FT8"},
+                "recentDecodes": [
+                    {
+                        "isNew": True,
+                        "time": 36_000_000,
+                        "deltaFrequency": 1220,
+                        "snr": -8,
+                        "message": "CQ E51ABC BG08",
+                        "dialFrequency": 14_074_000,
+                        "ts": now_ms,
+                    },
+                    {
+                        "isNew": True,
+                        "time": 36_015_000,
+                        "deltaFrequency": 1420,
+                        "snr": -5,
+                        "message": "EA1AA K1ABC 73",
+                        "dialFrequency": 14_074_000,
+                        "ts": now_ms + 1,
+                    },
+                ],
+            },
+        }
+    )
+    monkeypatch.setattr(ft8_service_module, "get_ft8_service", lambda: fake_ft8_service)
+    monkeypatch.setattr(wsjtx_module, "get_wsjtx_service", lambda: fake_wsjtx_service)
+
+    target = asyncio.run(background_tasks.ingest_latest_wsjtx_decode_once())
+
+    assert target is not None
+    assert service.wsjtx_ingested_decodes == 2
+    assert len(service.wsjtx_seen_decode_keys) == 2
+    assert {item["call"] for item in controller.status()["targets"]} == {"E51ABC", "EA1AA"}
 
 
 if __name__ == "__main__":

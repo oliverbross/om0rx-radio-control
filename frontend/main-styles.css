@@ -1979,6 +1979,11 @@
             white-space: nowrap;
         }
 
+        .wsjtx-planner-state {
+            color: #7dd3fc !important;
+            font-family: 'Courier New', monospace;
+        }
+
         .wsjtx-planner-actions,
         .wsjtx-planner-row-actions {
             display: flex;
@@ -2062,6 +2067,64 @@
             font-weight: 700;
         }
 
+        .wsjtx-direct-caller {
+            background: #0f766e !important;
+            color: #ecfeff !important;
+            border: 1px solid #14b8a6;
+            border-radius: 3px;
+            padding: 1px 5px;
+        }
+
+        .wsjtx-decision-log {
+            display: grid;
+            gap: 4px;
+            padding: 8px 9px;
+            border-top: 1px solid #284462;
+            background: #0b1220;
+        }
+
+        .wsjtx-decision-log > strong {
+            color: #dbeafe;
+            font-size: 12px;
+        }
+
+        .wsjtx-decision-row {
+            display: grid;
+            grid-template-columns: 72px minmax(80px, 120px) minmax(70px, 100px) 1fr;
+            gap: 8px;
+            align-items: center;
+            min-height: 22px;
+            padding: 3px 6px;
+            border: 1px solid #243244;
+            border-radius: 4px;
+            background: #0f172a;
+            color: #cbd5e1;
+            font-size: 11px;
+        }
+
+        .wsjtx-decision-row span {
+            color: #93c5fd;
+            font-family: 'Courier New', monospace;
+        }
+
+        .wsjtx-decision-row b {
+            color: #f8fafc;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .wsjtx-decision-row em {
+            color: #fbbf24;
+            font-style: normal;
+        }
+
+        .wsjtx-decision-row small {
+            color: #a7f3d0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
         .wsjtx-planner-empty {
             padding: 12px;
             color: #94a3b8;
@@ -2086,6 +2149,10 @@
 
             .wsjtx-planner-meta {
                 flex-wrap: wrap;
+            }
+
+            .wsjtx-decision-row {
+                grid-template-columns: 70px 90px 80px minmax(0, 1fr);
             }
         }
 

@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import _bootstrap  # noqa: F401
 
@@ -156,19 +157,19 @@ def test_auto_call_idle_search_has_inactive_watchdog_and_never_queues_cq():
     assert "CQ OM0RX JN88" not in service.tx_queue
 
 
-def test_auto_call_allows_needed_band_slot_when_avoiding_exact_duplicates():
+def test_auto_call_avoid_logged_rejects_worked_before_band_slot():
     service = ClockedService()
     configure_auto_call(service)
     band_slot = add_candidate(service, "EA1EQ", status="New Band")
     usable = add_candidate(service, "K3ZK", status="New Call")
 
-    assert band_slot is not None
+    assert band_slot is None
     assert usable is not None
 
     asyncio.run(service._automation_tick())
 
-    assert service.pending_tx_intent["call"] == "EA1EQ"
-    assert service.tx_queue == ["EA1EQ OM0RX JN88"]
+    assert service.pending_tx_intent["call"] == "K3ZK"
+    assert service.tx_queue == ["K3ZK OM0RX JN88"]
 
 
 def test_auto_call_does_not_start_from_someone_else_exchange_when_cq_only_is_off():
@@ -195,3 +196,29 @@ def test_auto_call_does_not_start_from_someone_else_exchange_when_cq_only_is_off
     assert service.pending_tx_intent["call"] == "K3ZK"
     assert service.tx_queue == ["K3ZK OM0RX JN88"]
     assert all("OK1HEH" not in message for message in service.tx_queue)
+
+
+def test_live_auto_call_attempt_is_not_abandoned_when_target_is_heard_elsewhere():
+    service = ClockedService()
+    configure_auto_call(service)
+    add_candidate(service, "OZ9TAN", status="ATNO")
+    add_candidate(service, "3G0Z", status="New Call")
+    asyncio.run(service._automation_tick())
+
+    attempt_id = service.active_attempt_id
+    active_qso = next(iter(service.active_qsos.values()))
+    active_call = active_qso.their_call
+    service._backoff_active_target_if_busy_elsewhere(
+        SimpleNamespace(message=f"{active_call} MW0RX -09")
+    )
+
+    assert service.active_attempt_id == attempt_id
+    assert active_call in service.active_qsos
+    assert service.pending_tx_intent["call"] == active_call
+    assert service.automation_controller.status()["active_target"]["call"] == active_call
+
+    asyncio.run(service._automation_tick())
+
+    assert service.active_attempt_id == attempt_id
+    assert service.automation_status == "qso-active"
+    assert service.pending_tx_intent["call"] == active_call

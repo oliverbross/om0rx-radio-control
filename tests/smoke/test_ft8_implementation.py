@@ -722,7 +722,7 @@ def test_auto_call_max_attempts_backoff_keeps_searching_next_target():
         "band": "40m",
         "mode": "FT8",
         "message": "CQ YO3OBB KN34",
-        "call_status": "New Band",
+        "call_status": "New Call",
         "dxcc_status": "Confirmed",
         "heard": True,
     })
@@ -810,7 +810,7 @@ def test_auto_call_backs_off_when_target_is_busy_elsewhere():
         "band": "30m",
         "mode": "FT8",
         "message": "CQ DL4ME JO50",
-        "call_status": "New Band",
+        "call_status": "New Call",
         "dxcc_status": "Confirmed",
         "heard": True,
     })
@@ -828,11 +828,11 @@ def test_auto_call_backs_off_when_target_is_busy_elsewhere():
 
     service._backoff_active_target_if_busy_elsewhere(Message())
 
-    assert service.active_qsos == {}
-    assert service.tx_queue == []
-    assert target.state == "backoff"
-    assert target.reason == "target-busy-with-other-station"
-    assert "busy with another station" in service.tx_status
+    assert service.active_qsos == {"DL4ME": qso}
+    assert service.tx_queue == ["DL4ME OM0RX JN88"]
+    assert target.state != "backoff"
+    assert service.automation_decisions[-1]["event"] == "target-busy-observed"
+    assert service.automation_decisions[-1]["reason"] == "active-qso-still-owned-by-backend"
 
 
 def test_busy_elsewhere_decode_does_not_abort_active_tx():
@@ -867,7 +867,7 @@ def test_busy_elsewhere_decode_does_not_abort_active_tx():
         "band": "30m",
         "mode": "FT8",
         "message": "CQ DL4ME JO50",
-        "call_status": "New Band",
+        "call_status": "New Call",
         "dxcc_status": "Confirmed",
         "heard": True,
     })
@@ -890,7 +890,8 @@ def test_busy_elsewhere_decode_does_not_abort_active_tx():
     assert service.active_qsos == {"DL4ME": qso}
     assert service.tx_queue == ["DL4ME OM0RX JN88"]
     assert target.state != "backoff"
-    assert service.automation_decisions[-1]["event"] == "target-busy-deferred"
+    assert service.automation_decisions[-1]["event"] == "target-busy-observed"
+    assert service.automation_decisions[-1]["reason"] == "active-qso-still-owned-by-backend"
 
 
 def test_generated_ft8_tx_frame_decodes_at_requested_audio_frequency():
@@ -1121,7 +1122,7 @@ def test_decoded_ft8_enrichment_uses_local_cache_before_wavelog_api():
     assert "local_call_flags = await asyncio.to_thread(qso_status_store.call_flags, callsign, band, mode)" in api
     assert "if source != \"decoded\":" in api
     assert "await classifier.call_status_flags(callsign, band, mode)" in api
-    assert "SELECT call, dxcc, band, mode, submode, lotw_qsl_rcvd, gridsquare" in store
+    assert "lotw_qsl_rcvd, eqsl_qsl_rcvd, qsl_rcvd" in store
     assert "def call_flags(" in store
 
 

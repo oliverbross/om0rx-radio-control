@@ -49,6 +49,8 @@ const wsjtxParser = new WsjtxParser();
 let latestWsjtxEndpoint = null;
 let latestWsjtxClientId = '';
 let wsjtxCommandSender = null;
+let pendingQsoLoggedUploadTimer = null;
+let pendingQsoLoggedData = null;
 let wsjtxStats = {
   packets: 0,
   statuses: 0,
@@ -68,6 +70,8 @@ let wsjtxStats = {
 };
 const WSJTX_TIMELINE_LIMIT = 80;
 const wsjtxTimeline = [];
+const WSJTX_RECENT_DECODE_LIMIT = 120;
+const wsjtxRecentDecodes = [];
 
 // ============= SDC PARSING =============
 
@@ -233,6 +237,7 @@ function getWsjtxStatsSnapshot() {
   const age = (entry) => entry && entry.ts ? now - entry.ts : null;
   return {
     ...wsjtxStats,
+    recentDecodes: wsjtxRecentDecodes.slice(-50),
     lastPacketAgeMs: age(wsjtxStats.lastPacket),
     lastStatusAgeMs: age(wsjtxStats.lastStatus),
     lastDecodeAgeMs: age(wsjtxStats.lastDecode),
@@ -537,6 +542,10 @@ function startWSJTXListener() {
           ts: Date.now()
         };
         wsjtxStats.lastDecode = broadcastData;
+        wsjtxRecentDecodes.push(broadcastData);
+        while (wsjtxRecentDecodes.length > WSJTX_RECENT_DECODE_LIMIT) {
+          wsjtxRecentDecodes.shift();
+        }
         addWsjtxTimeline({
           direction: 'in',
           type: 'decode',
@@ -570,7 +579,7 @@ function startWSJTXListener() {
           dialFrequency: broadcastData.dialFrequency,
           mode: broadcastData.mode,
         });
-        uploadLoggedQsoToBackend(broadcastData);
+        scheduleLoggedQsoUpload(msg.type, broadcastData);
       } else {
         wsjtxStats.other += 1;
         broadcastData = {
@@ -786,6 +795,33 @@ async function uploadLoggedQsoToBackend(loggedData) {
   }
 }
 
+function scheduleLoggedQsoUpload(messageType, loggedData) {
+  if (messageType === 'LOGGED_ADIF') {
+    if (pendingQsoLoggedUploadTimer) {
+      clearTimeout(pendingQsoLoggedUploadTimer);
+      pendingQsoLoggedUploadTimer = null;
+      pendingQsoLoggedData = null;
+    }
+    uploadLoggedQsoToBackend(loggedData);
+    return;
+  }
+
+  if (messageType !== 'QSO_LOGGED') {
+    return;
+  }
+
+  if (pendingQsoLoggedUploadTimer) {
+    clearTimeout(pendingQsoLoggedUploadTimer);
+  }
+  pendingQsoLoggedData = loggedData;
+  pendingQsoLoggedUploadTimer = setTimeout(() => {
+    const fallback = pendingQsoLoggedData;
+    pendingQsoLoggedUploadTimer = null;
+    pendingQsoLoggedData = null;
+    uploadLoggedQsoToBackend(fallback);
+  }, 1500);
+}
+
 function startWsjtxCommandServer() {
   const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') {
@@ -837,6 +873,11 @@ function getWsjtxStatusSnapshot() {
 }
 
 export function __resetWsjtxBridgeDiagnosticsForTest() {
+  if (pendingQsoLoggedUploadTimer) {
+    clearTimeout(pendingQsoLoggedUploadTimer);
+    pendingQsoLoggedUploadTimer = null;
+  }
+  pendingQsoLoggedData = null;
   latestWsjtxEndpoint = null;
   latestWsjtxClientId = '';
   wsjtxCommandSender = null;
@@ -858,6 +899,7 @@ export function __resetWsjtxBridgeDiagnosticsForTest() {
     lastCommand: null,
   };
   wsjtxTimeline.length = 0;
+  wsjtxRecentDecodes.length = 0;
 }
 
 export function __dispatchWsjtxCommandForTest(command, payload = {}) {
@@ -866,6 +908,10 @@ export function __dispatchWsjtxCommandForTest(command, payload = {}) {
 
 export function __getWsjtxStatusForTest() {
   return getWsjtxStatusSnapshot();
+}
+
+export function __buildLoggedQsoUploadForTest(loggedData) {
+  return buildLoggedQsoUpload(loggedData);
 }
 
 // ============= STARTUP =============

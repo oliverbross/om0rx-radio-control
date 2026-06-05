@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from typing import Optional, Dict, Any
 from datetime import date, datetime, time, timezone
 from threading import RLock
@@ -36,8 +37,11 @@ wavelog_client: Optional[WavelogClient] = None
 qrz_client: Optional[QRZClient] = None
 adif_handler: Optional[ADIFHandler] = None
 cty_resolver: Optional[CtyDatResolver] = None
+qso_status_store = None
 _dedupe_lock = RLock()
 _dedupe_ledger_path = config.LOGS_DIR / "qso_log_dedupe.json"
+_pending_dedupe_claims: Dict[str, Dict[str, Any]] = {}
+_PENDING_DEDUPE_TTL_SECONDS = 600
 
 
 class QSORequest(BaseModel):
@@ -84,6 +88,15 @@ class QSORequest(BaseModel):
 
 def build_qso_dedupe_key(qso_data: Dict[str, Any]) -> str:
     """Build a stable logical key used to make QSO logging restart-safe."""
+    return _build_qso_dedupe_key(qso_data, bucket_seconds=300, include_reports=True)
+
+
+def build_qso_loose_dedupe_key(qso_data: Dict[str, Any]) -> str:
+    """Build a broader duplicate key for repeated digital-mode logged-ADIF events."""
+    return _build_qso_dedupe_key(qso_data, bucket_seconds=900, include_reports=False)
+
+
+def _build_qso_dedupe_key(qso_data: Dict[str, Any], *, bucket_seconds: int, include_reports: bool) -> str:
     callsign = str(qso_data.get("callsign") or qso_data.get("call") or "").strip().upper()
     own_call = str(qso_data.get("station_callsign") or config.MY_STATION or "").strip().upper()
     mode = str(qso_data.get("mode") or "").strip().upper()
@@ -105,19 +118,19 @@ def build_qso_dedupe_key(qso_data: Dict[str, Any]) -> str:
         dt = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
     except Exception:
         dt = datetime.utcnow()
-    # Bucket by five minutes so restart/replay uses the QSO, not the process attempt id.
-    bucket = int(dt.timestamp() // 300)
+    bucket = int(dt.timestamp() // bucket_seconds)
 
     payload = {
         "dx": callsign,
         "own": own_call,
         "band": band,
-        "freq": round(frequency, 3),
         "mode": mode,
         "bucket": bucket,
-        "rst_sent": str(qso_data.get("rst_sent") or "").strip(),
-        "rst_received": str(qso_data.get("rst_received") or qso_data.get("rst_rcvd") or "").strip(),
     }
+    if include_reports:
+        payload["freq"] = round(frequency, 3)
+        payload["rst_sent"] = str(qso_data.get("rst_sent") or "").strip()
+        payload["rst_received"] = str(qso_data.get("rst_received") or qso_data.get("rst_rcvd") or "").strip()
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return "qso:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -176,6 +189,8 @@ async def _enrich_qso_from_qrz(qso_dict: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _load_dedupe_ledger() -> Dict[str, Any]:
+    if _dedupe_ledger_path is None:
+        return {}
     if not _dedupe_ledger_path.exists():
         return {}
     try:
@@ -187,6 +202,8 @@ def _load_dedupe_ledger() -> Dict[str, Any]:
 
 
 def _save_dedupe_ledger(ledger: Dict[str, Any]) -> None:
+    if _dedupe_ledger_path is None:
+        return
     _dedupe_ledger_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = _dedupe_ledger_path.with_suffix(_dedupe_ledger_path.suffix + ".tmp")
     tmp_path.write_text(json.dumps(ledger, indent=2, sort_keys=True), encoding="utf-8")
@@ -199,9 +216,68 @@ def _dedupe_entry(qso_key: str) -> Optional[Dict[str, Any]]:
         return entry if isinstance(entry, dict) else None
 
 
+def _prune_pending_dedupe_claims(now_ts: Optional[float] = None) -> None:
+    now_ts = now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp()
+    expired = [
+        key
+        for key, entry in _pending_dedupe_claims.items()
+        if now_ts - float(entry.get("claimed_ts") or 0) > _PENDING_DEDUPE_TTL_SECONDS
+    ]
+    for key in expired:
+        _pending_dedupe_claims.pop(key, None)
+
+
+def _claim_dedupe_keys(qso_keys: list[str], qso_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Claim all equivalent QSO keys before upload so parallel log paths cannot double-post."""
+    keys = [str(key or "").strip() for key in qso_keys if str(key or "").strip()]
+    if not keys:
+        return None
+    with _dedupe_lock:
+        now = datetime.now(timezone.utc)
+        now_ts = now.timestamp()
+        _prune_pending_dedupe_claims(now_ts)
+        ledger = _load_dedupe_ledger()
+        for key in keys:
+            entry = ledger.get(key)
+            if isinstance(entry, dict):
+                return entry
+        for key in keys:
+            entry = _pending_dedupe_claims.get(key)
+            if isinstance(entry, dict):
+                return entry
+
+        claim = {
+            "pending": True,
+            "claimed_at": now.isoformat(),
+            "claimed_ts": now_ts,
+            "callsign": str(qso_data.get("callsign") or qso_data.get("call") or "").upper(),
+            "own_call": str(config.MY_STATION or "").upper(),
+            "frequency": qso_data.get("frequency"),
+            "band": qso_data.get("band") or "",
+            "mode": str(qso_data.get("mode") or "").upper(),
+            "date_time": qso_data.get("date_time") or "",
+            "wavelog_success": False,
+            "adif_saved": False,
+            "outbox_queued": False,
+        }
+        for key in keys:
+            _pending_dedupe_claims[key] = claim
+        return None
+
+
+def _release_dedupe_keys(qso_keys: list[str]) -> None:
+    keys = [str(key or "").strip() for key in qso_keys if str(key or "").strip()]
+    if not keys:
+        return
+    with _dedupe_lock:
+        for key in keys:
+            _pending_dedupe_claims.pop(key, None)
+
+
 def _record_dedupe_entry(qso_key: str, qso_data: Dict[str, Any], result: Dict[str, Any]) -> None:
     with _dedupe_lock:
         ledger = _load_dedupe_ledger()
+        _pending_dedupe_claims.pop(qso_key, None)
         ledger[qso_key] = {
             "recorded_at": datetime.now(timezone.utc).isoformat(),
             "callsign": str(qso_data.get("callsign") or "").upper(),
@@ -217,6 +293,233 @@ def _record_dedupe_entry(qso_key: str, qso_data: Dict[str, Any], result: Dict[st
             "outbox_queued": bool(result.get("outbox_queued")),
         }
         _save_dedupe_ledger(ledger)
+
+
+def _parse_adif_fields(adif_text: str) -> Dict[str, str]:
+    fields: Dict[str, str] = {}
+    for match in re.finditer(r"<([^:>]+):(\d+)(?::[^>]*)?>", adif_text or ""):
+        name = match.group(1).strip().lower()
+        try:
+            length = int(match.group(2))
+        except ValueError:
+            continue
+        fields[name] = adif_text[match.end():match.end() + length].strip()
+    return fields
+
+
+def _qso_data_from_adif_record(adif_record: str) -> Dict[str, Any]:
+    fields = _parse_adif_fields(adif_record)
+    frequency = None
+    try:
+        if fields.get("freq"):
+            frequency = float(fields["freq"])
+    except (TypeError, ValueError):
+        frequency = None
+    return {
+        "callsign": (fields.get("call") or "").upper(),
+        "frequency": frequency,
+        "band": fields.get("band") or "",
+        "mode": (fields.get("submode") or fields.get("mode") or "").upper(),
+        "submode": (fields.get("submode") or "").upper(),
+        "gridsquare": (fields.get("gridsquare") or "").upper(),
+        "dxcc": fields.get("dxcc") or None,
+        "lotw_qsl_rcvd": fields.get("lotw_qsl_rcvd") or "",
+        "qsl_rcvd": fields.get("qsl_rcvd") or "",
+    }
+
+
+def _enrich_qso_with_cty(qso_dict: Dict[str, Any]) -> Dict[str, Any]:
+    call = str(qso_dict.get("callsign") or qso_dict.get("call") or "").strip().upper()
+    if not call or not cty_resolver:
+        return qso_dict
+    try:
+        info = cty_resolver.lookup(call) or {}
+    except Exception as exc:
+        logger.debug("CTY QSO enrichment skipped for %s: %s", call, exc)
+        return qso_dict
+
+    if info.get("dxcc") and not qso_dict.get("dxcc"):
+        qso_dict["dxcc"] = info.get("dxcc")
+    if info.get("country") and not qso_dict.get("country"):
+        qso_dict["country"] = info.get("country")
+    if info.get("continent") and not qso_dict.get("continent"):
+        qso_dict["continent"] = info.get("continent")
+    if info.get("cq") and not qso_dict.get("cq_zone"):
+        qso_dict["cq_zone"] = info.get("cq")
+    if info.get("itu") and not qso_dict.get("itu_zone"):
+        qso_dict["itu_zone"] = info.get("itu")
+    return qso_dict
+
+
+def _record_qso_status(qso_dict: Dict[str, Any]) -> None:
+    if not qso_status_store or not hasattr(qso_status_store, "record_qso"):
+        return
+    try:
+        enriched = _enrich_qso_with_cty(dict(qso_dict))
+        if qso_status_store.record_qso(enriched):
+            logger.info("✅ Local QSO status cache updated for %s", enriched.get("callsign"))
+    except Exception as exc:
+        logger.debug("Unable to update local QSO status cache for %s: %s", qso_dict.get("callsign"), exc)
+
+
+def _coerce_optional_float(value: Any) -> Optional[float]:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    try:
+        if value in (None, ""):
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_log_datetime(qso_dict: Dict[str, Any]) -> tuple[Optional[str], Optional[datetime], Optional[datetime], Optional[datetime]]:
+    date_time_value = qso_dict.get("date_time") or qso_dict.get("qso_datetime")
+    parsed_dt = None
+    if date_time_value:
+        try:
+            parsed_dt = datetime.fromisoformat(str(date_time_value).replace("Z", "+00:00"))
+            if parsed_dt.tzinfo is not None:
+                parsed_dt = parsed_dt.astimezone(timezone.utc).replace(tzinfo=None)
+        except ValueError:
+            parsed_dt = None
+
+    qso_date = _format_qso_date(qso_dict.get("date") or qso_dict.get("qso_date") or parsed_dt)
+    time_value = qso_dict.get("time_on") or qso_dict.get("time_off") or parsed_dt
+    time_text = _format_qso_time(time_value)
+    if parsed_dt is None and qso_date and time_text:
+        try:
+            parsed_dt = datetime.strptime(f"{qso_date}{time_text[:6]}", "%Y%m%d%H%M%S")
+        except ValueError:
+            parsed_dt = None
+    return qso_date or None, parsed_dt, parsed_dt, parsed_dt
+
+
+def write_qso_to_postgres_read_cache(qso_dict: Dict[str, Any]) -> bool:
+    """Write one logged QSO into the PostgreSQL read cache when PostgreSQL is active."""
+    if not should_use_postgres():
+        return False
+
+    qso = _enrich_qso_with_cty(dict(qso_dict))
+    call = str(qso.get("callsign") or qso.get("call") or "").strip().upper()
+    if not call:
+        return False
+
+    qso_date, time_on, time_off, qso_datetime = _parse_log_datetime(qso)
+    mode = str(qso.get("mode") or "").strip().upper() or None
+    submode = str(qso.get("submode") or "").strip().upper() or None
+    band = str(qso.get("band") or "").strip() or None
+    try:
+        with connect_postgres() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO qso_records (
+                        call, qso_date, time_on, time_off, qso_datetime, mode, submode,
+                        frequency, band, rst_sent, rst_rcvd, name, qth, state, county,
+                        gridsquare, pota_ref, sota_ref, iota, wwff_ref, sig, sig_info,
+                        comment, country, dxcc, cqz, ituz, continent, lotw_qsl_sent,
+                        lotw_qsl_rcvd, eqsl_qsl_sent, eqsl_qsl_rcvd, qsl_sent, qsl_rcvd,
+                        tx_pwr, operator, station_callsign, station_id, creation_date,
+                        last_modified, sync_timestamp
+                    )
+                    SELECT
+                        %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, now(),
+                        now(), now()
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM qso_records
+                        WHERE upper(call) = upper(%s)
+                          AND COALESCE(qso_date, '') = COALESCE(%s, '')
+                          AND COALESCE(band, '') = COALESCE(%s, '')
+                          AND COALESCE(mode, '') = COALESCE(%s, '')
+                          AND (
+                              %s IS NULL
+                              OR qso_datetime IS NULL
+                              OR ABS(EXTRACT(EPOCH FROM (qso_datetime - %s))) < 300
+                          )
+                    )
+                    """,
+                    (
+                        call,
+                        qso_date,
+                        time_on,
+                        time_off,
+                        qso_datetime,
+                        mode,
+                        submode,
+                        _coerce_optional_float(qso.get("frequency") or qso.get("freq")),
+                        band,
+                        qso.get("rst_sent") or "",
+                        qso.get("rst_received") or qso.get("rst_rcvd") or "",
+                        qso.get("name") or "",
+                        qso.get("qth") or "",
+                        qso.get("state") or "",
+                        qso.get("us_county") or qso.get("county") or "",
+                        qso.get("gridsquare") or qso.get("grid") or "",
+                        qso.get("pota") or qso.get("pota_ref") or "",
+                        qso.get("sota") or qso.get("sota_ref") or "",
+                        qso.get("iota") or "",
+                        qso.get("wwff") or qso.get("wwff_ref") or "",
+                        qso.get("sig") or "",
+                        qso.get("sig_info") or "",
+                        qso.get("notes") or qso.get("comment") or "",
+                        qso.get("country") or "",
+                        _coerce_optional_int(qso.get("dxcc") or qso.get("dxcc_id")),
+                        _coerce_optional_int(qso.get("cq_zone") or qso.get("cqz")),
+                        _coerce_optional_int(qso.get("itu_zone") or qso.get("ituz")),
+                        qso.get("continent") or "",
+                        qso.get("lotw_qsl_sent") or "",
+                        qso.get("lotw_qsl_rcvd") or "",
+                        qso.get("eqsl_qsl_sent") or "",
+                        qso.get("eqsl_qsl_rcvd") or "",
+                        qso.get("qsl_sent") or "",
+                        qso.get("qsl_rcvd") or "",
+                        _coerce_optional_float(qso.get("tx_pwr")),
+                        qso.get("operator") or "",
+                        qso.get("station_callsign") or config.MY_STATION or "",
+                        _coerce_optional_int(qso.get("station_id") or getattr(config, "WAVELOG_STATION_ID", 1)),
+                        call,
+                        qso_date,
+                        band,
+                        mode,
+                        qso_datetime,
+                        qso_datetime,
+                    ),
+                )
+                inserted = cur.rowcount > 0
+            conn.commit()
+        if inserted:
+            logger.info("✅ PostgreSQL QSO read cache write-through inserted %s", call)
+        return bool(inserted)
+    except Exception as exc:
+        logger.debug("PostgreSQL QSO read cache write-through skipped for %s: %s", call, exc, exc_info=True)
+        return False
+
+
+def record_qso_in_local_read_cache(qso_dict: Dict[str, Any]) -> None:
+    """Update both hot in-memory and PostgreSQL read-cache status for a logged QSO."""
+    _record_qso_status(qso_dict)
+    write_qso_to_postgres_read_cache(qso_dict)
+
+
+def record_qso_status_from_adif(adif_record: str) -> None:
+    """Record one resolved outbox ADIF record in the hot local status cache."""
+    qso_data = _qso_data_from_adif_record(adif_record)
+    if qso_data.get("callsign"):
+        record_qso_in_local_read_cache(qso_data)
 
 
 class RecentQSOsRequest(BaseModel):
@@ -361,14 +664,76 @@ def _get_recent_qsos_from_wavelog_db(callsign: str, limit: int) -> list[dict[str
     return qsos
 
 
-def init_qso_logging_clients(w_client: WavelogClient, q_client: QRZClient,
-                           a_handler: ADIFHandler, c_resolver: CtyDatResolver):
+def _recent_qso_datetime(qso: Dict[str, Any]) -> Optional[datetime]:
+    date_value = _format_qso_date(qso.get("qso_date") or qso.get("date"))
+    time_value = _format_qso_time(qso.get("time_on") or qso.get("time_off"))
+    if not date_value or not time_value:
+        return None
+    try:
+        return datetime.strptime(f"{date_value}{time_value[:6]}", "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def _recent_wavelog_duplicate_entry(qso_dict: Dict[str, Any], *, window_seconds: int = 1800) -> Optional[Dict[str, Any]]:
+    call = str(qso_dict.get("callsign") or qso_dict.get("call") or "").strip().upper()
+    if not call:
+        return None
+    requested_band = str(qso_dict.get("band") or "").strip().lower()
+    requested_mode = str(qso_dict.get("submode") or qso_dict.get("mode") or "").strip().upper()
+    _, requested_dt, _, _ = _parse_log_datetime(qso_dict)
+    if requested_dt is None:
+        return None
+
+    recent: list[dict[str, Any]] = []
+    for fetcher in (_get_recent_qsos_from_duckdb, _get_recent_qsos_from_wavelog_db):
+        try:
+            recent.extend(fetcher(call, 20))
+        except Exception as exc:
+            logger.debug("Recent QSO duplicate lookup skipped for %s via %s: %s", call, fetcher.__name__, exc)
+
+    for existing in recent:
+        existing_call = str(existing.get("call") or existing.get("callsign") or "").strip().upper()
+        existing_band = str(existing.get("band") or "").strip().lower()
+        existing_mode = str(existing.get("submode") or existing.get("mode") or "").strip().upper()
+        if existing_call and existing_call != call:
+            continue
+        if requested_band and existing_band and existing_band != requested_band:
+            continue
+        if requested_mode and existing_mode and existing_mode != requested_mode:
+            continue
+        existing_dt = _recent_qso_datetime(existing)
+        if existing_dt is None:
+            continue
+        if abs((requested_dt - existing_dt).total_seconds()) <= window_seconds:
+            return {
+                "recent_wavelog": True,
+                "callsign": call,
+                "band": existing.get("band") or qso_dict.get("band") or "",
+                "mode": existing.get("mode") or qso_dict.get("mode") or "",
+                "qso_date": existing.get("qso_date") or "",
+                "time_on": existing.get("time_on") or "",
+                "wavelog_success": True,
+                "adif_saved": True,
+                "outbox_queued": False,
+            }
+    return None
+
+
+def init_qso_logging_clients(
+    w_client: WavelogClient,
+    q_client: QRZClient,
+    a_handler: ADIFHandler,
+    c_resolver: CtyDatResolver,
+    status_store=None,
+):
     """Initialize the global clients for QSO logging"""
-    global wavelog_client, qrz_client, adif_handler, cty_resolver
+    global wavelog_client, qrz_client, adif_handler, cty_resolver, qso_status_store
     wavelog_client = w_client
     qrz_client = q_client
     adif_handler = a_handler
     cty_resolver = c_resolver
+    qso_status_store = status_store
     logger.info("✅ QSO logging clients initialized")
 
 
@@ -403,21 +768,48 @@ async def log_qso(qso: QSORequest):
         # They can be strings (FT8 SNR like "-12") or will be converted by wavelog_api
         qso_dict = qso.model_dump(exclude_unset=False)  # Include all fields
         qso_dict = await _enrich_qso_from_qrz(qso_dict)
-        qso_key = qso_dict.get("qso_key") or build_qso_dedupe_key(qso_dict)
+        qso_dict = _enrich_qso_with_cty(qso_dict)
+        requested_qso_key = qso_dict.get("qso_key")
+        qso_key = requested_qso_key or build_qso_dedupe_key(qso_dict)
+        loose_qso_key = build_qso_loose_dedupe_key(qso_dict)
         qso_dict["qso_key"] = qso_key
+        dedupe_keys = [qso_key, loose_qso_key]
 
-        existing_entry = _dedupe_entry(qso_key)
-        if existing_entry:
-            logger.info("Skipping duplicate QSO log request for stable key %s (%s)", qso_key, qso.callsign)
+        dedupe_entry = _claim_dedupe_keys(dedupe_keys, qso_dict)
+        if dedupe_entry:
+            logger.info("Skipping duplicate QSO log request for stable key %s / %s (%s)", qso_key, loose_qso_key, qso.callsign)
+            record_qso_in_local_read_cache(qso_dict)
             return {
                 "success": True,
                 "message": "Duplicate QSO log request ignored",
                 "duplicate": True,
                 "qso_key": qso_key,
-                "dedupe": existing_entry,
-                "wavelog": {"success": bool(existing_entry.get("wavelog_success"))},
-                "adif_saved": bool(existing_entry.get("adif_saved")),
-                "outbox_queued": bool(existing_entry.get("outbox_queued")),
+                "loose_qso_key": loose_qso_key,
+                "dedupe": dedupe_entry,
+                "wavelog": {"success": bool(dedupe_entry.get("wavelog_success"))},
+                "adif_saved": bool(dedupe_entry.get("adif_saved")),
+                "outbox_queued": bool(dedupe_entry.get("outbox_queued")),
+                "outbox": get_qso_outbox().status(),
+            }
+        notes = str(qso_dict.get("notes") or qso_dict.get("comment") or "").lower()
+        should_check_recent_wavelog = bool(requested_qso_key) or "built-in digital" in notes
+        recent_duplicate = _recent_wavelog_duplicate_entry(qso_dict) if should_check_recent_wavelog else None
+        if recent_duplicate:
+            logger.info("Skipping QSO log already present in Wavelog/read-cache for %s on %s %s", qso.callsign, qso.band, qso.mode)
+            _record_dedupe_entry(qso_key, qso_dict, {"wavelog": {"success": True}, "adif_saved": True})
+            if loose_qso_key and loose_qso_key != qso_key:
+                _record_dedupe_entry(loose_qso_key, qso_dict, {"wavelog": {"success": True}, "adif_saved": True})
+            record_qso_in_local_read_cache(qso_dict)
+            return {
+                "success": True,
+                "message": "QSO already present in Wavelog/read-cache",
+                "duplicate": True,
+                "qso_key": qso_key,
+                "loose_qso_key": loose_qso_key,
+                "dedupe": recent_duplicate,
+                "wavelog": {"success": True},
+                "adif_saved": True,
+                "outbox_queued": False,
                 "outbox": get_qso_outbox().status(),
             }
 
@@ -465,9 +857,16 @@ async def log_qso(qso: QSORequest):
             "outbox_queued": outbox_queued,
             "outbox": get_qso_outbox().status(),
             "qso_key": qso_key,
+            "loose_qso_key": loose_qso_key,
         }
         if wavelog_result.get("success") or adif_saved or outbox_queued:
             _record_dedupe_entry(qso_key, qso_dict, response)
+            if loose_qso_key and loose_qso_key != qso_key:
+                _record_dedupe_entry(loose_qso_key, qso_dict, response)
+        else:
+            _release_dedupe_keys(dedupe_keys)
+        if response["success"]:
+            record_qso_in_local_read_cache(qso_dict)
         return response
 
     except HTTPException:
@@ -685,7 +1084,11 @@ async def retry_qso_outbox(max_records: int = 20):
     global wavelog_client
     if not wavelog_client:
         wavelog_client = WavelogClient()
-    result = await get_qso_outbox().replay(wavelog_client, max_records=max_records)
+    result = await get_qso_outbox().replay(
+        wavelog_client,
+        max_records=max_records,
+        on_resolved_record=record_qso_status_from_adif,
+    )
     return {"success": result.get("success", False), "result": result, "outbox": get_qso_outbox().status()}
 
 

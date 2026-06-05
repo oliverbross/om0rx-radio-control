@@ -980,25 +980,9 @@ class FT8Service:
             their_call = str(qso.their_call or "").upper()
             if not their_call or their_call not in parts:
                 continue
-            if self.tx_in_progress:
-                self._record_decision(
-                    "target-busy-deferred",
-                    "tx-active",
-                    call=their_call,
-                    decoded_message=text,
-                )
-                return
-            self._cancel_current_attempt(
-                reason="target-busy-with-other-station",
-                backoff_active_target=True,
-                disable_tx=False,
-                pause_auto_engage=False,
-            )
-            self.auto_call_remaining = self._auto_call_attempt_budget()
-            self.tx_status = f"{their_call} is busy with another station; searching next target"
             self._record_decision(
-                "attempt-cancelled",
-                "target-busy-with-other-station",
+                "target-busy-observed",
+                "active-qso-still-owned-by-backend",
                 call=their_call,
                 decoded_message=text,
             )

@@ -5,6 +5,10 @@ import subprocess
 from pathlib import Path
 
 import _bootstrap  # noqa: F401
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import services.wsjtx as wsjtx_module
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -128,6 +132,9 @@ def test_wsjtx_bridge_server_exposes_command_timeline_contract():
     assert "WSJTX_TIMELINE_LIMIT" in bridge
     assert "wsjtxTimeline" in bridge
     assert "addWsjtxTimeline" in bridge
+    assert "WSJTX_RECENT_DECODE_LIMIT" in bridge
+    assert "wsjtxRecentDecodes" in bridge
+    assert "recentDecodes: wsjtxRecentDecodes.slice(-50)" in bridge
     assert "commandCapabilities" in bridge
     assert "start_target_qso" in bridge
     assert "lastCommand" in bridge
@@ -135,6 +142,115 @@ def test_wsjtx_bridge_server_exposes_command_timeline_contract():
     assert "traceId: payload.traceId" in bridge
     assert "result.traceId = commandEntry.traceId" in bridge
     assert "timeline: wsjtxTimeline.slice(-25)" in bridge
+    assert "scheduleLoggedQsoUpload" in bridge
+    assert "messageType === 'LOGGED_ADIF'" in bridge
+    assert "clearTimeout(pendingQsoLoggedUploadTimer)" in bridge
+    assert "}, 1500);" in bridge
+
+
+def test_wsjtx_halt_tx_endpoint_accepts_empty_body(monkeypatch):
+    app = FastAPI()
+    calls = []
+
+    class FakeWsjtxService:
+        def send_bridge_command(self, command, payload):
+            calls.append((command, payload))
+            return {"success": True, "command": command, "payload": payload}
+
+    monkeypatch.setattr(wsjtx_module, "get_wsjtx_service", lambda: FakeWsjtxService())
+    wsjtx_module.register_wsjtx_endpoints(app)
+
+    response = TestClient(app).post("/api/wsjtx/halt-tx")
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert calls == [("halt_tx", {"autoOnly": False})]
+
+
+def test_wsjtx_decode_status_ingests_native_decode_into_automation(monkeypatch):
+    import services.ft8_service as ft8_service_module
+    from services.digital_automation import DigitalAutomationController
+
+    app = FastAPI()
+    fake_controller = DigitalAutomationController(mycall="OM0RX")
+
+    class FakeQsoStatusStore:
+        def call_flags(self, callsign, band, mode):
+            return (False, False, True, True, False)
+
+        def dxcc_overall(self, dxcc):
+            return (False, False)
+
+        def dxcc_bandmode_flags(self, dxcc, band, mode):
+            return (True, True, False)
+
+        def grid_flags(self, grid, band, mode):
+            return (True, True, True)
+
+    app.state.classifier = type("FakeClassifier", (), {"qso_status_store": FakeQsoStatusStore()})()
+    fake_ft8_service = type(
+        "FakeFt8Service",
+        (),
+        {
+            "mode": "FT8",
+            "automation_controller": fake_controller,
+        },
+    )()
+    monkeypatch.setattr(ft8_service_module, "get_ft8_service", lambda: fake_ft8_service)
+    wsjtx_module.register_wsjtx_endpoints(app)
+
+    response = TestClient(app).post(
+        "/api/wsjtx/decode-status",
+        json={
+            "call": "E51ABC",
+            "grid": "BG08",
+            "band": "20m",
+            "mode": "FT8",
+            "frequency_hz": 14074000,
+            "audioOffset": 822,
+            "snr": -9,
+            "message": "CQ E51ABC BG08",
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["automation_target"]["call"] == "E51ABC"
+    assert payload["automation_target"]["heard"] is True
+    assert payload["automation_decision"]["decision"] == "queued"
+
+    selected = fake_controller.next_target(auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert selected.call == "E51ABC"
+
+
+def test_wsjtx_bridge_logged_qso_upload_payload_prefers_adif_fields():
+    payload = run_node_protocol_script(
+        """
+        process.env.OM0RX_BRIDGE_TEST_MODE = '1';
+        const bridge = await import('./bridge/sdc-bridge-server.js?logged-qso-payload-contract');
+        const upload = bridge.__buildLoggedQsoUploadForTest({
+          dxCall: 'EA1AA',
+          dxGrid: 'IN80',
+          dialFrequency: 14074000,
+          mode: 'FT8',
+          txRst: '-10',
+          rxRst: '-07',
+          adifText: '<call:5>EA1AA <gridsquare:4>IN80 <freq:6>14.074 <mode:3>FT8 <rst_sent:3>-10 <rst_rcvd:3>-07 <eor>'
+        });
+        console.log(JSON.stringify(upload));
+        """
+    )
+
+    assert payload["call"] == "EA1AA"
+    assert payload["frequency_hz"] == 14074000
+    assert payload["mode"] == "FT8"
+    assert payload["grid"] == "IN80"
+    assert payload["rst_sent"] == "-10"
+    assert payload["rst_received"] == "-07"
+    assert payload["adif_text"].startswith("<call:5>EA1AA")
+    assert payload["source"] == "wsjtx-bridge"
 
 
 def test_wsjtx_bridge_failed_command_status_contract():

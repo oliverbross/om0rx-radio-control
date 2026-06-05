@@ -238,6 +238,8 @@ def initialize_schema() -> None:
                 CREATE TABLE IF NOT EXISTS digital_targets (
                     key TEXT PRIMARY KEY,
                     call TEXT NOT NULL CHECK (length(call) > 0),
+                    target_id TEXT,
+                    command_id TEXT,
                     band TEXT,
                     mode TEXT NOT NULL DEFAULT 'FT8',
                     source TEXT NOT NULL DEFAULT 'decoded',
@@ -251,6 +253,8 @@ def initialize_schema() -> None:
                     call_status TEXT DEFAULT 'Unknown',
                     dxcc_status TEXT DEFAULT 'Unknown',
                     status_source TEXT,
+                    need_reasons TEXT[],
+                    reference_items TEXT,
                     score INTEGER DEFAULT 0,
                     snr DOUBLE PRECISION,
                     audio_offset INTEGER,
@@ -264,14 +268,35 @@ def initialize_schema() -> None:
                     backoff_until TIMESTAMPTZ,
                     attempts INTEGER DEFAULT 0,
                     state TEXT DEFAULT 'queued',
+                    lifecycle TEXT DEFAULT 'queued',
+                    active_state TEXT DEFAULT 'idle',
                     reason TEXT,
-                    heard BOOLEAN DEFAULT false
+                    skip_reason TEXT,
+                    completion_reason TEXT,
+                    heard BOOLEAN DEFAULT false,
+                    direct_caller BOOLEAN DEFAULT false,
+                    last_command_at TIMESTAMPTZ
                 )
                 """
             )
+            for column, definition in (
+                ("target_id", "TEXT"),
+                ("command_id", "TEXT"),
+                ("need_reasons", "TEXT[]"),
+                ("reference_items", "TEXT"),
+                ("lifecycle", "TEXT DEFAULT 'queued'"),
+                ("active_state", "TEXT DEFAULT 'idle'"),
+                ("skip_reason", "TEXT"),
+                ("completion_reason", "TEXT"),
+                ("direct_caller", "BOOLEAN DEFAULT false"),
+                ("last_command_at", "TIMESTAMPTZ"),
+            ):
+                cur.execute(f"ALTER TABLE digital_targets ADD COLUMN IF NOT EXISTS {column} {definition}")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_updated ON digital_targets(updated_at DESC)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_call ON digital_targets(upper(call))")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_state ON digital_targets(state)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_lifecycle ON digital_targets(lifecycle)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_direct ON digital_targets(direct_caller)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_source ON digital_targets(source)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_band_mode ON digital_targets(band, mode)")
 

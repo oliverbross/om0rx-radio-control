@@ -305,13 +305,6 @@ class ActivityIntelligenceService:
                     )
                 )
 
-        current_contests = self.contest_context(spot.get("band"), spot.get("mode")).get("candidates", [])
-        for contest in current_contests[:2]:
-            tags.append(ActivityTag("CONTEST_ACTIVE", contest.get("name", "Contest active"), 0.72, contest.get("source_id", "WA7BNM"), contest.get("id")))
-            ai_score += int(weights.get("contestActiveBandMode", 10))
-            reasons.append("contest context")
-            break
-
         propagation = self.assess_propagation(spot)
         if propagation:
             spot["propagation"] = compact_dict(propagation)

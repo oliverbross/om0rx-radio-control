@@ -41,6 +41,7 @@ class BackgroundTaskService:
     tasks: List[asyncio.Task] = field(default_factory=list)
     rbn_direct_task: Optional[asyncio.Task] = None
     wsjtx_last_decode_key: Optional[str] = None
+    wsjtx_seen_decode_keys: List[str] = field(default_factory=list)
     wsjtx_ingested_decodes: int = 0
     wsjtx_ingest_last_error: Optional[str] = None
 
@@ -78,6 +79,60 @@ def _normalize_cty_longitude(value):
     if abs(longitude) > 180:
         return None
     return -longitude
+
+
+def _should_queue_digital_spot_for_automation(spot: Dict[str, Any]) -> bool:
+    mode = str(spot.get("mode") or "").strip().upper()
+    if mode not in {"FT8", "FT4", "FT2"}:
+        return False
+    status_text = f"{spot.get('call_status') or ''} {spot.get('dxcc_status') or ''}".lower()
+    dxcc_status = str(spot.get("dxcc_status") or "").strip().lower()
+    has_new_slot = "new band" in status_text or "new mode" in status_text or "atno" in status_text
+    has_unconfirmed_dxcc = dxcc_status == "worked"
+    if dxcc_status == "confirmed" and not has_new_slot:
+        return False
+    return has_new_slot or has_unconfirmed_dxcc
+
+
+def _queue_digital_spot_for_automation(context: Any, spot: Dict[str, Any]) -> None:
+    if not _should_queue_digital_spot_for_automation(spot):
+        return
+    try:
+        from services.ft8_service import get_ft8_service
+
+        controller = getattr(get_ft8_service(), "automation_controller", None)
+        if not controller:
+            return
+        classifier = getattr(context, "classifier", None)
+        qso_status_store = getattr(classifier, "qso_status_store", None) if classifier else None
+        if hasattr(controller, "set_status_sources"):
+            controller.set_status_sources(
+                qso_status_store=qso_status_store,
+                cty_resolver=getattr(context, "cty_resolver", None),
+            )
+        if not getattr(controller.settings, "spot_hunt_enabled", False):
+            return
+
+        payload = dict(spot)
+        source = str(payload.get("spot_source") or payload.get("source") or "spot").strip().lower()
+        payload["source"] = "rbl" if source == "rbl" else "cluster"
+        payload["heard"] = bool(payload.get("local_heard"))
+        payload["enableTx"] = False
+        if payload.get("frequency_mhz") is not None:
+            payload["base_frequency"] = payload["frequency_mhz"]
+        target = controller.ingest_target(payload)
+        if target:
+            logger.info(
+                "Queued digital spot listen candidate: %s %s/%s %s MHz [%s/%s]",
+                target.call,
+                target.band,
+                target.mode,
+                target.dial_frequency,
+                target.call_status,
+                target.dxcc_status,
+            )
+    except Exception as exc:
+        logger.debug("Could not queue digital spot for automation: %s", exc, exc_info=True)
 
 
 def set_globals(
@@ -270,6 +325,9 @@ async def process_cluster_spot(spot_data: dict):
         call_status = "Unknown"
         dxcc_status = "Unknown"
         tag = None
+        call_worked = False
+        call_new_band = False
+        call_new_mode = False
 
         if classifier:
             # Call classification using Wavelog API (more reliable than direct DB)
@@ -374,6 +432,13 @@ async def process_cluster_spot(spot_data: dict):
             'cq': cq_display,
             'call_status': call_status,
             'dxcc_status': dxcc_status,
+            'needed': {
+                'call': bool(not call_worked) if classifier else False,
+            },
+            'needed_on_band': {
+                'call': bool(call_new_band) if classifier else False,
+                'mode': bool(call_new_mode) if classifier else False,
+            },
             'special': special_tag,
             'tag': tag,
             'timestamp': timestamp.timestamp(),
@@ -399,6 +464,7 @@ async def process_cluster_spot(spot_data: dict):
                 activity_intelligence.enrich_spot(spot)
         except Exception:
             logger.debug("Could not enrich spot with Activity Intelligence", exc_info=True)
+        _queue_digital_spot_for_automation(context, spot)
 
         # Add to cache (keep last 200 visible rows, aggregating repeated RBL spots)
         spot, was_merged = upsert_live_spot(dx_spots_cache, spot, max_len=200)
@@ -536,10 +602,13 @@ def _timestamp_from_wsjtx_qtime(value: Any) -> str:
     return datetime.combine(now.date(), decoded_time).isoformat()
 
 
-def build_wsjtx_decode_automation_payload(status_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def build_wsjtx_decode_automation_payload(
+    status_payload: Dict[str, Any],
+    decode_override: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Convert bridge /wsjtx/status into a Digital automation decoded target."""
     stats = status_payload.get("stats") if isinstance(status_payload.get("stats"), dict) else {}
-    decode = stats.get("lastDecode") if isinstance(stats.get("lastDecode"), dict) else {}
+    decode = decode_override if isinstance(decode_override, dict) else stats.get("lastDecode") if isinstance(stats.get("lastDecode"), dict) else {}
     last_status = stats.get("lastStatus") if isinstance(stats.get("lastStatus"), dict) else {}
     if not decode or not decode.get("message"):
         return None
@@ -579,7 +648,7 @@ def build_wsjtx_decode_automation_payload(status_payload: Dict[str, Any]) -> Opt
 
 
 async def ingest_latest_wsjtx_decode_once() -> Optional[Dict[str, Any]]:
-    """Ingest one fresh bridge decode into the backend automation queue."""
+    """Ingest fresh bridge decodes into the backend automation queue."""
     service = require_background_task_service()
     try:
         from services.ft8_service import get_ft8_service
@@ -587,19 +656,31 @@ async def ingest_latest_wsjtx_decode_once() -> Optional[Dict[str, Any]]:
 
         bridge_status = await asyncio.to_thread(get_wsjtx_service().get_bridge_status)
         stats = bridge_status.get("stats") if isinstance(bridge_status, dict) else {}
-        decode = stats.get("lastDecode") if isinstance(stats, dict) else None
-        if not isinstance(decode, dict):
-            return None
-        age_ms = _coerce_number(stats.get("lastDecodeAgeMs"))
-        if age_ms is None or age_ms > 90_000:
-            return None
-        key = _wsjtx_decode_key(decode)
-        if not key or key == service.wsjtx_last_decode_key:
+        if not isinstance(stats, dict):
             return None
 
-        payload = build_wsjtx_decode_automation_payload(bridge_status)
-        if not payload:
-            service.wsjtx_last_decode_key = key
+        raw_decodes = stats.get("recentDecodes")
+        if isinstance(raw_decodes, list):
+            decodes = [decode for decode in raw_decodes if isinstance(decode, dict)]
+        else:
+            decode = stats.get("lastDecode")
+            decodes = [decode] if isinstance(decode, dict) else []
+        if not decodes:
+            return None
+
+        now_ms = datetime.now(timezone.utc).timestamp() * 1000
+        fresh_decodes: list[Dict[str, Any]] = []
+        for decode in decodes:
+            ts = _coerce_number(decode.get("ts"))
+            age_ms = (now_ms - ts) if ts else _coerce_number(stats.get("lastDecodeAgeMs"))
+            if age_ms is None or age_ms > 90_000:
+                continue
+            key = _wsjtx_decode_key(decode)
+            if not key or key in service.wsjtx_seen_decode_keys:
+                continue
+            fresh_decodes.append(decode)
+
+        if not fresh_decodes:
             return None
 
         ft8_service = get_ft8_service()
@@ -608,11 +689,22 @@ async def ingest_latest_wsjtx_decode_once() -> Optional[Dict[str, Any]]:
             qso_status_store=getattr(classifier, "qso_status_store", None) if classifier else None,
             cty_resolver=getattr(service.context, "cty_resolver", None),
         )
-        target = ft8_service.automation_controller.ingest_target(payload)
-        service.wsjtx_last_decode_key = key
-        service.wsjtx_ingested_decodes += 1 if target else 0
+        selected_target = None
+        for decode in fresh_decodes:
+            key = _wsjtx_decode_key(decode)
+            payload = build_wsjtx_decode_automation_payload(bridge_status, decode)
+            service.wsjtx_seen_decode_keys.append(key)
+            service.wsjtx_last_decode_key = key
+            if not payload:
+                continue
+            target = ft8_service.automation_controller.ingest_target(payload)
+            if target:
+                selected_target = target
+                service.wsjtx_ingested_decodes += 1
+        if len(service.wsjtx_seen_decode_keys) > 500:
+            service.wsjtx_seen_decode_keys = service.wsjtx_seen_decode_keys[-500:]
         service.wsjtx_ingest_last_error = None
-        return target.to_dict() if target else None
+        return selected_target.to_dict() if selected_target else None
     except Exception as exc:
         service.wsjtx_ingest_last_error = str(exc)
         logger.debug("WSJT-X decode ingest failed: %s", exc, exc_info=True)
@@ -674,12 +766,14 @@ async def start_background_tasks():
     if service.context.wavelog_client:
         from radio_control import config
         from radio_control.qso_outbox import get_qso_outbox
+        from services.qso_logging import record_qso_status_from_adif
 
         outbox_task = asyncio.create_task(
             get_qso_outbox().replay_periodically(
                 service.context.wavelog_client,
                 interval_seconds=getattr(config, "WAVELOG_OUTBOX_RETRY_INTERVAL", 60),
                 max_records=getattr(config, "WAVELOG_OUTBOX_RETRY_BATCH_SIZE", 20),
+                on_resolved_record=record_qso_status_from_adif,
             )
         )
         tasks.append(outbox_task)

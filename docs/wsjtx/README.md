@@ -13,7 +13,7 @@ planned backend porting strategy.
 Apply it from the root of the WSJT-X Improved source tree:
 
 ```powershell
-git apply C:\Projects\om0rx-radio-control\docs\wsjtx\om0rx-start-target-qso.patch
+git apply --unidiff-zero C:\Projects\om0rx-radio-control\docs\wsjtx\om0rx-start-target-qso.patch
 ```
 
 The patch adds UDP message type `17` (`OM0RXStartTargetQSO`). The payload is a

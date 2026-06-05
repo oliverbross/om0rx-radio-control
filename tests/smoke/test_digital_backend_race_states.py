@@ -449,6 +449,122 @@ def test_backend_logging_dedupe_survives_restart(monkeypatch, tmp_path):
     assert fake_adif.calls == 1
 
 
+def test_backend_logging_loose_dedupe_catches_adjacent_time_bucket(monkeypatch, tmp_path):
+    import services.qso_logging as qlog
+    from services.qso_logging import QSORequest
+
+    class FakeQRZ:
+        async def lookup(self, _callsign):
+            return {"success": False}
+
+    class FakeWavelog:
+        def __init__(self):
+            self.calls = 0
+
+        async def log_qso(self, _qso):
+            self.calls += 1
+            return {"success": True, "message": "ok"}
+
+    class FakeAdif:
+        def __init__(self):
+            self.calls = 0
+
+        def add_qso(self, _qso):
+            self.calls += 1
+            return True
+
+    fake_wavelog = FakeWavelog()
+    fake_adif = FakeAdif()
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+    monkeypatch.setattr(qlog, "wavelog_client", fake_wavelog)
+    monkeypatch.setattr(qlog, "adif_handler", fake_adif)
+    monkeypatch.setattr(qlog, "qrz_client", FakeQRZ())
+
+    first = QSORequest(
+        callsign="CS2TU",
+        frequency=21.074,
+        band="15m",
+        mode="FT8",
+        rst_sent="-18",
+        rst_received="-24",
+        date_time=datetime(2026, 6, 5, 10, 4, 59, tzinfo=timezone.utc).isoformat(),
+    )
+    second = QSORequest(
+        callsign="CS2TU",
+        frequency=21.0755,
+        band="15m",
+        mode="FT8",
+        rst_sent="-18",
+        rst_received="-24",
+        date_time=datetime(2026, 6, 5, 10, 5, 1, tzinfo=timezone.utc).isoformat(),
+    )
+
+    first_result = asyncio.run(qlog.log_qso(first))
+    second_result = asyncio.run(qlog.log_qso(second))
+
+    assert first_result["success"] is True
+    assert second_result["duplicate"] is True
+    assert fake_wavelog.calls == 1
+    assert fake_adif.calls == 1
+
+
+def test_backend_logging_skips_when_recent_wavelog_row_exists(monkeypatch, tmp_path):
+    import services.qso_logging as qlog
+    from services.qso_logging import QSORequest
+
+    class FakeWavelog:
+        def __init__(self):
+            self.calls = 0
+
+        async def log_qso(self, _qso):
+            self.calls += 1
+            return {"success": True, "message": "ok"}
+
+    class FakeAdif:
+        def __init__(self):
+            self.calls = 0
+
+        def add_qso(self, _qso):
+            self.calls += 1
+            return True
+
+    fake_wavelog = FakeWavelog()
+    fake_adif = FakeAdif()
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+    monkeypatch.setattr(qlog, "_pending_dedupe_claims", {})
+    monkeypatch.setattr(qlog, "_get_recent_qsos_from_duckdb", lambda _call, _limit: [])
+    monkeypatch.setattr(
+        qlog,
+        "_get_recent_qsos_from_wavelog_db",
+        lambda _call, _limit: [{
+            "call": "M6OTU",
+            "qso_date": "20260605",
+            "time_on": "104216",
+            "band": "12m",
+            "mode": "FT8",
+        }],
+    )
+    monkeypatch.setattr(qlog, "wavelog_client", fake_wavelog)
+    monkeypatch.setattr(qlog, "adif_handler", fake_adif)
+    monkeypatch.setattr(qlog, "qrz_client", None)
+
+    result = asyncio.run(qlog.log_qso(QSORequest(
+        callsign="M6OTU",
+        frequency=24.915,
+        band="12m",
+        mode="FT8",
+        rst_sent="-10",
+        rst_received="-07",
+        notes="Completed in built-in DIGITAL",
+        date_time=datetime(2026, 6, 5, 10, 43, 0, tzinfo=timezone.utc).isoformat(),
+    )))
+
+    assert result["success"] is True
+    assert result["duplicate"] is True
+    assert fake_wavelog.calls == 0
+    assert fake_adif.calls == 0
+
+
 def test_qso_logging_enriches_missing_fields_from_qrz(monkeypatch):
     import services.qso_logging as qlog
     from services.qso_logging import QSORequest
@@ -485,6 +601,7 @@ def test_qso_logging_enriches_missing_fields_from_qrz(monkeypatch):
     monkeypatch.setattr(qlog, "qrz_client", FakeQRZ())
     monkeypatch.setattr(qlog, "wavelog_client", FakeWavelog())
     monkeypatch.setattr(qlog, "adif_handler", FakeAdif())
+    monkeypatch.setattr(qlog, "qso_status_store", None)
 
     qso = QSORequest(
         callsign="EG53DMM",
@@ -505,6 +622,126 @@ def test_qso_logging_enriches_missing_fields_from_qrz(monkeypatch):
     assert captured["wavelog"]["cq_zone"] == 14
     assert captured["wavelog"]["itu_zone"] == 37
     assert captured["wavelog"]["lotw_member"] is True
+
+
+def test_qso_logging_updates_hot_status_cache(monkeypatch):
+    import services.qso_logging as qlog
+    from services.qso_logging import QSORequest
+
+    recorded = []
+
+    class FakeWavelog:
+        async def log_qso(self, _qso):
+            return {"success": True, "message": "ok"}
+
+    class FakeAdif:
+        def add_qso(self, _qso):
+            return True
+
+    class FakeStatusStore:
+        def record_qso(self, qso):
+            recorded.append(dict(qso))
+            return True
+
+    class FakeCty:
+        def lookup(self, callsign):
+            return {"dxcc": 281, "country": "Spain"} if callsign == "EA1AA" else {}
+
+    monkeypatch.setattr(qlog, "_dedupe_entry", lambda _key: None)
+    monkeypatch.setattr(qlog, "_record_dedupe_entry", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(qlog, "qrz_client", None)
+    monkeypatch.setattr(qlog, "wavelog_client", FakeWavelog())
+    monkeypatch.setattr(qlog, "adif_handler", FakeAdif())
+    monkeypatch.setattr(qlog, "cty_resolver", FakeCty())
+    monkeypatch.setattr(qlog, "qso_status_store", FakeStatusStore())
+
+    result = asyncio.run(qlog.log_qso(QSORequest(
+        callsign="EA1AA",
+        frequency=14.074,
+        band="20m",
+        mode="FT8",
+        rst_sent="-10",
+        rst_received="-07",
+        gridsquare="IN80",
+        date_time=datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc).isoformat(),
+    )))
+
+    assert result["success"] is True
+    assert recorded[0]["callsign"] == "EA1AA"
+    assert recorded[0]["band"] == "20m"
+    assert recorded[0]["mode"] == "FT8"
+    assert recorded[0]["gridsquare"] == "IN80"
+    assert recorded[0]["dxcc"] == 281
+
+
+def test_qso_logging_writes_new_qso_to_postgres_read_cache(monkeypatch):
+    import services.qso_logging as qlog
+
+    captured = {}
+
+    class FakeCursor:
+        rowcount = 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params):
+            captured["query"] = query
+            captured["params"] = params
+
+    class FakeConnection:
+        def __init__(self):
+            self.cursor_obj = FakeCursor()
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return self.cursor_obj
+
+        def commit(self):
+            self.committed = True
+            captured["committed"] = True
+
+    monkeypatch.setattr(qlog, "should_use_postgres", lambda: True)
+    monkeypatch.setattr(qlog, "connect_postgres", lambda: FakeConnection())
+    monkeypatch.setattr(qlog, "cty_resolver", None)
+
+    inserted = qlog.write_qso_to_postgres_read_cache({
+        "callsign": "ea1aa",
+        "frequency": 14.074,
+        "band": "20m",
+        "mode": "FT8",
+        "rst_sent": "-10",
+        "rst_received": "-07",
+        "gridsquare": "IN80",
+        "dxcc": 281,
+        "date_time": datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc).isoformat(),
+    })
+
+    assert inserted is True
+    assert "INSERT INTO qso_records" in captured["query"]
+    assert "WHERE NOT EXISTS" in captured["query"]
+    assert captured["query"].count("%s") == len(captured["params"])
+    assert captured["params"][0] == "EA1AA"
+    assert captured["params"][8] == "20m"
+    assert captured["params"][24] == 281
+    assert captured["committed"] is True
+
+
+def test_qso_logging_skips_postgres_write_when_backend_disabled(monkeypatch):
+    import services.qso_logging as qlog
+
+    monkeypatch.setattr(qlog, "should_use_postgres", lambda: False)
+
+    assert qlog.write_qso_to_postgres_read_cache({"callsign": "EA1AA"}) is False
 
 
 def test_backend_logging_dedupe_handles_missing_and_corrupt_file(monkeypatch, tmp_path):

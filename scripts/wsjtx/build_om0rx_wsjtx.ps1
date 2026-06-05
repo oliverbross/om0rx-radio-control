@@ -51,13 +51,13 @@ $build = $buildRoot.Replace("\", "/").Replace("C:", "/c")
 $configureLog = (Join-Path $ProjectRoot "data\build\wsjtx-improved-om0rx\build-msys-configure.log").Replace("\", "/").Replace("C:", "/c")
 $buildLog = (Join-Path $ProjectRoot "data\build\wsjtx-improved-om0rx\build-msys-build.log").Replace("\", "/").Replace("C:", "/c")
 
-$configure = "export PATH=/mingw64/bin:/usr/bin:`$PATH; cmake -S '$src' -B '$build' -G Ninja -DCMAKE_BUILD_TYPE=Release -DWSJT_SKIP_MANPAGES=ON -DWSJT_GENERATE_DOCS=OFF -DWSJT_BUILD_UTILS=OFF -DOM0RX_BUILD_WITH_OMNIRIG=OFF -DCMAKE_PREFIX_PATH=/mingw64 2>&1 | tee '$configureLog'"
+$configure = "set -o pipefail; export PATH=/mingw64/bin:/usr/bin:`$PATH; cmake -S '$src' -B '$build' -G Ninja -DCMAKE_BUILD_TYPE=Release -DWSJT_SKIP_MANPAGES=ON -DWSJT_GENERATE_DOCS=OFF -DWSJT_BUILD_UTILS=OFF -DOM0RX_BUILD_WITH_OMNIRIG=OFF -DCMAKE_PREFIX_PATH=/mingw64 2>&1 | tee '$configureLog'"
 & $bash -lc $configure
 if ($LASTEXITCODE -ne 0) {
     throw "WSJT-X Improved configure failed. See $configureLog"
 }
 
-$buildCommand = "export PATH=/mingw64/bin:/usr/bin:`$PATH; cmake --build '$build' --target wsjtx jt9 -j2 2>&1 | tee '$buildLog'"
+$buildCommand = "set -o pipefail; export PATH=/mingw64/bin:/usr/bin:`$PATH; cmake --build '$build' --target wsjtx jt9 -j2 2>&1 | tee '$buildLog'"
 & $bash -lc $buildCommand
 if ($LASTEXITCODE -ne 0) {
     throw "WSJT-X Improved build failed. See $buildLog"

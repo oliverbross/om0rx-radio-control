@@ -268,9 +268,10 @@
             <div v-if="wsjtxPlanner.open" class="wsjtx-planner-panel">
                 <div class="wsjtx-planner-header">
                     <div>
-                        <strong>WSJT Planner</strong>
-                        <span>{{ getWsjtxPlannerSummaryText() }}</span>
-                        <small>{{ getWsjtxPlannerFilterText() }}</small>
+                            <strong>WSJT Planner</strong>
+                            <span>{{ getWsjtxPlannerSummaryText() }}</span>
+                            <small>{{ getWsjtxPlannerFilterText() }}</small>
+                            <small class="wsjtx-planner-state">{{ getWsjtxPlannerStateText() }}</small>
                     </div>
                     <div class="wsjtx-planner-actions">
                         <span v-if="wsjtxPlanner.message">{{ wsjtxPlanner.message }}</span>
@@ -304,12 +305,14 @@
                             <span>{{ target.band || '-' }} {{ target.mode || '-' }}</span>
                             <small>{{ target.reason || target.state }}</small>
                         </div>
-                        <div class="wsjtx-planner-meta">
-                            <span>Score {{ target.score || 0 }}</span>
-                            <span>{{ target.call_status || 'Unknown' }}</span>
-                            <span>{{ target.dxcc_status || 'Unknown' }}</span>
-                            <span>{{ target.state }}</span>
-                        </div>
+                            <div class="wsjtx-planner-meta">
+                                <span>Score {{ target.score || 0 }}</span>
+                                <span>{{ target.source || '-' }}</span>
+                                <span>{{ target.lifecycle || target.state }}</span>
+                                <span>{{ target.call_status || 'Unknown' }}</span>
+                                <span>{{ target.dxcc_status || 'Unknown' }}</span>
+                                <span v-if="target.direct_caller" class="wsjtx-direct-caller">Direct</span>
+                            </div>
                         <div class="wsjtx-planner-row-actions">
                             <button @click="prepareWsjtxPlannerTarget(target)"
                                     :disabled="wsjtxPlanner.actionKey === 'prepare:' + target.key"
@@ -326,6 +329,18 @@
                                     title="Remove this target from the active planner queue">
                                 Remove
                             </button>
+                        </div>
+                    </div>
+                    <div class="wsjtx-decision-log" v-if="getWsjtxPlannerDecisionLog().length">
+                        <strong>Decision Log</strong>
+                        <div v-for="entry in getWsjtxPlannerDecisionLog().slice(0, 6)"
+                             :key="`${entry.timestamp}-${entry.call || entry.reason || entry.decision}`"
+                             class="wsjtx-decision-row"
+                             :title="getWsjtxPlannerDecisionTitle(entry)">
+                            <span>{{ formatWsjtxPlannerDecisionTime(entry.timestamp) }}</span>
+                            <b>{{ entry.call || entry.decision || '-' }}</b>
+                            <em>{{ entry.decision || '-' }}</em>
+                            <small>{{ entry.reason || entry.state || '-' }}</small>
                         </div>
                     </div>
                 </div>

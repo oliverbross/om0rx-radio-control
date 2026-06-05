@@ -245,15 +245,15 @@ async def initialize_services():
     init_flex_radio()
     init_cty_resolver()  # Initialize before QSO logging
     
-    # Initialize QSO logging service with clients (after cty_resolver)
+    await init_classifier()  # Async
+    # Initialize QSO logging service with clients and the hot worked/needed cache.
     init_qso_logging_clients(
         context.wavelog_client,
         context.qrz_client,
         context.adif_handler,
         context.cty_resolver,
+        getattr(context.classifier, "qso_status_store", None) if context.classifier else None,
     )
-    
-    await init_classifier()  # Async
     try:
         context.activity_intelligence = get_activity_intelligence_service()
         logging.info("✅ Activity Intelligence initialized")
@@ -281,6 +281,7 @@ async def initialize_services():
         get_rotator_service(),
         context.cty_resolver,
         context.adif_handler,
+        getattr(context.classifier, "qso_status_store", None) if context.classifier else None,
     )
 
     sync_runtime_state()

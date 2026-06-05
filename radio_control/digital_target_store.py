@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 import logging
 import os
 from typing import Any, Mapping, Optional
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 DIGITAL_TARGET_COLUMNS = [
     "key",
     "call",
+    "target_id",
+    "command_id",
     "band",
     "mode",
     "source",
@@ -28,6 +31,8 @@ DIGITAL_TARGET_COLUMNS = [
     "call_status",
     "dxcc_status",
     "status_source",
+    "need_reasons",
+    "reference_items",
     "score",
     "snr",
     "audio_offset",
@@ -41,8 +46,14 @@ DIGITAL_TARGET_COLUMNS = [
     "backoff_until",
     "attempts",
     "state",
+    "lifecycle",
+    "active_state",
     "reason",
+    "skip_reason",
+    "completion_reason",
     "heard",
+    "direct_caller",
+    "last_command_at",
 ]
 
 
@@ -53,7 +64,9 @@ def _target_mapping(target: Any) -> dict[str, Any]:
         data = dict(target)
     else:
         raise TypeError("Digital target persistence expects a mapping or target with to_dict()")
-    return {column: data.get(column) for column in DIGITAL_TARGET_COLUMNS}
+    row = {column: data.get(column) for column in DIGITAL_TARGET_COLUMNS}
+    row["reference_items"] = json.dumps(data.get("reference_items") or data.get("references") or [])
+    return row
 
 
 class PostgresDigitalTargetStore:
