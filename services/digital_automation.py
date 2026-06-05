@@ -247,6 +247,10 @@ def current_band_plan_bands(band_plan: Any, now: Optional[datetime] = None) -> l
     return selected[1]
 
 
+def _target_freshness_seconds(mode: Any) -> int:
+    return 20 if normalise_mode(mode) == "FT4" else 45
+
+
 def _message_dict(message: Any) -> dict[str, Any]:
     if hasattr(message, "to_dict"):
         return dict(message.to_dict())
@@ -1050,7 +1054,7 @@ class DigitalAutomationController:
             target.last_heard_at = now
             if heard_slot:
                 target.heard_slot_start_at = heard_slot
-            if target.state in {"listening", "queued"}:
+            if target.state in {"listening", "queued", "expired"}:
                 target.sync_state("heard")
             if self.listen_target_key == target.key:
                 self.listen_target_key = None
@@ -1214,6 +1218,7 @@ class DigitalAutomationController:
                     "attempts": active.attempts,
                 })
                 return None
+        active_bands = current_band_plan_bands(self.settings.band_plan, now) if self.settings.band_hopping else []
         candidates = []
         rejected: dict[str, int] = {}
 
@@ -1223,6 +1228,9 @@ class DigitalAutomationController:
         for target in self.targets.values():
             if target.state in {"done", "skipped", "expired", "backoff"}:
                 reject(target.state)
+                continue
+            if active_bands and target.band and target.band.lower() not in active_bands and not target.direct_caller:
+                reject("outside-active-band-plan")
                 continue
             if (
                 not target.direct_caller
@@ -1265,7 +1273,7 @@ class DigitalAutomationController:
                 continue
             if auto_call_start_only and target.source in {"decoded", "wsjtx-decode-status"}:
                 last_heard_at = target.last_heard_at or target.updated_at
-                max_age_seconds = 20 if normalise_mode(target.mode) == "FT4" else 45
+                max_age_seconds = _target_freshness_seconds(target.mode)
                 if (now - last_heard_at).total_seconds() > max_age_seconds:
                     target.sync_state("expired")
                     target.reason = "decode-too-old"
@@ -1279,6 +1287,23 @@ class DigitalAutomationController:
                         "mode": target.mode,
                     })
                     reject("decode-too-old")
+                    continue
+            if auto_call_start_only and target.heard and target.last_heard_at:
+                max_age_seconds = _target_freshness_seconds(target.mode)
+                if (now - target.last_heard_at).total_seconds() > max_age_seconds:
+                    target.sync_state("expired")
+                    target.reason = "heard-target-too-old"
+                    target.updated_at = now
+                    self._persist_target(target)
+                    self._set_decision({
+                        "decision": "expired",
+                        "reason": "heard-target-too-old",
+                        "call": target.call,
+                        "band": target.band,
+                        "mode": target.mode,
+                        "source": target.source,
+                    })
+                    reject("heard-target-too-old")
                     continue
             if (
                 cq_only

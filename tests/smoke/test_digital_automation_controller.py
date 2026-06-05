@@ -9,6 +9,7 @@ import _bootstrap  # noqa: F401
 from services.digital_automation import (
     DigitalAutomationController,
     DigitalAutomationSettings,
+    current_band_plan_bands,
     payload_matches_need_filters,
     score_payload,
 )
@@ -278,6 +279,171 @@ def test_controller_rejects_non_cq_decodes_as_auto_call_starters():
 
     assert target is None
     assert controller.last_decision["reason"] == "not-auto-call-start-message"
+
+
+def test_current_band_plan_uses_utc_schedule_boundaries():
+    plan = "05:20m,17m,15m,12m,10m\n20:30m,40m,80m,160m"
+
+    assert current_band_plan_bands(plan, datetime(2026, 6, 5, 4, 59, tzinfo=timezone.utc)) == [
+        "30m",
+        "40m",
+        "80m",
+        "160m",
+    ]
+    assert current_band_plan_bands(plan, datetime(2026, 6, 5, 5, 0, tzinfo=timezone.utc)) == [
+        "20m",
+        "17m",
+        "15m",
+        "12m",
+        "10m",
+    ]
+    assert current_band_plan_bands(plan, datetime(2026, 6, 5, 19, 59, tzinfo=timezone.utc)) == [
+        "20m",
+        "17m",
+        "15m",
+        "12m",
+        "10m",
+    ]
+    assert current_band_plan_bands(plan, datetime(2026, 6, 5, 22, 41, tzinfo=timezone.utc)) == [
+        "30m",
+        "40m",
+        "80m",
+        "160m",
+    ]
+    assert current_band_plan_bands(plan, datetime(2026, 6, 6, 0, 39, tzinfo=timezone.utc)) == [
+        "30m",
+        "40m",
+        "80m",
+        "160m",
+    ]
+
+
+def test_auto_call_obeys_active_utc_band_plan_when_band_hopping_enabled():
+    now = datetime(2026, 6, 5, 22, 41, tzinfo=timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "bandHopping": True,
+            "bandPlan": "05:20m,17m,15m,12m,10m\n20:30m,40m,80m,160m",
+            "requireHeardBeforeCall": True,
+            "avoidLogged": True,
+            "treat73AsCQ": True,
+        }
+    })
+
+    outside = controller.ingest_target({
+        "message": "CQ A41KB LL93",
+        "callsign": "A41KB",
+        "band": "17m",
+        "mode": "FT8",
+        "source": "rbl",
+        "heard": True,
+        "snr": -4,
+        "call_status": "Worked",
+        "dxcc_status": "Worked",
+        "needed": {"dxcc": True},
+        "needed_on_band": {"band": True},
+    })
+    inside = controller.ingest_target({
+        "message": "CQ XX9TXN OL62",
+        "callsign": "XX9TXN",
+        "band": "30m",
+        "mode": "FT8",
+        "source": "rbl",
+        "heard": True,
+        "snr": -7,
+        "call_status": "New Call",
+        "dxcc_status": "ATNO",
+    })
+    assert outside is not None
+    assert inside is not None
+    outside.last_heard_at = now
+    outside.updated_at = now
+    inside.last_heard_at = now
+    inside.updated_at = now
+
+    selected = controller.next_target(now=now, auto_call_start_only=True, cq_only=True)
+
+    assert selected is not None
+    assert selected.call == "XX9TXN"
+    assert controller.last_decision["call"] == "XX9TXN"
+
+
+def test_stale_heard_spot_is_not_called_hours_later():
+    now = datetime(2026, 6, 5, 22, 41, tzinfo=timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "bandHopping": True,
+            "bandPlan": "20:30m,40m,80m,160m",
+            "requireHeardBeforeCall": True,
+            "avoidLogged": True,
+        }
+    })
+
+    stale = controller.ingest_target({
+        "message": "CQ A41KB LL93",
+        "callsign": "A41KB",
+        "band": "30m",
+        "mode": "FT8",
+        "source": "rbl",
+        "heard": True,
+        "snr": 1,
+        "call_status": "Worked",
+        "dxcc_status": "Worked",
+        "needed": {"dxcc": True},
+    })
+    assert stale is not None
+    stale.last_heard_at = now - timedelta(hours=6)
+    stale.updated_at = stale.last_heard_at
+
+    assert controller.next_target(now=now, auto_call_start_only=True, cq_only=True) is None
+    assert stale.state == "expired"
+    assert stale.reason == "heard-target-too-old"
+    assert controller.last_decision["reason"] == "no-eligible-targets"
+
+
+def test_fresh_decode_revives_expired_target_for_73_hunting():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "avoidLogged": True,
+            "treat73AsCQ": True,
+            "requireHeardBeforeCall": True,
+        }
+    })
+    first = controller.ingest_target({
+        "message": "CQ EA8ACW IL18",
+        "callsign": "EA8ACW",
+        "band": "30m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": -3,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+    assert first is not None
+    first.sync_state("expired")
+    first.reason = "decode-too-old"
+
+    revived = controller.ingest_target({
+        "message": "IQ0VT EA8ACW 73",
+        "callsign": "EA8ACW",
+        "band": "30m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": -3,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+
+    assert revived is first
+    assert revived.state == "heard"
+    selected = controller.next_target(auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert selected.call == "EA8ACW"
 
 
 def test_treat_73_as_cq_allows_auto_call_selection():
