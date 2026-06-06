@@ -98,6 +98,15 @@ def test_wsjtx_engine_patch_contains_om0rx_hunting_controls():
     assert 'SLOT (accept ())' in text
 
 
+def test_wsjtx_engine_patch_treats_73_as_cq_in_native_cq_only_filter():
+    text = PATCH_PATH.read_text(encoding="utf-8")
+
+    assert "bool include73AsCQ" in text
+    assert "include73AsCQ && is_73" in text
+    assert "ui->cbOm0rxTreat73AsCQ->isChecked ())" in text
+    assert "if (checked) ui->cbHoldTxFreq->setChecked (true);" in text
+
+
 def test_wsjtx_engine_patch_contains_runtime_reason_panel_contract():
     text = PATCH_PATH.read_text(encoding="utf-8")
 
