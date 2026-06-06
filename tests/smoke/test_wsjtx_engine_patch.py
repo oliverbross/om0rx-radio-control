@@ -107,6 +107,18 @@ def test_wsjtx_engine_patch_treats_73_as_cq_in_native_cq_only_filter():
     assert "if (checked) ui->cbHoldTxFreq->setChecked (true);" in text
 
 
+def test_wsjtx_engine_patch_clears_finished_target_and_mirrors_tx_rows():
+    text = PATCH_PATH.read_text(encoding="utf-8")
+
+    assert "void MainWindow::clear_om0rx_target_state ()" in text
+    assert "genStdMsgs (QString {}, true);" in text
+    assert "clear_om0rx_target_state ();" in text
+    assert "void MainWindow::display_om0rx_transmitted_text" in text
+    assert "ui->decodedTextBrowser2->displayTransmittedText" in text
+    assert "ui->decodedTextBrowser->displayTransmittedText" in text
+    assert "display_om0rx_transmitted_text (current_message);" in text
+
+
 def test_wsjtx_engine_patch_contains_runtime_reason_panel_contract():
     text = PATCH_PATH.read_text(encoding="utf-8")
 

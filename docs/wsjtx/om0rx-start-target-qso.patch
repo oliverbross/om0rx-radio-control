@@ -333,7 +333,7 @@ index 6fcadb8..f064261 100644
 @@ -58,0 +63 @@ public:
 +  Q_SLOT void annotate_callsign (QString const& callsign, QString const& annotation, QColor const& fg);
 diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
-index c75aa42..2bd71eb 100644
+index c75aa42..f6a383c 100644
 --- a/widgets/mainwindow.cpp
 +++ b/widgets/mainwindow.cpp
 @@ -52,0 +53,3 @@
@@ -396,7 +396,7 @@ index c75aa42..2bd71eb 100644
 +          });
 +  connect(ui->decodedTextBrowser2, &DisplayText::decodedCallsign,
 +          this, &MainWindow::request_om0rx_decode_status);
-@@ -836,0 +888,49 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+@@ -836,0 +888,48 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
 +  connect (m_messageClient, &MessageClient::start_target_qso, this, &MainWindow::remote_start_target_qso);
 +  auto send_om0rx_policy = [this] {send_om0rx_automation_policy ();};
 +  auto stop_om0rx_when_disabled = [this] (bool checked) {
@@ -409,8 +409,7 @@ index c75aa42..2bd71eb 100644
 +            ui->autoButton->click ();
 +          }
 +        on_stopTxButton_clicked ();
-+        clearDX ();
-+        ui->dxGridEntry->clear ();
++        clear_om0rx_target_state ();
 +        ui->labOm0rxAutomation->setText (tr ("OM0RX automation stopped"));
 +        ui->labOm0rxAutomation->setToolTip (tr ("Auto CQ and Auto Call are off; TX was halted and the active DX target was cleared."));
 +      }
@@ -446,10 +445,10 @@ index c75aa42..2bd71eb 100644
 +  connect (ui->teOm0rxIgnoreList, &QPlainTextEdit::textChanged, this, send_om0rx_policy);
 +  connect (&m_om0rx_automation_timer, &QTimer::timeout, this, &MainWindow::pulse_om0rx_automation);
 +  m_om0rx_automation_timer.setInterval (750);
-@@ -1193 +1293 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+@@ -1193 +1292 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
 -  auto t = "UTC   dB   DT Freq    " + tr ("Message");
 +  auto t = om0rx_decode_heading ();
-@@ -1196,0 +1297,12 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+@@ -1196,0 +1296,12 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
 +  QTimer::singleShot (0, this, [this] {
 +    ui->dxCallEntry->clear ();
 +    ui->dxGridEntry->clear ();
@@ -462,10 +461,10 @@ index c75aa42..2bd71eb 100644
 +    genStdMsgs (QString {});
 +    ui->labOm0rxAutomation->setText (tr ("OM0RX idle: startup cleared stale target"));
 +  });
-@@ -1270 +1382 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+@@ -1270 +1381 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
 -  
 +
-@@ -1513,2 +1625,5 @@ void MainWindow::on_the_minute ()
+@@ -1513,2 +1624,5 @@ void MainWindow::on_the_minute ()
 -  if (m_config.watchdog () && m_mode!="WSPR" && m_mode!="FST4W") {
 -    if (m_idleMinutes < m_config.watchdog ()) ++m_idleMinutes;
 +  om0rx_band_hopping_tick ();
@@ -473,7 +472,7 @@ index c75aa42..2bd71eb 100644
 +  auto watchdog_minutes = om0rx_watchdog_minutes ();
 +  if (watchdog_minutes && m_mode!="WSPR" && m_mode!="FST4W") {
 +    if (m_idleMinutes < watchdog_minutes) ++m_idleMinutes;
-@@ -1654,0 +1770,22 @@ void MainWindow::writeSettings()
+@@ -1654,0 +1769,22 @@ void MainWindow::writeSettings()
 +  m_settings->setValue ("Om0rxAutoCQ", ui->cbOm0rxAutoCQ->isChecked ());
 +  m_settings->setValue ("Om0rxAutoCall", ui->cbOm0rxAutoCall->isChecked ());
 +  m_settings->setValue ("Om0rxMinSignal", ui->sbOm0rxMinSignal->value ());
@@ -496,7 +495,7 @@ index c75aa42..2bd71eb 100644
 +  m_settings->setValue ("Om0rxPriority", ui->cbOm0rxPriority->currentIndex ());
 +  m_settings->setValue ("Om0rxBandPlan", ui->teOm0rxBandPlan->toPlainText ());
 +  m_settings->setValue ("Om0rxIgnoreList", ui->teOm0rxIgnoreList->toPlainText ());
-@@ -2115,0 +2253,23 @@ void MainWindow::readSettings()
+@@ -2115,0 +2252,23 @@ void MainWindow::readSettings()
 +  ui->cbOm0rxAutoCQ->setChecked (m_settings->value ("Om0rxAutoCQ", false).toBool ());
 +  ui->cbOm0rxAutoCall->setChecked (m_settings->value ("Om0rxAutoCall", false).toBool ());
 +  ui->sbOm0rxMinSignal->setValue (m_settings->value ("Om0rxMinSignal", -30).toInt ());
@@ -520,96 +519,108 @@ index c75aa42..2bd71eb 100644
 +  ui->teOm0rxBandPlan->setPlainText (
 +    m_settings->value ("Om0rxBandPlan", "05:20m,17m,15m,12m,10m\n20:30m,40m,80m,160m").toString ());
 +  ui->teOm0rxIgnoreList->setPlainText (m_settings->value ("Om0rxIgnoreList", "").toString ());
-@@ -2502 +2662 @@ void MainWindow::dataSink(qint64 frames)
+@@ -2502 +2661 @@ void MainWindow::dataSink(qint64 frames)
 -  
 +
-@@ -2616 +2776 @@ void MainWindow::dataSink(qint64 frames)
+@@ -2616 +2775 @@ void MainWindow::dataSink(qint64 frames)
 -    dec_data.params.nagainfil=0;	
 +    dec_data.params.nagainfil=0;
-@@ -2710 +2870 @@ QString MainWindow::save_wave_file (QString const& name, short const * data, int
+@@ -2710 +2869 @@ QString MainWindow::save_wave_file (QString const& name, short const * data, int
 -    }  
 +    }
-@@ -3392 +3552,2 @@ void MainWindow::fastSink(qint64 frames)
+@@ -3392 +3551,2 @@ void MainWindow::fastSink(qint64 frames)
 -          haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid);
 +          haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid,
 +          ui->cbOm0rxTreat73AsCQ->isChecked ());
-@@ -4571 +4732 @@ void MainWindow::setup_status_bar (bool vhf)
+@@ -4571 +4731 @@ void MainWindow::setup_status_bar (bool vhf)
 -  } 
 +  }
-@@ -5560,2 +5721,2 @@ void MainWindow::decode()                                       //decode()
+@@ -4725,0 +4886,4 @@ void MainWindow::on_stopButton_clicked()                       //stopButton
++  if (ui->cbOm0rxAutoCall->isChecked () || ui->cbOm0rxAutoCQ->isChecked ())
++    {
++      clear_om0rx_target_state ();
++    }
+@@ -5560,2 +5724,2 @@ void MainWindow::decode()                                       //decode()
 -    dec_data.params.lapcqonly= (isecs_since_tx > 300); 
 -  } else { 
 +    dec_data.params.lapcqonly= (isecs_since_tx > 300);
 +  } else {
-@@ -5686 +5847 @@ void MainWindow::decode()                                       //decode()
+@@ -5686 +5850 @@ void MainWindow::decode()                                       //decode()
 -    
 +
-@@ -5713 +5874 @@ void MainWindow::decode()                                       //decode()
+@@ -5713 +5877 @@ void MainWindow::decode()                                       //decode()
 -    dec_data.params.lcommonft8b=m_commonFT8b;    
 +    dec_data.params.lcommonft8b=m_commonFT8b;
-@@ -5761 +5922 @@ void MainWindow::decode()                                       //decode()
+@@ -5761 +5925 @@ void MainWindow::decode()                                       //decode()
 -  
 +
-@@ -5764 +5925 @@ void MainWindow::decode()                                       //decode()
+@@ -5764 +5928 @@ void MainWindow::decode()                                       //decode()
 -  if(hisCall.length()<3) { 
 +  if(hisCall.length()<3) {
-@@ -5766 +5927 @@ void MainWindow::decode()                                       //decode()
+@@ -5766 +5930 @@ void MainWindow::decode()                                       //decode()
 -    ::memcpy(dec_data.params.hisbcall,(hisCall+"            ").toLatin1(),12); 
 +    ::memcpy(dec_data.params.hisbcall,(hisCall+"            ").toLatin1(),12);
-@@ -5770 +5931 @@ void MainWindow::decode()                                       //decode()
+@@ -5770 +5934 @@ void MainWindow::decode()                                       //decode()
 -  ::memcpy(dec_data.params.hisgrid,(hisGrid+"      ").toLatin1(),6);    
 +  ::memcpy(dec_data.params.hisgrid,(hisGrid+"      ").toLatin1(),6);
-@@ -5772 +5933 @@ void MainWindow::decode()                                       //decode()
+@@ -5772 +5936 @@ void MainWindow::decode()                                       //decode()
 -  
 +
-@@ -7119 +7280,2 @@ void MainWindow::readFromStdout()                             //readFromStdout
+@@ -7119 +7283,2 @@ void MainWindow::readFromStdout()                             //readFromStdout
 -                                                        haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid);
 +                                                        haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid,
 +                                                        ui->cbOm0rxTreat73AsCQ->isChecked ());
-@@ -7128 +7290,2 @@ void MainWindow::readFromStdout()                             //readFromStdout
+@@ -7128 +7293,2 @@ void MainWindow::readFromStdout()                             //readFromStdout
 -                                                          haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid);
 +                                                          haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid,
 +                                                          ui->cbOm0rxTreat73AsCQ->isChecked ());
-@@ -7133 +7296,2 @@ void MainWindow::readFromStdout()                             //readFromStdout
+@@ -7133 +7299,2 @@ void MainWindow::readFromStdout()                             //readFromStdout
 -                                                          haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid);
 +                                                          haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid,
 +                                                          ui->cbOm0rxTreat73AsCQ->isChecked ());
-@@ -7780 +7944 @@ void MainWindow::pskPost (DecodedText const& decodedtext)
+@@ -7780 +7947 @@ void MainWindow::pskPost (DecodedText const& decodedtext)
 -    qSpotTime = QDateTime(QDateTime::currentDateTimeUtc().date(), time2, Qt::UTC); 
 +    qSpotTime = QDateTime(QDateTime::currentDateTimeUtc().date(), time2, Qt::UTC);
-@@ -7783,2 +7947,2 @@ void MainWindow::pskPost (DecodedText const& decodedtext)
+@@ -7783,2 +7950,2 @@ void MainWindow::pskPost (DecodedText const& decodedtext)
 -    qSpotTime = QDateTime((QDateTime::currentDateTimeUtc().addDays(-1)).date(), time2, Qt::UTC); 
 -  }    
 +    qSpotTime = QDateTime((QDateTime::currentDateTimeUtc().addDays(-1)).date(), time2, Qt::UTC);
 +  }
-@@ -7992,2 +8156,3 @@ void MainWindow::guiUpdate()
+@@ -7992,2 +8159,3 @@ void MainWindow::guiUpdate()
 -    if (m_config.watchdog() && m_mode!="WSPR" && m_mode!="FST4W"
 -        && m_idleMinutes >= m_config.watchdog ()) {
 +    auto watchdog_minutes = om0rx_watchdog_minutes ();
 +    if (watchdog_minutes && m_mode!="WSPR" && m_mode!="FST4W"
 +        && m_idleMinutes >= watchdog_minutes) {
-@@ -8046 +8211 @@ void MainWindow::guiUpdate()
+@@ -8046 +8214 @@ void MainWindow::guiUpdate()
 -      
 +
-@@ -8394 +8559 @@ void MainWindow::guiUpdate()
+@@ -8296,2 +8464 @@ void MainWindow::guiUpdate()
+-        ui->decodedTextBrowser2->displayTransmittedText(m_currentMessage.trimmed(),m_mode,
+-                     ui->TxFreqSpinBox->value(),m_bFastMode,m_TRperiod,m_config.superFox());
++        display_om0rx_transmitted_text (m_currentMessage);
+@@ -8394 +8561 @@ void MainWindow::guiUpdate()
 -    if(m_config.watchdog () && m_mode!="WSPR" && m_mode!="FST4W"
 +    if(om0rx_watchdog_minutes () && m_mode!="WSPR" && m_mode!="FST4W"
-@@ -8733 +8898 @@ void MainWindow::startTx2()
+@@ -8405,2 +8572 @@ void MainWindow::guiUpdate()
+-            ui->decodedTextBrowser2->displayTransmittedText(current_message.trimmed(),
+-                  m_mode,ui->TxFreqSpinBox->value(),m_bFastMode,m_TRperiod,m_config.superFox());
++            display_om0rx_transmitted_text (current_message);
+@@ -8733 +8899 @@ void MainWindow::startTx2()
 -{    
 +{
-@@ -10829 +10994 @@ void MainWindow::on_genStdMsgsPushButton_clicked()          //genStdMsgs button
+@@ -10829 +10995 @@ void MainWindow::on_genStdMsgsPushButton_clicked()          //genStdMsgs button
 -      
 +
-@@ -10917,0 +11083,4 @@ void MainWindow::on_logQSOButton_clicked()                 //Log QSO button
+@@ -10917,0 +11084,4 @@ void MainWindow::on_logQSOButton_clicked()                 //Log QSO button
 +  if (ui->cbOm0rxAutoLog->isChecked ())
 +    {
 +      QTimer::singleShot (0, m_logDlg.data (), SLOT (accept ()));
 +    }
-@@ -10962,0 +11132,5 @@ void MainWindow::acceptQSO (QDateTime const& QSO_date_off, QString const& call,
+@@ -10962,0 +11133,4 @@ void MainWindow::acceptQSO (QDateTime const& QSO_date_off, QString const& call,
 +  if (ui->cbOm0rxAutoLog->isChecked () || ui->cbOm0rxAutoCall->isChecked () || ui->cbOm0rxAutoCQ->isChecked ())
 +    {
-+      clearDX ();
-+      ui->dxGridEntry->clear ();
++      clear_om0rx_target_state ();
 +    }
 @@ -11149 +11323 @@ void MainWindow::on_actionFST4_triggered()
 -  m_FFTSize = m_nsps / 2;  
@@ -722,7 +733,12 @@ index c75aa42..2bd71eb 100644
 @@ -14499 +14673 @@ void MainWindow::tx_watchdog (bool triggered)
 -      if (m_config.watchdog () && m_mode!="WSPR" && m_mode!="FST4W") {
 +      if (om0rx_watchdog_minutes () && m_mode!="WSPR" && m_mode!="FST4W") {
-@@ -14515,0 +14690,16 @@ void MainWindow::tx_watchdog (bool triggered)
+@@ -14505,0 +14680,4 @@ void MainWindow::tx_watchdog (bool triggered)
++      if (ui->cbOm0rxAutoCall->isChecked () || ui->cbOm0rxAutoCQ->isChecked ())
++        {
++          clear_om0rx_target_state ();
++        }
+@@ -14515,0 +14694,16 @@ void MainWindow::tx_watchdog (bool triggered)
 +int MainWindow::om0rx_watchdog_minutes () const
 +{
 +  if (ui)
@@ -739,35 +755,73 @@ index c75aa42..2bd71eb 100644
 +  return m_config.watchdog ();
 +}
 +
-@@ -14519 +14709,2 @@ void MainWindow::update_watchdog_label ()
+@@ -14519 +14713,2 @@ void MainWindow::update_watchdog_label ()
 -  if (m_config.watchdog () && m_mode!="WSPR" && m_mode!="FST4W")
 +  auto watchdog_minutes = om0rx_watchdog_minutes ();
 +  if (watchdog_minutes && m_mode!="WSPR" && m_mode!="FST4W")
-@@ -14521 +14712 @@ void MainWindow::update_watchdog_label ()
+@@ -14521 +14716 @@ void MainWindow::update_watchdog_label ()
 -      watchdog_label.setText (tr (" WD:%1m ").arg (m_config.watchdog () - m_idleMinutes));
 +      watchdog_label.setText (tr (" WD:%1m ").arg (watchdog_minutes - m_idleMinutes));
-@@ -14524 +14715 @@ void MainWindow::update_watchdog_label ()
+@@ -14524 +14719 @@ void MainWindow::update_watchdog_label ()
 -      if ((m_config.watchdog() - m_idleMinutes == 1) && (m_auto or m_tune))
 +      if ((watchdog_minutes - m_idleMinutes == 1) && (m_auto or m_tune))
-@@ -14526 +14717 @@ void MainWindow::update_watchdog_label ()
+@@ -14526 +14721 @@ void MainWindow::update_watchdog_label ()
 -      if (m_config.watchdog() - m_idleMinutes > 1) watchdog_label.setStyleSheet ("");
 +      if (watchdog_minutes - m_idleMinutes > 1) watchdog_label.setStyleSheet ("");
-@@ -14606 +14797 @@ void MainWindow::readWidebandDecodes()
+@@ -14606 +14801 @@ void MainWindow::readWidebandDecodes()
 -      qSpotTime = QDateTime(QDateTime::currentDateTimeUtc().date(), time2, Qt::UTC); 
 +      qSpotTime = QDateTime(QDateTime::currentDateTimeUtc().date(), time2, Qt::UTC);
-@@ -14609,2 +14800,2 @@ void MainWindow::readWidebandDecodes()
+@@ -14609,2 +14804,2 @@ void MainWindow::readWidebandDecodes()
 -      qSpotTime = QDateTime((QDateTime::currentDateTimeUtc().addDays(-1)).date(), time2, Qt::UTC); 
 -    }        
 +      qSpotTime = QDateTime((QDateTime::currentDateTimeUtc().addDays(-1)).date(), time2, Qt::UTC);
 +    }
-@@ -15887,0 +16079 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
+@@ -15827,0 +16023,37 @@ void MainWindow::configActiveStations()
++void MainWindow::clear_om0rx_target_state ()
++{
++  auto_tx_mode (false);
++  ui->dxCallEntry->clear ();
++  ui->dxGridEntry->clear ();
++  if (!keepTx5) ui->tx5->setCurrentText ("");
++  genStdMsgs (QString {}, true);
++  ui->labOm0rxCallStatus->setText (tr ("CALL idle"));
++  ui->labOm0rxCallStatus->setToolTip (tr ("No active OM0RX target"));
++  ui->labOm0rxCallStatus->setStyleSheet ("");
++  ui->labOm0rxDxccStatus->setText (tr ("DXCC idle"));
++  ui->labOm0rxDxccStatus->setToolTip (tr ("No active OM0RX target"));
++  ui->labOm0rxDxccStatus->setStyleSheet ("");
++  ui->labOm0rxEntityStatus->setText (tr ("No target"));
++  ui->labOm0rxEntityStatus->setToolTip (tr ("No active OM0RX target"));
++  ui->labOm0rxEntityStatus->setStyleSheet ("");
++  m_hisCall.clear ();
++  m_hisCall0.clear ();
++  m_lastCallsign.clear ();
++  m_rptSent.clear ();
++  m_rptRcvd.clear ();
++  m_qsoStart.clear ();
++  m_qsoStop.clear ();
++  m_inQSOwith.clear ();
++  m_ntx = 6;
++  ui->txrb6->setChecked (true);
++  m_QSOProgress = CALLING;
++}
++
++void MainWindow::display_om0rx_transmitted_text (QString const& message)
++{
++  ui->decodedTextBrowser2->displayTransmittedText (message.trimmed (), m_mode,
++        ui->TxFreqSpinBox->value (), m_bFastMode, m_TRperiod, m_config.superFox ());
++  ui->decodedTextBrowser->displayTransmittedText (message.trimmed (), m_mode,
++        ui->TxFreqSpinBox->value (), m_bFastMode, m_TRperiod, m_config.superFox ());
++}
++
+@@ -15887,0 +16120 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
 +      auto previous_call = ui->dxCallEntry->text ().trimmed ().toUpper ();
-@@ -15888,0 +16081,4 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
+@@ -15888,0 +16122,4 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
 +      if (previous_call != dx_call)
 +        {
 +          set_om0rx_active_status_pending (dx_call);
 +        }
-@@ -15912,0 +16109,572 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
+@@ -15912,0 +16150,571 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
 +void MainWindow::send_om0rx_automation_policy (bool planner_tick)
 +{
 +  auto auto_call = ui->cbOm0rxAutoCall->isChecked ();
@@ -905,8 +959,7 @@ index c75aa42..2bd71eb 100644
 +                || panel_state == "failed"
 +                || panel_state == "completed"))
 +          {
-+            ui->dxCallEntry->clear ();
-+            ui->dxGridEntry->clear ();
++            clear_om0rx_target_state ();
 +          }
 +        if (!detail.isEmpty ())
 +          {
@@ -1340,7 +1393,7 @@ index c75aa42..2bd71eb 100644
 +  QApplication::alert (this);
 +}
 +
-@@ -16073,0 +16842,274 @@ void MainWindow::on_pb60E_clicked()
+@@ -16073,0 +16882,274 @@ void MainWindow::on_pb60E_clicked()
 +QStringList MainWindow::om0rx_current_band_plan () const
 +{
 +  struct PlanEntry
@@ -1616,7 +1669,7 @@ index c75aa42..2bd71eb 100644
 +}
 +
 diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
-index 366e1a7..76998c9 100644
+index 366e1a7..9a1920f 100644
 --- a/widgets/mainwindow.h
 +++ b/widgets/mainwindow.h
 @@ -24,0 +25 @@
@@ -1633,12 +1686,15 @@ index 366e1a7..76998c9 100644
 +                                    int snr);
 +  void set_om0rx_active_status_pending (QString const& callsign);
 +  void apply_om0rx_decode_status (QString const& callsign, QJsonObject const& status);
-@@ -519,0 +531,2 @@ private:
+@@ -502,0 +514,2 @@ private:
++  void clear_om0rx_target_state ();
++  void display_om0rx_transmitted_text (QString const& message);
+@@ -519,0 +533,2 @@ private:
 +  QSet<QString> m_om0rx_status_inflight;
 +  QHash<QString, QString> m_om0rx_status_cache;
-@@ -821,0 +835 @@ private:
+@@ -821,0 +837 @@ private:
 +  QTimer m_om0rx_automation_timer;
-@@ -1049,0 +1064,4 @@ private:
+@@ -1049,0 +1066,4 @@ private:
 +  int om0rx_watchdog_minutes () const;
 +  QStringList om0rx_current_band_plan () const;
 +  void om0rx_band_hopping_tick ();
