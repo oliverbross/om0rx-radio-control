@@ -34,6 +34,8 @@ WSJT_MODE_PERIODS = {
     "FT4": 7,
     "FT2": 4,
 }
+GRID_RE = re.compile(r"^[A-R]{2}\d{2}([A-X]{2})?$")
+NON_GRID_TOKENS = {"CQ", "DE", "QRZ", "RRR", "RR73", "73"}
 WSJT_CLIENT_FRESH_MS = 30_000
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PATCHED_ENGINE_BUILD_ROOT = PROJECT_ROOT / "data" / "build" / "wsjtx-improved-om0rx" / "build-msys"
@@ -69,6 +71,13 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _normalise_grid_value(value: Any) -> str:
+    grid = str(value or "").strip().upper().strip("<>,;")
+    if not grid or grid in NON_GRID_TOKENS:
+        return ""
+    return grid[:4] if GRID_RE.match(grid) else ""
 
 
 def _parse_adif_fields(adif_text: Any) -> Dict[str, str]:
@@ -1571,7 +1580,7 @@ class WSJTXService:
         if references:
             target["references"] = references
 
-        grid = str(_first_present(req, "grid", "dxGrid", "gridsquare") or "").strip().upper()
+        grid = _normalise_grid_value(_first_present(req, "grid", "dxGrid", "gridsquare"))
         if grid:
             target["grid"] = grid
 

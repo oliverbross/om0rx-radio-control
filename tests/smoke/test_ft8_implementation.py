@@ -1131,6 +1131,12 @@ def test_ft8_grid_parser_does_not_treat_rr73_as_grid():
 
     assert "!/^(RR73|73)$/.test(part)" in modal
 
+    from services.ft8_service import FT8Service
+
+    service = FT8Service(mycall="OM0RX", mygrid="JN88")
+    assert service._grid_from_message("R3HX/P OM0RX RR73") == ""
+    assert service._grid_from_message("CQ EA1AA IN80") == "IN80"
+
 
 def test_ft8_slot_clock_uses_ntp_offset_for_cycle_timing():
     from services.ft8_service import FT8Service

@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 SIGNAL_REPORT_RE = re.compile(r"^R?[+-]\d{1,2}$")
 GRID_RE = re.compile(r"^[A-R]{2}\d{2}([A-X]{2})?$")
+NON_GRID_TOKENS = {"CQ", "DE", "QRZ", "RRR", "RR73", "73"}
 SUPPORTED_SPECIAL_SUBMODES = {"standard", "foxhound", "superfox"}
 SUPPORTED_SPECIAL_ROLES = {"hound", "fox"}
 
@@ -965,6 +966,8 @@ class FT8Service:
     def _grid_from_message(text: str) -> str:
         for token in reversed(str(text or "").upper().replace(";", " ").split()):
             value = token.strip("<>,;")
+            if value in NON_GRID_TOKENS:
+                continue
             if GRID_RE.match(value):
                 return value[:4]
         return ""
@@ -1269,7 +1272,7 @@ class FT8Service:
             self.set_mode(mode)
 
         self._infer_tx_slot_from_target(payload)
-        grid = str(payload.get("grid") or payload.get("gridsquare") or "").strip().upper()
+        grid = self._grid_from_message(str(payload.get("grid") or payload.get("gridsquare") or ""))
         frequency = payload.get("frequency_mhz", payload.get("base_frequency", payload.get("frequency", 0)))
         try:
             frequency_mhz = float(frequency or 0)

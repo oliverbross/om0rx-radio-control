@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 SUPPORTED_AUTOMATION_MODES = {"FT8", "FT4", "FT2"}
 CALL_RE = re.compile(r"^[A-Z0-9][A-Z0-9/]{2,}$")
 GRID_RE = re.compile(r"^[A-R]{2}\d{2}([A-X]{2})?$")
+NON_GRID_TOKENS = {"CQ", "DE", "QRZ", "RRR", "RR73", "73"}
 DEFAULT_TX_AUDIO_HZ = 1500
 TX_AUDIO_LOW_HZ = 300
 TX_AUDIO_HIGH_HZ = 3000
@@ -268,6 +269,13 @@ def _message_dict(message: Any) -> dict[str, Any]:
 
 def _message_tokens(text: str) -> list[str]:
     return [token.strip(";,<>").upper() for token in re.split(r"\s+", normalise_decode_message_text(text).strip()) if token.strip(";,<>")]
+
+
+def normalise_grid_value(value: Any) -> str:
+    grid = str(value or "").strip().upper().strip("<>,;")
+    if not grid or grid in NON_GRID_TOKENS:
+        return ""
+    return grid[:4] if GRID_RE.match(grid) else ""
 
 
 def normalise_decode_message_text(message: Any) -> str:
@@ -1021,15 +1029,16 @@ class DigitalAutomationController:
         if not target:
             target = DigitalTarget(key=key, call=call, band=band, mode=mode)
             self.targets[key] = target
+        grid = normalise_grid_value(payload.get("grid") or payload.get("gridsquare") or "")
         if not target.target_id:
-            target.target_id = target_identity(call, band, mode, source, payload.get("grid") or payload.get("gridsquare") or "")
+            target.target_id = target_identity(call, band, mode, source, grid)
         if source in {"decoded", "wsjtx-decode-status"} and source_is_spot_hunt(target.source):
             target.source = target.source
         else:
             target.source = source or target.source or "decoded"
         if message:
             target.message = message
-        target.grid = str(payload.get("grid") or payload.get("gridsquare") or target.grid or "").upper()
+        target.grid = grid or normalise_grid_value(target.grid)
         target.country = str(payload.get("country") or payload.get("dxcc_name") or target.country or "")
         target.dxcc = _optional_int(payload.get("dxcc"), target.dxcc)
         target.continent = str(payload.get("continent") or target.continent or "")
@@ -1155,7 +1164,7 @@ class DigitalAutomationController:
                         enriched["dxcc_tag"] = display.tag
                     status_sources.append("qso-dxcc-cache")
 
-            grid = str(enriched.get("grid") or enriched.get("gridsquare") or "").strip().upper()
+            grid = normalise_grid_value(enriched.get("grid") or enriched.get("gridsquare") or "")
             if grid and hasattr(store, "grid_flags"):
                 grid_flags = store.grid_flags(grid, band, mode)
                 if grid_flags is not None:
@@ -2443,7 +2452,7 @@ def _target_from_mapping(row: Mapping[str, Any]) -> Optional[DigitalTarget]:
     if not key or not call:
         return None
     source = str(data.get("source") or "decoded")
-    grid = str(data.get("grid") or "").upper()
+    grid = normalise_grid_value(data.get("grid") or "")
     raw_reasons = data.get("need_reasons") or data.get("needed_reasons") or []
     if isinstance(raw_reasons, str):
         raw_reasons = [token.strip() for token in raw_reasons.replace(",", "\n").splitlines()]
@@ -2502,6 +2511,6 @@ def _target_from_mapping(row: Mapping[str, Any]) -> Optional[DigitalTarget]:
     cleaned["snr"] = _float(cleaned.get("snr"))
     cleaned["audio_offset"] = _optional_int(cleaned.get("audio_offset"), None)
     cleaned["dial_frequency"] = _float(cleaned.get("dial_frequency"))
-    cleaned["grid"] = str(cleaned.get("grid") or "").upper()
+    cleaned["grid"] = normalise_grid_value(cleaned.get("grid") or "")
 
     return DigitalTarget(**cleaned)

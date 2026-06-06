@@ -758,6 +758,24 @@ def test_wsjtx_target_builder_accepts_ranked_automation_target():
     assert target["traceId"].startswith("wsjtx-")
 
 
+def test_wsjtx_target_builder_does_not_send_rr73_as_grid():
+    service = WSJTXService()
+
+    target = service.build_target_from_automation_target({
+        "call": "R3HX/P",
+        "mode": "FT8",
+        "dial_frequency": 7_074_000,
+        "audio_offset": 863,
+        "grid": "RR73",
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+        "enableTx": True,
+    })
+
+    assert target["call"] == "R3HX/P"
+    assert "grid" not in target
+
+
 def test_wsjtx_policy_allows_new_needed_digital_target():
     service = WSJTXService()
     payload = {
