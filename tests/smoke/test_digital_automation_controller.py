@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import _bootstrap  # noqa: F401
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from services.digital_automation import (
     DigitalAutomationController,
@@ -13,7 +15,7 @@ from services.digital_automation import (
     payload_matches_need_filters,
     score_payload,
 )
-from services.wsjtx import WSJTXService
+from services.wsjtx import WSJTXService, register_wsjtx_endpoints
 
 
 class _FakeCtyResolver:
@@ -790,6 +792,228 @@ def test_spot_hunt_listens_for_unconfirmed_dxcc_before_calling():
     assert selected.reason == "needed"
 
 
+def test_live_decoded_candidate_preempts_spot_listen_probe():
+    now = datetime(2026, 6, 5, 10, 15, tzinfo=timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "enabled": True,
+            "spotHuntEnabled": True,
+            "requireHeardBeforeCall": True,
+            "treat73AsCQ": True,
+            "bandPlan": "05:20m,17m,15m,12m,10m",
+            "allowedModes": {"FT8": True},
+        }
+    })
+    spot = controller.ingest_target({
+        "callsign": "DX1DX",
+        "grid": "AA00",
+        "band": "12m",
+        "mode": "FT8",
+        "source": "rbl",
+        "frequency_mhz": 24.915,
+        "dxcc_status": "ATNO",
+    })
+    assert spot is not None
+    assert controller.next_listen_target(now=now) is not None
+
+    heard = controller.ingest_target({
+        "message": "CQ R3KBY KO90",
+        "callsign": "R3KBY",
+        "grid": "KO90",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "wsjtx-decode-status",
+        "heard": True,
+        "snr": -9,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+
+    assert heard is not None
+    selected = controller.next_target(now=now + timedelta(seconds=5), auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert selected.call == "R3KBY"
+    assert controller.listen_target_key is None
+    assert controller.status()["listen_target"] is None
+    assert controller.last_decision["reason"] != "spot-listen-in-progress"
+
+
+def test_treat_73_candidate_preempts_spot_listen_probe():
+    now = datetime(2026, 6, 5, 10, 15, tzinfo=timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "enabled": True,
+            "spotHuntEnabled": True,
+            "requireHeardBeforeCall": True,
+            "treat73AsCQ": True,
+            "allowedModes": {"FT8": True},
+        }
+    })
+    controller.ingest_target({
+        "callsign": "DX1DX",
+        "band": "12m",
+        "mode": "FT8",
+        "source": "rbl",
+        "frequency_mhz": 24.915,
+        "dxcc_status": "ATNO",
+    })
+    assert controller.next_listen_target(now=now) is not None
+
+    heard = controller.ingest_target({
+        "message": "EA1AA F4ABC RR73",
+        "callsign": "EA1AA",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "wsjtx-decode-status",
+        "heard": True,
+        "snr": -12,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+
+    assert heard is not None
+    selected = controller.next_target(now=now + timedelta(seconds=5), auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert selected.call == "EA1AA"
+    assert controller.listen_target_key is None
+
+
+def test_spot_listen_respects_allowed_modes_after_mode_switching_off():
+    now = datetime(2026, 6, 5, 22, 15, tzinfo=timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "enabled": True,
+            "spotHuntEnabled": True,
+            "bandPlan": "20:30m,40m,80m,160m",
+            "allowedModes": {"FT8": True},
+        }
+    })
+    ft4 = controller.ingest_target({
+        "callsign": "KD4JG",
+        "band": "30m",
+        "mode": "FT4",
+        "source": "rbl",
+        "frequency_mhz": 10.140,
+        "dxcc_status": "ATNO",
+    })
+    assert ft4 is None
+    assert controller.last_decision["reason"] == "mode-disabled"
+
+    ft8 = controller.ingest_target({
+        "callsign": "KD4JG",
+        "band": "30m",
+        "mode": "FT8",
+        "source": "rbl",
+        "frequency_mhz": 10.136,
+        "dxcc_status": "ATNO",
+    })
+    assert ft8 is not None
+    listen = controller.next_listen_target(now=now)
+    assert listen is not None
+    assert listen.mode == "FT8"
+
+
+def test_disabled_mode_candidate_is_not_selected_for_auto_call():
+    now = datetime(2026, 6, 5, 22, 15, tzinfo=timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "enabled": True,
+            "spotHuntEnabled": True,
+            "allowedModes": {"FT8": True},
+            "requireHeardBeforeCall": True,
+        }
+    })
+    ft4 = controller.ingest_target({
+        "message": "CQ LU1UG FF87",
+        "callsign": "LU1UG",
+        "grid": "FF87",
+        "band": "40m",
+        "mode": "FT4",
+        "source": "wsjtx-decode-status",
+        "heard": True,
+        "snr": -9,
+        "freq": 1500,
+        "frequency_mhz": 7.047,
+        "call_status": "New Call",
+        "dxcc_status": "Worked",
+    })
+    assert ft4 is None
+    assert controller.last_decision["reason"] == "mode-disabled"
+
+    selected = controller.next_target(now=now, auto_call_start_only=True, cq_only=True)
+    assert selected is None
+    assert controller.active_target_key is None
+
+
+def test_release_target_restores_selected_candidate_without_attempt():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    target = controller.ingest_target({
+        "message": "CQ R3KBY KO90",
+        "callsign": "R3KBY",
+        "grid": "KO90",
+        "band": "80m",
+        "mode": "FT8",
+        "source": "wsjtx-decode-status",
+        "heard": True,
+        "snr": -9,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+    assert target is not None
+
+    selected = controller.next_target(auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert controller.active_target_key == target.key
+
+    released = controller.release_target(target.key, reason="bridge-command-failed")
+
+    assert released is target
+    assert controller.active_target_key is None
+    assert controller.active_qso_state == "idle"
+    assert target.state == "heard"
+    assert target.active_state == "idle"
+    assert target.attempts == 0
+    assert controller.last_decision["reason"] == "bridge-command-failed"
+
+
+def test_active_listen_probe_is_cleared_when_mode_becomes_disabled():
+    now = datetime(2026, 6, 5, 22, 15, tzinfo=timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "enabled": True,
+            "spotHuntEnabled": True,
+            "allowedModes": {"FT4": True},
+        }
+    })
+    ft4 = controller.ingest_target({
+        "callsign": "LU1UG",
+        "band": "40m",
+        "mode": "FT4",
+        "source": "rbl",
+        "frequency_mhz": 7.0468,
+        "dxcc_status": "ATNO",
+    })
+    assert ft4 is not None
+    assert controller.next_listen_target(now=now) is not None
+    assert controller.listen_target_key == ft4.key
+
+    controller.apply_operator_settings({
+        "automation": {
+            "allowedModes": {"FT8": True},
+        }
+    })
+
+    assert controller.next_target(now=now + timedelta(seconds=5), auto_call_start_only=True, cq_only=True) is None
+    assert controller.listen_target_key is None
+    assert ft4.state == "skipped"
+    assert ft4.reason == "mode-disabled"
+
+
 def test_spot_hunt_probe_expires_when_not_heard():
     now = datetime(2026, 6, 5, 10, 15, tzinfo=timezone.utc)
     controller = DigitalAutomationController(mycall="OM0RX")
@@ -1498,6 +1722,62 @@ def test_prepare_wsjtx_target_dry_run_does_not_send_bridge_command(monkeypatch):
     assert result["bridge"]["sent"] is False
     assert controller.status()["last_decision"]["decision"] == "dry-run"
     assert any(entry["decision"] == "dry-run" for entry in controller.status()["decision_log"])
+
+
+def test_wsjtx_automation_tick_releases_target_when_bridge_fails(monkeypatch):
+    import services.ft8_service as ft8_service_module
+    import services.wsjtx as wsjtx_module
+
+    controller = DigitalAutomationController(mycall="OM0RX")
+    target = controller.ingest_target({
+        "message": "CQ R3KBY KO90",
+        "callsign": "R3KBY",
+        "grid": "KO90",
+        "band": "80m",
+        "mode": "FT8",
+        "source": "wsjtx-decode-status",
+        "heard": True,
+        "snr": -9,
+        "freq": 916,
+        "frequency_mhz": 3.573,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+    assert target is not None
+
+    fake_ft8_service = SimpleNamespace(
+        automation_controller=controller,
+        set_tx_options=lambda **kwargs: None,
+        get_stats=lambda: {},
+    )
+    monkeypatch.setattr(ft8_service_module, "get_ft8_service", lambda: fake_ft8_service)
+
+    class FailingWsjtxService(WSJTXService):
+        def send_bridge_command(self, command, payload=None):
+            raise HTTPException(status_code=503, detail="bridge unavailable")
+
+    monkeypatch.setattr(wsjtx_module, "get_wsjtx_service", lambda: FailingWsjtxService())
+
+    app = FastAPI()
+    register_wsjtx_endpoints(app)
+    client = TestClient(app)
+
+    response = client.post("/api/wsjtx/automation/tick", json={
+        "automation": {
+            "autoCall": True,
+            "autoCQ": False,
+            "cqOnly": True,
+            "currentMode": "FT8",
+            "modeSwitching": False,
+            "enableTx": True,
+        }
+    })
+
+    assert response.status_code == 503
+    assert controller.active_target_key is None
+    assert target.state == "heard"
+    assert target.attempts == 0
+    assert controller.last_decision["reason"] == "bridge-command-failed"
 
 
 def test_controller_enriches_unknown_decode_from_local_status_cache():

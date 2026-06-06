@@ -2029,6 +2029,7 @@ def register_wsjtx_endpoints(app):
         wsjtx_target.setdefault("targetId", target.target_id)
         wsjtx_target.setdefault("commandId", target.command_id or "")
 
+        bridge_failed = False
         if ft8_service.automation_controller.settings.dry_run:
             ft8_service.automation_controller._set_decision({
                 "decision": "dry-run",
@@ -2046,14 +2047,31 @@ def register_wsjtx_endpoints(app):
                 "command": "start_target_qso",
             }
         else:
-            recorded = ft8_service.automation_controller.record_attempt(target.key)
-            if recorded:
-                wsjtx_target["commandId"] = recorded.command_id
-                target_payload = recorded.to_dict()
-            bridge_result = service.send_bridge_command("start_target_qso", {"target": wsjtx_target})
+            try:
+                bridge_result = service.send_bridge_command("start_target_qso", {"target": wsjtx_target})
+            except HTTPException:
+                ft8_service.automation_controller.release_target(target.key, reason="bridge-command-failed")
+                raise
+            except Exception:
+                ft8_service.automation_controller.release_target(target.key, reason="bridge-command-failed")
+                raise
+            if isinstance(bridge_result, dict) and bridge_result.get("success") is False:
+                ft8_service.automation_controller.release_target(target.key, reason="bridge-command-failed")
+                bridge_failed = True
+            else:
+                recorded = ft8_service.automation_controller.record_attempt(target.key)
+                if recorded:
+                    wsjtx_target["commandId"] = recorded.command_id
+                    target_payload = recorded.to_dict()
         return {
             "success": True,
-            "action": "dry-run" if ft8_service.automation_controller.settings.dry_run else "armed",
+            "action": (
+                "dry-run"
+                if ft8_service.automation_controller.settings.dry_run
+                else "bridge-failed"
+                if bridge_failed
+                else "armed"
+            ),
             "target": target_payload,
             "wsjtx_target": wsjtx_target,
             "bridge": bridge_result,

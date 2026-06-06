@@ -1186,22 +1186,6 @@ class DigitalAutomationController:
     ) -> Optional[DigitalTarget]:
         now = now or utc_now()
         listening = self._active_listen_target(now)
-        if listening:
-            listen_started = listening.last_command_at or listening.updated_at
-            remaining = max(
-                0,
-                int(self.settings.dwell_seconds - (now - listen_started).total_seconds()),
-            ) if listen_started else self.settings.dwell_seconds
-            self._set_decision({
-                "decision": "hold",
-                "reason": "spot-listen-in-progress",
-                "call": listening.call,
-                "band": listening.band,
-                "mode": listening.mode,
-                "remaining_seconds": remaining,
-            })
-            return None
-
         active = self.targets.get(self.active_target_key) if self.active_target_key else None
         if active and active.state not in {"done", "skipped", "expired", "backoff"}:
             if self._expire_stale_active_target(active, now):
@@ -1228,6 +1212,9 @@ class DigitalAutomationController:
         for target in self.targets.values():
             if target.state in {"done", "skipped", "expired", "backoff"}:
                 reject(target.state)
+                continue
+            if target.mode not in self.settings.allowed_modes:
+                reject("mode-disabled")
                 continue
             if active_bands and target.band and target.band.lower() not in active_bands and not target.direct_caller:
                 reject("outside-active-band-plan")
@@ -1348,6 +1335,22 @@ class DigitalAutomationController:
             candidates.append(target)
 
         if not candidates:
+            if listening:
+                listen_started = listening.last_command_at or listening.updated_at
+                remaining = max(
+                    0,
+                    int(self.settings.dwell_seconds - (now - listen_started).total_seconds()),
+                ) if listen_started else self.settings.dwell_seconds
+                self._set_decision({
+                    "decision": "hold",
+                    "reason": "spot-listen-in-progress",
+                    "call": listening.call,
+                    "band": listening.band,
+                    "mode": listening.mode,
+                    "remaining_seconds": remaining,
+                    "rejected": rejected,
+                })
+                return None
             if self.active_target_key and self.active_target_key not in self.targets:
                 self.active_target_key = None
                 self.active_qso_state = "idle"
@@ -1370,6 +1373,8 @@ class DigitalAutomationController:
         chosen = candidates[0]
         chosen.sync_state("selected", active_state="candidate_selected")
         chosen.updated_at = now
+        if self.listen_target_key and self.listen_target_key != chosen.key:
+            self.listen_target_key = None
         self.active_target_key = chosen.key
         self.active_qso_state = "candidate_selected"
         self._persist_target(chosen)
@@ -1484,6 +1489,9 @@ class DigitalAutomationController:
             if target.state in {"done", "skipped", "expired", "backoff"}:
                 reject(target.state)
                 continue
+            if target.mode not in self.settings.allowed_modes:
+                reject("mode-disabled")
+                continue
             if target.is_backed_off(now):
                 reject("backoff")
                 continue
@@ -1558,6 +1566,21 @@ class DigitalAutomationController:
             return None
         if target.state in {"done", "skipped", "expired", "backoff"}:
             self.listen_target_key = None
+            return None
+        if target.mode not in self.settings.allowed_modes:
+            target.sync_state("skipped")
+            target.reason = "mode-disabled"
+            target.skip_reason = "mode-disabled"
+            target.updated_at = now
+            self.listen_target_key = None
+            self._persist_target(target)
+            self._set_decision({
+                "decision": "skip",
+                "reason": "mode-disabled",
+                "call": target.call,
+                "band": target.band,
+                "mode": target.mode,
+            })
             return None
         listen_started = target.last_command_at or target.updated_at
         if listen_started and (now - listen_started).total_seconds() >= max(15, self.settings.dwell_seconds):
@@ -1656,6 +1679,31 @@ class DigitalAutomationController:
             "key": key,
             "call": target.call,
             "reason": reason,
+        })
+        self._persist_target(target)
+        return target
+
+    def release_target(self, key: str, *, reason: str = "target-released") -> Optional[DigitalTarget]:
+        """Release a selected target that never became a real TX attempt."""
+        target = self.targets.get(key)
+        if not target:
+            self._set_decision({"decision": "release", "reason": "release-target-missing", "key": key})
+            return None
+        if self.active_target_key == key:
+            self.active_target_key = None
+            self.active_qso_state = "idle"
+        target.sync_state("heard" if target.heard else "queued", active_state="idle")
+        target.lifecycle = "queued"
+        target.reason = reason
+        target.skip_reason = ""
+        target.updated_at = utc_now()
+        self._set_decision({
+            "decision": "release",
+            "reason": reason,
+            "call": target.call,
+            "band": target.band,
+            "mode": target.mode,
+            "state": target.state,
         })
         self._persist_target(target)
         return target
