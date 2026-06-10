@@ -6,6 +6,7 @@ Includes auto-logging to Wavelog, QRZ data enrichment, and auto-rotation feature
 """
 
 import logging
+import asyncio
 import json
 import platform
 import os
@@ -24,6 +25,7 @@ from fastapi import Body, HTTPException, Request
 # Import required modules
 from radio_control.spot_processor import band_from_khz, infer_mode
 from radio_control.qso_outbox import get_qso_outbox
+from radio_control.spot_classification import classify_call_status, classify_dxcc_status
 from radio_control import config
 logger = logging.getLogger(__name__)
 
@@ -36,11 +38,15 @@ WSJT_MODE_PERIODS = {
 }
 GRID_RE = re.compile(r"^[A-R]{2}\d{2}([A-X]{2})?$")
 NON_GRID_TOKENS = {"CQ", "DE", "QRZ", "RRR", "RR73", "73"}
-WSJT_CLIENT_FRESH_MS = 30_000
+WSJT_CLIENT_FRESH_MS = 300_000
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PATCHED_ENGINE_BUILD_ROOT = PROJECT_ROOT / "data" / "build" / "wsjtx-improved-om0rx" / "build-msys"
 PATCHED_ENGINE_RUN_SCRIPT = PROJECT_ROOT / "scripts" / "wsjtx" / "run_om0rx_wsjtx.ps1"
+WSJTZ_ENGINE_BUILD_ROOT = PROJECT_ROOT / "data" / "build" / "wsjt-z-om0rx" / "build-msys"
+WSJTZ_ENGINE_RUN_SCRIPT = PROJECT_ROOT / "scripts" / "wsjtz" / "run_om0rx_wsjtz.ps1"
 PATCHED_ENGINE_MSYS_ROOT = Path(os.environ.get("WSJTX_MSYS_ROOT", r"C:\JTSDK64-Tools\tools\msys64"))
+WSJTX_DECODE_CTY_CACHE_MAX = 4096
+_wsjtx_decode_cty_cache: Dict[str, Dict[str, Any]] = {}
 
 
 def _coerce_float(value: Any) -> Optional[float]:
@@ -324,14 +330,14 @@ def _process_creation_flags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
 
-def _patched_engine_log_paths(rig_name: str) -> dict[str, Path]:
+def _patched_engine_log_paths(rig_name: str, app_prefix: str = "wsjt-x") -> dict[str, Path]:
     log_root = PROJECT_ROOT / "logs"
     log_safe_name = "".join(
         ch if ch.isalnum() or ch in "._-" else "-"
-        for ch in f"wsjt-x-{rig_name}"
+        for ch in f"{app_prefix}-{rig_name}"
     ).strip("-").lower()
     if not log_safe_name:
-        log_safe_name = "wsjt-x-om0rx-auto"
+        log_safe_name = f"{app_prefix}-om0rx-auto"
     return {
         "stdout": log_root / f"{log_safe_name}.out.log",
         "stderr": log_root / f"{log_safe_name}.err.log",
@@ -375,15 +381,16 @@ def _tail_text_file(path: Path, max_lines: int, max_bytes: int = 256_000) -> dic
     }
 
 
-def _patched_engine_process_ids(rig_name: str, test_mode: bool = False) -> list[int]:
-    """Return running wsjtx.exe PIDs for this OM0RX rig profile."""
+def _wsjt_engine_process_ids(exe_name: str, rig_name: str, test_mode: bool = False) -> list[int]:
+    """Return running WSJT engine PIDs for this OM0RX rig profile."""
     if platform.system().lower() != "windows":
         return []
+    safe_exe = exe_name.replace("'", "''")
     safe_rig = rig_name.replace("'", "''")
     test_filter = " -and $_.CommandLine -like '*--test-mode*'" if test_mode else ""
     command = (
         "$ErrorActionPreference='SilentlyContinue'; "
-        f"Get-CimInstance Win32_Process -Filter \"Name='wsjtx.exe'\" | "
+        f"Get-CimInstance Win32_Process -Filter \"Name='{safe_exe}'\" | "
         f"Where-Object {{ $_.CommandLine -like '*--rig-name {safe_rig}*'{test_filter} }} | "
         "ForEach-Object { $_.ProcessId }"
     )
@@ -406,6 +413,10 @@ def _patched_engine_process_ids(rig_name: str, test_mode: bool = False) -> list[
         except ValueError:
             continue
     return pids
+
+
+def _patched_engine_process_ids(rig_name: str, test_mode: bool = False) -> list[int]:
+    return _wsjt_engine_process_ids("wsjtx.exe", rig_name, test_mode=test_mode)
 
 
 def _patched_engine_decoder_process_ids(rig_name: str) -> list[int]:
@@ -454,6 +465,7 @@ class WSJTXService:
         self.adif_handler = None
         self.qso_status_store = None
         self._recent_logged_qso_keys: Dict[str, float] = {}
+        self._outbox_replay_task: Optional[asyncio.Task] = None
 
     def set_dependencies(
         self,
@@ -507,6 +519,67 @@ class WSJTXService:
         except Exception as exc:
             logger.debug("Unable to mark automation QSO complete for WSJT-X logged QSO %s: %s", call, exc)
 
+    def _finish_async_logged_qso(
+        self,
+        qso_data: Dict[str, Any],
+        *,
+        qso_key: str = "",
+        loose_qso_key: str = "",
+        outbox_queued: bool = False,
+    ) -> None:
+        call = str(qso_data.get("callsign") or "").strip().upper()
+        adif_saved = False
+        try:
+            if self.adif_handler:
+                adif_saved = self.adif_handler.add_qso(qso_data)
+        except Exception as exc:
+            logger.debug("Async WSJT-X local ADIF save failed for %s: %s", call, exc, exc_info=True)
+
+        self._record_logged_qso_in_status_cache(qso_data)
+        if qso_key:
+            try:
+                from services.qso_logging import _record_dedupe_entry
+
+                record = {
+                    "wavelog": {"success": False, "queued": outbox_queued},
+                    "adif_saved": adif_saved,
+                    "outbox_queued": outbox_queued,
+                }
+                _record_dedupe_entry(qso_key, qso_data, record)
+                if loose_qso_key and loose_qso_key != qso_key:
+                    _record_dedupe_entry(loose_qso_key, qso_data, record)
+            except Exception as exc:
+                logger.debug("Unable to record async WSJT-X QSO dedupe entry for %s: %s", call, exc, exc_info=True)
+
+        logger.info(
+            "✅ Accepted WSJT-X logged QSO for async Wavelog upload: %s %s %s (ADIF: %s, Outbox: %s)",
+            call,
+            qso_data.get("band"),
+            qso_data.get("mode"),
+            adif_saved,
+            outbox_queued,
+        )
+
+    async def _replay_wavelog_outbox_once(self) -> None:
+        try:
+            from services.qso_logging import record_qso_status_from_adif
+
+            result = await get_qso_outbox().replay(
+                self.wavelog_client,
+                max_records=getattr(config, "WAVELOG_OUTBOX_RETRY_BATCH_SIZE", 20),
+                on_resolved_record=record_qso_status_from_adif,
+            )
+            if result.get("attempted"):
+                logger.info("✅ Immediate Wavelog outbox replay after WSJT-X log: %s", result)
+        except Exception as exc:
+            logger.warning("Immediate Wavelog outbox replay after WSJT-X log failed: %s", exc)
+
+    def _schedule_wavelog_outbox_replay(self) -> None:
+        task = self._outbox_replay_task
+        if task and not task.done():
+            return
+        self._outbox_replay_task = asyncio.create_task(self._replay_wavelog_outbox_once())
+
     async def log_qso(self, req: Dict[str, Any]):
         """
         Auto-log a QSO from WSJT-X to Wavelog
@@ -526,6 +599,115 @@ class WSJTXService:
             if mode == "MFSK" and submode in WSJT_TARGET_MODES:
                 mode = submode
             frequency_hz = _frequency_hz_from_payload(req) or _frequency_hz_from_adif(adif_fields)
+            band = adif_fields.get("band") or (band_from_khz(frequency_hz / 1000) if frequency_hz else "Unknown")
+            date_time = req.get("date_time") or _iso_from_adif_datetime(
+                adif_fields.get("qso_date", ""),
+                adif_fields.get("time_on") or adif_fields.get("time_off", ""),
+            )
+
+            if adif_text and _coerce_bool(req.get("async_upload")):
+                cty_data = {}
+                if self.cty_resolver:
+                    try:
+                        cty_data = self.cty_resolver.lookup(call) or {}
+                    except Exception as exc:
+                        logger.debug("CTY lookup failed for async WSJT-X QSO %s: %s", call, exc)
+                qso_data = {
+                    "callsign": call,
+                    "frequency": frequency_hz / 1_000_000 if frequency_hz else None,
+                    "mode": mode,
+                    "submode": submode if submode in WSJT_TARGET_MODES else "",
+                    "band": band,
+                    "rst_sent": req.get("rst_sent") or adif_fields.get("rst_sent"),
+                    "rst_received": req.get("rst_received") or adif_fields.get("rst_rcvd"),
+                    "date": req.get("date") or adif_fields.get("qso_date") or None,
+                    "time_off": req.get("time_off") or adif_fields.get("time_off") or adif_fields.get("time_on") or None,
+                    "date_time": date_time,
+                    "name": adif_fields.get("name") or "",
+                    "qth": adif_fields.get("qth") or "",
+                    "gridsquare": req.get("grid") or adif_fields.get("gridsquare") or "",
+                    "notes": req.get("comments") or adif_fields.get("comment") or adif_fields.get("comments") or f"Auto-logged from WSJT-X ({mode})",
+                    "continent": cty_data.get("continent", ""),
+                    "dxcc": cty_data.get("dxcc"),
+                    "country": cty_data.get("entity") or cty_data.get("country") or "",
+                    "state": "",
+                    "cq_zone": cty_data.get("cq"),
+                    "itu_zone": cty_data.get("itu"),
+                }
+                qso_key = ""
+                loose_qso_key = ""
+                try:
+                    from services.qso_logging import (
+                        _claim_dedupe_keys,
+                        build_qso_dedupe_key,
+                        build_qso_loose_dedupe_key,
+                    )
+
+                    qso_key = str(req.get("qso_key") or build_qso_dedupe_key(qso_data))
+                    loose_qso_key = build_qso_loose_dedupe_key(qso_data)
+                    qso_data["qso_key"] = qso_key
+                    dedupe_keys = [key for key in (qso_key, loose_qso_key) if key]
+                    dedupe_entry = _claim_dedupe_keys(dedupe_keys, qso_data)
+                    if dedupe_entry:
+                        outbox_queued = False
+                        if not dedupe_entry.get("wavelog_success"):
+                            outbox_queued = get_qso_outbox().enqueue_adif(adif_text)
+                            self._schedule_wavelog_outbox_replay()
+                            logger.info(
+                                "Retrying duplicate WSJT-X async QSO without confirmed Wavelog success: %s %s %s (Outbox: %s)",
+                                call,
+                                band,
+                                mode,
+                                outbox_queued,
+                            )
+                        self._record_logged_qso_in_status_cache(qso_data)
+                        return {
+                            "success": True,
+                            "duplicate": True,
+                            "async_upload": True,
+                            "message": (
+                                "Duplicate WSJT-X QSO log request retried via Wavelog outbox"
+                                if not dedupe_entry.get("wavelog_success")
+                                else "Duplicate WSJT-X QSO log request ignored"
+                            ),
+                            "outbox_queued": outbox_queued,
+                            "qso_key": qso_key,
+                            "loose_qso_key": loose_qso_key,
+                            "dedupe": dedupe_entry,
+                        }
+                except Exception as exc:
+                    logger.debug("Async WSJT-X QSO dedupe guard unavailable for %s: %s", call, exc, exc_info=True)
+
+                outbox_queued = get_qso_outbox().enqueue_adif(adif_text)
+                self._schedule_wavelog_outbox_replay()
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        self._finish_async_logged_qso,
+                        qso_data,
+                        qso_key=qso_key,
+                        loose_qso_key=loose_qso_key,
+                        outbox_queued=outbox_queued,
+                    )
+                )
+                return {
+                    "success": True,
+                    "async_upload": True,
+                    "adif_saved": None,
+                    "outbox_queued": outbox_queued,
+                    "qso_key": qso_key,
+                    "loose_qso_key": loose_qso_key,
+                    "message": "QSO accepted into local Wavelog upload queue",
+                    "qso_data": {
+                        "callsign": call,
+                        "frequency": qso_data["frequency"],
+                        "mode": mode,
+                        "gridsquare": qso_data["gridsquare"],
+                        "rst_sent": qso_data["rst_sent"],
+                        "rst_received": qso_data["rst_received"],
+                        "country": qso_data["country"],
+                        "continent": qso_data["continent"],
+                    },
+                }
 
             # Fetch QRZ data if not already provided
             qrz_data = req.get('qrz_data', {}) or {}
@@ -553,12 +735,6 @@ class WSJTXService:
 
             # Build QSO data from WSJT-X and QRZ
             # Match the standard QSORequest structure to ensure consistency with regular QSO logging
-            band = adif_fields.get("band") or (band_from_khz(frequency_hz / 1000) if frequency_hz else "Unknown")
-            date_time = req.get("date_time") or _iso_from_adif_datetime(
-                adif_fields.get("qso_date", ""),
-                adif_fields.get("time_on") or adif_fields.get("time_off", ""),
-            )
-            
             qso_data = {
                 # Core fields (required)
                 "callsign": call,
@@ -968,6 +1144,29 @@ class WSJTXService:
             "usr_bin_exists": usr_bin.exists(),
         }
 
+    def get_wsjtz_engine_status(self) -> Dict[str, Any]:
+        """Return local OM0RX WSJT-Z launcher prerequisites."""
+        exe = WSJTZ_ENGINE_BUILD_ROOT / "wsjt-z.exe"
+        decoder = WSJTZ_ENGINE_BUILD_ROOT / "jt9.exe"
+        mingw_bin = PATCHED_ENGINE_MSYS_ROOT / "mingw64" / "bin"
+        usr_bin = PATCHED_ENGINE_MSYS_ROOT / "usr" / "bin"
+        return {
+            "platform": platform.system(),
+            "supported": platform.system().lower() == "windows",
+            "script": str(WSJTZ_ENGINE_RUN_SCRIPT),
+            "build_root": str(WSJTZ_ENGINE_BUILD_ROOT),
+            "exe": str(exe),
+            "decoder": str(decoder),
+            "msys_root": str(PATCHED_ENGINE_MSYS_ROOT),
+            "mingw_bin": str(mingw_bin),
+            "usr_bin": str(usr_bin),
+            "script_exists": WSJTZ_ENGINE_RUN_SCRIPT.exists(),
+            "exe_exists": exe.exists(),
+            "decoder_exists": decoder.exists(),
+            "mingw_bin_exists": mingw_bin.exists(),
+            "usr_bin_exists": usr_bin.exists(),
+        }
+
     def launch_patched_engine(self, req: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Start the locally built OM0RX-patched WSJT-X engine on Windows."""
         req = req or {}
@@ -1057,6 +1256,104 @@ class WSJTXService:
         })
         return result
 
+    def launch_wsjtz_engine(self, req: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Start the locally built OM0RX WSJT-Z engine on Windows."""
+        req = req or {}
+        status = self.get_wsjtz_engine_status()
+        if not status["supported"]:
+            raise HTTPException(status_code=400, detail="WSJT-Z engine launcher is currently Windows-only")
+        if not status["script_exists"]:
+            raise HTTPException(status_code=404, detail=f"Run script not found: {status['script']}")
+        if not status["exe_exists"]:
+            raise HTTPException(status_code=404, detail="OM0RX WSJT-Z wsjt-z.exe not found. Build the OM0RX WSJT-Z engine first.")
+        if not status["decoder_exists"]:
+            raise HTTPException(status_code=404, detail="OM0RX WSJT-Z jt9.exe not found. Build the OM0RX WSJT-Z engine first.")
+        if not status["mingw_bin_exists"]:
+            raise HTTPException(status_code=404, detail=f"MSYS2 MinGW bin not found: {status['mingw_bin']}")
+
+        rig_name = str(req.get("rigName") or "OM0RX-WSJT-Z").strip() or "OM0RX-WSJT-Z"
+        config_name = str(req.get("configName") or "OM0RX-WSJT-Z").strip() or "OM0RX-WSJT-Z"
+        test_mode = _coerce_bool(req.get("testMode"), False)
+        dry_run = _coerce_bool(req.get("dryRun"), False)
+
+        command = [
+            status["exe"],
+            "--rig-name",
+            rig_name,
+            "--config",
+            config_name,
+        ]
+        if test_mode:
+            command.append("--test-mode")
+
+        existing_pids = _wsjt_engine_process_ids("wsjt-z.exe", rig_name, test_mode=test_mode)
+        log_paths = _patched_engine_log_paths(rig_name, app_prefix="wsjt-z")
+
+        result = {
+            "success": True,
+            "dry_run": dry_run,
+            "rig_name": rig_name,
+            "config_name": config_name,
+            "test_mode": test_mode,
+            "command": command,
+            "existing_pids": existing_pids,
+            "engine": status,
+            "stdout_log": str(log_paths["stdout"]),
+            "stderr_log": str(log_paths["stderr"]),
+        }
+        if dry_run:
+            result["message"] = "OM0RX WSJT-Z launcher prerequisites are available"
+            return result
+        if existing_pids:
+            result["already_running"] = True
+            result["message"] = f"OM0RX WSJT-Z is already running for {rig_name}"
+            return result
+
+        script_command = [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            status["script"],
+            "-ProjectRoot",
+            str(PROJECT_ROOT),
+            "-MsysRoot",
+            status["msys_root"],
+            "-RigName",
+            rig_name,
+            "-ConfigName",
+            config_name,
+        ]
+        if test_mode:
+            script_command.append("-TestMode")
+        try:
+            completed = subprocess.run(
+                script_command,
+                cwd=str(PROJECT_ROOT),
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+                creationflags=_process_creation_flags(),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Could not start OM0RX WSJT-Z: {exc}") from exc
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "WSJT-Z launcher script failed").strip()
+            raise HTTPException(status_code=500, detail=detail)
+
+        launched_pids = _wsjt_engine_process_ids("wsjt-z.exe", rig_name, test_mode=test_mode)
+
+        result.update({
+            "pid": launched_pids[0] if launched_pids else None,
+            "script_command": script_command,
+            "script_stdout": completed.stdout,
+            "script_stderr": completed.stderr,
+            "message": "OM0RX WSJT-Z launch command completed",
+        })
+        return result
+
     def get_launch_logs(self, rig_name: str = "OM0RX-AUTO", lines: int = 120) -> Dict[str, Any]:
         """Return recent stdout/stderr lines for the patched WSJT launcher profile."""
         rig_name = str(rig_name or "OM0RX-AUTO").strip() or "OM0RX-AUTO"
@@ -1077,8 +1374,13 @@ class WSJTXService:
     def get_launch_preflight(self, req: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Dry-run the patched WSJT launch path and verify bridge listener readiness."""
         req = req or {}
-        rig_name = str(req.get("rigName") or "OM0RX-AUTO").strip() or "OM0RX-AUTO"
-        config_name = str(req.get("configName") or "OM0RX-AUTO").strip() or "OM0RX-AUTO"
+        engine_key = str(req.get("engine") or "wsjtx").strip().lower()
+        is_wsjtz = engine_key in {"wsjtz", "wsjt-z"}
+        default_profile = "OM0RX-WSJT-Z" if is_wsjtz else "OM0RX-AUTO"
+        engine_label = "OM0RX WSJT-Z" if is_wsjtz else "patched WSJT engine"
+        launcher = self.launch_wsjtz_engine if is_wsjtz else self.launch_patched_engine
+        rig_name = str(req.get("rigName") or default_profile).strip() or default_profile
+        config_name = str(req.get("configName") or default_profile).strip() or default_profile
         test_mode = _coerce_bool(req.get("testMode"), False)
         command_url = getattr(config, 'WSJTX_BRIDGE_COMMAND_URL', 'http://127.0.0.1:8092/wsjtx/command')
         status_url = _command_url_to_status_url(command_url)
@@ -1094,7 +1396,7 @@ class WSJTXService:
         launcher_ok = False
         launcher_error = ""
         try:
-            launcher_result = self.launch_patched_engine({
+            launcher_result = launcher({
                 "rigName": rig_name,
                 "configName": config_name,
                 "testMode": test_mode,
@@ -1138,9 +1440,9 @@ class WSJTXService:
             "Launcher dry-run",
             "ok" if launcher_ok else "fail",
             (
-                f"Patched WSJT engine can be launched for profile {rig_name}/{config_name}"
+                f"{engine_label} can be launched for profile {rig_name}/{config_name}"
                 if launcher_ok else
-                f"Patched WSJT engine dry-run failed: {launcher_error or launcher_result.get('detail') or 'unknown error'}"
+                f"{engine_label} dry-run failed: {launcher_error or launcher_result.get('detail') or 'unknown error'}"
             ),
             critical=True,
             value_text=launcher_result.get("message", "") if launcher_ok else launcher_error,
@@ -1207,6 +1509,7 @@ class WSJTXService:
         return {
             "success": True,
             "ready": ready,
+            "engine": "wsjtz" if is_wsjtz else "wsjtx",
             "rig_name": rig_name,
             "config_name": config_name,
             "test_mode": test_mode,
@@ -1777,6 +2080,7 @@ def _normalise_wsjtx_automation_policy(req: Dict[str, Any]) -> Dict[str, Any]:
     watchdog_ft8 = _coerce_int(_first_present(automation, "watchdogFT8", "watchdog_ft8"))
     watchdog_ft4 = _coerce_int(_first_present(automation, "watchdogFT4", "watchdog_ft4"))
     hop_interval_seconds = _coerce_int(_first_present(automation, "hopIntervalSeconds", "hop_interval_seconds"))
+    band_hopping = _coerce_bool(_first_present(automation, "bandHopping", "band_hopping"), False)
     mode_switching = _coerce_bool(_first_present(automation, "modeSwitching", "mode_switching"), False)
     current_mode = str(_first_present(automation, "currentMode", "current_mode", "mode") or "").strip().upper()
     if current_mode not in {"FT8", "FT4", "FT2"}:
@@ -1791,8 +2095,8 @@ def _normalise_wsjtx_automation_policy(req: Dict[str, Any]) -> Dict[str, Any]:
 
     operator_automation = {
         "enabled": auto_call or auto_cq or _coerce_bool(_first_present(automation, "enabled"), False),
-        "spotHuntEnabled": _coerce_bool(_first_present(automation, "spotHuntEnabled", "spot_hunt_enabled"), auto_call),
-        "bandHopping": _coerce_bool(_first_present(automation, "bandHopping", "band_hopping"), False),
+        "spotHuntEnabled": _coerce_bool(_first_present(automation, "spotHuntEnabled", "spot_hunt_enabled"), auto_call and band_hopping),
+        "bandHopping": band_hopping,
         "modeSwitching": mode_switching,
         "treat73AsCQ": _coerce_bool(_first_present(automation, "treat73AsCQ", "treat_73_as_cq"), False),
         "avoidLogged": _coerce_bool(_first_present(automation, "avoidLogged", "avoid_logged"), True),
@@ -1804,10 +2108,21 @@ def _normalise_wsjtx_automation_policy(req: Dict[str, Any]) -> Dict[str, Any]:
         "needMode": _coerce_bool(_first_present(automation, "needMode", "need_mode"), True),
         "needGrid": _coerce_bool(_first_present(automation, "needGrid", "need_grid"), True),
         "needReference": _coerce_bool(_first_present(automation, "needReference", "need_reference"), False),
+        "filterMatrixEnabled": _coerce_bool(
+            _first_present(automation, "filterMatrixEnabled", "filter_matrix_enabled"),
+            False,
+        ),
+        "filterNew": _first_present(automation, "filterNew", "filter_new") or {},
+        "filterNewOnBand": _first_present(automation, "filterNewOnBand", "filter_new_on_band") or {},
+        "filterContinents": _first_present(automation, "filterContinents", "filter_continents", "continents") or {},
+        "lotwOnly": _coerce_bool(_first_present(automation, "lotwOnly", "lotw_only"), False),
         "answerDirectCallers": _coerce_bool(_first_present(automation, "answerDirectCallers", "answer_direct_callers"), True),
         "dryRun": _coerce_bool(_first_present(automation, "dryRun", "dry_run"), False),
         "priority": priority,
     }
+    current_band = str(_first_present(automation, "currentBand", "current_band") or "").strip().lower()
+    if current_band:
+        operator_automation["currentBand"] = current_band
     if not mode_switching and current_mode:
         operator_automation["allowedModes"] = {current_mode: True}
     if hop_interval_seconds is not None:
@@ -1845,7 +2160,7 @@ def _normalise_wsjtx_automation_policy(req: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _attach_wsjtx_status_sources(ft8_service: Any, request: Request) -> Dict[str, Any]:
+def _attach_wsjtx_status_sources(ft8_service: Any, request: Request, *, include_diagnostics: bool = True) -> Dict[str, Any]:
     """Attach local Wavelog/CTY caches to the WSJT automation controller."""
     classifier = getattr(request.app.state, "classifier", None)
     qso_status_store = getattr(classifier, "qso_status_store", None) if classifier else None
@@ -1861,12 +2176,165 @@ def _attach_wsjtx_status_sources(ft8_service: Any, request: Request) -> Dict[str
         "qso_status_store": bool(qso_status_store),
         "cty_resolver": bool(cty_resolver),
     }
-    if qso_status_store and hasattr(qso_status_store, "diagnostics"):
+    if include_diagnostics and qso_status_store and hasattr(qso_status_store, "diagnostics"):
         try:
             diagnostics["qso_status"] = qso_status_store.diagnostics()
         except Exception as exc:
             diagnostics["qso_status_error"] = str(exc)
     return diagnostics
+
+
+def _local_wsjtx_decode_status(req: Dict[str, Any], request: Request) -> Dict[str, Any]:
+    call = str(req.get("call") or req.get("callsign") or "").strip().upper().replace("<", "").replace(">", "")
+    if not call:
+        return {"success": False, "reason": "missing-call"}
+
+    band = str(req.get("band") or "").strip()
+    frequency_hz = _frequency_hz_from_payload(req)
+    if not band and frequency_hz:
+        band = band_from_khz(frequency_hz / 1000.0) or ""
+    mode = str(req.get("mode") or "").strip().upper()
+
+    classifier = getattr(request.app.state, "classifier", None)
+    store = getattr(classifier, "qso_status_store", None) if classifier else None
+    cty_resolver = getattr(request.app.state, "cty_resolver", None)
+
+    country = ""
+    dxcc = None
+    continent = ""
+    cq_zone = ""
+    itu_zone = ""
+    if cty_resolver:
+        try:
+            cty_info = _wsjtx_decode_cty_cache.get(call)
+            if cty_info is None:
+                cty_info = dict(cty_resolver.lookup(call) or {})
+                if len(_wsjtx_decode_cty_cache) >= WSJTX_DECODE_CTY_CACHE_MAX:
+                    _wsjtx_decode_cty_cache.clear()
+                _wsjtx_decode_cty_cache[call] = cty_info
+            country = cty_info.get("entity") or cty_info.get("country") or ""
+            dxcc = cty_info.get("dxcc")
+            continent = cty_info.get("continent") or cty_info.get("cont") or ""
+            cq_zone = cty_info.get("cq") or cty_info.get("cq_zone") or ""
+            itu_zone = cty_info.get("itu") or cty_info.get("itu_zone") or ""
+        except Exception as exc:
+            logger.debug("WSJT-Z CTY decode lookup failed for %s: %s", call, exc)
+
+    call_status = "Unknown"
+    dxcc_status = "Unknown"
+    dxcc_tag = ""
+    needed: Dict[str, Any] = {}
+    needed_on_band: Dict[str, Any] = {}
+    status_sources: list[str] = []
+
+    if store:
+        try:
+            # This endpoint is called for every decoded line. Do not call the
+            # store's public methods here: they may refresh from Wavelog/MySQL
+            # when their TTL expires, blocking the WSJT-Z UI at "..." during
+            # busy decode bursts. Use only the already-loaded hot sets.
+            cache_loaded = getattr(store, "_loaded_at", None) is not None
+            if cache_loaded:
+                normalise_call = getattr(store, "_normalise_call", lambda value: str(value or "").upper().strip())
+                normalise_band = getattr(store, "_normalise_band", lambda value: str(value or "").lower().strip())
+                call_value = normalise_call(call)
+                band_value = normalise_band(band)
+                mode_value = str(mode or "").strip().upper()
+
+                call_worked = call_value in getattr(store, "call_worked", set())
+                call_confirmed = call_value in getattr(store, "call_confirmed", set())
+                call_new_band = bool(band_value) and (
+                    call_value,
+                    band_value,
+                ) not in getattr(store, "call_band_worked", set())
+                call_new_mode = bool(mode_value) and (
+                    call_value,
+                    mode_value,
+                ) not in getattr(store, "call_mode_worked", set())
+                call_bandmode_confirmed = (
+                    bool(band_value)
+                    and bool(mode_value)
+                    and (
+                        call_value,
+                        band_value,
+                        mode_value,
+                    ) in getattr(store, "call_bandmode_confirmed", set())
+                )
+                call_status = classify_call_status(
+                    call_worked,
+                    call_new_band,
+                    call_new_mode,
+                    call_bandmode_confirmed,
+                )
+                needed["call"] = not call_worked
+                needed_on_band["call"] = bool(call_new_band)
+                needed_on_band["mode"] = bool(call_new_mode)
+                status_sources.append("qso-call-hot-cache")
+
+                if dxcc is not None:
+                    dxcc_int = int(dxcc)
+                    dxcc_worked = dxcc_int in getattr(store, "dxcc_worked", set())
+                    dxcc_confirmed = dxcc_int in getattr(store, "dxcc_confirmed", set())
+                    dxcc_new_band = bool(band_value) and (
+                        dxcc_int,
+                        band_value,
+                    ) not in getattr(store, "dxcc_band_worked", set())
+                    dxcc_new_mode = bool(mode_value) and (
+                        dxcc_int,
+                        mode_value,
+                    ) not in getattr(store, "dxcc_mode_worked", set())
+                    dxcc_bandmode_confirmed = (
+                        bool(band_value)
+                        and bool(mode_value)
+                        and (
+                            dxcc_int,
+                            band_value,
+                            mode_value,
+                        ) in getattr(store, "dxcc_bandmode_confirmed", set())
+                    )
+                    display = classify_dxcc_status(
+                        dxcc_worked,
+                        dxcc_confirmed,
+                        dxcc_new_band,
+                        dxcc_new_mode,
+                        dxcc_bandmode_confirmed,
+                    )
+                    dxcc_status = display.status
+                    dxcc_tag = display.tag or ""
+                    needed["dxcc"] = not dxcc_worked
+                    needed_on_band["dxcc"] = bool(dxcc_new_band)
+                    needed_on_band["dxcc_mode"] = bool(dxcc_new_mode)
+                    status_sources.append("qso-dxcc-hot-cache")
+            else:
+                status_sources.append("qso-cache-not-loaded")
+        except Exception as exc:
+            logger.debug("WSJT-Z local decode status failed for %s: %s", call, exc, exc_info=True)
+
+    if cty_resolver:
+        status_sources.append("cty")
+
+    return {
+        "success": True,
+        "call": call,
+        "band": band,
+        "mode": mode,
+        "grid": str(req.get("grid") or req.get("gridsquare") or "").strip().upper(),
+        "country": country,
+        "dxcc": dxcc,
+        "continent": continent,
+        "cq_zone": str(cq_zone),
+        "itu_zone": str(itu_zone),
+        "call_status": call_status,
+        "dxcc_status": dxcc_status,
+        "dxcc_tag": dxcc_tag,
+        "needed": needed,
+        "needed_on_band": needed_on_band,
+        "status_source": ",".join(dict.fromkeys(status_sources)),
+        "status_sources": {
+            "qso_status_store": bool(store),
+            "cty_resolver": bool(cty_resolver),
+        },
+    }
 
 
 def register_wsjtx_endpoints(app):
@@ -1962,6 +2430,38 @@ def register_wsjtx_endpoints(app):
                 "status_sources": status_sources,
             }
 
+        tx_slot_hold = None
+        if auto_call and not force and hasattr(ft8_service, "_live_cycle_state") and hasattr(ft8_service, "_max_safe_late_start_seconds"):
+            try:
+                cycle_duration, cycle_position, cycle_number, slot_is_tx = ft8_service._live_cycle_state()
+                mode = str(policy["txOptions"].get("mode") or policy["operatorSettings"].get("current_mode") or getattr(ft8_service, "mode", "FT8") or "FT8")
+                max_safe_late = float(ft8_service._max_safe_late_start_seconds(mode))
+                if slot_is_tx and float(cycle_position or 0.0) > max(0.0, max_safe_late - 0.05):
+                    tx_slot_hold = {
+                        "cycle_duration": cycle_duration,
+                        "cycle_position": cycle_position,
+                        "cycle_number": cycle_number,
+                        "slot_is_tx": bool(slot_is_tx),
+                        "max_safe_late_start": max_safe_late,
+                    }
+            except Exception:
+                tx_slot_hold = None
+        if tx_slot_hold:
+            ft8_service.automation_controller._set_decision({
+                "decision": "hold",
+                "reason": "tx-slot-too-late-for-new-target",
+                **tx_slot_hold,
+            })
+            return {
+                "success": True,
+                "action": "idle",
+                "reason": "tx-slot-too-late-for-new-target",
+                "slot": tx_slot_hold,
+                "automation": ft8_service.automation_controller.status(),
+                "stats": ft8_service.get_stats(),
+                "status_sources": status_sources,
+            }
+
         target = ft8_service.automation_controller.next_target(
             cq_only=bool(policy["txOptions"].get("cq_only")),
             auto_call_start_only=True,
@@ -1975,6 +2475,8 @@ def register_wsjtx_endpoints(app):
                 target_payload = listen_target.to_dict()
                 wsjtx_target = service.build_target_from_automation_target(target_payload)
                 wsjtx_target["enableTx"] = False
+                wsjtx_target["generateMessages"] = False
+                wsjtx_target["listenOnly"] = True
                 wsjtx_target["holdTxFreq"] = _coerce_bool(
                     _first_present(automation_payload, "holdTxFreq", "hold_tx_freq"),
                     True,
@@ -1987,7 +2489,7 @@ def register_wsjtx_endpoints(app):
                 if ft8_service.automation_controller.settings.dry_run:
                     ft8_service.automation_controller._set_decision({
                         "decision": "dry-run",
-                        "reason": "would-send-spot-listen-qso",
+                        "reason": "would-send-spot-listen-qsy",
                         "call": listen_target.call,
                         "band": listen_target.band,
                         "mode": listen_target.mode,
@@ -2092,93 +2594,111 @@ def register_wsjtx_endpoints(app):
     @app.post("/api/wsjtx/decode-status")
     async def wsjtx_decode_status(req: Dict[str, Any], request: Request):
         """Return fast local Wavelog/CTY status for one native WSJT-X decode."""
-        from services.ft8_service import get_ft8_service
+        return _local_wsjtx_decode_status(req, request)
 
-        ft8_service = get_ft8_service()
-        status_sources = _attach_wsjtx_status_sources(ft8_service, request)
-        controller = getattr(ft8_service, "automation_controller", None)
-        call = str(req.get("call") or req.get("callsign") or "").strip().upper()
+    @app.get("/api/wsjtx/qso-history/{callsign:path}")
+    async def wsjtx_qso_history(callsign: str, limit: int = 20):
+        """Return previous QSOs from the local Wavelog mirror for the native WSJT-Z popup."""
+        call = str(callsign or "").strip().upper()
         if not call:
-            return {
-                "success": False,
-                "reason": "missing-call",
-                "status_sources": status_sources,
+            raise HTTPException(status_code=400, detail="callsign is required")
+
+        actual_limit = max(1, min(int(limit or 20), 100))
+        rows: list[Dict[str, Any]] = []
+        try:
+            from radio_control.postgres_store import connect as connect_postgres
+            from radio_control.postgres_store import should_use_postgres
+
+            if should_use_postgres():
+                columns = [
+                    "call",
+                    "qso_date",
+                    "time_on",
+                    "time_off",
+                    "qso_datetime",
+                    "mode",
+                    "submode",
+                    "frequency",
+                    "band",
+                    "rst_sent",
+                    "rst_rcvd",
+                    "country",
+                    "gridsquare",
+                    "lotw_qsl_sent",
+                    "lotw_qsl_rcvd",
+                    "eqsl_qsl_rcvd",
+                    "qsl_rcvd",
+                ]
+                with connect_postgres() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            f"""
+                            SELECT {", ".join(columns)}
+                            FROM qso_records
+                            WHERE UPPER(call) = UPPER(%s)
+                            ORDER BY COALESCE(qso_datetime, time_on) DESC NULLS LAST
+                            LIMIT %s
+                            """,
+                            (call, actual_limit),
+                        )
+                        rows = [dict(zip(columns, row)) for row in cur.fetchall()]
+        except Exception as exc:
+            logger.debug("PostgreSQL QSO history lookup failed for %s: %s", call, exc)
+
+        if not rows:
+            from radio_control.wavelog_db import get_wavelog_db
+
+            rows = get_wavelog_db().get_qsos_by_callsign(call, limit=actual_limit)
+        qsos: list[Dict[str, Any]] = []
+        matrix: Dict[str, Dict[str, Dict[str, bool]]] = {}
+        summary: Dict[str, Any] = {}
+
+        def history_time_on(row: Dict[str, Any]) -> str:
+            qso_date = str(row.get("qso_date") or "").strip()
+            time_on = str(row.get("time_on") or "").strip()
+            if qso_date and time_on.startswith(qso_date):
+                return time_on
+            if qso_date and time_on:
+                return f"{qso_date} {time_on}"
+            return time_on or qso_date
+
+        for row in rows:
+            mode = str(row.get("mode_rx") or row.get("mode") or "").strip().upper()
+            band = str(row.get("band") or "").strip().lower()
+            lotw_rcvd = str(row.get("lotw_qsl_rcvd") or row.get("lotw_rcvd") or "").strip().upper()
+            qso = {
+                "time_on": history_time_on(row),
+                "callsign": row.get("callsign") or row.get("call") or call,
+                "band": band,
+                "mode": mode,
+                "submode": str(row.get("submode") or "").strip().upper(),
+                "rst_sent": str(row.get("rst_sent") or ""),
+                "rst_rcvd": str(row.get("rst_rcvd") or ""),
+                "lotw_sent": str(row.get("lotw_qsl_sent") or row.get("lotw_sent") or ""),
+                "lotw_rcvd": lotw_rcvd,
+                "country": row.get("country") or "",
+                "gridsquare": row.get("gridsquare") or "",
             }
-
-        band = str(req.get("band") or "").strip()
-        mode = str(req.get("mode") or ft8_service.mode or "").strip().upper()
-        if not band:
-            frequency_hz = _frequency_hz_from_payload(req)
-            if frequency_hz:
-                band = band_from_khz(frequency_hz / 1000.0) or ""
-
-        payload = {
-            "source": "wsjtx-decode-status",
-            "heard": True,
-            "call": call,
-            "grid": str(req.get("grid") or req.get("gridsquare") or "").strip().upper(),
-            "band": band,
-            "mode": mode,
-            "message": str(req.get("message") or "").strip(),
-            "snr": _coerce_int(req.get("snr")),
-            "audio_offset": _coerce_int(_first_present(req, "audioOffset", "audio_offset", "rxDf", "rx_df")),
-            "call_status": "Unknown",
-            "dxcc_status": "Unknown",
-        }
-        timestamp = _first_present(req, "slotStartUtc", "slot_start_utc", "timestamp", "time")
-        if timestamp is not None:
-            payload["timestamp"] = timestamp
-            payload["slot_start_utc"] = timestamp
-        frequency_hz = _frequency_hz_from_payload(req)
-        if frequency_hz:
-            payload["frequency_mhz"] = frequency_hz / 1_000_000
-            payload["base_frequency"] = frequency_hz / 1_000_000
-
-        enriched = payload
-        if controller and hasattr(controller, "_enrich_payload_from_local_status"):
-            enriched = controller._enrich_payload_from_local_status(
-                payload,
-                call=call,
-                band=band,
-                mode=mode,
-            )
-        automation_target = None
-        if controller and hasattr(controller, "ingest_target"):
-            automation_target = controller.ingest_target(enriched)
+            qsos.append(qso)
+            if not summary:
+                summary = {
+                    "country": qso["country"],
+                    "gridsquare": qso["gridsquare"],
+                }
+            if mode and band:
+                matrix.setdefault(mode, {}).setdefault(band, {"worked": False, "confirmed": False})
+                matrix[mode][band]["worked"] = True
+                if lotw_rcvd == "Y":
+                    matrix[mode][band]["confirmed"] = True
 
         return {
             "success": True,
-            "automation_target": automation_target.to_dict() if automation_target else None,
-            "automation_decision": getattr(controller, "last_decision", None) if controller else None,
-            "call": call,
-            "band": band,
-            "mode": mode,
-            "grid": enriched.get("grid") or "",
-            "country": enriched.get("country") or "",
-            "dxcc": enriched.get("dxcc"),
-            "continent": enriched.get("continent") or "",
-            "cq_zone": enriched.get("cq_zone") or "",
-            "itu_zone": enriched.get("itu_zone") or "",
-            "call_status": enriched.get("call_status") or "Unknown",
-            "dxcc_status": enriched.get("dxcc_status") or "Unknown",
-            "dxcc_tag": enriched.get("dxcc_tag") or "",
-            "needed": enriched.get("needed") or {},
-            "needed_on_band": enriched.get("needed_on_band") or enriched.get("neededOnBand") or {},
-            "status_source": enriched.get("status_source") or enriched.get("statusSource") or "",
-            "status_sources": status_sources,
+            "callsign": call,
+            "count": len(qsos),
+            "qsos": qsos,
+            "summary": summary,
+            "matrix": matrix,
         }
-
-    @app.post("/api/wsjtx/launch-patched-engine")
-    async def wsjtx_launch_patched_engine(req: Dict[str, Any]):
-        """Launch the locally built OM0RX-patched WSJT-X engine."""
-        service = get_wsjtx_service()
-        return service.launch_patched_engine(req)
-
-    @app.post("/api/wsjtx/launch-preflight")
-    async def wsjtx_launch_preflight(req: Dict[str, Any]):
-        """Dry-run patched WSJT launch/profile checks without starting the engine."""
-        service = get_wsjtx_service()
-        return service.get_launch_preflight(req)
 
     @app.get("/api/wsjtx/launch-logs")
     async def wsjtx_launch_logs(rigName: str = "OM0RX-AUTO", lines: int = 120):

@@ -167,36 +167,18 @@ def test_wsjtx_halt_tx_endpoint_accepts_empty_body(monkeypatch):
     assert calls == [("halt_tx", {"autoOnly": False})]
 
 
-def test_wsjtx_decode_status_ingests_native_decode_into_automation(monkeypatch):
-    import services.ft8_service as ft8_service_module
-    from services.digital_automation import DigitalAutomationController
-
+def test_wsjtx_decode_status_returns_native_decode_enrichment(monkeypatch):
     app = FastAPI()
-    fake_controller = DigitalAutomationController(mycall="OM0RX")
 
     class FakeQsoStatusStore:
-        def call_flags(self, callsign, band, mode):
-            return (False, False, True, True, False)
-
-        def dxcc_overall(self, dxcc):
-            return (False, False)
-
-        def dxcc_bandmode_flags(self, dxcc, band, mode):
-            return (True, True, False)
-
-        def grid_flags(self, grid, band, mode):
-            return (True, True, True)
+        _loaded_at = 1
+        call_worked = set()
+        call_confirmed = set()
+        call_band_worked = set()
+        call_mode_worked = set()
+        call_bandmode_confirmed = set()
 
     app.state.classifier = type("FakeClassifier", (), {"qso_status_store": FakeQsoStatusStore()})()
-    fake_ft8_service = type(
-        "FakeFt8Service",
-        (),
-        {
-            "mode": "FT8",
-            "automation_controller": fake_controller,
-        },
-    )()
-    monkeypatch.setattr(ft8_service_module, "get_ft8_service", lambda: fake_ft8_service)
     wsjtx_module.register_wsjtx_endpoints(app)
 
     response = TestClient(app).post(
@@ -216,13 +198,46 @@ def test_wsjtx_decode_status_ingests_native_decode_into_automation(monkeypatch):
     payload = response.json()
     assert response.status_code == 200
     assert payload["success"] is True
-    assert payload["automation_target"]["call"] == "E51ABC"
-    assert payload["automation_target"]["heard"] is True
-    assert payload["automation_decision"]["decision"] == "queued"
+    assert payload["call"] == "E51ABC"
+    assert payload["call_status"] == "New Call"
+    assert payload["needed"]["call"] is True
+    assert "automation_target" not in payload
 
-    selected = fake_controller.next_target(auto_call_start_only=True, cq_only=True)
-    assert selected is not None
-    assert selected.call == "E51ABC"
+
+def test_wsjtx_decode_status_reports_new_band_for_worked_call_on_other_band(monkeypatch):
+    app = FastAPI()
+
+    class FakeQsoStatusStore:
+        _loaded_at = 1
+        call_worked = {"AD9GE"}
+        call_confirmed = {"AD9GE"}
+        call_band_worked = {("AD9GE", "10m")}
+        call_mode_worked = {("AD9GE", "FT8")}
+        call_bandmode_confirmed = set()
+
+    app.state.classifier = type("FakeClassifier", (), {"qso_status_store": FakeQsoStatusStore()})()
+    wsjtx_module.register_wsjtx_endpoints(app)
+
+    response = TestClient(app).post(
+        "/api/wsjtx/decode-status",
+        json={
+            "call": "AD9GE",
+            "grid": "EM69",
+            "band": "20m",
+            "mode": "FT8",
+            "frequency_hz": 14074000,
+            "audioOffset": 847,
+            "snr": -14,
+            "message": "CQ AD9GE EM69",
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert payload["call_status"] == "New Band"
+    assert payload["needed_on_band"]["call"] is True
+    assert "automation_target" not in payload
 
 
 def test_wsjtx_bridge_logged_qso_upload_payload_prefers_adif_fields():

@@ -3,6 +3,7 @@
 import logging
 import re
 import socket
+import threading
 import time
 
 class FlexSpots:
@@ -70,6 +71,7 @@ class FlexCtl:
         self.sock = None
         self.seq = 1000
         self._socket_mod = _s
+        self._io_lock = threading.RLock()
         # Slice state tracking
         self.current_filter_lo = None
         self.current_filter_hi = None
@@ -90,50 +92,65 @@ class FlexCtl:
         self.last_subscription_time = 0
         self.last_resubscribe_time = 0
         self.last_radio_message_time = 0
+        self.last_command_time = 0
         logging.info(f"FlexCtl initialized for {host}:{port} slice {slice_id}")
 
     def connect(self) -> bool:
         """Connect to SmartSDR TCP API if not already connected."""
-        if self.sock:
-            return True
-        try:
-            logging.info(f"FlexCtl connecting to {self.host}:{self.port}...")
-            self.sock = self._socket_mod.create_connection((self.host, self.port), timeout=3.0)
-            self.sock.settimeout(1.0)
-            
-            # Read version and handle
+        with self._io_lock:
+            if self.sock:
+                return True
             try:
-                greeting = self.sock.recv(512).decode(errors="ignore")
-                logging.debug(f"FlexCtl GREETING: {greeting.strip()}")
+                logging.info(f"FlexCtl connecting to {self.host}:{self.port}...")
+                self.sock = self._socket_mod.create_connection((self.host, self.port), timeout=3.0)
+                self.sock.settimeout(1.0)
+                
+                # Read version and handle
+                try:
+                    greeting = self.sock.recv(512).decode(errors="ignore")
+                    logging.debug(f"FlexCtl GREETING: {greeting.strip()}")
+                except Exception as e:
+                    logging.warning(f"FlexCtl greeting read error: {e}")
+                
+                # Identify and subscribe. "sub transmit all" returns
+                # 500000A3 on this station and is not needed for TX/interlock
+                # updates, which arrive through "sub tx all".
+                self._send("client station=OM0RX")
+                self._send("sub slice all")
+                self._send("sub radio all")
+                self._send("sub tx all")
+                self.last_resubscribe_time = time.time()
+                
+                # Test: Try to read subscription confirmation
+                self.sock.settimeout(0.5)
+                try:
+                    test_resp = self.sock.recv(4096).decode(errors="ignore")
+                    logging.info(f"POST-SUBSCRIPTION MSG: {test_resp[:300] if test_resp else 'NO RESPONSE'}")
+                    for line in [part.strip() for part in re.split(r"[\r\n]+", test_resp) if part.strip()]:
+                        self._record_basic_status_from_line(line)
+                except socket.timeout:
+                    logging.debug("No subscription confirmation received (timeout)")
+                except Exception as e:
+                    logging.warning(f"Error reading subscription confirm: {e}")
+                
+                self.sock.settimeout(1.0)
+                
+                logging.info("FlexCtl connected successfully")
+                return True
             except Exception as e:
-                logging.warning(f"FlexCtl greeting read error: {e}")
-            
-            # Identify and subscribe
-            self._send("client station=OM0RX")
-            self._send("sub slice all")
-            self._send("sub radio all")
-            self._send("sub tx all")
-            self._send("sub transmit all")
-            self.last_resubscribe_time = time.time()
-            
-            # Test: Try to read subscription confirmation
-            self.sock.settimeout(0.5)
-            try:
-                test_resp = self.sock.recv(4096).decode(errors="ignore")
-                logging.info(f"🔌 POST-SUBSCRIPTION MSG: {test_resp[:300] if test_resp else 'NO RESPONSE'}")
-            except socket.timeout:
-                logging.warning("⚠️  No subscription confirmation received (timeout)")
-            except Exception as e:
-                logging.warning(f"⚠️  Error reading subscription confirm: {e}")
-            
-            self.sock.settimeout(1.0)
-            
-            logging.info("FlexCtl connected successfully")
-            return True
-        except Exception as e:
-            logging.error(f"FlexCtl connect FAILED: {e}")
-            self.sock = None
-            return False
+                logging.error(f"FlexCtl connect FAILED: {e}")
+                self.sock = None
+                return False
+
+    def close(self) -> None:
+        """Close the SmartSDR TCP socket."""
+        with self._io_lock:
+            if self.sock:
+                try:
+                    self.sock.close()
+                except Exception:
+                    pass
+                self.sock = None
 
     def _record_basic_status_from_line(self, line: str) -> None:
         """Update cached state from async status lines that arrive while sending commands."""
@@ -143,6 +160,8 @@ class FlexCtl:
                 self.current_mode = m_mode.group(1)
 
             m_freq = re.search(r"\bRF_frequency=([\d.]+)", line)
+            if not m_freq:
+                m_freq = re.search(r"\bfreq=([\d.]+)", line)
             if m_freq:
                 self.current_freq = float(m_freq.group(1))
 
@@ -170,64 +189,71 @@ class FlexCtl:
 
     def _send(self, cmd: str) -> bool:
         """Send command to radio and wait for the matching command response."""
+        ok, _response = self._send_with_response(cmd)
+        return ok
+
+    def _send_with_response(self, cmd: str):
+        """Send command and return (success, response_body) for matching response."""
         if not self.connect():
-            return False
-        old_timeout = None
-        try:
-            self.seq += 1
-            seq = self.seq
-            wire = f"C{seq}|{cmd}\r"
-            logging.debug(f"FlexCtl SEND: {cmd}")
-            self.sock.sendall(wire.encode("ascii", errors="ignore"))
+            return False, ""
+        with self._io_lock:
+            old_timeout = None
+            try:
+                self.seq += 1
+                seq = self.seq
+                wire = f"C{seq}|{cmd}\r"
+                logging.debug(f"FlexCtl SEND: {cmd}")
+                self.sock.sendall(wire.encode("ascii", errors="ignore"))
 
-            response_prefix = f"R{seq}|"
-            old_timeout = self.sock.gettimeout()
-            try:
-                self.sock.settimeout(0.25)
-            except Exception:
-                old_timeout = None
-            deadline = time.time() + 1.5
-            saw_anything = False
-            try:
-                while time.time() < deadline:
-                    try:
-                        resp = self.sock.recv(4096).decode(errors="ignore")
-                    except socket.timeout:
-                        continue
-                    if not resp:
-                        break
-                    saw_anything = True
-                    for line in [part.strip() for part in re.split(r"[\r\n]+", resp) if part.strip()]:
-                        logging.debug(f"FlexCtl RECV: {line}")
-                        self._record_basic_status_from_line(line)
-                        if not line.startswith(response_prefix):
+                response_prefix = f"R{seq}|"
+                old_timeout = self.sock.gettimeout()
+                try:
+                    self.sock.settimeout(0.25)
+                except Exception:
+                    old_timeout = None
+                deadline = time.time() + 1.5
+                saw_anything = False
+                try:
+                    while time.time() < deadline:
+                        try:
+                            resp = self.sock.recv(4096).decode(errors="ignore")
+                        except socket.timeout:
                             continue
-                        parts = line.split("|", 3)
-                        hex_resp = parts[1] if len(parts) >= 2 else ""
-                        if hex_resp in {"00000000", "0"}:
-                            return True
-                        logging.warning(f"FlexCtl command '{cmd}' returned error: {hex_resp}")
-                        return False
-            except Exception as e:
-                logging.debug(f"FlexCtl recv exception (may be normal): {e}")
+                        if not resp:
+                            break
+                        saw_anything = True
+                        for line in [part.strip() for part in re.split(r"[\r\n]+", resp) if part.strip()]:
+                            logging.debug(f"FlexCtl RECV: {line}")
+                            self._record_basic_status_from_line(line)
+                            if not line.startswith(response_prefix):
+                                continue
+                            parts = line.split("|", 2)
+                            hex_resp = parts[1] if len(parts) >= 2 else ""
+                            response_body = parts[2] if len(parts) >= 3 else ""
+                            if hex_resp in {"00000000", "0"}:
+                                return True, response_body
+                            logging.warning(f"FlexCtl command '{cmd}' returned error: {hex_resp}")
+                            return False, response_body
+                except Exception as e:
+                    logging.debug(f"FlexCtl recv exception (may be normal): {e}")
 
-            if saw_anything:
-                logging.warning("FlexCtl command '%s' did not receive matching response %s", cmd, response_prefix)
-            return True
-        except Exception as e:
-            logging.error(f"FlexCtl send FAILED for '{cmd}': {e}")
-            try:
-                self.sock.close()
-            except Exception:
-                pass
-            self.sock = None
-            return False
-        finally:
-            try:
-                if self.sock and old_timeout is not None:
-                    self.sock.settimeout(old_timeout)
-            except Exception:
-                pass
+                if saw_anything:
+                    logging.warning("FlexCtl command '%s' did not receive matching response %s", cmd, response_prefix)
+                return True, ""
+            except Exception as e:
+                logging.error(f"FlexCtl send FAILED for '{cmd}': {e}")
+                try:
+                    self.sock.close()
+                except Exception:
+                    pass
+                self.sock = None
+                return False, ""
+            finally:
+                try:
+                    if self.sock and old_timeout is not None:
+                        self.sock.settimeout(old_timeout)
+                except Exception:
+                    pass
 
     def get_current_levels(self, timeout: float = 1.5):
         """
@@ -240,28 +266,138 @@ class FlexCtl:
         - freq: current frequency in MHz
         - mode: current mode (USB, LSB, etc)
         """
-        if not self.connect():
-            logging.warning("FlexCtl get_current_levels: not connected")
-            return {}
-        
-        logging.info("FlexCtl querying radio for initial state...")
-        
+        self._io_lock.acquire()
+        old_timeout = None
         try:
+            if not self.connect():
+                logging.warning("FlexCtl get_current_levels: not connected")
+                self._io_lock.release()
+                return {}
+
+            logging.info("FlexCtl querying radio for current state...")
+
+            # Collect responses for a while
+            import time as _t, re as _re
+            end = _t.time() + float(timeout)
+            buf = b""
+            levels = {}
+
+            def parse_values(text: str) -> None:
+                """Parse SmartSDR key/value state from a slice/transmit payload."""
+                if not text:
+                    return
+                m_vol = _re.search(r"\baudio_level=(\d+)", text)
+                if m_vol:
+                    levels["audio_level"] = int(m_vol.group(1))
+
+                m_flo = _re.search(r"\bfilter_lo=(-?\d+)", text)
+                if m_flo:
+                    levels["filter_lo"] = int(m_flo.group(1))
+
+                m_fhi = _re.search(r"\bfilter_hi=(-?\d+)", text)
+                if m_fhi:
+                    levels["filter_hi"] = int(m_fhi.group(1))
+
+                m_freq = _re.search(r"\bRF_frequency=([\d.]+)", text)
+                if not m_freq:
+                    m_freq = _re.search(r"\bfreq=([\d.]+)", text)
+                if m_freq:
+                    levels["freq"] = float(m_freq.group(1))
+
+                m_mode = _re.search(r"\bmode=([A-Z]+)", text)
+                if m_mode:
+                    levels["mode"] = m_mode.group(1)
+
+                m_rit_on = _re.search(r"\brit_on=([01])", text)
+                if m_rit_on:
+                    levels["rit_on"] = bool(int(m_rit_on.group(1)))
+
+                m_rit_freq = _re.search(r"\brit_freq=(-?\d+)", text)
+                if m_rit_freq:
+                    levels["rit_freq"] = int(m_rit_freq.group(1))
+
+                m_xit_on = _re.search(r"\bxit_on=([01])", text)
+                if m_xit_on:
+                    levels["xit_on"] = bool(int(m_xit_on.group(1)))
+
+                m_xit_freq = _re.search(r"\bxit_freq=(-?\d+)", text)
+                if m_xit_freq:
+                    levels["xit_freq"] = int(m_xit_freq.group(1))
+
+                m_agc = _re.search(r"\bagc_mode=(\w+)", text)
+                if m_agc:
+                    levels["agc_mode"] = m_agc.group(1)
+
+                m_agc_thresh = _re.search(r"\bagc_threshold=(\d+)", text)
+                if m_agc_thresh:
+                    levels["agc_threshold"] = int(m_agc_thresh.group(1))
+
+                m_step = _re.search(r"\bstep=(\d+)", text)
+                if m_step:
+                    levels["step"] = int(m_step.group(1))
+
+                for key in ("nb", "nr", "anf", "apf"):
+                    m_enabled = _re.search(rf"\b{key}_on=([01])", text)
+                    if m_enabled:
+                        levels[key] = bool(int(m_enabled.group(1)))
+                    m_level = _re.search(rf"\b{key}_level=(\d+)", text)
+                    if m_level:
+                        levels[f"{key}_level"] = int(m_level.group(1))
+
+                m_state = _re.search(r"\bstate=([A-Z_]+)", text)
+                if m_state:
+                    levels["interlock_state"] = m_state.group(1)
+                    levels["mox"] = levels["interlock_state"] == "TRANSMITTING"
+
+                m_rf = _re.search(r"\brfpower=(\d+)", text)
+                if m_rf:
+                    levels["rfpower"] = int(m_rf.group(1))
+
+                m_tune = _re.search(r"\btunepower=(\d+)", text)
+                if m_tune:
+                    levels["tunepower"] = int(m_tune.group(1))
+
+                m_mic = _re.search(r"\bmiclevel=(\d+)", text)
+                if m_mic:
+                    levels["miclevel"] = int(m_mic.group(1))
+
+                m_vox = _re.search(r"\bvox_enable=([01])", text)
+                if m_vox:
+                    levels["vox_enable"] = bool(int(m_vox.group(1)))
+
+                m_breakin = _re.search(r"\bbreak_in=([01])", text)
+                if m_breakin:
+                    levels["break_in"] = bool(int(m_breakin.group(1)))
+
+                m_mox = _re.search(r"\bmox=([01])", text)
+                if m_mox:
+                    levels["mox"] = bool(int(m_mox.group(1)))
+
+                m_mon = _re.search(r"\bmon=([01])", text)
+                if m_mon:
+                    levels["mon"] = int(m_mon.group(1))
+
+                m_mon_gain = _re.search(r"\bmon_gain_sb=(\d+)", text)
+                if m_mon_gain:
+                    levels["mon"] = int(m_mon_gain.group(1))
+
+            def send_no_wait(cmd: str) -> None:
+                self.seq += 1
+                wire = f"C{self.seq}|{cmd}\r"
+                logging.debug(f"FlexCtl SEND snapshot: {cmd}")
+                self.sock.sendall(wire.encode("ascii", errors="ignore"))
+
             # Request current state
-            self._send(f"slice list")
-            self._send(f"sub slice all")
-            self._send(f"sub tx all")
-            self._send(f"sub transmit all")
+            ok, slice_body = self._send_with_response("slice list")
+            if ok and slice_body:
+                parse_values(slice_body)
+            send_no_wait("sub slice all")
+            send_no_wait("sub tx all")
         except Exception as e:
             logging.warning(f"FlexCtl get_current_levels: send error: {e}")
-        
-        # Collect responses for a while
-        import time as _t, re as _re
-        end = _t.time() + float(timeout)
-        buf = b""
-        levels = {}
-        
+
         try:
+            old_timeout = self.sock.gettimeout()
             self.sock.settimeout(0.15)
         except Exception:
             pass
@@ -312,6 +448,8 @@ class FlexCtl:
                             
                             # freq
                             m_freq = _re.search(r"\bRF_frequency=([\d.]+)", kvs)
+                            if not m_freq:
+                                m_freq = _re.search(r"\bfreq=([\d.]+)", kvs)
                             if m_freq:
                                 levels["freq"] = float(m_freq.group(1))
                                 logging.debug(f"  Parsed freq={levels['freq']}")
@@ -453,12 +591,29 @@ class FlexCtl:
             self.current_freq = levels["freq"]
         if "mode" in levels:
             self.current_mode = levels["mode"]
+        if "audio_level" in levels:
+            self.current_volume = levels["audio_level"]
+        if "rfpower" in levels:
+            self.current_rfpower = levels["rfpower"]
+        if "tunepower" in levels:
+            self.current_tunepower = levels["tunepower"]
+        if "miclevel" in levels:
+            self.current_miclevel = levels["miclevel"]
+        if "vox_enable" in levels:
+            self.current_vox_enable = levels["vox_enable"]
         if "mox" in levels:
             self.current_mox = levels["mox"]
         if "interlock_state" in levels:
             self.current_interlock_state = levels["interlock_state"]
         
-        logging.info(f"FlexCtl initial state: {levels}")
+        logging.info(f"FlexCtl current state: {levels}")
+        try:
+            if self.sock and old_timeout is not None:
+                self.sock.settimeout(old_timeout)
+        except Exception:
+            pass
+        finally:
+            self._io_lock.release()
         return levels
 
     # --- Basic operations ---
@@ -473,6 +628,7 @@ class FlexCtl:
         
         if ok:
             self.current_mode = mode_upper
+            self.last_command_time = time.time()
         return ok
 
     def tune_mhz(self, mhz: float) -> bool:
@@ -485,6 +641,7 @@ class FlexCtl:
         ok = self._send(f"slice tune {self.slice_id} {f:.6f}")
         if ok:
             self.current_freq = f
+            self.last_command_time = time.time()
         return ok
 
     def set_band(self, band: str) -> bool:
@@ -501,7 +658,8 @@ class FlexCtl:
         if not self.sock:
             if not self.connect():
                 return False
-        
+
+        self._io_lock.acquire()
         try:
             self.seq += 1
             ts = ts_epoch if ts_epoch is not None else int(time.time())
@@ -542,6 +700,8 @@ class FlexCtl:
         except Exception as e:
             logging.warning(f"FlexCtl add_spot failed: {e}")
             return False
+        finally:
+            self._io_lock.release()
 
     # --- Audio / TX controls ---
     # CRITICAL: Use correct SmartSDR API parameter names!
@@ -688,7 +848,8 @@ class FlexCtl:
         if not self.connect():
             logging.error("❌ REFRESH FAILED: Could not connect to SmartSDR")
             return False
-        
+
+        self._io_lock.acquire()
         try:
             import re as _re
             import time as _time
@@ -705,7 +866,6 @@ class FlexCtl:
                 try:
                     self._send("sub slice all")
                     self._send("sub tx all")
-                    self._send("sub transmit all")
                     self.last_resubscribe_time = now
                 except Exception as e:
                     logging.debug(f"FlexCtl re-subscription attempt: {e}")
@@ -981,3 +1141,5 @@ class FlexCtl:
         except Exception as e:
             logging.error(f"FlexCtl refresh_radio_state FAILED: {e}")
             return False
+        finally:
+            self._io_lock.release()

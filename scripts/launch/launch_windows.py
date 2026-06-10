@@ -49,6 +49,12 @@ VISUAL_MAP_WINDOW_CONFIG = {
     "width": 1320,
     "height": 920,
 }
+SPOTS_WINDOW_CONFIG = {
+    "title": "OM0RX Radio Control - Filters",
+    "url": f"{BASE_URL}/spots.html",
+    "width": 1320,
+    "height": 860,
+}
 
 
 class DesktopApi:
@@ -57,6 +63,7 @@ class DesktopApi:
     def __init__(self):
         self._digital_window = None
         self._visual_map_window = None
+        self._spots_window = None
         self._lock = threading.Lock()
 
     def open_digital_window(self):
@@ -118,6 +125,50 @@ class DesktopApi:
                 return {"success": True, "reused": False}
             except Exception as exc:
                 print(f"❌ Failed to create visual map window: {exc}")
+                return {"success": False, "error": str(exc)}
+
+    def open_spots_window(self):
+        """Open or focus the native Filters window without using browser tabs."""
+        with self._lock:
+            try:
+                if self._spots_window:
+                    try:
+                        self._spots_window.restore()
+                        self._spots_window.show()
+                        self._spots_window.evaluate_js("window.focus && window.focus();")
+                        return {"success": True, "reused": True}
+                    except Exception:
+                        self._spots_window = None
+
+                self._spots_window = webview.create_window(
+                    title=SPOTS_WINDOW_CONFIG["title"],
+                    url=SPOTS_WINDOW_CONFIG["url"],
+                    width=SPOTS_WINDOW_CONFIG["width"],
+                    height=SPOTS_WINDOW_CONFIG["height"],
+                    resizable=True,
+                    focus=True,
+                )
+                print(
+                    f"✅ Created window: {SPOTS_WINDOW_CONFIG['title']} -> "
+                    f"{SPOTS_WINDOW_CONFIG['url']}"
+                )
+                return {"success": True, "reused": False}
+            except Exception as exc:
+                print(f"❌ Failed to create Filters window: {exc}")
+                return {"success": False, "error": str(exc)}
+
+    def close_spots_window(self):
+        """Close the native Filters window if it is open."""
+        with self._lock:
+            try:
+                if self._spots_window:
+                    try:
+                        self._spots_window.destroy()
+                    finally:
+                        self._spots_window = None
+                return {"success": True}
+            except Exception as exc:
+                print(f"❌ Failed to close Filters window: {exc}")
                 return {"success": False, "error": str(exc)}
 
     def _resolve_visual_map_url(self, url=None):

@@ -550,6 +550,11 @@ def test_wsjtx_native_automation_policy_maps_wsjtz_controls():
             "needBand": False,
             "needMode": True,
             "needGrid": False,
+            "filterMatrixEnabled": True,
+            "filterNew": {"call": False, "dxcc": True, "continent": False, "grid": False, "cqZone": False, "ituZone": False},
+            "filterNewOnBand": {"call": True, "dxcc": False, "continent": False, "grid": True, "cqZone": False, "ituZone": False},
+            "filterContinents": {"EU": False, "NA": True, "SA": True, "AS": False, "AF": False, "OC": False, "AN": False},
+            "lotwOnly": True,
             "priority": "Signal strength",
             "ignoreList": "K1ABC\nK2ABC",
         },
@@ -570,6 +575,20 @@ def test_wsjtx_native_automation_policy_maps_wsjtz_controls():
     assert automation["needBand"] is False
     assert automation["needMode"] is True
     assert automation["needGrid"] is False
+    assert automation["filterMatrixEnabled"] is True
+    assert automation["filterNew"]["dxcc"] is True
+    assert automation["filterNewOnBand"]["call"] is True
+    assert automation["filterNewOnBand"]["grid"] is True
+    assert automation["filterContinents"] == {
+        "EU": False,
+        "NA": True,
+        "SA": True,
+        "AS": False,
+        "AF": False,
+        "OC": False,
+        "AN": False,
+    }
+    assert automation["lotwOnly"] is True
     assert automation["minSignal"] == -27
     assert automation["autoCallCount"] == 7
     assert automation["autoCQCount"] == 3
@@ -614,6 +633,24 @@ def test_wsjtx_native_automation_policy_locks_current_mode_when_mode_switching_o
 
     assert automation["modeSwitching"] is False
     assert automation["allowedModes"] == {"FT8": True}
+
+
+def test_wsjtx_native_automation_policy_disables_spot_hunt_when_band_hopping_off():
+    policy = _normalise_wsjtx_automation_policy({
+        "automation": {
+            "autoCall": True,
+            "bandHopping": False,
+            "currentBand": "20m",
+            "currentMode": "FT8",
+        },
+    })
+
+    automation = policy["operatorSettings"]["automation"]
+
+    assert automation["enabled"] is True
+    assert automation["bandHopping"] is False
+    assert automation["spotHuntEnabled"] is False
+    assert automation["currentBand"] == "20m"
 
 
 def test_wsjtx_native_automation_policy_keeps_all_modes_when_mode_switching_on():

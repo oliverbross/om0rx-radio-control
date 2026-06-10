@@ -1,0 +1,1752 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4994d0d..3bb1927 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -132,6 +132,9 @@ option (WSJT_RIG_NONE_CAN_SPLIT "Allow split operation with \"None\" as rig.")
+ option (WSJT_TRACE_UDP "Debugging option that turns on UDP message protocol diagnostics.")
+ option (WSJT_BUILD_UTILS "Build simulators and code demonstrators." ON)
+ option (WSJT_FOX_OTP "Enable Fox OTP Verification Messages." ON)
++option (OM0RX_BUILD_WITH_OMNIRIG
++  "Build optional Windows OmniRig COM transceiver support."
++  OFF)
+ CMAKE_DEPENDENT_OPTION (WSJT_QDEBUG_IN_RELEASE "Leave Qt debugging statements in Release configuration." OFF
+   "NOT is_debug_build" OFF)
+ CMAKE_DEPENDENT_OPTION (WSJT_ENABLE_EXPERIMENTAL_FEATURES "Enable features not fully ready for public releases." ON
+@@ -325,12 +328,14 @@ if (WIN32)
+     ${wsjt_CXXSRCS}
+     killbyname.cpp
+     )
++endif (WIN32)
+ 
++if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+   set (wsjt_qt_CXXSRCS
+     ${wsjt_qt_CXXSRCS}
+     Transceiver/OmniRigTransceiver.cpp
+     )
+-endif (WIN32)
++endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+ 
+ set (wsjt_FSRCS
+   # put module sources first in the hope that they get rebuilt before use
+@@ -904,7 +909,7 @@ set_source_files_properties (lib/filbig.f90 PROPERTIES COMPILE_FLAGS "-Wno-alias
+ set_property (SOURCE ${all_C_and_CXXSRCS} APPEND_STRING PROPERTY COMPILE_FLAGS " -include wsjtx_config.h")
+ set_property (SOURCE ${all_C_and_CXXSRCS} APPEND PROPERTY OBJECT_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/wsjtx_config.h)
+ 
+-if (WIN32)
++if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+   # generate the OmniRig COM interface source
+   find_program (DUMPCPP dumpcpp)
+   if (DUMPCPP-NOTFOUND)
+@@ -921,7 +926,7 @@ if (WIN32)
+   endif (NOT AXSERVER)
+   string (REPLACE "\"" "" AXSERVER ${AXSERVER})
+   file (TO_CMAKE_PATH ${AXSERVER} AXSERVERSRCS)
+-endif ()
++endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+ 
+ 
+ #
+@@ -1000,6 +1005,10 @@ find_package (OpenMP)
+ # fftw3 single precision library
+ #
+ find_package (FFTW3 COMPONENTS single threads REQUIRED)
++find_library (OM0RX_FFTW3F_THREADS_LIBRARY NAMES fftw3f_threads)
++if (OM0RX_FFTW3F_THREADS_LIBRARY AND NOT OM0RX_FFTW3F_THREADS_LIBRARY IN_LIST FFTW3_LIBRARIES)
++  list (INSERT FFTW3_LIBRARIES 0 ${OM0RX_FFTW3F_THREADS_LIBRARY})
++endif ()
+ 
+ #
+ # hamlib setup
+@@ -1025,8 +1034,10 @@ find_package (Qt5 COMPONENTS Widgets SerialPort Multimedia PrintSupport Sql Ling
+ 
+ if (WIN32)
+   add_definitions (-DQT_NEEDS_QTMAIN)
+-  find_package (Qt5AxContainer REQUIRED)
+ endif (WIN32)
++if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
++  find_package (Qt5AxContainer REQUIRED)
++endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+ 
+ #
+ # Library building setup
+@@ -1511,9 +1522,9 @@ add_library (wsjt_qt STATIC ${wsjt_qt_CXXSRCS} ${wsjt_qt_GENUISRCS} ${GENAXSRCS}
+ # set wsjtx_udp exports to static variants
+ target_compile_definitions (wsjt_qt PUBLIC UDP_STATIC_DEFINE)
+ target_link_libraries (wsjt_qt Hamlib::Hamlib Boost::log qcp Qt5::Widgets Qt5::Network Qt5::Sql Qt5::WebSockets)
+-if (WIN32)
++if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+   target_link_libraries (wsjt_qt Qt5::AxContainer Qt5::AxBase)
+-endif (WIN32)
++endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+ 
+ # build a library of package Qt functionality used in Fortran utilities
+ add_library (fort_qt STATIC ${fort_qt_CXXSRCS})
+diff --git a/Transceiver/TransceiverFactory.cpp b/Transceiver/TransceiverFactory.cpp
+index 2146eac..e45a0ef 100644
+--- a/Transceiver/TransceiverFactory.cpp
++++ b/Transceiver/TransceiverFactory.cpp
+@@ -8,7 +8,7 @@
+ #include "HRDTransceiver.hpp"
+ #include "EmulateSplitTransceiver.hpp"
+ 
+-#if defined (WIN32)
++#if OM0RX_BUILD_WITH_OMNIRIG
+ #include "OmniRigTransceiver.hpp"
+ #endif
+ 
+@@ -42,7 +42,7 @@ TransceiverFactory::TransceiverFactory ()
+   DXLabSuiteCommanderTransceiver::register_transceivers (&logger_, &transceivers_, CommanderId);
+   HRDTransceiver::register_transceivers (&logger_, &transceivers_, HRDId);
+   
+-#if defined (WIN32)
++#if OM0RX_BUILD_WITH_OMNIRIG
+   // OmniRig is ActiveX/COM server so only on Windows
+   OmniRigTransceiver::register_transceivers (&logger_, &transceivers_, OmniRigOneId, OmniRigTwoId);
+ #endif
+@@ -160,7 +160,7 @@ std::unique_ptr<Transceiver> TransceiverFactory::create (ParameterPack const& pa
+       }
+       break;
+ 
+-#if defined (WIN32)
++#if OM0RX_BUILD_WITH_OMNIRIG
+     case OmniRigOneId:
+       {
+         std::unique_ptr<TransceiverBase> basic_transceiver;
+diff --git a/widgets/displaytext.cpp b/widgets/displaytext.cpp
+index 5cc3475..796df8d 100644
+--- a/widgets/displaytext.cpp
++++ b/widgets/displaytext.cpp
+@@ -10,9 +10,11 @@
+ #include <QTextBlock>
+ #include <QMenu>
+ #include <QAction>
++#include <QFont>
+ #include <QListIterator>
+ #include <QRegularExpression>
+ #include <QScrollBar>
++#include <QSet>
+ 
+ #include "Configuration.hpp"
+ #include "Decoder/decodedtext.h"
+@@ -21,12 +23,18 @@
+ #include "logbook/logbook.h"
+ #include "Logger.hpp"
+ 
+-#include "qt_helpers.hpp"
+-#include "moc_displaytext.cpp"
+-
+-// Regexes compiled once and reused across every decoded-line render. Constructing
+-// QRegularExpression on each call of displayDecodedText() measurably dominates the
+-// display hot path on busy FT8 bands.
++#include "qt_helpers.hpp"
++#include "moc_displaytext.cpp"
++
++namespace
++{
++  QString normalize_om0rx_clicked_token (QString token);
++  QString om0rx_callsign_from_decode_line (QString const& line, QString const& clicked);
++}
++
++// Regexes compiled once and reused across every decoded-line render. Constructing
++// QRegularExpression on each call of displayDecodedText() measurably dominates the
++// display hot path on busy FT8 bands.
+ static QRegularExpression const kReGrid {
+     QStringLiteral("\\A(?![Rr]{2}73)[A-Ra-r]{2}[0-9]{2}([A-Xa-x]{2}){0,1}\\z")};
+ static QRegularExpression const kReRemoveExtra {QStringLiteral(R"(\? a[1-9]|a[1-9])")};
+@@ -51,16 +59,12 @@ DisplayText::DisplayText(QWidget *parent)
+   // max lines to limit heap usage
+   document ()->setMaximumBlockCount (5000);
+ 
+-  // context menu erase action
+-  setContextMenuPolicy (Qt::CustomContextMenu);
+-  connect (this, &DisplayText::customContextMenuRequested, [this] (QPoint const& position) {
+-      auto * menu = createStandardContextMenu (position);
+-      menu->addAction (erase_action_);
+-      menu->exec (mapToGlobal (position));
+-      delete menu;
+-    });
+-  connect (erase_action_, &QAction::triggered, this, &DisplayText::erase);
+-}
++  // context menu erase action
++  setContextMenuPolicy (Qt::CustomContextMenu);
++  connect (this, &DisplayText::customContextMenuRequested,
++           this, &DisplayText::show_om0rx_context_menu);
++  connect (erase_action_, &QAction::triggered, this, &DisplayText::erase);
++}
+ 
+ void DisplayText::erase ()
+ {
+@@ -92,24 +96,158 @@ void DisplayText::setContentFont(QFont const& font)
+     }
+ }
+ 
+-void DisplayText::mouseDoubleClickEvent(QMouseEvent *e)
++void DisplayText::mouseDoubleClickEvent(QMouseEvent *e)
++{
++  auto text_cursor = cursorForPosition (e->pos ());
++  text_cursor.select (QTextCursor::LineUnderCursor);
++  setTextCursor (text_cursor);
++  Q_EMIT selectCallsign(e->modifiers ());
++  e->accept ();
++}
++
++namespace
+ {
+-  Q_EMIT selectCallsign(e->modifiers ());
++  QString normalize_om0rx_clicked_token (QString token)
++  {
++    token = token.trimmed ().toUpper ();
++    while (token.startsWith ('<') && token.endsWith ('>') && token.size () > 2)
++      {
++        token = token.mid (1, token.size () - 2);
++      }
++    token.remove (QRegularExpression {"^[^A-Z0-9/<]+|[^A-Z0-9/>]+$"});
++    token.remove ('<');
++    token.remove ('>');
++    return token;
++  }
++
++  bool is_om0rx_click_callsign (QString const& raw)
++  {
++    auto token = normalize_om0rx_clicked_token (raw);
++    if (token.size () < 3 || token.size () > 16)
++      {
++        return false;
++      }
++
++    static QSet<QString> const reserved {
++      "CQ", "QRZ", "DE", "DX", "RR73", "73", "RRR", "RR", "R",
++      "FT8", "FT4", "FT2", "JT65", "JT9", "MSK", "MSK144", "Q65",
++      "UTC", "TX", "RX", "WORKED", "CONFIRMED", "CHECKING",
++      "NEW", "CALL", "BAND", "MODE", "DXCC", "STATUS", "CS", "DS"
++    };
++    if (reserved.contains (token))
++      {
++        return false;
++      }
++    if (QRegularExpression {"^[A-R]{2}[0-9]{2}([A-X]{2})?$"}.match (token).hasMatch ())
++      {
++        return false;
++      }
++    if (QRegularExpression {"^R?-?[0-9]{1,2}$"}.match (token).hasMatch ())
++      {
++        return false;
++      }
++    if (QRegularExpression {"^[0-9]+$"}.match (token).hasMatch ())
++      {
++        return false;
++      }
++    if (!QRegularExpression {"[A-Z]"}.match (token).hasMatch ()
++        || !QRegularExpression {"[0-9]"}.match (token).hasMatch ())
++      {
++        return false;
++      }
++    return QRegularExpression {"^[A-Z0-9]+(/[A-Z0-9]+)?$"}.match (token).hasMatch ();
++  }
++
++  QString om0rx_callsign_from_decode_line (QString const& line, QString const& clicked)
++  {
++    if (is_om0rx_click_callsign (clicked))
++      {
++        return normalize_om0rx_clicked_token (clicked);
++      }
++
++    auto words = line.simplified ().split (' ', Qt::SkipEmptyParts);
++    for (auto i = 0; i + 1 < words.size (); ++i)
++      {
++        if (words.at (i).toUpper () != "CQ")
++          {
++            continue;
++          }
++        auto next = i + 1;
++        if (next < words.size () && words.at (next).toUpper () == "DX")
++          {
++            ++next;
++          }
++        if (next < words.size () && is_om0rx_click_callsign (words.at (next)))
++          {
++            return normalize_om0rx_clicked_token (words.at (next));
++          }
++      }
++
++    for (auto const& word : words)
++      {
++        if (is_om0rx_click_callsign (word))
++          {
++            return normalize_om0rx_clicked_token (word);
++          }
++      }
++    return QString {};
++  }
+ }
++
+  // Z
+- void DisplayText::mousePressEvent(QMouseEvent *mouseEvent) {
+-     QTextCursor textCursor = cursorForPosition(mouseEvent->pos());
+-     if (Qt::RightButton == mouseEvent->button()) {
+-         textCursor.select(QTextCursor::LineUnderCursor);
+-         setTextCursor(textCursor);
+-     } else {
+-         textCursor.select(QTextCursor::LineUnderCursor);
+-         setTextCursor(textCursor);
+-         Q_EMIT leftClick(mouseEvent->modifiers ());
+-     }
+- }
+-
+-void DisplayText::insertLineSpacer(QString const& line)
++ void DisplayText::mousePressEvent(QMouseEvent *mouseEvent) {
++     QTextCursor textCursor = cursorForPosition(mouseEvent->pos());
++     if (Qt::RightButton == mouseEvent->button()) {
++         textCursor.select(QTextCursor::LineUnderCursor);
++         setTextCursor(textCursor);
++     } else {
++         textCursor.select(QTextCursor::LineUnderCursor);
++         setTextCursor(textCursor);
++     }
++ }
++
++void DisplayText::show_om0rx_context_menu (QPoint const& position)
++{
++  auto * menu = new QMenu {this};
++  auto text_cursor = cursorForPosition (position);
++  auto line = text_cursor.block ().text ();
++  auto offset = text_cursor.position () - text_cursor.block ().position ();
++  auto start = qBound (0, offset, line.size ());
++  auto end = start;
++  while (start > 0 && !line.at (start - 1).isSpace ())
++    {
++      --start;
++    }
++  while (end < line.size () && !line.at (end).isSpace ())
++    {
++      ++end;
++    }
++  auto clicked = line.mid (start, end - start);
++  auto call = om0rx_callsign_from_decode_line (line, clicked);
++  auto my_call = m_config ? normalize_om0rx_clicked_token (m_config->my_callsign ()) : QString {};
++  if (!call.isEmpty () && call != my_call)
++    {
++      auto * previous_qsos = menu->addAction (tr ("Prev QSO's for %1").arg (call));
++      connect (previous_qsos, &QAction::triggered, this, [this, call] {
++          Q_EMIT decodedCallsignClicked (call);
++        });
++      menu->addSeparator ();
++    }
++
++  for (auto * action : actions ())
++    {
++      menu->addAction (action);
++    }
++  if (!actions ().contains (erase_action_))
++    {
++      menu->addSeparator ();
++      menu->addAction (erase_action_);
++    }
++  menu->exec (mapToGlobal (position));
++  delete menu;
++}
++
++void DisplayText::insertLineSpacer(QString const& line)
+ {
+   // Z
+   insertText (line, m_config->separatorColor());
+@@ -556,7 +694,36 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
+         message = leftJustifyAppendage (message, "[F]");
+ 
+   insertText (message.trimmed (), bg, fg, decodedText.call (), dxCall);
+-}
++
++  QString first_call = normalize_om0rx_clicked_token (decodedText.call ());
++  QString second_call = normalize_om0rx_clicked_token (dxCall);
++  QString cq_call = normalize_om0rx_clicked_token (decodedText.CQersCall ());
++  QString status_call = first_call;
++  if (!is_om0rx_click_callsign (status_call)
++      || status_call == "CQ"
++      || status_call == "QRZ"
++      || status_call == "DE")
++    {
++      status_call = !cq_call.isEmpty () ? cq_call : second_call;
++    }
++  if (!is_om0rx_click_callsign (status_call))
++    {
++      status_call = om0rx_callsign_from_decode_line (decodedText.string (), QString {});
++    }
++
++  QString my_call = normalize_om0rx_clicked_token (myCall);
++  if (status_call == my_call && is_om0rx_click_callsign (second_call) && second_call != my_call)
++    {
++      status_call = second_call;
++    }
++
++  if (!status_call.isEmpty () && status_call != my_call)
++    {
++      Q_EMIT decodedCallsign (decodedText.frequencyOffset (), status_call, CQcall,
++                              static_cast<int> (decodedText.timeInSeconds ()), currentBand, dxGrid,
++                              decodedText.string ().trimmed (), decodedText.snr ());
++    }
++}
+ 
+ 
+ void DisplayText::displayTransmittedText(QString text, QString modeTx, qint32 txFreq,
+@@ -777,6 +944,199 @@ void DisplayText::highlight_callsign (QString const& callsign, QColor const& bg,
+   setCurrentCharFormat (old_format);
+ }
+ 
++namespace
++{
++  QTextCharFormat om0rx_status_format (QString const& status)
++  {
++    auto normalized = status.toLower ();
++    QColor foreground {45, 45, 45};
++    if (normalized.contains ("atno") || normalized.contains ("new call"))
++      {
++        foreground = QColor {210, 70, 32};
++      }
++    else if (normalized.contains ("new band") || normalized.contains ("new mode"))
++      {
++        foreground = QColor {0, 104, 178};
++      }
++    else if (normalized.contains ("worked"))
++      {
++        foreground = QColor {74, 85, 104};
++      }
++    else if (normalized.contains ("confirmed"))
++      {
++        foreground = QColor {0, 126, 72};
++      }
++
++    QTextCharFormat format;
++    format.clearBackground ();
++    format.setForeground (foreground);
++    format.setFontWeight (QFont::Normal);
++    return format;
++  }
++
++  QString om0rx_status_label (QString const& status)
++  {
++    auto label = status.trimmed ();
++    auto normalized = label.toLower ();
++    QString prefix;
++    if (normalized.startsWith ("c/") || normalized.startsWith ("w/"))
++      {
++        prefix = normalized.left (1).toUpper () + "/";
++        normalized = normalized.mid (2).trimmed ();
++      }
++
++    if (normalized == "checking")
++      {
++        label = "...";
++      }
++    else if (normalized == "unknown" || normalized.isEmpty ())
++      {
++        label = "?";
++      }
++    else if (normalized == "confirmed")
++      {
++        label = "C";
++      }
++    else if (normalized == "worked")
++      {
++        label = "W";
++      }
++    else if (normalized == "atno")
++      {
++        label = "ATNO";
++      }
++    else if (normalized.contains ("new call"))
++      {
++        label = "NC";
++      }
++    else if (normalized.contains ("new band") && normalized.contains ("mode"))
++      {
++        label = "NB+M";
++      }
++    else if (normalized.contains ("new band"))
++      {
++        label = "NB";
++      }
++    else if (normalized.contains ("new mode"))
++      {
++        label = "NM";
++      }
++
++    if (!prefix.isEmpty () && label != "?" && label != "...")
++      {
++        label = prefix + label;
++      }
++    return label.left (6).leftJustified (6);
++  }
++
++  QString om0rx_status_cell (QString const& status)
++  {
++    return om0rx_status_label (status).left (6).leftJustified (6);
++  }
++}
++
++void DisplayText::annotate_callsign (QString const& callsign, QString const& annotation,
++                                     QColor const& fg)
++{
++  Q_UNUSED (fg);
++  if (callsign.trimmed ().isEmpty () || annotation.trimmed ().isEmpty ())
++    {
++      return;
++    }
++
++  auto escaped = callsign.trimmed ().toUpper ();
++  escaped.replace (QLatin1Char {'+'}, QLatin1String {"\\+"})
++      .replace (QLatin1Char {'.'}, QLatin1String {"\\."})
++      .replace (QLatin1Char {'?'}, QLatin1String {"\\?"});
++  QRegularExpression target {QString {"<?%1>?"}.arg (escaped),
++                             QRegularExpression::DontCaptureOption};
++  QRegularExpression status_columns {
++      QString {R"(\s{1,}(?:\.\.\.|\?|NC|NB\+M|NB|NM|C|W|ATNO|C/NB\+M|W/NB\+M|C/NB|W/NB|C/NM|W/NM)\s{1,}(?:\.\.\.|\?|NC|NB\+M|NB|NM|C|W|ATNO|C/NB\+M|W/NB\+M|C/NB|W/NB|C/NM|W/NM)\s*$)"}};
++  QRegularExpression existing_om0rx {QString {R"(\s+\[OM0RX:[^\]]+\])"}};
++  QRegularExpression parsed_status {QString {R"(^\s*([^|]+?)\s*\|\s*([^|]+?)\s*$)"}};
++  auto status_match = parsed_status.match (annotation);
++  auto call_status = status_match.hasMatch () ? status_match.captured (1).trimmed () : annotation.trimmed ();
++  auto dxcc_status = status_match.hasMatch () ? status_match.captured (2).trimmed () : QString {};
++  QTextCharFormat old_format {currentCharFormat ()};
++  QTextCursor cursor {document ()};
++
++  while (!cursor.isNull ())
++    {
++      cursor = document ()->find (target, cursor, QTextDocument::FindWholeWords);
++      if (!cursor.isNull () && cursor.hasSelection ())
++        {
++          QTextCursor line {cursor};
++          line.movePosition (QTextCursor::StartOfLine);
++          line.movePosition (QTextCursor::EndOfLine, QTextCursor::KeepAnchor);
++          auto text = line.selectedText ();
++          auto column_match = status_columns.match (text);
++          auto om0rx_match = existing_om0rx.match (text);
++          auto appendage_start = text.indexOf (QChar::Nbsp);
++          int suffix_start {-1};
++          auto remember_suffix_start = [&suffix_start, &text] (int start) {
++            if (start < 0)
++              {
++                return;
++              }
++            while (start > 0 && text.at (start - 1).isSpace ())
++              {
++                --start;
++              }
++            if (suffix_start < 0 || start < suffix_start)
++              {
++                suffix_start = start;
++              }
++          };
++          if (column_match.hasMatch ())
++            {
++              remember_suffix_start (column_match.capturedStart ());
++            }
++          if (appendage_start >= 0)
++            {
++              remember_suffix_start (appendage_start);
++            }
++          if (om0rx_match.hasMatch ())
++            {
++              remember_suffix_start (om0rx_match.capturedStart ());
++            }
++
++          auto base_length = suffix_start >= 0 ? suffix_start : text.size ();
++          constexpr int status_column = 61;
++          auto status_padding = std::max (1, status_column - base_length);
++          auto call_format = om0rx_status_format (call_status);
++          auto dxcc_format = om0rx_status_format (dxcc_status);
++          call_format.setFont (char_font_);
++          dxcc_format.setFont (char_font_);
++          auto call_label = om0rx_status_cell (call_status);
++          auto dxcc_label = om0rx_status_cell (dxcc_status);
++          QTextCharFormat separator_format {old_format};
++          separator_format.clearBackground ();
++          separator_format.setFont (char_font_);
++          separator_format.setForeground (QColor {100, 116, 139});
++          separator_format.setFontWeight (QFont::Normal);
++
++          QTextCursor suffix {line};
++          if (suffix_start >= 0)
++            {
++              suffix.setPosition (line.selectionStart () + suffix_start);
++              suffix.setPosition (line.selectionEnd (), QTextCursor::KeepAnchor);
++              suffix.removeSelectedText ();
++            }
++          else
++            {
++              suffix.clearSelection ();
++              suffix.movePosition (QTextCursor::EndOfLine);
++            }
++          suffix.insertText (QString {status_padding, QChar {' '}}, separator_format);
++          suffix.insertText (call_label, call_format);
++          suffix.insertText (QString {" "}, separator_format);
++          suffix.insertText (dxcc_label, dxcc_format);
++        }
++    }
++
++  setCurrentCharFormat (old_format);
++}
++
+ void DisplayText::flushUpdates() {
+     for (const auto& update : m_updateBuffer) {
+         QString text;
+diff --git a/widgets/displaytext.h b/widgets/displaytext.h
+index 4f70a14..aa4f751 100644
+--- a/widgets/displaytext.h
++++ b/widgets/displaytext.h
+@@ -3,15 +3,17 @@
+ #define DISPLAYTEXT_H
+ 
+ #include <QTextEdit>
+-#include <QFont>
+-#include <QHash>
+-#include <QPair>
+-#include <QString>
+-
+-class QAction;
+-class Configuration;
+-class LogBook;
+-class DecodedText;
++#include <QFont>
++#include <QHash>
++#include <QPair>
++#include <QString>
++
++class QAction;
++class Configuration;
++class QMouseEvent;
++class QPoint;
++class LogBook;
++class DecodedText;
+ 
+ class DisplayText
+   : public QTextEdit
+@@ -19,12 +21,13 @@ class DisplayText
+   Q_OBJECT
+ public:
+   explicit DisplayText(QWidget *parent = nullptr);
+-  void set_configuration (Configuration const * configuration, bool high_volume = false)
+-  {
+-    disconnect (vertical_scroll_connection_);
+-    m_config = configuration;
+-    high_volume_ = high_volume;
+-  }
++  void set_configuration (Configuration const * configuration, bool high_volume = false)
++  {
++    disconnect (vertical_scroll_connection_);
++    m_config = configuration;
++    high_volume_ = high_volume;
++    setContextMenuPolicy (Qt::CustomContextMenu);
++  }
+   void setContentFont (QFont const&);
+   void insertLineSpacer(QString const&);
+   // Z
+@@ -46,6 +49,11 @@ public:
+   bool m_bDisplayPoints;
+ 
+   Q_SIGNAL void selectCallsign (Qt::KeyboardModifiers);
++  Q_SIGNAL void decodedCallsignClicked (QString const& callsign);
++  Q_SIGNAL void decodedCallsign (double freq_hz, QString const& callsign,
++                                 bool is_cq, int time_sec,
++                                 QString const& band, QString const& grid, QString const& message,
++                                 int snr);
+   // Z
+   Q_SIGNAL void leftClick (Qt::KeyboardModifiers);
+ void log(QString s);
+@@ -55,10 +63,12 @@ void log(QString s);
+                           , QString const& call1 = QString {}, QString const& call2 = QString {}, QTextCursor::MoveOperation location=QTextCursor::End);
+   Q_SLOT void erase ();
+   Q_SLOT void highlight_callsign (QString const& callsign, QColor const& bg, QColor const& fg, bool last_period_only);
++  Q_SLOT void annotate_callsign (QString const& callsign, QString const& annotation, QColor const& fg);
+ 
+-private:
+-  QString leftJustifyAppendage (QString message, QString const& appendage) const;
+-  void mouseDoubleClickEvent (QMouseEvent *) override;
++private:
++  QString leftJustifyAppendage (QString message, QString const& appendage) const;
++  void show_om0rx_context_menu (QPoint const& position);
++  void mouseDoubleClickEvent (QMouseEvent *) override;
+   // Z
+   void mousePressEvent(QMouseEvent *) override;
+   void enterEvent(QEvent *event) override;
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+index ee26233..6037e88 100644
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -42,6 +42,14 @@
+ #include <QUdpSocket>
+ #include <QAbstractItemView>
+ #include <QInputDialog>
++#include <QJsonArray>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QDialog>
++#include <QDialogButtonBox>
++#include <QHeaderView>
++#include <QTableWidget>
++#include <QVBoxLayout>
+ #if QT_VERSION >= QT_VERSION_CHECK (5, 15, 0)
+ #include <QRandomGenerator>
+ #endif
+@@ -50,6 +58,7 @@
+ #include <QSplitter>
+ #include <QNetworkAccessManager>
+ #include <QNetworkReply>
++#include <QNetworkProxy>
+ #include <QUrlQuery>
+ #include <QHash>
+ #include <QXmlStreamReader>
+@@ -111,6 +120,82 @@
+ 
+ #define FCL fortran_charlen_t
+ 
++namespace
++{
++QString om0rx_decode_heading (QString const& prefix = QString {})
++{
++  return prefix + QString {"UTC   dB   DT Freq    Message"}.leftJustified (61)
++      + QObject::tr ("CS     DS");
++}
++
++QString om0rx_fast_decode_heading (QString const& prefix = QString {})
++{
++  return prefix + QString {"UTC   dB    T Freq    Message"}.leftJustified (61)
++      + QObject::tr ("CS     DS");
++}
++
++QString om0rx_normalized_call (QString call)
++{
++  call = call.trimmed ().toUpper ();
++  call.remove ('<');
++  call.remove ('>');
++  return call;
++}
++
++int om0rx_status_rank_one (QString status)
++{
++  auto normalized = status.trimmed ().toLower ();
++  normalized.replace ('-', ' ');
++  normalized.replace ("_", " ");
++
++  if (normalized.contains ("attno") || normalized.contains ("atno"))
++    {
++      return 10000;
++    }
++
++  auto prefixed = normalized.startsWith ("c/") || normalized.startsWith ("w/");
++  auto new_call = normalized.contains ("new call");
++  auto new_band = normalized.contains ("new band");
++  auto new_mode = normalized.contains ("new mode") || (new_band && normalized.contains ("mode"));
++
++  if (new_call && new_band && new_mode) return 9300;
++  if (new_call && new_band) return 9000;
++  if (new_call) return 8600;
++  if (new_band && new_mode) return prefixed ? 6500 : 8000;
++  if (new_band) return prefixed ? 6200 : 7800;
++  if (new_mode) return prefixed ? 5000 : 7000;
++  if (normalized.contains ("worked")) return 2000;
++  if (normalized.contains ("confirmed")) return 1000;
++  return 0;
++}
++
++int om0rx_status_rank (QString const& call_status, QString const& dxcc_status)
++{
++  return std::max (om0rx_status_rank_one (call_status),
++                   om0rx_status_rank_one (dxcc_status));
++}
++
++int om0rx_logbook_rank (bool callB4, bool callB4onBand, bool countryB4, bool countryB4onBand)
++{
++  if (!countryB4) return 10000;
++  if (!callB4 && !callB4onBand) return 9000;
++  if (!callB4) return 8600;
++  if (!callB4onBand) return 7800;
++  if (!countryB4onBand) return 6200;
++  return 0;
++}
++
++bool om0rx_dxcc_priority_hunt_status (QString status)
++{
++  auto normalized = status.trimmed ().toLower ();
++  normalized.replace ('-', ' ');
++  normalized.replace ("_", " ");
++  return normalized.contains ("attno")
++      || normalized.contains ("atno")
++      || normalized.contains ("new band");
++}
++}
++
+ extern "C" {
+   //----------------------------------------------------- C and Fortran routines
+   void symspec_(struct dec_data *, int* k, double* trperiod, int* nsps, int* ingain,
+@@ -797,6 +882,14 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+   // Z
+   connect (ui->decodedTextBrowser2, &DisplayText::leftClick, this, &MainWindow::leftClickHandler);
+   connect (ui->decodedTextBrowser, &DisplayText::leftClick, this, &MainWindow::leftClickHandler);
++  connect (ui->decodedTextBrowser, &DisplayText::decodedCallsign,
++           this, &MainWindow::request_om0rx_decode_status);
++  connect (ui->decodedTextBrowser2, &DisplayText::decodedCallsign,
++           this, &MainWindow::request_om0rx_decode_status);
++  connect (ui->decodedTextBrowser, &DisplayText::decodedCallsignClicked,
++           this, &MainWindow::request_om0rx_qso_history_popup);
++  connect (ui->decodedTextBrowser2, &DisplayText::decodedCallsignClicked,
++           this, &MainWindow::request_om0rx_qso_history_popup);
+   ui->groupBox->setVisible(false);
+ 
+   // initialize decoded text font and hook up font change signals
+@@ -1031,7 +1124,7 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+   m_dateTimeSentTx3=QDateTime::currentDateTimeUtc();
+   // Z
+   labAz.setText("");
+-  auto t = "UTC   dB   DT Freq    " + tr ("Message");
++  auto t = om0rx_decode_heading ();
+   ui->lh_decodes_headings_label->setText(t);
+   ui->rh_decodes_headings_label->setText(t);
+   readSettings();            //Restore user's setup parameters
+@@ -1285,8 +1378,10 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+ 
+     connect (&m_config, &Configuration::qrz_config_changed, this, &MainWindow::qrzInit);
+     networkManager = new QNetworkAccessManager(this);
++    om0rxNetworkManager = new QNetworkAccessManager(this);
++    om0rxNetworkManager->setProxy(QNetworkProxy::NoProxy);
+ 
+-    connect (statusBar(), SIGNAL(clicked(bool)), this, SLOT(tx_watchdog(false)));
++  connect (statusBar(), SIGNAL(clicked(bool)), this, SLOT(tx_watchdog(false)));
+ 
+     // Initialize QRZ lookup
+     if (m_config.qrzComUn().length() > 0 && m_config.qrzComPw().length() > 0) {
+@@ -8412,6 +8507,19 @@ void MainWindow::acceptQSO (QDateTime const& QSO_date_off, QString const& call,
+   m_messageClient->logged_ADIF (ADIF);
+ 
+   // Z
++  auto const logged_call = om0rx_normalized_call (call);
++  if (m_om0rxPriorityHuntActive
++      && logged_call == om0rx_normalized_call (m_om0rxPriorityHuntCall))
++    {
++      om0rx_clear_priority_hunt ("logged");
++      m_idleMinutes = 0;
++      update_watchdog_label ();
++    }
++  else if (m_om0rxPriorityHuntPending
++           && logged_call == om0rx_normalized_call (m_om0rxPriorityHuntCall))
++    {
++      om0rx_clear_priority_hunt ("logged before start");
++    }
+   updateQsoCounter(true);
+   clearDX();
+ 
+@@ -8700,7 +8808,7 @@ void MainWindow::on_actionFT2_triggered()
+   ui->cbAutoSeq->setChecked(true);
+   m_fastGraph->hide();
+   m_wideGraph->show();
+-  ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+   m_wideGraph->setPeriod(m_TRperiod,m_nsps);
+   if (m_tci_audio && ui->bandComboBox->currentText()!="OOB")
+     Q_EMIT m_config.transceiver_period(m_TRperiod);
+@@ -8710,7 +8818,7 @@ void MainWindow::on_actionFT2_triggered()
+   }
+   ui->rh_decodes_title_label->setText(tr ("Rx Frequency"));
+   ui->lh_decodes_title_label->setText(tr ("Band Activity"));
+-  ui->lh_decodes_headings_label->setText( "  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText( om0rx_decode_heading ("  "));
+   displayWidgets(nWidgets("11101000010011100001000000011000100000"));
+   ui->txrb2->setEnabled(true);
+   ui->txrb4->setEnabled(true);
+@@ -8757,7 +8865,7 @@ void MainWindow::on_actionFT4_triggered()
+   ui->cbAutoSeq->setChecked(true);
+   m_fastGraph->hide();
+   m_wideGraph->show();
+-  ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+   m_wideGraph->setPeriod(m_TRperiod,m_nsps);
+   if (m_tci_audio && ui->bandComboBox->currentText()!="OOB")
+     Q_EMIT m_config.transceiver_period(m_TRperiod);
+@@ -8767,7 +8875,7 @@ void MainWindow::on_actionFT4_triggered()
+   }
+   ui->rh_decodes_title_label->setText(tr ("Rx Frequency"));
+   ui->lh_decodes_title_label->setText(tr ("Band Activity"));
+-  ui->lh_decodes_headings_label->setText( "  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText( om0rx_decode_heading ("  "));
+ //                         01234567890123456789012345678901234567
+   displayWidgets(nWidgets("11101000010011100001000000011000100000"));
+   ui->txrb2->setEnabled(true);
+@@ -8810,7 +8918,7 @@ void MainWindow::on_actionFT8_triggered()
+   ui->sbFtol->setValue (m_settings->value ("Ftol_SF", 50).toInt()); // restore last used Ftol parameter
+   m_fastGraph->hide();
+   m_wideGraph->show();
+-  ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+   m_wideGraph->setPeriod(m_TRperiod,m_nsps);
+   if (m_tci_audio && ui->bandComboBox->currentText()!="OOB")
+     Q_EMIT m_config.transceiver_period(m_TRperiod);
+@@ -8824,7 +8932,7 @@ void MainWindow::on_actionFT8_triggered()
+     ui->lh_decodes_headings_label->setText( "Call         Grid   dB  Freq   Dist Age Cont Score");
+   } else {
+     ui->lh_decodes_title_label->setText(tr ("Band Activity"));
+-    ui->lh_decodes_headings_label->setText( "  UTC   dB   DT Freq    " + tr ("Message"));
++    ui->lh_decodes_headings_label->setText( om0rx_decode_heading ("  "));
+   }
+ //                         01234567890123456789012345678901234567
+   displayWidgets(nWidgets("11101000010011100001000010011000100000"));
+@@ -8975,8 +9083,8 @@ void MainWindow::on_actionJT4_triggered()
+   m_bFast9=false;
+   setup_status_bar (bVHF);
+   ui->sbSubmode->setMaximum(6);
+-  ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
+-  ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
+   if(bVHF) {
+     // restore last used parameters
+     ui->sbFtol->setValue (m_settings->value ("Ftol_JT4", 50).toInt());
+@@ -9049,15 +9157,15 @@ void MainWindow::on_actionJT9_triggered()
+     m_fastGraph->showNormal();
+     ui->TxFreqSpinBox->setValue(700);
+     ui->RxFreqSpinBox->setValue(700);
+-    ui->lh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
+-    ui->rh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
++    ui->lh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
++    ui->rh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
+   } else {
+     ui->cbAutoSeq->setChecked(false);
+     if (m_mode != "FST4")
+       {
+         m_TRperiod=60.0;
+-        ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
+-        ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++        ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
++        ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
+       }
+   }
+   m_wideGraph->setPeriod(m_TRperiod,m_nsps);
+@@ -9193,8 +9301,8 @@ void MainWindow::on_actionQ65_triggered()
+   switch_mode (Modes::Q65);
+ //                         01234567890123456789012345678901234567
+   displayWidgets(nWidgets("11111101011011010011100000010000000011"));
+-  ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
+-  ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
+ 
+   m_specOp=m_config.special_op_id();
+   if(m_specOp!=SpecOp::NONE and m_specOp!=SpecOp::FOX and m_specOp!=SpecOp::HOUND) {
+@@ -9273,8 +9381,8 @@ void MainWindow::on_actionMSK144_triggered()
+   ui->RxFreqSpinBox->setMinimum(1400);
+   ui->RxFreqSpinBox->setMaximum(1600);
+   ui->RxFreqSpinBox->setSingleStep(10);
+-  ui->lh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
+-  ui->rh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
++  ui->rh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
+   if (m_tci_audio && ui->bandComboBox->currentText()!="OOB")
+     Q_EMIT m_config.transceiver_period(m_TRperiod);
+   if (!m_tci_audio) {
+@@ -10594,18 +10702,18 @@ void MainWindow::on_sbTR_valueChanged(int value)
+       {
+         if (m_TRperiod < 60)
+           {
+-            ui->lh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++            ui->lh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+             if (m_mode != "FST4W")
+               {
+-                ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++                ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+               }
+           }
+         else
+           {
+-            ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++            ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
+             if (m_mode != "FST4W")
+               {
+-                ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++                ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
+               }
+           }
+ 
+@@ -11528,6 +11636,10 @@ void MainWindow::tx_watchdog (bool triggered)
+                   QApplication::alert (this);
+                 }
+ 
++      if (m_om0rxPriorityHuntActive)
++        {
++          om0rx_clear_priority_hunt ("watchdog");
++        }
+       clearDX();
+     }
+   else
+@@ -12751,6 +12863,134 @@ void MainWindow::write_all(QString txRx, QString message)
+  }
+ }
+ 
++void MainWindow::om0rx_remember_priority_hunt(QString const& call, QString const& grid,
++                                              int report, int freq, bool tx_first,
++                                              int rank, int score, QString const& band,
++                                              QString const& mode, QString const& status)
++{
++  auto normalized_call = om0rx_normalized_call (call);
++  if (normalized_call.isEmpty () || rank < 6200)
++    {
++      return;
++    }
++
++  if (m_om0rxPriorityHuntPending && score < m_om0rxPriorityHuntScore)
++    {
++      return;
++    }
++
++  m_om0rxPriorityHuntPending = true;
++  m_om0rxPriorityHuntCall = normalized_call;
++  m_om0rxPriorityHuntGrid = grid;
++  m_om0rxPriorityHuntBand = band;
++  m_om0rxPriorityHuntMode = mode;
++  m_om0rxPriorityHuntStatus = status;
++  m_om0rxPriorityHuntScore = score;
++  m_om0rxPriorityHuntRank = rank;
++  m_om0rxPriorityHuntFreq = freq;
++  m_om0rxPriorityHuntReport = report;
++  m_om0rxPriorityHuntTxFirst = tx_first;
++
++  if (m_zdebug)
++    {
++      log ("OM0RX priority hunt pending: " + m_om0rxPriorityHuntCall
++           + " rank=" + QString::number (rank)
++           + " score=" + QString::number (score)
++           + " status=" + status);
++    }
++}
++
++bool MainWindow::om0rx_try_start_priority_hunt()
++{
++  if (!m_om0rxPriorityHuntPending)
++    {
++      return false;
++    }
++
++  if (!ui->cbAutoCall->isChecked () || ui->autoButton->isChecked ()
++      || m_transmitting || CALLING != m_QSOProgress)
++    {
++      return false;
++    }
++
++  auto const dx_entry = om0rx_normalized_call (ui->dxCallEntry->text ());
++  if (!dx_entry.isEmpty () && dx_entry != m_om0rxPriorityHuntCall)
++    {
++      return false;
++    }
++
++  auto const active_call = om0rx_normalized_call (m_hisCall);
++  auto const last_logged = om0rx_normalized_call (m_lastCall);
++  if (!active_call.isEmpty () && active_call != m_om0rxPriorityHuntCall
++      && active_call != last_logged)
++    {
++      return false;
++    }
++
++  m_om0rxPriorityHuntPending = false;
++  m_om0rxPriorityHuntActive = true;
++  m_idleMinutes = 0;
++  update_watchdog_label ();
++
++  m_priorityCall = m_om0rxPriorityHuntCall;
++  m_priorityCallPreferCQTarget = false;
++  m_nextCall = m_om0rxPriorityHuntCall;
++  m_nextGrid = m_om0rxPriorityHuntGrid;
++  dxLookup (m_nextCall, m_nextGrid);
++  ui->rptSpinBox->setValue (m_om0rxPriorityHuntReport);
++  ui->txFirstCheckBox->setChecked (m_om0rxPriorityHuntTxFirst);
++  ui->RxFreqSpinBox->setValue (m_om0rxPriorityHuntFreq);
++  if (!ui->cbHoldTxFreq->isChecked ())
++    {
++      ui->TxFreqSpinBox->setValue (m_om0rxPriorityHuntFreq);
++    }
++
++  tx_watchdog (false);
++  useNextCall ();
++  on_txb1_clicked ();
++  auto_tx_mode (true);
++  ui->cb_autoCallNext->setChecked (false);
++  if (m_config.highlightDX ())
++    {
++      ui->decodedTextBrowser->highlight_callsign (m_om0rxPriorityHuntCall,
++                                                  QColor (255, 0, 0),
++                                                  QColor (255, 255, 255), true);
++    }
++
++  if (m_zdebug)
++    {
++      log ("OM0RX priority hunt started: " + m_om0rxPriorityHuntCall
++           + " watchdog=20m status=" + m_om0rxPriorityHuntStatus);
++    }
++  return true;
++}
++
++void MainWindow::om0rx_clear_priority_hunt(QString const& reason)
++{
++  if (m_om0rxPriorityHuntPending || m_om0rxPriorityHuntActive)
++    {
++      if (m_zdebug)
++        {
++          log ("OM0RX priority hunt cleared: " + reason
++               + " call=" + m_om0rxPriorityHuntCall);
++        }
++    }
++
++  m_om0rxPriorityHuntPending = false;
++  m_om0rxPriorityHuntActive = false;
++  m_om0rxPriorityHuntCall.clear ();
++  m_om0rxPriorityHuntGrid.clear ();
++  m_om0rxPriorityHuntBand.clear ();
++  m_om0rxPriorityHuntMode.clear ();
++  m_om0rxPriorityHuntStatus.clear ();
++  m_om0rxPriorityHuntScore = -1;
++  m_om0rxPriorityHuntRank = -1;
++  m_om0rxPriorityHuntFreq = 0;
++  m_om0rxPriorityHuntReport = 0;
++  m_om0rxPriorityHuntTxFirst = false;
++  update_watchdog_label ();
++}
++
+ void MainWindow::chkFT4()
+ {
+   if((m_mode!="FT4" and m_mode!="FT2")) return;
+@@ -13457,10 +13697,17 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+                   ui->pte_alerts->appendPlainText(dxCall.leftJustified(12, ' ') + looked_up.entity_name);
+                   m_beeped = true;
+               }
+-          }
++    }
+ 
+     if (m_zdebug) log("Call not filtered: " + dxCall);
+ 
++    if (!matched) {
++        m_logBook.match (dxCall, m_mode, dxGrid, looked_up, callB4, countryB4, gridB4, continentB4, CQZoneB4, ITUZoneB4);
++        m_logBook.match (dxCall, m_mode, dxGrid, looked_up, callB4onBand, countryB4onBand, gridB4onBand,
++                       continentB4onBand, CQZoneB4onBand, ITUZoneB4onBand, m_currentBand);
++        matched = true;
++    }
++
+     if ( !is_CQ && !(ui->cbCQonlyIncl73->isChecked() && is_73) ) {
+         if (m_zdebug) log("Not CQ/73. Exiting.");
+         return false;
+@@ -13481,12 +13728,37 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+     bool forcePreferPromotion = cqTargetPreferMode && cqTargetPreferMatch && !m_priorityCallPreferCQTarget;
+     bool skipAutoPriority = cqTargetPreferMode && m_priorityCallPreferCQTarget && !cqTargetPreferMatch;
+     if (forcePreferPromotion) {
+-      prio = true;
+       // Restart priority baseline when switching from non-preferred to preferred pool.
+       m_maxDistance = 0;
+       m_maxSignal = -31;
++      m_om0rxHuntingPriorityScore = -1;
+     }
+ 
++    auto huntingRank = om0rx_logbook_rank (callB4, callB4onBand, countryB4, countryB4onBand);
++    auto dxccHuntRank = !countryB4 ? 10000 : !countryB4onBand ? 6200 : 0;
++    QString dxccHuntStatus = !countryB4 ? QString {"ATNO"}
++        : !countryB4onBand ? QString {"DXCC New Band"} : QString {};
++    auto const cache_key = QString {"%1|%2|%3"}.arg (dxCall, m_currentBand.trimmed (), m_mode.trimmed ().toUpper ());
++    if (m_om0rx_status_cache.contains (cache_key))
++      {
++        auto parts = m_om0rx_status_cache.value (cache_key).split ('|');
++        if (parts.size () >= 2)
++          {
++            huntingRank = om0rx_status_rank (parts.value (0), parts.value (1));
++            if (om0rx_dxcc_priority_hunt_status (parts.value (1)))
++              {
++                dxccHuntRank = om0rx_status_rank_one (parts.value (1));
++                dxccHuntStatus = parts.value (1);
++              }
++            else
++              {
++                dxccHuntRank = 0;
++                dxccHuntStatus.clear ();
++              }
++          }
++      }
++
++    int tieBreak = 0;
+     if (!skipAutoPriority && ui->cb_autoCallPriority->currentIndex() == 2) {
+         if (dxGrid.length() == 4 && dxGrid != "RR73" && !dxGrid.startsWith("R-") && !dxGrid.startsWith("R+")) {
+             double utch=0.0;
+@@ -13494,34 +13766,48 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+             azdist_(const_cast <char *> ((m_config.my_grid () + "      ").left (6).toLatin1 ().constData ()),
+                     const_cast <char *> (dxGrid.left (6).toLatin1 ().constData ()),&utch,
+                     &nAz,&nEl,&nDmiles,&nDkm,&nHotAz,&nHotABetter,6,6);
+-            if (nDkm >  m_maxDistance) {
+-                prio = true;
+-                m_maxDistance = nDkm;
+-            }
++            tieBreak = nDkm;
+ 
+         } else {
+-            prio = true;
+-            m_maxDistance = 1;
++            tieBreak = 1;
+         }
+ 
+     } else if (!skipAutoPriority && ui->cb_autoCallPriority->currentIndex() == 1) {
+         bool convOK;
+         int intdbM = dbM.toInt(&convOK);
+-        if (convOK && intdbM >  m_maxSignal) {
+-               prio = true;
+-               m_maxSignal = intdbM;
+-
+-       }
++        if (convOK) {
++               tieBreak = intdbM + 1000;
++        }
+ 
+     } else if (!skipAutoPriority && ui->cb_autoCallPriority->currentIndex() == 0) {
+-        prio = true;
++        tieBreak = 0;
+     }
+ 
++    auto const candidateScore = huntingRank * 100000 + tieBreak;
++    if (dxccHuntRank >= 6200)
++      {
++        auto const dxccHuntScore = dxccHuntRank * 100000 + tieBreak;
++        om0rx_remember_priority_hunt (dxCall, dxGrid, dt.report ().toInt (),
++                                      dt.frequencyOffset (), m_txFirst,
++                                      dxccHuntRank, dxccHuntScore,
++                                      m_currentBand.trimmed (),
++                                      m_mode.trimmed ().toUpper (),
++                                      dxccHuntStatus);
++      }
++    auto const lastDecodedPriority = ui->cb_autoCallPriority->currentIndex() == 0;
++    if (!skipAutoPriority
++        && (candidateScore > m_om0rxHuntingPriorityScore
++            || (lastDecodedPriority && candidateScore == m_om0rxHuntingPriorityScore))) {
++        prio = true;
++    }
+ 
+     if (prio) {
+-        if (m_zdebug) log("++ New Priority Call: " + dxCall);
++        if (m_zdebug) log("++ New Priority Call: " + dxCall
++                          + " rank=" + QString::number (huntingRank)
++                          + " score=" + QString::number (candidateScore));
+         m_priorityCall = dxCall;
+       m_priorityCallPreferCQTarget = cqTargetPreferMatch;
++        m_om0rxHuntingPriorityScore = candidateScore;
+         m_prioFreq = dt.frequencyOffset();
+         m_nextRpt = dt.report();
+         int nmod;
+@@ -13827,6 +14113,361 @@ void MainWindow::leftClickHandler(Qt::KeyboardModifiers modifiers) {
+   }
+ }
+ 
++void MainWindow::request_om0rx_decode_status (double freq_hz, QString const& callsign,
++                                              bool, int,
++                                              QString const& decode_band,
++                                              QString const& grid, QString const& message,
++                                              int snr)
++{
++  auto call = callsign.trimmed ().toUpper ();
++  call.remove ('<');
++  call.remove ('>');
++  auto active_call = ui->dxCallEntry->text ().trimmed ().toUpper ();
++  active_call.remove ('<');
++  active_call.remove ('>');
++  auto my_call = m_config.my_callsign ().trimmed ().toUpper ();
++  my_call.remove ('<');
++  my_call.remove ('>');
++  if (!active_call.isEmpty () && active_call != my_call)
++    {
++      QRegularExpression active_token {
++          QString {R"((^|\s)<?%1>?(?=\s|$))"}.arg (QRegularExpression::escape (active_call))};
++      if (active_token.match (message.trimmed ().toUpper ()).hasMatch ())
++        {
++          call = active_call;
++        }
++    }
++  if (call.isEmpty ())
++    {
++      return;
++    }
++
++  auto band = decode_band.trimmed ();
++  if (band.isEmpty ())
++    {
++      band = m_currentBand.trimmed ();
++    }
++  if (band.isEmpty ())
++    {
++      band = ui->bandComboBox->currentText ().trimmed ();
++    }
++  auto mode = m_mode.trimmed ().toUpper ();
++  auto cache_key = QString {"%1|%2|%3"}.arg (call, band, mode);
++  if (m_om0rx_status_cache.contains (cache_key))
++    {
++      auto parts = m_om0rx_status_cache.value (cache_key).split ('|');
++      QJsonObject cached;
++      if (parts.size () >= 3)
++        {
++          cached.insert ("call_status", parts.value (0));
++          cached.insert ("dxcc_status", parts.value (1));
++          cached.insert ("country", parts.value (2));
++          if (parts.size () >= 6)
++            {
++              cached.insert ("dxcc_tag", parts.value (3));
++              cached.insert ("cq_zone", parts.value (4));
++              cached.insert ("itu_zone", parts.value (5));
++            }
++          QTimer::singleShot (0, this, [this, call, cached] {
++            apply_om0rx_decode_status (call, cached);
++          });
++          return;
++        }
++    }
++
++  QTimer::singleShot (0, this, [this, call] {
++    ui->decodedTextBrowser->annotate_callsign (call, QString {"Checking | Checking"}, QColor {});
++    ui->decodedTextBrowser2->annotate_callsign (call, QString {"Checking | Checking"}, QColor {});
++  });
++  if (m_om0rx_status_inflight.contains (cache_key))
++    {
++      return;
++    }
++  m_om0rx_status_inflight.insert (cache_key);
++
++  QJsonObject payload;
++  payload.insert ("call", call);
++  payload.insert ("band", band);
++  payload.insert ("mode", mode);
++  payload.insert ("frequency_hz", static_cast<double> (m_freqNominal));
++  payload.insert ("audioOffset", static_cast<int> (freq_hz));
++  payload.insert ("grid", grid.trimmed ().toUpper ());
++  payload.insert ("message", message.trimmed ());
++  payload.insert ("snr", snr);
++
++  QNetworkRequest request {QUrl {"http://127.0.0.1:8765/api/wsjtx/decode-status"}};
++  request.setHeader (QNetworkRequest::ContentTypeHeader, "application/json");
++  auto reply = om0rxNetworkManager->post (request, QJsonDocument {payload}.toJson (QJsonDocument::Compact));
++  auto * timeout = new QTimer {reply};
++  timeout->setSingleShot (true);
++  connect (timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
++  timeout->start (15000);
++  connect (reply, &QNetworkReply::finished, this, [this, reply, call, cache_key] {
++    auto * timeout = reply->findChild<QTimer *> ();
++    if (timeout)
++      {
++        timeout->stop ();
++      }
++    m_om0rx_status_inflight.remove (cache_key);
++    if (QNetworkReply::NoError == reply->error ())
++      {
++        auto body = reply->readAll ();
++        auto doc = QJsonDocument::fromJson (body);
++        auto status = doc.object ();
++        if (status.value ("success").toBool ())
++          {
++            auto call_status = status.value ("call_status").toString ("Unknown");
++            auto dxcc_status = status.value ("dxcc_status").toString ("Unknown");
++            auto country = status.value ("country").toString ();
++            auto dxcc_tag = status.value ("dxcc_tag").toString ();
++            auto cq_zone = status.value ("cq_zone").toString ();
++            auto itu_zone = status.value ("itu_zone").toString ();
++            auto call_unknown = call_status.trimmed ().isEmpty ()
++                || call_status.compare ("Unknown", Qt::CaseInsensitive) == 0;
++            auto dxcc_unknown = dxcc_status.trimmed ().isEmpty ()
++                || dxcc_status.compare ("Unknown", Qt::CaseInsensitive) == 0;
++            if (call_unknown || dxcc_unknown)
++              {
++                if (m_zdebug)
++                  {
++                    log ("OM0RX decode-status unknown for " + call + ": " + QString::fromUtf8 (body));
++                  }
++              }
++            else
++              {
++                m_om0rx_status_cache.insert (
++                    cache_key,
++                    QString {"%1|%2|%3|%4|%5|%6"}.arg (
++                        call_status, dxcc_status, country, dxcc_tag, cq_zone, itu_zone));
++                QTimer::singleShot (0, this, [this, call, status] {
++                  apply_om0rx_decode_status (call, status);
++                });
++              }
++          }
++        else
++          {
++            if (m_zdebug)
++              {
++                log ("OM0RX decode-status failed for " + call + ": " + QString::fromUtf8 (body));
++              }
++          }
++      }
++    else
++      {
++        if (m_zdebug)
++          {
++            log ("OM0RX decode-status network error for " + call + ": " + reply->errorString ());
++          }
++      }
++    reply->deleteLater ();
++  });
++}
++
++void MainWindow::request_om0rx_qso_history_popup (QString const& callsign)
++{
++  auto call = callsign.trimmed ().toUpper ();
++  call.remove ('<');
++  call.remove ('>');
++  if (call.isEmpty () || call == m_config.my_callsign ().trimmed ().toUpper ())
++    {
++      return;
++    }
++  if (m_om0rx_history_inflight.contains (call))
++    {
++      return;
++    }
++  m_om0rx_history_inflight.insert (call);
++
++  auto encoded = QString::fromUtf8 (QUrl::toPercentEncoding (call));
++  QNetworkRequest request {
++      QUrl {QString {"http://127.0.0.1:8080/api/wsjtx/qso-history/%1?limit=20"}.arg (encoded)}};
++  auto reply = om0rxNetworkManager->get (request);
++  auto * timeout = new QTimer {reply};
++  timeout->setSingleShot (true);
++  connect (timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
++  timeout->start (15000);
++  connect (reply, &QNetworkReply::finished, this, [this, reply, call] {
++    auto * timeout = reply->findChild<QTimer *> ();
++    if (timeout)
++      {
++        timeout->stop ();
++      }
++    m_om0rx_history_inflight.remove (call);
++    QJsonObject payload;
++    if (QNetworkReply::NoError == reply->error ())
++      {
++        payload = QJsonDocument::fromJson (reply->readAll ()).object ();
++      }
++    else
++      {
++        payload.insert ("success", false);
++        payload.insert ("detail", reply->errorString ());
++      }
++    reply->deleteLater ();
++    show_om0rx_qso_history_popup (call, payload);
++  });
++}
++
++void MainWindow::show_om0rx_qso_history_popup (QString const& callsign, QJsonObject const& payload)
++{
++  auto qsos = payload.value ("qsos").toArray ();
++  auto summary = payload.value ("summary").toObject ();
++  auto matrix = payload.value ("matrix").toObject ();
++
++  auto * dialog = new QDialog {this};
++  dialog->setAttribute (Qt::WA_DeleteOnClose);
++  dialog->setWindowTitle (tr ("Previous QSOs - %1").arg (callsign));
++  dialog->resize (880, 560);
++  dialog->setStyleSheet (
++      "QDialog { background: #141827; color: #e5e7eb; }"
++      "QLabel { color: #e5e7eb; }"
++      "QLabel#om0rxHistoryTitle { color: #10d59a; font-weight: 700; font-size: 14px; }"
++      "QLabel#om0rxHistorySummary { background: #24233f; border-left: 3px solid #10d59a; padding: 8px; font-weight: 700; }"
++      "QLabel#om0rxHistoryBadges { background: #24233f; padding: 8px; }"
++      "QTableWidget { background: #16172b; color: #e5e7eb; gridline-color: #3b3b4f; selection-background-color: #0d5ea8; }"
++      "QHeaderView::section { background: #0d3f6e; color: #ffffff; border: 0; padding: 4px; font-weight: 700; }"
++      "QPushButton { background: #2f3a44; color: #ffffff; border: 1px solid #465360; padding: 4px 12px; }");
++
++  auto * layout = new QVBoxLayout {dialog};
++  auto * title = new QLabel {tr ("Previous QSOs - %1").arg (callsign), dialog};
++  title->setObjectName ("om0rxHistoryTitle");
++  layout->addWidget (title);
++
++  auto * count = new QLabel {tr ("%1 times worked before").arg (qsos.size ()), dialog};
++  count->setObjectName ("om0rxHistorySummary");
++  layout->addWidget (count);
++
++  auto * qso_table = new QTableWidget {qsos.size (), 7, dialog};
++  qso_table->setHorizontalHeaderLabels ({tr ("Date"), tr ("Callsign"), tr ("Mode"),
++                                         tr ("RST (S)"), tr ("RST (R)"), tr ("Band"), tr ("LoTW")});
++  qso_table->verticalHeader ()->setVisible (false);
++  qso_table->setEditTriggers (QAbstractItemView::NoEditTriggers);
++  qso_table->setSelectionBehavior (QAbstractItemView::SelectRows);
++  qso_table->horizontalHeader ()->setSectionResizeMode (QHeaderView::Stretch);
++  for (auto row = 0; row < qsos.size (); ++row)
++    {
++      auto qso = qsos.at (row).toObject ();
++      auto mode = qso.value ("submode").toString ().trimmed ();
++      if (mode.isEmpty ())
++        {
++          mode = qso.value ("mode").toString ();
++        }
++      QStringList values {
++        qso.value ("time_on").toString (),
++        qso.value ("callsign").toString (),
++        mode,
++        qso.value ("rst_sent").toString (),
++        qso.value ("rst_rcvd").toString (),
++        qso.value ("band").toString (),
++        QString {"S:%1 R:%2"}.arg (qso.value ("lotw_sent").toString ("-"),
++                                   qso.value ("lotw_rcvd").toString ("-"))
++      };
++      for (auto column = 0; column < values.size (); ++column)
++        {
++          auto * item = new QTableWidgetItem {values.at (column)};
++          item->setTextAlignment (Qt::AlignCenter);
++          qso_table->setItem (row, column, item);
++        }
++    }
++  layout->addWidget (qso_table);
++
++  QStringList badges;
++  if (!summary.value ("country").toString ().isEmpty ())
++    {
++      badges << tr ("DXCC %1").arg (summary.value ("country").toString ().toUpper ());
++    }
++  if (!summary.value ("gridsquare").toString ().isEmpty ())
++    {
++      badges << tr ("Gridsquare %1").arg (summary.value ("gridsquare").toString ().toUpper ());
++    }
++  auto * badge_label = new QLabel {badges.isEmpty () ? tr ("No Wavelog summary for %1").arg (callsign) : badges.join ("   "), dialog};
++  badge_label->setObjectName ("om0rxHistoryBadges");
++  layout->addWidget (badge_label);
++
++  auto * matrix_label = new QLabel {tr ("Band/Mode Matrix"), dialog};
++  matrix_label->setObjectName ("om0rxHistoryTitle");
++  layout->addWidget (matrix_label);
++
++  QStringList bands {"160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "6m", "2m"};
++  QStringList modes {"CW", "FT8", "FT4", "FT2", "RTTY", "SSB", "LSB", "USB"};
++  auto * matrix_table = new QTableWidget {modes.size (), bands.size (), dialog};
++  matrix_table->setHorizontalHeaderLabels (bands);
++  matrix_table->setVerticalHeaderLabels (modes);
++  matrix_table->setEditTriggers (QAbstractItemView::NoEditTriggers);
++  matrix_table->horizontalHeader ()->setSectionResizeMode (QHeaderView::Stretch);
++  matrix_table->verticalHeader ()->setSectionResizeMode (QHeaderView::Stretch);
++  for (auto row = 0; row < modes.size (); ++row)
++    {
++      auto mode_matrix = matrix.value (modes.at (row)).toObject ();
++      for (auto column = 0; column < bands.size (); ++column)
++        {
++          auto cell = mode_matrix.value (bands.at (column)).toObject ();
++          auto confirmed = cell.value ("confirmed").toBool ();
++          auto worked = cell.value ("worked").toBool ();
++          auto * item = new QTableWidgetItem {confirmed ? QString {"C"} : worked ? QString {"W"} : QString {"-"}};
++          item->setTextAlignment (Qt::AlignCenter);
++          if (confirmed)
++            {
++              item->setBackground (QColor {26, 188, 126});
++              item->setForeground (QColor {255, 255, 255});
++            }
++          else if (worked)
++            {
++              item->setBackground (QColor {215, 48, 55});
++              item->setForeground (QColor {255, 255, 255});
++            }
++          matrix_table->setItem (row, column, item);
++        }
++    }
++  layout->addWidget (matrix_table);
++
++  auto * buttons = new QDialogButtonBox {QDialogButtonBox::Close, dialog};
++  connect (buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
++  layout->addWidget (buttons);
++  dialog->show ();
++}
++
++void MainWindow::apply_om0rx_decode_status (QString const& callsign, QJsonObject const& status)
++{
++  auto display_call = callsign.trimmed ().toUpper ();
++  display_call.remove ('<');
++  display_call.remove ('>');
++  auto call_status = status.value ("call_status").toString ("Unknown");
++  auto dxcc_status = status.value ("dxcc_status").toString ("Unknown");
++
++  auto status_colours = [] (QString const& text) {
++    auto normalized = text.toLower ();
++    QColor bg {88, 88, 88};
++    QColor fg {255, 255, 255};
++    if (normalized.contains ("atno") || normalized.contains ("new call"))
++      {
++        bg = QColor {225, 75, 0};
++        fg = QColor {255, 255, 255};
++      }
++    else if (normalized.contains ("new band") || normalized.contains ("new mode"))
++      {
++        bg = QColor {0, 100, 255};
++        fg = QColor {255, 255, 255};
++      }
++    else if (normalized.contains ("worked"))
++      {
++        bg = QColor {110, 110, 110};
++        fg = QColor {255, 255, 0};
++      }
++    else if (normalized.contains ("confirmed"))
++      {
++        bg = QColor {0, 130, 65};
++        fg = QColor {255, 255, 255};
++      }
++    return qMakePair (bg, fg);
++  };
++
++  auto combined = QString {"%1 %2"}.arg (call_status, dxcc_status);
++  auto colours = status_colours (combined);
++  ui->decodedTextBrowser->annotate_callsign (display_call, QString {"%1 | %2"}.arg (call_status, dxcc_status), colours.second);
++  ui->decodedTextBrowser2->annotate_callsign (display_call, QString {"%1 | %2"}.arg (call_status, dxcc_status), colours.second);
++}
++
+ void MainWindow::dxLookup(QString dxCall, QString dxGrid) {
+ 
+     if (!ui->w_callInfo->isVisible()) return;
+@@ -14273,6 +14914,8 @@ void MainWindow::switchBand(int row) {
+         on_bandComboBox_activated (row);
+         m_priorityCall = QString();
+         m_priorityCallPreferCQTarget = false;
++        m_om0rxHuntingPriorityScore = -1;
++        om0rx_clear_priority_hunt ("band switch");
+         m_lastCall = QString();
+         clearDX();
+         busySlots.clear();
+@@ -14319,6 +14962,7 @@ void MainWindow::ZProcess ()
+     {
+         m_priorityCall = QString();
+       m_priorityCallPreferCQTarget = false;
++        m_om0rxHuntingPriorityScore = -1;
+         if (m_zdebug) log("ZProcess: EXIT (Transmitting)");
+         return;
+     }
+@@ -14340,7 +14984,10 @@ void MainWindow::ZProcess ()
+     if (m_zdebug) log("ZProcess: m_hiscall: " + m_hisCall);
+     if (m_zdebug) log("ZProcess: m_lastcall: " + m_lastCall);
+ 
+-    if (!ui->autoButton->isChecked() && (ui->cbAutoCall->isChecked() || ui->cb_autoCallNext->isChecked())
++    auto const om0rxPriorityHuntStarted = om0rx_try_start_priority_hunt ();
++
++    if (!om0rxPriorityHuntStarted
++            && !ui->autoButton->isChecked() && (ui->cbAutoCall->isChecked() || ui->cb_autoCallNext->isChecked())
+             && !m_priorityCall.isNull() && !m_priorityCall.isEmpty()
+             && m_lastCall != m_priorityCall && (ui->dxCallEntry->text().isEmpty() || ui->dxCallEntry->text() == m_priorityCall)) {
+         tx_watchdog(false);
+@@ -14433,6 +15080,7 @@ void MainWindow::ZProcess ()
+ 
+     m_maxDistance = 0 ;
+     m_maxSignal = -30;
++    m_om0rxHuntingPriorityScore = -1;
+     m_priorityCall = QString();
+     m_priorityCallPreferCQTarget = false;
+     m_beeped = false;
+@@ -14448,10 +15096,12 @@ void MainWindow::resetAutoSwitch() {
+         ui->le_autoCQLeft->setText(QString::number(ui->sb_autoCQCount->value()));
+         m_priorityCall = QString();
+   m_priorityCallPreferCQTarget = false;
++        m_om0rxHuntingPriorityScore = -1;
+   update_mode_switch_status_label ();
+ }
+ 
+ int MainWindow::watchdog() {
++    if (m_om0rxPriorityHuntActive) return 20;
+     if (m_config.wd_Timer()) {
+         if (m_mode == "FT8") return m_config.wd_FT8();
+         if (m_mode == "FT2") return m_config.wd_FT2();
+diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
+index fa1f473..55198cb 100644
+--- a/widgets/mainwindow.h
++++ b/widgets/mainwindow.h
+@@ -21,6 +21,8 @@
+ #include <QHostAddress>
+ #include <QPointer>
+ #include <QSet>
++#include <QHash>
++#include <QJsonObject>
+ #include <QVector>
+ #include <QQueue>
+ #include <QFuture>
+@@ -427,6 +429,13 @@ private slots:
+      void on_txrb6_doubleClicked ();
+      void dxLookup(QString dxCall, QString dxGrid);
+      void leftClickHandler(Qt::KeyboardModifiers modifiers);
++     void request_om0rx_decode_status (double freq_hz, QString const& callsign,
++                                       bool is_cq, int time_sec,
++                                       QString const& band, QString const& grid, QString const& message,
++                                       int snr);
++     void request_om0rx_qso_history_popup (QString const& callsign);
++     void show_om0rx_qso_history_popup (QString const& callsign, QJsonObject const& payload);
++     void apply_om0rx_decode_status (QString const& callsign, QJsonObject const& status);
+      void on_actionCall_info_triggered();
+      void on_actionDark_mode_triggered();
+      void qrzInit();
+@@ -728,13 +737,26 @@ private:
+   QString m_lastCall;
+   int	  m_lastX = -1;
+   int	  m_lastY = -1;
+-  int     m_maxDistance = 0;
+-  int     m_maxSignal = -30;
+-  QString m_priorityCall;
+-  bool    m_priorityCallPreferCQTarget = false;
+-  int     m_decodeCount = 0;
+-  bool    m_prioTxFirst;
+-  int     m_prioFreq;
++  int     m_maxDistance = 0;
++  int     m_maxSignal = -30;
++  int     m_om0rxHuntingPriorityScore = -1;
++  QString m_priorityCall;
++  bool    m_priorityCallPreferCQTarget = false;
++  bool    m_om0rxPriorityHuntPending = false;
++  bool    m_om0rxPriorityHuntActive = false;
++  QString m_om0rxPriorityHuntCall;
++  QString m_om0rxPriorityHuntGrid;
++  QString m_om0rxPriorityHuntBand;
++  QString m_om0rxPriorityHuntMode;
++  QString m_om0rxPriorityHuntStatus;
++  int     m_om0rxPriorityHuntScore = -1;
++  int     m_om0rxPriorityHuntRank = -1;
++  int     m_om0rxPriorityHuntFreq = 0;
++  int     m_om0rxPriorityHuntReport = 0;
++  bool    m_om0rxPriorityHuntTxFirst = false;
++  int     m_decodeCount = 0;
++  bool    m_prioTxFirst;
++  int     m_prioFreq;
+   QString m_prioGrid;
+   bool    m_infoMessageShown = false;
+   bool    m_autoModeSwitch = false;
+@@ -790,7 +812,11 @@ private:
+   QLabel labDate;
+   QString qrzSessionKey;
+   QString qrzPendingLookupCall;
+-  QNetworkAccessManager * networkManager;
++  QNetworkAccessManager * networkManager;
++  QNetworkAccessManager * om0rxNetworkManager;
++  QSet<QString> m_om0rx_status_inflight;
++  QSet<QString> m_om0rx_history_inflight;
++  QHash<QString, QString> m_om0rx_status_cache;
+ 
+   QLabel auto_tx_label;
+   QLabel band_hopping_label;
+@@ -1026,11 +1052,17 @@ private:
+   QString WSPR_message();
+   void fast_config(bool b);
+   void CQTxFreq();
+-  void useNextCall();
+-  void abortQSO();
+-  void updateRate();
+-  void write_all(QString txRx, QString message);
+-  bool isWorked(int itype, QString key, float fMHz=0, QString="");
++  void useNextCall();
++  void abortQSO();
++  void updateRate();
++  void write_all(QString txRx, QString message);
++  void om0rx_remember_priority_hunt(QString const& call, QString const& grid, int report,
++                                    int freq, bool tx_first, int rank, int score,
++                                    QString const& band, QString const& mode,
++                                    QString const& status);
++  bool om0rx_try_start_priority_hunt();
++  void om0rx_clear_priority_hunt(QString const& reason);
++  bool isWorked(int itype, QString key, float fMHz=0, QString="");
+ 
+   QString save_wave_file (QString const& name
+                           , short const * data
+diff --git a/wsjtx_config.h.in b/wsjtx_config.h.in
+index 5d66589..2ec368a 100644
+--- a/wsjtx_config.h.in
++++ b/wsjtx_config.h.in
+@@ -48,6 +48,7 @@ extern "C"  {
+ #cmakedefine01 WSJT_ENABLE_EXPERIMENTAL_FEATURES
+ #cmakedefine01 WSJT_RIG_NONE_CAN_SPLIT
+ #cmakedefine01 WSJT_TRACE_UDP
++#cmakedefine01 OM0RX_BUILD_WITH_OMNIRIG
+ 
+ /* consistent UNICODE behaviour */
+ #ifndef UNICODE

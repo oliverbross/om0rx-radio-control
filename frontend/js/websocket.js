@@ -36,7 +36,11 @@ const websocketMethods = {
                 const message = JSON.parse(event.data);
                 log('debug', 'ws', 'Received:', message.type);
                 
-                if (message.type === 'status') {
+                if (message.type === 'spot-command') {
+                    if (typeof this.handleSpotsPopoutCommand === 'function') {
+                        this.handleSpotsPopoutCommand(message.data);
+                    }
+                } else if (message.type === 'status') {
                     this.updateRadioStatus(message.data);
                 } else if (message.type === 'spots') {
                     // Accumulate spots instead of replacing

@@ -3,6 +3,36 @@
 
 console.log('✅ Loading dx-spots.js module...');
 
+const SPOT_SECTION_VISIBILITY_STORAGE_KEY = 'om0rx.spots.sectionVisibility';
+const SPOTS_POPOUT_STATE_STORAGE_KEY = 'om0rx.spots.popoutState';
+const SPOTS_POPOUT_COMMAND_STORAGE_KEY = 'om0rx.spots.popoutCommand';
+const SPOTS_POPOUT_COMMAND_CHANNEL = 'om0rx-spots-popout-command';
+
+function getDefaultSpotSectionVisibility() {
+    return {
+        activeFilters: true,
+        bandActivity: true,
+        sourceDiagnostics: true,
+        rblMonitor: true,
+        rblAlerts: true,
+        wsjtxEngine: true,
+        wsjtxPlanner: true,
+        activityIntelligence: true,
+    };
+}
+
+function loadInitialSpotSectionVisibility() {
+    try {
+        const storage = window.localStorage;
+        const raw = storage.getItem(SPOT_SECTION_VISIBILITY_STORAGE_KEY);
+        if (!raw) return getDefaultSpotSectionVisibility();
+        return { ...getDefaultSpotSectionVisibility(), ...JSON.parse(raw) };
+    } catch (error) {
+        console.warn('Could not load spots section visibility:', error);
+        return getDefaultSpotSectionVisibility();
+    }
+}
+
 const dxSpotsData = {
     // DX Spots
     dxSpots: [],
@@ -72,6 +102,7 @@ const dxSpotsData = {
     rblAlertSettingsOpen: false,
     rblAlerts: [],
     rblAlertSeen: {},
+    spotsSectionVisibility: loadInitialSpotSectionVisibility(),
     
     // Filtered search from database
     filteredSearchResults: [],
@@ -219,11 +250,52 @@ const dxSpotsData = {
     spotsWindow: null,
     spotsDetached: false,
     spotsChannel: null, // BroadcastChannel for window sync
+    spotsCommandChannel: null,
+    spotsCommandListenerStarted: false,
+    spotsCommandPollTimer: null,
+    lastSpotsCommandId: '',
+    spotsCommandPollInitialized: false,
+    processedSpotCommandIds: {},
+    spotsPopoutSyncTimer: null,
     visualMapWindow: null,
 };
 
 const dxSpotsMethods = {
     // === DX Spots ===
+
+    getRadioModeForSpot(spot, freqMhz) {
+        const mode = String(spot?.mode || '').trim().toUpperCase();
+        if (!mode) return '';
+
+        if (mode === 'SSB') {
+            return freqMhz < 14 ? 'LSB' : 'USB';
+        }
+
+        if (['FT8', 'FT4', 'FT2', 'JT65', 'JT9', 'PSK', 'DIGI', 'MFSK', 'OLIVIA'].includes(mode)) {
+            return 'DIGU';
+        }
+
+        return mode;
+    },
+
+    sendImmediateSpotTune(freqMhz, radioMode, spot) {
+        return this.sendCommand('spots/tune', { frequency: freqMhz, mode: radioMode })
+            .then(result => {
+                const appliedMode = result?.mode || radioMode;
+                if (this.radioStatus) {
+                    this.radioStatus.frequency = freqMhz;
+                    this.radioStatus.mode = appliedMode;
+                }
+                console.log('✅ Spot radio tune command completed:', spot?.callsign, freqMhz, appliedMode);
+                this.showStatus(`✅ Tuned radio to ${spot?.callsign || 'spot'} on ${this.formatFrequencyForDisplay(freqMhz)} MHz`, 'success');
+                return result;
+            })
+            .catch(error => {
+                console.error('Spot radio tune command failed:', error);
+                this.showStatus(`❌ Radio tune failed: ${error.message}`, 'error');
+                return null;
+            });
+    },
     
     async tuneToSpot(spot) {
         console.log('🎯 tuneToSpot called with spot:', spot);
@@ -239,17 +311,14 @@ const dxSpotsMethods = {
         }
         
         try {
-            // Map cluster mode to radio mode
-            // For SSB: determine USB (20m and up) or LSB (160-40m bands)
-            let radioMode = spot.mode;
-            if (spot.mode === 'SSB' || spot.mode === 'ssb') {
-                // LSB for 160m, 80m, 60m, 40m (freq < 14 MHz)
-                // USB for 20m and higher (freq >= 14 MHz)
-                radioMode = freqMhz < 14 ? 'LSB' : 'USB';
-            }
+            const radioMode = this.getRadioModeForSpot(spot, freqMhz);
             
             console.log('Tuning to spot:', freqMhz, 'Mode:', spot.mode, '→', radioMode);
             this.showStatus(`🎯 Tuning to ${spot.callsign} on ${this.formatFrequencyForDisplay(freqMhz)} MHz (${radioMode})...`, 'info');
+
+            // Start the physical radio tune immediately. Log form updates, WSJT
+            // bridge updates, profile lookups, and rotor work must not delay it.
+            const radioTunePromise = this.sendImmediateSpotTune(freqMhz, radioMode, spot);
 
             // === CLEAR OLD FORM DATA FIRST ===
             // Make sure all fields from all tabs are cleared before populating with new spot
@@ -307,7 +376,11 @@ const dxSpotsMethods = {
             }
 
             if (!spot._skipDigitalBroadcast) {
-                this.broadcastDigitalSpotSelection(spot, freqMhz);
+                try {
+                    this.broadcastDigitalSpotSelection(spot, freqMhz);
+                } catch (error) {
+                    console.warn('Could not broadcast digital spot selection:', error);
+                }
             }
 
             await this.$nextTick();
@@ -363,9 +436,6 @@ const dxSpotsMethods = {
                 }
             });
 
-            // Tune radio with full precision
-            await this.sendCommand('spots/tune', { frequency: freqMhz, mode: radioMode });
-
             // Add spot to SmartSDR panadapter display
             try {
                 const response = await fetch('/api/spots/add-to-radio', {
@@ -389,7 +459,10 @@ const dxSpotsMethods = {
                 console.warn('Could not add spot to panadapter:', e);
             }
 
-            this.showStatus(`✅ Tuned to ${spot.callsign} on ${this.formatFrequencyForDisplay(freqMhz)} MHz`, 'success');
+            radioTunePromise.then(result => {
+                if (!result) return;
+                console.log(`✅ Spot action completed for ${spot.callsign} on ${this.formatFrequencyForDisplay(freqMhz)} MHz`);
+            });
             
         } catch (e) {
             this.suppressCallsignLookup = false;
@@ -1516,35 +1589,231 @@ const dxSpotsMethods = {
         // All filters matched
         return true;
     },
+
+    getDefaultSpotSectionVisibility,
+
+    loadSpotSectionVisibility() {
+        this.spotsSectionVisibility = loadInitialSpotSectionVisibility();
+    },
+
+    saveSpotSectionVisibility() {
+        try {
+            window.localStorage.setItem(
+                SPOT_SECTION_VISIBILITY_STORAGE_KEY,
+                JSON.stringify({ ...getDefaultSpotSectionVisibility(), ...(this.spotsSectionVisibility || {}) })
+            );
+        } catch (error) {
+            console.warn('Could not save spots section visibility:', error);
+        }
+    },
+
+    getSpotSectionVisibilityItems() {
+        return [
+            { id: 'activeFilters', label: 'Active filters' },
+            { id: 'bandActivity', label: 'Band activity' },
+            { id: 'sourceDiagnostics', label: 'Sources' },
+            { id: 'rblMonitor', label: 'RBL controls' },
+            { id: 'rblAlerts', label: 'RBL alerts' },
+            { id: 'wsjtxEngine', label: 'WSJT status' },
+            { id: 'wsjtxPlanner', label: 'WSJT planner' },
+            { id: 'activityIntelligence', label: 'Activity intelligence' },
+        ];
+    },
+
+    isSpotSectionVisible(sectionId) {
+        const visibility = this.spotsSectionVisibility || {};
+        return visibility[sectionId] !== false;
+    },
+
+    toggleSpotSectionVisibility(sectionId) {
+        const next = {
+            ...getDefaultSpotSectionVisibility(),
+            ...(this.spotsSectionVisibility || {}),
+        };
+        next[sectionId] = next[sectionId] === false;
+        this.spotsSectionVisibility = next;
+        this.saveSpotSectionVisibility();
+
+        if (sectionId === 'activityIntelligence' && next[sectionId]) {
+            this.activityPanelCollapsed = false;
+        }
+    },
+
+    showAllSpotSections() {
+        this.spotsSectionVisibility = getDefaultSpotSectionVisibility();
+        this.activityPanelCollapsed = false;
+        this.saveSpotSectionVisibility();
+    },
+
+    saveSpotsPopoutState() {
+        try {
+            const cloneSpot = spot => ({ ...(spot || {}) });
+            const limit = Math.max(500, Number(this.maxSpots || 100));
+            window.localStorage.setItem(SPOTS_POPOUT_STATE_STORAGE_KEY, JSON.stringify({
+                spotsFilter: this.spotsFilter,
+                maxSpots: this.maxSpots,
+                viewMode: this.viewMode === 'visual' ? 'visual' : 'spots',
+                clusterConnected: this.clusterConnected,
+                clusterStatus: this.clusterStatus,
+                spotSourceStats: this.spotSourceStats,
+                dxSpots: (this.dxSpots || []).slice(0, limit).map(cloneSpot),
+                filteredSearchResults: (this.filteredSearchResults || []).slice(0, limit).map(cloneSpot),
+                savedAt: Date.now(),
+            }));
+        } catch (error) {
+            console.warn('Could not save filters pop-out state:', error);
+        }
+    },
+
+    startSpotsPopoutSync() {
+        this.stopSpotsPopoutSync();
+        this.saveSpotsPopoutState();
+        this.spotsPopoutSyncTimer = setInterval(() => {
+            if (!this.spotsDetached) {
+                this.stopSpotsPopoutSync();
+                return;
+            }
+            this.saveSpotsPopoutState();
+        }, 1000);
+    },
+
+    stopSpotsPopoutSync() {
+        if (this.spotsPopoutSyncTimer) {
+            clearInterval(this.spotsPopoutSyncTimer);
+            this.spotsPopoutSyncTimer = null;
+        }
+    },
     
     // === Spots Window Management ===
+
+    handleSpotsPopoutCommand(command) {
+        if (!command || (command.type && command.type !== 'spot-action') || !command.id || !command.action || !command.spot) return false;
+        if (this.isSpotsStandalone() || this.processedSpotCommandIds[command.id]) return false;
+        this.processedSpotCommandIds[command.id] = Date.now();
+        document.documentElement.dataset.spotsCommandBridge = `handled:${command.action || 'unknown'}`;
+        document.documentElement.dataset.spotsCommandId = command.id;
+
+        const ids = Object.keys(this.processedSpotCommandIds);
+        if (ids.length > 50) {
+            ids.sort((a, b) => this.processedSpotCommandIds[a] - this.processedSpotCommandIds[b])
+                .slice(0, ids.length - 50)
+                .forEach(id => delete this.processedSpotCommandIds[id]);
+        }
+
+        if (command.action === 'tune') {
+            this.tuneToSpot(command.spot);
+            return true;
+        }
+        if (command.action === 'details') {
+            this.showSpotDetails(command.spot);
+            return true;
+        }
+        return false;
+    },
+
+    startSpotsCommandListener() {
+        if (this.isSpotsStandalone() || this.spotsCommandListenerStarted) return;
+        this.spotsCommandListenerStarted = true;
+        document.documentElement.dataset.spotsCommandBridge = 'started';
+
+        const handleCommand = command => this.handleSpotsPopoutCommand(command);
+
+        if ('BroadcastChannel' in window) {
+            this.spotsCommandChannel = new BroadcastChannel(SPOTS_POPOUT_COMMAND_CHANNEL);
+            this.spotsCommandChannel.onmessage = event => handleCommand(event.data);
+        }
+
+        window.addEventListener('storage', event => {
+            if (event.key !== SPOTS_POPOUT_COMMAND_STORAGE_KEY || !event.newValue) return;
+            try {
+                handleCommand(JSON.parse(event.newValue));
+            } catch (error) {
+                console.warn('Could not parse detached filters command:', error);
+            }
+        });
+
+        const pollCommands = async () => {
+            try {
+                const suffix = this.lastSpotsCommandId
+                    ? `?since=${encodeURIComponent(this.lastSpotsCommandId)}`
+                    : '';
+                document.documentElement.dataset.spotsCommandPollSince = this.lastSpotsCommandId || '';
+                document.documentElement.dataset.spotsCommandPollAt = String(Date.now());
+                const response = await fetch(`/api/spots/popout-command${suffix}`);
+                const data = await response.json();
+                document.documentElement.dataset.spotsCommandPollStatus = String(response.status);
+                document.documentElement.dataset.spotsCommandPollCount = String(Array.isArray(data.commands) ? data.commands.length : 0);
+                if (!response.ok || !data.ok || !Array.isArray(data.commands)) return;
+                if (!this.spotsCommandPollInitialized && !this.lastSpotsCommandId) {
+                    const latestCommand = data.commands[data.commands.length - 1];
+                    if (latestCommand?.id) {
+                        this.lastSpotsCommandId = latestCommand.id;
+                        document.documentElement.dataset.spotsCommandLastSeen = latestCommand.id;
+                    }
+                    this.spotsCommandPollInitialized = true;
+                    document.documentElement.dataset.spotsCommandBridge = 'polling';
+                    return;
+                }
+                this.spotsCommandPollInitialized = true;
+                data.commands.forEach(command => {
+                    this.lastSpotsCommandId = command.id || this.lastSpotsCommandId;
+                    if (command.id) {
+                        document.documentElement.dataset.spotsCommandLastSeen = command.id;
+                    }
+                    handleCommand(command);
+                });
+            } catch (error) {
+                document.documentElement.dataset.spotsCommandPollError = error.message || 'error';
+                console.warn('Could not poll detached filters commands:', error);
+            }
+        };
+
+        pollCommands();
+        this.spotsCommandPollTimer = setInterval(pollCommands, 750);
+    },
     
-    detachSpots() {
+    async detachSpots() {
         if (this.spotsDetached) return;
+        this.startSpotsPopoutSync();
+
+        if (window.pywebview?.api?.open_spots_window) {
+            try {
+                const result = await window.pywebview.api.open_spots_window();
+                if (result && result.success) {
+                    this.spotsDetached = true;
+                    return;
+                }
+                if (typeof this.showStatus === 'function') {
+                    this.showStatus(`Filters pop-out failed: ${result?.error || 'unknown error'}`, 'warning');
+                }
+            } catch (error) {
+                if (typeof this.showStatus === 'function') {
+                    this.showStatus(`Filters pop-out failed: ${error.message}`, 'warning');
+                }
+            }
+        }
         
-        const windowFeatures = 'width=1200,height=800,scrollbars=yes,resizable=yes';
+        const windowFeatures = 'width=1280,height=860,left=80,top=80,scrollbars=yes,resizable=yes';
         this.spotsWindow = window.open('/spots.html', 'spotsWindow', windowFeatures);
         
         if (this.spotsWindow) {
             this.spotsDetached = true;
-            
-            // Set up communication channel
-            this.spotsChannel = new BroadcastChannel('spots-sync');
-            
-            // Send initial data when window loads
-            this.spotsWindow.addEventListener('load', () => {
-                this.syncSpotsToWindow();
-            });
-            
-            // Handle window close
+
+            const detachTimer = setInterval(() => {
+                if (!this.spotsWindow || this.spotsWindow.closed) {
+                    clearInterval(detachTimer);
+                    this.reattachSpots({ keepWindowOpen: true });
+                }
+            }, 1000);
+
             this.spotsWindow.addEventListener('beforeunload', () => {
+                clearInterval(detachTimer);
                 this.spotsDetached = false;
                 this.spotsWindow = null;
-                if (this.spotsChannel) {
-                    this.spotsChannel.close();
-                    this.spotsChannel = null;
-                }
             });
+        } else if (typeof this.showStatus === 'function') {
+            this.stopSpotsPopoutSync();
+            this.showStatus('Filters pop-out was blocked by the browser', 'warning');
         }
     },
     
@@ -1559,16 +1828,40 @@ const dxSpotsMethods = {
         }
     },
     
-    reattachSpots() {
-        if (this.spotsWindow) {
+    reattachSpots(options = {}) {
+        if (this.spotsWindow && !options.keepWindowOpen) {
             this.spotsWindow.close();
         }
+        if (!options.keepWindowOpen && window.pywebview?.api?.close_spots_window) {
+            window.pywebview.api.close_spots_window().catch(error => {
+                console.warn('Could not close native filters window:', error);
+            });
+        }
         this.spotsDetached = false;
+        this.stopSpotsPopoutSync();
         this.spotsWindow = null;
         if (this.spotsChannel) {
             this.spotsChannel.close();
             this.spotsChannel = null;
         }
+    },
+
+    focusDetachedSpots() {
+        if (window.pywebview?.api?.open_spots_window) {
+            window.pywebview.api.open_spots_window().catch(error => {
+                console.warn('Could not focus native filters window:', error);
+            });
+            return;
+        }
+        if (this.spotsWindow && !this.spotsWindow.closed) {
+            this.spotsWindow.focus();
+        } else {
+            this.reattachSpots({ keepWindowOpen: true });
+        }
+    },
+
+    isSpotsStandalone() {
+        return document.body.dataset.spotsStandalone === 'true';
     },
 
     isVisualMapStandalone() {
@@ -5304,3 +5597,26 @@ window.FlexRadioSpots = {
     methods: dxSpotsMethods,
     computed: dxSpotsComputed
 };
+
+function startDetachedSpotsCommandListenerWhenReady() {
+    const app = window.vueInstance;
+    if (
+        app &&
+        typeof app.startSpotsCommandListener === 'function' &&
+        document.body.dataset.spotsStandalone !== 'true'
+    ) {
+        app.startSpotsCommandListener();
+        return true;
+    }
+    return false;
+}
+
+document.addEventListener('vue-mounted', startDetachedSpotsCommandListenerWhenReady);
+
+const detachedCommandListenerStartupTimer = setInterval(() => {
+    if (startDetachedSpotsCommandListenerWhenReady()) {
+        clearInterval(detachedCommandListenerStartupTimer);
+    }
+}, 500);
+
+setTimeout(() => clearInterval(detachedCommandListenerStartupTimer), 30000);

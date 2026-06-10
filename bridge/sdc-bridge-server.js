@@ -25,6 +25,8 @@ import dgram from 'dgram';
 import http from 'http';
 import https from 'https';
 import os from 'os';
+import fs from 'fs';
+import path from 'path';
 import { WebSocketServer } from 'ws';
 import { WsjtxParser } from './wsjtx-parser.js';
 import { buildCommand } from './wsjtx-protocol.js';
@@ -39,6 +41,9 @@ const WSJTX_COMMAND_PORT = parseInt(process.env.WSJTX_COMMAND_PORT || '8092');
 const WSJTX_ENABLED = process.env.WSJTX_ENABLED !== 'false';
 const BRIDGE_TEST_MODE = process.env.OM0RX_BRIDGE_TEST_MODE === '1';
 const OM0RX_BACKEND_URL = (process.env.OM0RX_BACKEND_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '');
+const LOGGED_QSO_RETRY_INTERVAL_MS = parseInt(process.env.WSJTX_LOGGED_QSO_RETRY_INTERVAL_MS || '15000');
+const LOGGED_QSO_PENDING_PATH = process.env.WSJTX_LOGGED_QSO_PENDING_PATH
+  || path.join(process.cwd(), 'logs', 'wsjtx_logged_qso_pending.jsonl');
 
 // WebSocket server is created during startup. Keeping module import side-effect
 // free in test mode lets protocol/diagnostic contracts be exercised safely.
@@ -51,6 +56,8 @@ let latestWsjtxClientId = '';
 let wsjtxCommandSender = null;
 let pendingQsoLoggedUploadTimer = null;
 let pendingQsoLoggedData = null;
+let loggedQsoRetryTimer = null;
+let loggedQsoUploadQueue = [];
 let wsjtxStats = {
   packets: 0,
   statuses: 0,
@@ -753,7 +760,124 @@ function buildLoggedQsoUpload(loggedData) {
     comments: loggedData.adifText ? 'Auto-logged from WSJT-X UDP ADIF' : 'Auto-logged from WSJT-X UDP QSO Logged',
     adif_text: loggedData.adifText || '',
     source: 'wsjtx-bridge',
+    async_upload: true,
   };
+}
+
+function loggedQsoIdentity(payload) {
+  if (!payload) return '';
+  const adif = String(payload.adif_text || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+  if (adif) return adif;
+  return [
+    payload.call,
+    payload.frequency_hz,
+    payload.mode,
+    payload.rst_sent,
+    payload.rst_received,
+  ].map(value => String(value || '').trim().toUpperCase()).join('|');
+}
+
+function persistLoggedQsoUploadQueue() {
+  if (BRIDGE_TEST_MODE) return;
+  try {
+    fs.mkdirSync(path.dirname(LOGGED_QSO_PENDING_PATH), { recursive: true });
+    const data = loggedQsoUploadQueue
+      .map(item => JSON.stringify(item))
+      .join('\n');
+    const tempPath = `${LOGGED_QSO_PENDING_PATH}.tmp`;
+    fs.writeFileSync(tempPath, data ? `${data}\n` : '', 'utf8');
+    fs.renameSync(tempPath, LOGGED_QSO_PENDING_PATH);
+  } catch (error) {
+    console.warn(`⚠️  Could not persist WSJT-X logged QSO retry queue: ${error.message || error}`);
+  }
+}
+
+function loadLoggedQsoUploadQueue() {
+  if (BRIDGE_TEST_MODE || !fs.existsSync(LOGGED_QSO_PENDING_PATH)) return;
+  try {
+    const lines = fs.readFileSync(LOGGED_QSO_PENDING_PATH, 'utf8')
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean);
+    loggedQsoUploadQueue = lines
+      .map(line => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(item => item && item.payload && loggedQsoIdentity(item.payload));
+    if (loggedQsoUploadQueue.length) {
+      console.log(`📝 Loaded ${loggedQsoUploadQueue.length} pending WSJT-X logged QSO upload(s)`);
+    }
+  } catch (error) {
+    console.warn(`⚠️  Could not load WSJT-X logged QSO retry queue: ${error.message || error}`);
+    loggedQsoUploadQueue = [];
+  }
+}
+
+function enqueueLoggedQsoUpload(payload, reason = '') {
+  const identity = loggedQsoIdentity(payload);
+  if (!identity) return;
+  const existing = loggedQsoUploadQueue.find(item => item.identity === identity);
+  if (existing) {
+    existing.lastError = reason || existing.lastError || '';
+    existing.nextAttemptAt = Math.min(existing.nextAttemptAt || Date.now(), Date.now() + LOGGED_QSO_RETRY_INTERVAL_MS);
+  } else {
+    loggedQsoUploadQueue.push({
+      identity,
+      payload,
+      attempts: 0,
+      queuedAt: Date.now(),
+      nextAttemptAt: Date.now() + LOGGED_QSO_RETRY_INTERVAL_MS,
+      lastError: reason,
+    });
+  }
+  persistLoggedQsoUploadQueue();
+}
+
+async function retryOneLoggedQsoUpload() {
+  const now = Date.now();
+  const item = loggedQsoUploadQueue.find(entry => (entry.nextAttemptAt || 0) <= now);
+  if (!item) return;
+  item.attempts = (item.attempts || 0) + 1;
+  try {
+    const result = await postJson(`${OM0RX_BACKEND_URL}/api/wsjtx/log-qso`, item.payload, 15000);
+    loggedQsoUploadQueue = loggedQsoUploadQueue.filter(entry => entry !== item);
+    persistLoggedQsoUploadQueue();
+    wsjtxStats.loggedUploads += 1;
+    wsjtxStats.lastLoggedUpload = {
+      ts: Date.now(),
+      call: item.payload.call,
+      mode: item.payload.mode,
+      dialFrequency: item.payload.frequency_hz,
+      success: true,
+      statusCode: result.statusCode,
+      result: result.body,
+      retry: true,
+    };
+    console.log(`✅ Retried WSJT-X logged QSO upload succeeded: ${item.payload.call}`);
+  } catch (error) {
+    item.lastError = error.message || String(error);
+    item.nextAttemptAt = Date.now() + Math.min(300000, LOGGED_QSO_RETRY_INTERVAL_MS * Math.max(1, item.attempts));
+    persistLoggedQsoUploadQueue();
+    console.warn(`⚠️  Retried WSJT-X logged QSO upload failed for ${item.payload.call}: ${item.lastError}`);
+  }
+}
+
+function startLoggedQsoRetryLoop() {
+  if (loggedQsoRetryTimer || BRIDGE_TEST_MODE) return;
+  loadLoggedQsoUploadQueue();
+  loggedQsoRetryTimer = setInterval(() => {
+    retryOneLoggedQsoUpload().catch(error => {
+      console.warn(`⚠️  WSJT-X logged QSO retry loop failed: ${error.message || error}`);
+    });
+  }, LOGGED_QSO_RETRY_INTERVAL_MS);
+  if (typeof loggedQsoRetryTimer.unref === 'function') loggedQsoRetryTimer.unref();
 }
 
 async function uploadLoggedQsoToBackend(loggedData) {
@@ -770,7 +894,7 @@ async function uploadLoggedQsoToBackend(loggedData) {
     error: '',
   };
   try {
-    const result = await postJson(`${OM0RX_BACKEND_URL}/api/wsjtx/log-qso`, payload);
+    const result = await postJson(`${OM0RX_BACKEND_URL}/api/wsjtx/log-qso`, payload, 15000);
     uploadEntry.success = true;
     uploadEntry.statusCode = result.statusCode;
     uploadEntry.result = result.body;
@@ -779,6 +903,7 @@ async function uploadLoggedQsoToBackend(loggedData) {
   } catch (error) {
     uploadEntry.error = error.message || String(error);
     wsjtxStats.loggedUploadErrors += 1;
+    enqueueLoggedQsoUpload(payload, uploadEntry.error);
     console.warn(`⚠️  WSJT-X logged QSO backend upload failed for ${payload.call}: ${uploadEntry.error}`);
   } finally {
     wsjtxStats.lastLoggedUpload = uploadEntry;
@@ -877,7 +1002,12 @@ export function __resetWsjtxBridgeDiagnosticsForTest() {
     clearTimeout(pendingQsoLoggedUploadTimer);
     pendingQsoLoggedUploadTimer = null;
   }
+  if (loggedQsoRetryTimer) {
+    clearInterval(loggedQsoRetryTimer);
+    loggedQsoRetryTimer = null;
+  }
   pendingQsoLoggedData = null;
+  loggedQsoUploadQueue = [];
   latestWsjtxEndpoint = null;
   latestWsjtxClientId = '';
   wsjtxCommandSender = null;
@@ -928,6 +1058,9 @@ if (!BRIDGE_TEST_MODE) {
 
   // Start local command API for backend-driven automation
   startWsjtxCommandServer();
+
+  // Retry logged QSOs that could not be forwarded while the backend was busy.
+  startLoggedQsoRetryLoop();
 
   // Graceful shutdown
   process.on('SIGINT', () => {

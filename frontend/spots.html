@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OM0RX Radio Control - Filters</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link rel="stylesheet" href="main-styles.css?v=20260604-filters-popout-44">
+</head>
+<body data-spots-standalone="true">
+    <div id="app" class="spots-standalone-app">
+        <div class="spots-standalone-title">
+            <strong>OM0RX Filters</strong>
+            <span v-if="statusMessage" :class="['visual-map-standalone-status', statusMessage.type]">
+                {{ statusMessage.message }}
+            </span>
+        </div>
+        <div id="dx-spots-section"></div>
+    </div>
+
+    <script src="js/logger.js"></script>
+    <script src="js/dx-spots.js?v=20260604-filters-popout-44"></script>
+    <script src="js/spots-standalone.js?v=20260604-filters-popout-44"></script>
+    <script async src="https://unpkg.com/topojson-client@3"></script>
+</body>
+</html>

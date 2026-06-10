@@ -31,20 +31,6 @@
             <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="position: absolute; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;">
                 <span class="status-indicator" :class="connected ? 'status-connected' : 'status-disconnected'"></span>
                 <button
-                    @click="openDigitalWindow"
-                    class="ft8-digi-button"
-                    title="Open digital mode interface"
-                    style="padding: 4px 12px; font-size: 12px; background: #2a5a8f; color: white; border: 1px solid #4a7aaf; border-radius: 4px; cursor: pointer; font-weight: 600;">
-                    DIGITAL
-                </button>
-                <button
-                    @click="launchPatchedWsjtxEngine"
-                    :disabled="wsjtxLaunchLoading || wsjtxPreflightLoading"
-                    title="Launch OM0RX patched WSJT-X"
-                    style="padding: 4px 8px; font-size: 12px; background: #15803d; color: white; border: 1px solid #22c55e; border-radius: 4px; cursor: pointer; font-weight: 600;">
-                    WSJT-X
-                </button>
-                <button
                     @click="showSyncModal = true"
                     :class="syncStatus.syncing ? 'sync-button sync-syncing' : 'sync-button'"
                     :title="syncStatus.syncing ? 'Wavelog local sync in progress...' : `Wavelog local cache: ${syncStatus.total_records} records synced`"

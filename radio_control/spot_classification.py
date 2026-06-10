@@ -79,6 +79,12 @@ def classify_call_status(
         return "New Call"
     if bandmode_confirmed:
         return "Confirmed"
+    if new_band and new_mode:
+        return "New Band+Mode"
+    if new_band:
+        return "New Band"
+    if new_mode:
+        return "New Mode"
     return "Worked"
 
 

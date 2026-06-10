@@ -195,10 +195,53 @@ def worked_status_flags(
 
 
 def canonical_call_status(status: Any, dxcc_status: Any = None) -> str:
-    value = normalise_status(status)
-    if value in {"New Band", "New Mode", "New Band+Mode"} and status_has_prior_call_work(value, dxcc_status):
-        return "Worked"
-    return value
+    return normalise_status(status)
+
+
+def slot_aware_call_status(
+    status: Any,
+    needed: Mapping[str, Any] | None,
+    needed_on_band: Mapping[str, Any] | None,
+) -> str:
+    call_status = normalise_status(status)
+    needed = needed or {}
+    needed_on_band = needed_on_band or {}
+    if _bool(needed.get("call")) or call_status == "New Call":
+        return "New Call"
+
+    band_needed = _bool(needed_on_band.get("call"))
+    mode_needed = _bool(needed_on_band.get("mode") or needed_on_band.get("call_mode"))
+    if band_needed and mode_needed:
+        return "New Band+Mode"
+    if band_needed:
+        return "New Band"
+    if mode_needed:
+        return "New Mode"
+    return call_status
+
+
+def slot_aware_dxcc_status(
+    status: Any,
+    needed: Mapping[str, Any] | None,
+    needed_on_band: Mapping[str, Any] | None,
+) -> str:
+    dxcc_status = normalise_status(status)
+    needed = needed or {}
+    needed_on_band = needed_on_band or {}
+    if _bool(needed.get("dxcc")) or dxcc_status == "ATNO":
+        return "ATNO"
+
+    band_needed = _bool(needed_on_band.get("dxcc") or needed_on_band.get("dxcc_band"))
+    mode_needed = _bool(needed_on_band.get("dxcc_mode"))
+    if not (band_needed or mode_needed):
+        return dxcc_status
+
+    prefix = "C" if dxcc_status == "Confirmed" or dxcc_status.startswith("C/") else "W"
+    if band_needed and mode_needed:
+        return f"{prefix}/New Band+Mode"
+    if band_needed:
+        return f"{prefix}/New Band"
+    return f"{prefix}/New Mode"
 
 
 def source_is_spot_hunt(source: Any) -> bool:
@@ -214,7 +257,7 @@ def _prior_work_should_block(
 ) -> bool:
     if not status_has_prior_call_work(call_status, dxcc_status):
         return False
-    if source_is_spot_hunt(source) and _prior_work_has_enabled_slot_need(reasons, settings):
+    if _prior_work_has_enabled_slot_need(reasons, settings):
         return False
     return True
 
@@ -347,12 +390,47 @@ def message_is_directed_to_mycall(message: Any, mycall: str) -> bool:
     return False
 
 
+def _normalise_filter_continents(value: Any) -> set[str]:
+    valid = {"EU", "AF", "OC", "AS", "SA", "NA", "AN"}
+    aliases = {
+        "EUROPE": "EU",
+        "AFRICA": "AF",
+        "OCEANIA": "OC",
+        "ASIA": "AS",
+        "SOUTH AMERICA": "SA",
+        "S. AMERICA": "SA",
+        "S_AMERICA": "SA",
+        "SOUTH_AMERICA": "SA",
+        "NORTH AMERICA": "NA",
+        "N. AMERICA": "NA",
+        "N_AMERICA": "NA",
+        "NORTH_AMERICA": "NA",
+        "ANTARCTICA": "AN",
+    }
+    if isinstance(value, Mapping):
+        values = [key for key, enabled in value.items() if _bool(enabled)]
+    elif isinstance(value, str):
+        values = value.replace(",", "\n").splitlines()
+    elif isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray)):
+        values = list(value)
+    else:
+        return set()
+    continents: set[str] = set()
+    for item in values:
+        token = str(item or "").strip().upper()
+        token = aliases.get(token, token)
+        if token in valid:
+            continents.add(token)
+    return continents
+
+
 @dataclass
 class DigitalAutomationSettings:
     enabled: bool = False
     spot_hunt_enabled: bool = False
     band_hopping: bool = False
     mode_switching: bool = False
+    current_band: str = ""
     allowed_modes: set[str] = field(default_factory=lambda: {"FT8", "FT4"})
     min_signal: int = -30
     dwell_seconds: int = 120
@@ -370,6 +448,21 @@ class DigitalAutomationSettings:
     need_mode: bool = True
     need_grid: bool = True
     need_reference: bool = False
+    filter_matrix_enabled: bool = False
+    filter_new_call: bool = False
+    filter_new_dxcc: bool = False
+    filter_new_continent: bool = False
+    filter_new_grid: bool = False
+    filter_new_cq_zone: bool = False
+    filter_new_itu_zone: bool = False
+    filter_band_call: bool = True
+    filter_band_dxcc: bool = False
+    filter_band_continent: bool = False
+    filter_band_grid: bool = True
+    filter_band_cq_zone: bool = False
+    filter_band_itu_zone: bool = False
+    filter_continents: set[str] = field(default_factory=lambda: {"EU", "AF", "OC", "AS", "SA", "NA", "AN"})
+    filter_lotw_only: bool = False
     answer_direct_callers: bool = True
     dry_run: bool = False
     priority: str = "last"
@@ -408,6 +501,9 @@ class DigitalAutomationSettings:
         )
         self.band_hopping = _bool(automation.get("bandHopping", automation.get("band_hopping")), self.band_hopping)
         self.mode_switching = _bool(automation.get("modeSwitching", automation.get("mode_switching")), self.mode_switching)
+        current_band = str(automation.get("currentBand", automation.get("current_band", self.current_band)) or "").strip().lower()
+        if re.match(r"^\d{1,3}m$", current_band):
+            self.current_band = current_band
         self.min_signal = _int(automation.get("minSignal", automation.get("min_signal")), self.min_signal, low=-40, high=30)
         self.dwell_seconds = _int(
             automation.get("spotListenSeconds", automation.get("dwell_seconds")),
@@ -470,6 +566,35 @@ class DigitalAutomationSettings:
             automation.get("needReference", automation.get("need_reference")),
             self.need_reference,
         )
+        self.filter_matrix_enabled = _bool(
+            automation.get("filterMatrixEnabled", automation.get("filter_matrix_enabled")),
+            self.filter_matrix_enabled,
+        )
+        filter_new = automation.get("filterNew", automation.get("filter_new"))
+        if isinstance(filter_new, Mapping):
+            self.filter_new_call = _bool(filter_new.get("call"), self.filter_new_call)
+            self.filter_new_dxcc = _bool(filter_new.get("dxcc"), self.filter_new_dxcc)
+            self.filter_new_continent = _bool(filter_new.get("continent"), self.filter_new_continent)
+            self.filter_new_grid = _bool(filter_new.get("grid"), self.filter_new_grid)
+            self.filter_new_cq_zone = _bool(filter_new.get("cqZone", filter_new.get("cq_zone")), self.filter_new_cq_zone)
+            self.filter_new_itu_zone = _bool(filter_new.get("ituZone", filter_new.get("itu_zone")), self.filter_new_itu_zone)
+        filter_band = automation.get("filterNewOnBand", automation.get("filter_new_on_band"))
+        if isinstance(filter_band, Mapping):
+            self.filter_band_call = _bool(filter_band.get("call"), self.filter_band_call)
+            self.filter_band_dxcc = _bool(filter_band.get("dxcc"), self.filter_band_dxcc)
+            self.filter_band_continent = _bool(filter_band.get("continent"), self.filter_band_continent)
+            self.filter_band_grid = _bool(filter_band.get("grid"), self.filter_band_grid)
+            self.filter_band_cq_zone = _bool(filter_band.get("cqZone", filter_band.get("cq_zone")), self.filter_band_cq_zone)
+            self.filter_band_itu_zone = _bool(filter_band.get("ituZone", filter_band.get("itu_zone")), self.filter_band_itu_zone)
+        continents = _normalise_filter_continents(
+            automation.get("filterContinents", automation.get("filter_continents", automation.get("continents")))
+        )
+        if continents:
+            self.filter_continents = continents
+        self.filter_lotw_only = _bool(
+            automation.get("lotwOnly", automation.get("lotw_only")),
+            self.filter_lotw_only,
+        )
         self.answer_direct_callers = _bool(
             automation.get("answerDirectCallers", automation.get("answer_direct_callers")),
             self.answer_direct_callers,
@@ -494,6 +619,7 @@ class DigitalAutomationSettings:
             "spot_hunt_enabled": self.spot_hunt_enabled,
             "band_hopping": self.band_hopping,
             "mode_switching": self.mode_switching,
+            "current_band": self.current_band,
             "allowed_modes": sorted(self.allowed_modes),
             "min_signal": self.min_signal,
             "dwell_seconds": self.dwell_seconds,
@@ -511,6 +637,25 @@ class DigitalAutomationSettings:
             "need_mode": self.need_mode,
             "need_grid": self.need_grid,
             "need_reference": self.need_reference,
+            "filter_matrix_enabled": self.filter_matrix_enabled,
+            "filter_new": {
+                "call": self.filter_new_call,
+                "dxcc": self.filter_new_dxcc,
+                "continent": self.filter_new_continent,
+                "grid": self.filter_new_grid,
+                "cq_zone": self.filter_new_cq_zone,
+                "itu_zone": self.filter_new_itu_zone,
+            },
+            "filter_new_on_band": {
+                "call": self.filter_band_call,
+                "dxcc": self.filter_band_dxcc,
+                "continent": self.filter_band_continent,
+                "grid": self.filter_band_grid,
+                "cq_zone": self.filter_band_cq_zone,
+                "itu_zone": self.filter_band_itu_zone,
+            },
+            "filter_continents": sorted(self.filter_continents),
+            "filter_lotw_only": self.filter_lotw_only,
             "answer_direct_callers": self.answer_direct_callers,
             "dry_run": self.dry_run,
             "priority": self.priority,
@@ -1118,6 +1263,16 @@ class DigitalAutomationController:
 
         store = self.qso_status_store
         if not store:
+            needed = enriched.get("needed") if isinstance(enriched.get("needed"), Mapping) else {}
+            needed_on_band = (
+                enriched.get("needed_on_band")
+                if isinstance(enriched.get("needed_on_band"), Mapping)
+                else enriched.get("neededOnBand")
+                if isinstance(enriched.get("neededOnBand"), Mapping)
+                else {}
+            )
+            enriched["call_status"] = slot_aware_call_status(enriched.get("call_status"), needed, needed_on_band)
+            enriched["dxcc_status"] = slot_aware_dxcc_status(enriched.get("dxcc_status"), needed, needed_on_band)
             if status_sources and not enriched.get("status_source"):
                 enriched["status_source"] = ",".join(status_sources)
             return enriched
@@ -1152,6 +1307,13 @@ class DigitalAutomationController:
                 if overall is not None and bandmode is not None:
                     worked, confirmed = overall
                     new_band, new_mode, bandmode_confirmed = bandmode
+                    needed = dict(enriched.get("needed") or {})
+                    needed_on_band = dict(enriched.get("needed_on_band") or enriched.get("neededOnBand") or {})
+                    needed["dxcc"] = bool(needed.get("dxcc") or not worked)
+                    needed_on_band["dxcc"] = bool(needed_on_band.get("dxcc") or new_band)
+                    needed_on_band["dxcc_mode"] = bool(needed_on_band.get("dxcc_mode") or new_mode)
+                    enriched["needed"] = needed
+                    enriched["needed_on_band"] = needed_on_band
                     display = classify_dxcc_status(
                         worked,
                         confirmed,
@@ -1180,6 +1342,17 @@ class DigitalAutomationController:
                     status_sources.append("qso-grid-cache")
         except Exception as exc:
             logger.debug("Digital QSO status enrichment failed for %s: %s", call, exc, exc_info=True)
+
+        needed = enriched.get("needed") if isinstance(enriched.get("needed"), Mapping) else {}
+        needed_on_band = (
+            enriched.get("needed_on_band")
+            if isinstance(enriched.get("needed_on_band"), Mapping)
+            else enriched.get("neededOnBand")
+            if isinstance(enriched.get("neededOnBand"), Mapping)
+            else {}
+        )
+        enriched["call_status"] = slot_aware_call_status(enriched.get("call_status"), needed, needed_on_band)
+        enriched["dxcc_status"] = slot_aware_dxcc_status(enriched.get("dxcc_status"), needed, needed_on_band)
 
         existing_source = str(enriched.get("status_source") or enriched.get("statusSource") or "").strip()
         if status_sources and not existing_source:
@@ -1414,15 +1587,31 @@ class DigitalAutomationController:
             return False
         if target.active_state not in {"candidate_selected", "command_sent", "waiting_for_tx", "calling"}:
             return False
-        markers = [
-            marker
-            for marker in (target.last_command_at, target.last_attempt_at, target.last_heard_at)
-            if marker is not None
-        ]
+        if target.active_state == "candidate_selected":
+            progress_sources = (
+                target.last_command_at,
+                target.last_attempt_at,
+                target.updated_at,
+                target.last_heard_at,
+            )
+        else:
+            # A fresh decode from the same station is not QSO progress once we have
+            # started calling. Only command/attempt activity, or a real QSO state
+            # transition above, can keep the active attempt alive.
+            progress_sources = (
+                target.last_command_at,
+                target.last_attempt_at,
+                target.updated_at if not target.last_command_at and not target.last_attempt_at else None,
+            )
+        markers = [marker for marker in progress_sources if marker is not None]
         if not markers:
             return False
         last_progress_at = max(markers)
         stale_after = max(30, int(self.settings.dwell_seconds or 0))
+        if target.active_state in {"command_sent", "waiting_for_tx", "calling"}:
+            # Hunting should not sit on a one-sided call for the full spot-listen
+            # dwell. Replies advance the target into protected states above.
+            stale_after = max(45, min(stale_after, 60))
         if (now - last_progress_at).total_seconds() < stale_after:
             return False
         target.sync_state("backoff", active_state="failed")
@@ -1521,6 +1710,14 @@ class DigitalAutomationController:
                 continue
             if active_bands and target.band and target.band not in active_bands:
                 reject("outside-active-band-plan")
+                continue
+            if (
+                not self.settings.band_hopping
+                and self.settings.current_band
+                and target.band
+                and target.band != self.settings.current_band
+            ):
+                reject("band-hopping-disabled")
                 continue
             if not target.dial_frequency:
                 reject("missing-frequency")
@@ -2360,6 +2557,18 @@ def payload_need_reasons(payload: Mapping[str, Any]) -> set[str]:
         reasons.add("grid")
     if _bool(needed.get("mode")) or _bool(needed_on_band.get("mode")) or "new mode" in status_text:
         reasons.add("mode")
+    if _bool(needed.get("continent")):
+        reasons.add("continent")
+    if _bool(needed_on_band.get("continent")):
+        reasons.add("band_continent")
+    if _bool(needed.get("cq_zone")) or _bool(needed.get("cqZone")):
+        reasons.add("cq_zone")
+    if _bool(needed_on_band.get("cq_zone")) or _bool(needed_on_band.get("cqZone")):
+        reasons.add("band_cq_zone")
+    if _bool(needed.get("itu_zone")) or _bool(needed.get("ituZone")):
+        reasons.add("itu_zone")
+    if _bool(needed_on_band.get("itu_zone")) or _bool(needed_on_band.get("ituZone")):
+        reasons.add("band_itu_zone")
     if _bool(needed.get("call")) or call_status == "New Call":
         reasons.add("call")
     for item in references:
@@ -2373,6 +2582,45 @@ def payload_need_reasons(payload: Mapping[str, Any]) -> set[str]:
 
 def payload_matches_need_filters(payload: Mapping[str, Any], settings: DigitalAutomationSettings) -> bool:
     """Return whether a decoded/spot target matches the enabled hunting reasons."""
+    if settings.filter_matrix_enabled:
+        continent = str(payload.get("continent") or "").strip().upper()
+        if settings.filter_continents and continent and continent not in settings.filter_continents:
+            return False
+        if settings.filter_continents and len(settings.filter_continents) < 7 and not continent:
+            return False
+        if settings.filter_lotw_only:
+            lotw_value = _first_present(payload, "lotw_member", "lotwMember", "lotw", "lotw_user", "lotwUser")
+            if not _bool(lotw_value):
+                return False
+
+        call_status = normalise_status(payload.get("call_status") or payload.get("callStatus"))
+        dxcc_status = normalise_status(payload.get("dxcc_status") or payload.get("dxccStatus"))
+        status_text = f"{call_status} {dxcc_status}".lower()
+        needed = payload.get("needed") if isinstance(payload.get("needed"), Mapping) else {}
+        needed_on_band = (
+            payload.get("needed_on_band")
+            if isinstance(payload.get("needed_on_band"), Mapping)
+            else payload.get("neededOnBand")
+            if isinstance(payload.get("neededOnBand"), Mapping)
+            else {}
+        )
+        reasons = payload_need_reasons(payload)
+        selected_matches = [
+            settings.filter_new_call and ("call" in reasons or call_status == "New Call" or _bool(needed.get("call"))),
+            settings.filter_new_dxcc and ("dxcc" in reasons or dxcc_status in {"ATNO", "Worked"} or _bool(needed.get("dxcc"))),
+            settings.filter_new_continent and ("continent" in reasons or _bool(needed.get("continent"))),
+            settings.filter_new_grid and ("grid" in reasons or _bool(needed.get("grid"))),
+            settings.filter_new_cq_zone and ("cq_zone" in reasons or "cq" in reasons or _bool(needed.get("cq_zone")) or _bool(needed.get("cqZone"))),
+            settings.filter_new_itu_zone and ("itu_zone" in reasons or "itu" in reasons or _bool(needed.get("itu_zone")) or _bool(needed.get("ituZone"))),
+            settings.filter_band_call and (_bool(needed_on_band.get("call")) or "new band" in call_status.lower()),
+            settings.filter_band_dxcc and (_bool(needed_on_band.get("dxcc")) or "new band" in dxcc_status.lower()),
+            settings.filter_band_continent and (_bool(needed_on_band.get("continent")) or "band_continent" in reasons),
+            settings.filter_band_grid and _bool(needed_on_band.get("grid")),
+            settings.filter_band_cq_zone and (_bool(needed_on_band.get("cq_zone")) or _bool(needed_on_band.get("cqZone")) or "band_cq_zone" in reasons),
+            settings.filter_band_itu_zone and (_bool(needed_on_band.get("itu_zone")) or _bool(needed_on_band.get("ituZone")) or "band_itu_zone" in reasons),
+        ]
+        return any(selected_matches)
+
     enabled_filters = {
         "call": settings.need_call,
         "dxcc": settings.need_dxcc,
@@ -2395,6 +2643,38 @@ def payload_matches_need_filters(payload: Mapping[str, Any], settings: DigitalAu
 
 
 def _need_reasons_match_filters(reasons: Iterable[str], settings: DigitalAutomationSettings) -> bool:
+    if settings.filter_matrix_enabled:
+        enabled_filters = {
+            "call": settings.filter_new_call or settings.filter_band_call,
+            "dxcc": settings.filter_new_dxcc or settings.filter_band_dxcc,
+            "band": any(
+                (
+                    settings.filter_band_call,
+                    settings.filter_band_dxcc,
+                    settings.filter_band_continent,
+                    settings.filter_band_grid,
+                    settings.filter_band_cq_zone,
+                    settings.filter_band_itu_zone,
+                )
+            ),
+            "continent": settings.filter_new_continent or settings.filter_band_continent,
+            "grid": settings.filter_new_grid or settings.filter_band_grid,
+            "cq": settings.filter_new_cq_zone or settings.filter_band_cq_zone,
+            "cq_zone": settings.filter_new_cq_zone or settings.filter_band_cq_zone,
+            "itu": settings.filter_new_itu_zone or settings.filter_band_itu_zone,
+            "itu_zone": settings.filter_new_itu_zone or settings.filter_band_itu_zone,
+            "reference": settings.need_reference,
+            "pota": settings.need_reference,
+            "sota": settings.need_reference,
+            "iota": settings.need_reference,
+            "wwff": settings.need_reference,
+            "county": settings.need_reference,
+            "state": settings.need_reference,
+            "province": settings.need_reference,
+            "award": settings.need_reference,
+        }
+        return any(enabled_filters.get(str(reason).strip().lower(), False) for reason in reasons)
+
     enabled_filters = {
         "call": settings.need_call,
         "dxcc": settings.need_dxcc,
@@ -2416,10 +2696,31 @@ def _need_reasons_match_filters(reasons: Iterable[str], settings: DigitalAutomat
 
 def _prior_work_has_enabled_slot_need(reasons: Iterable[str], settings: DigitalAutomationSettings) -> bool:
     """Worked/confirmed calls may still be eligible for non-call slot needs."""
+    slot_reasons = {
+        "dxcc",
+        "band",
+        "mode",
+        "grid",
+        "continent",
+        "cq_zone",
+        "itu_zone",
+        "band_continent",
+        "band_cq_zone",
+        "band_itu_zone",
+        "reference",
+        "pota",
+        "sota",
+        "iota",
+        "wwff",
+        "county",
+        "state",
+        "province",
+        "award",
+    }
     non_call_reasons = {
         str(reason).strip().lower()
         for reason in reasons
-        if str(reason).strip().lower() in {"dxcc", "band", "mode", "grid", "reference", "pota", "sota", "iota", "wwff", "county", "state", "province", "award"}
+        if str(reason).strip().lower() in slot_reasons
     }
     return _need_reasons_match_filters(non_call_reasons, settings)
 

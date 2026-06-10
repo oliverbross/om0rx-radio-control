@@ -34,6 +34,7 @@ def test_wsjtx_engine_patch_contains_om0rx_hunting_controls():
     assert "cbOm0rxBandHopping" in text
     assert "cbOm0rxModeSwitching" in text
     assert "cbOm0rxTreat73AsCQ" in text
+    assert "cbOm0rxQsoPopup" in text
     assert "teOm0rxBandPlan" in text
     assert "teOm0rxIgnoreList" in text
     assert "annotate_callsign" in text
@@ -49,6 +50,7 @@ def test_wsjtx_engine_patch_contains_om0rx_hunting_controls():
     assert "ui->dxCallEntry->clear" in text
     assert "ui->dxGridEntry->clear" in text
     assert "startup cleared stale target" in text
+    assert "/api/ft8/tx/clear-qso" in text
     assert "Call Status" in text
     assert "DXCC Status" in text
     assert "om0rx_status_format" in text
@@ -60,11 +62,23 @@ def test_wsjtx_engine_patch_contains_om0rx_hunting_controls():
     assert "left (12).leftJustified (12)" in text
     assert "QTimer::singleShot (0, this, [this, call, cached]" in text
     assert "NewB+Mode" in text
+    assert "New Band" in text
+    assert "New Mode" in text
+    assert 'cache_key = QString {"%1|%2|%3"}.arg (call, band, mode)' in text
+    assert 'annotate_callsign (display_call, QString {"%1 | %2"}.arg (call_status, dxcc_status)' in text
     assert "cbOm0rxNeedCall" in text
     assert "cbOm0rxNeedDxcc" in text
     assert "cbOm0rxNeedBand" in text
     assert "cbOm0rxNeedMode" in text
     assert "cbOm0rxNeedGrid" in text
+    assert "gbOm0rxFiltering" in text
+    assert "cbOm0rxFilterNewCall" in text
+    assert "cbOm0rxFilterNewDxcc" in text
+    assert "cbOm0rxFilterBandCall" in text
+    assert "cbOm0rxFilterBandGrid" in text
+    assert "cbOm0rxContinentNorthAmerica" in text
+    assert "cbOm0rxContinentSouthAmerica" in text
+    assert "cbOm0rxLotwOnly" in text
     assert "sbOm0rxHopInterval" in text
     assert "om0rx_watchdog_minutes" in text
     assert "om0rx_current_band_plan" in text
@@ -86,13 +100,40 @@ def test_wsjtx_engine_patch_contains_om0rx_hunting_controls():
     assert 'payload.insert ("snr"' in text
     assert 'automation.insert ("bandPlan"' in text
     assert 'automation.insert ("ignoreList"' in text
+    assert 'automation.insert ("currentBand", m_currentBand)' in text
     assert 'automation.insert ("autoLogToWavelog"' in text
     assert 'automation.insert ("hopIntervalSeconds"' in text
     assert 'automation.insert ("currentMode", m_mode)' in text
     assert 'automation.insert ("needCall"' in text
     assert 'automation.insert ("needDxcc"' in text
+    assert 'automation.insert ("filterMatrixEnabled", true)' in text
+    assert 'automation.insert ("filterNew", filter_new)' in text
+    assert 'automation.insert ("filterNewOnBand", filter_band)' in text
+    assert 'automation.insert ("filterContinents", filter_continents)' in text
+    assert 'automation.insert ("lotwOnly"' in text
     assert "ui->cbOm0rxAutoLog->isChecked ())" in text
     assert "ui->cbOm0rxAutoLog->isChecked () && m_logDlg->isVisible ()" not in text
+    assert "decodedCallsignClicked" in text
+    assert "request_om0rx_qso_history_popup" in text
+    assert "show_om0rx_qso_history_popup" in text
+    assert "/api/wavelog-log/search/%1" in text
+    assert "Previous QSOs - %1" in text
+    assert "single_click_timer_.stop" in text
+    assert "call.remove ('<')" in text
+    assert "display_call.remove ('<')" in text
+    assert "Band hopping is off" in text
+    assert "Mode switching is off" in text
+    assert 'auto listen_only = bool_value ("listenOnly", false);' in text
+    assert "OM0RX listening for %1 before calling" in text
+    assert "active QSO with %2 is still in progress" in text
+    assert "m_om0rx_backend_has_active_target" in text
+    assert "m_om0rx_no_eligible_since" in text
+    assert "backend_eligible_count == 0" in text
+    assert "clear_om0rx_target_state ();" in text
+    assert "no_eligible_seconds" in text
+    assert "no eligible target" in text
+    assert "om0rx_final_73_for_us" in text
+    assert "logQSOTimer.start (0)" in text
     assert "OM0RX automation stopped" in text
     assert "Auto CQ and Auto Call are off; TX was halted" in text
     assert 'SLOT (accept ())' in text

@@ -603,58 +603,6 @@ window.RadioControlConfig = {
             return (data && (data.message || data.error)) || fallback;
         },
 
-        getWsjtxLaunchPayload() {
-            return {
-                rigName: 'OM0RX-AUTO',
-                configName: 'OM0RX-AUTO',
-                testMode: false,
-            };
-        },
-
-        async loadWsjtxLaunchLogs(options = {}) {
-            this.wsjtxLaunchLogsLoading = true;
-            if (!options.preserveMessage) {
-                this.wsjtxHealthMessage = null;
-            }
-            try {
-                const payload = this.getWsjtxLaunchPayload();
-                const rigName = encodeURIComponent(this.wsjtxLaunchResult?.rig_name || payload.rigName);
-                const response = await fetch(`/api/wsjtx/launch-logs?rigName=${rigName}&lines=120`);
-                const data = await response.json();
-                if (!response.ok || data.success === false) {
-                    throw new Error(this.formatWsjtxCommandError(data, 'Could not read WSJT launch logs'));
-                }
-                this.wsjtxLaunchLogs = data;
-                if (!options.preserveMessage) {
-                    this.wsjtxHealthMessage = { type: 'success', text: 'WSJT launch logs refreshed.' };
-                }
-            } catch (error) {
-                this.wsjtxHealthMessage = { type: 'error', text: 'WSJT log read failed: ' + error.message };
-            } finally {
-                this.wsjtxLaunchLogsLoading = false;
-            }
-        },
-
-        async runWsjtxLaunchPreflight(options = {}) {
-            const response = await fetch('/api/wsjtx/launch-preflight', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(this.getWsjtxLaunchPayload()),
-            });
-            const data = await response.json();
-            this.wsjtxPreflight = data;
-            if (data.health) {
-                this.wsjtxHealth = data.health;
-            }
-            if (!response.ok || data.success === false) {
-                throw new Error(this.formatWsjtxCommandError(data, 'Launch self-test failed'));
-            }
-            if (options.requireReady && !data.ready) {
-                throw new Error(`Critical launch checks failed: ${this.formatWsjtxPreflightSummary()}`);
-            }
-            return data;
-        },
-
         async loadWsjtxHealth(options = {}) {
             this.wsjtxHealthLoading = true;
             if (!options.preserveMessage) {
@@ -808,65 +756,6 @@ window.RadioControlConfig = {
             } finally {
                 this.wsjtxHealthLoading = false;
                 this.loadWsjtxHealth({ preserveMessage: true });
-            }
-        },
-
-        async testWsjtxLaunchPreflight() {
-            this.wsjtxPreflightLoading = true;
-            this.wsjtxHealthMessage = null;
-            try {
-                const data = await this.runWsjtxLaunchPreflight();
-                this.wsjtxHealthMessage = {
-                    type: data.ready ? 'success' : 'warning',
-                    text: data.ready
-                        ? 'Launch self-test passed. Starting the OM0RX engine is safe from this profile.'
-                        : `Launch self-test found issues: ${this.formatWsjtxPreflightSummary()}.`,
-                };
-            } catch (error) {
-                this.wsjtxHealthMessage = { type: 'error', text: 'Launch self-test failed: ' + error.message };
-            } finally {
-                this.wsjtxPreflightLoading = false;
-            }
-        },
-
-        async launchPatchedWsjtxEngine() {
-            this.wsjtxLaunchLoading = true;
-            this.wsjtxHealthMessage = null;
-            this.wsjtxLaunchResult = null;
-            this.wsjtxLaunchLogs = null;
-            try {
-                this.wsjtxPreflightLoading = true;
-                const preflight = await this.runWsjtxLaunchPreflight({ requireReady: true });
-                this.wsjtxPreflightLoading = false;
-                this.wsjtxHealthMessage = {
-                    type: 'success',
-                    text: `Launch self-test passed: ${preflight.validation?.critical_ok || 0}/${preflight.validation?.critical_total || 0} critical checks ready.`,
-                };
-                const response = await fetch('/api/wsjtx/launch-patched-engine', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.getWsjtxLaunchPayload()),
-                });
-                const data = await response.json();
-                if (!response.ok || data.success === false) {
-                    throw new Error(this.formatWsjtxCommandError(data, 'Patched engine launch failed'));
-                }
-                this.wsjtxLaunchResult = data;
-                this.wsjtxHealthMessage = {
-                    type: 'success',
-                    text: data.message || 'Patched OM0RX WSJT engine launch command completed.',
-                };
-                await this.loadWsjtxLaunchLogs({ preserveMessage: true });
-            } catch (error) {
-                const preflightBlocked = String(error.message || '').includes('Critical launch checks failed');
-                this.wsjtxHealthMessage = {
-                    type: preflightBlocked ? 'warning' : 'error',
-                    text: `${preflightBlocked ? 'Engine start blocked' : 'Engine launch failed'}: ${error.message}`,
-                };
-            } finally {
-                this.wsjtxPreflightLoading = false;
-                this.wsjtxLaunchLoading = false;
-                setTimeout(() => this.loadWsjtxHealth({ preserveMessage: true }), 1500);
             }
         },
 

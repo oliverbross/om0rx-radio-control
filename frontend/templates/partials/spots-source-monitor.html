@@ -1,4 +1,4 @@
-<div v-if="hasSpotSourceDiagnostics() || getSourceStateSummaryItems().length > 0" class="source-diagnostics-strip">
+<div v-if="isSpotSectionVisible('sourceDiagnostics') && (hasSpotSourceDiagnostics() || getSourceStateSummaryItems().length > 0)" class="source-diagnostics-strip">
     <div v-if="hasSpotSourceDiagnostics()" class="source-diagnostics-summary">
         <strong>Sources</strong>
         <span :class="['source-health-pill', 'source-health-' + getClusterHealth().status]">{{ getClusterHealth().label }}</span>
@@ -35,7 +35,7 @@
     <button @click="toggleSpotSourceMute('rbl')" :class="['rbl-monitor-action', { active: spotSourceMuted.rbl }]">{{ spotSourceMuted.rbl ? 'Unmute RBL' : 'Mute RBL' }}</button>
 </div>
 
-<div v-if="getRblMonitorStats().total > 0" class="rbl-monitor-strip">
+<div v-if="isSpotSectionVisible('rblMonitor') && getRblMonitorStats().total > 0" class="rbl-monitor-strip">
     <div :class="['rbl-monitor-summary', { stale: getRblMonitorStats().stale }]">
         <strong>RBL</strong>
         <span>{{ getRblMonitorStats().total }} live</span>
@@ -59,7 +59,7 @@
     </div>
 </div>
 
-<div v-if="rblAlertSettingsOpen" class="rbl-alert-rules">
+<div v-if="isSpotSectionVisible('rblMonitor') && rblAlertSettingsOpen" class="rbl-alert-rules">
     <label><input type="checkbox" v-model="rblAlertRules.newDxcc"> New DXCC</label>
     <label><input type="checkbox" v-model="rblAlertRules.newBand"> New band</label>
     <label><input type="checkbox" v-model="rblAlertRules.newCall"> New call</label>
@@ -80,7 +80,7 @@
     <button @click="resetRblAlertRules" class="rbl-monitor-action">Reset</button>
 </div>
 
-<div v-if="rblAlerts.length > 0" class="rbl-alert-tray">
+<div v-if="isSpotSectionVisible('rblAlerts') && rblAlerts.length > 0" class="rbl-alert-tray">
     <div class="rbl-alert-header">
         <strong>RBL Alerts</strong>
         <span>{{ rblAlertStatusText() }}</span>

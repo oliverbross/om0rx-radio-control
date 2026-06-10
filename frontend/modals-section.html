@@ -279,12 +279,6 @@
                                         {{ wsjtxHealth ? ((wsjtxHealth.value || wsjtxHealth.status || 'unknown')) : 'not checked' }}
                                     </span>
                                     <button type="button" @click="loadWsjtxHealth" :disabled="wsjtxHealthLoading" style="padding: 4px 8px; font-size: 10px;">Refresh WSJT</button>
-                                    <button type="button" @click="testWsjtxLaunchPreflight" :disabled="wsjtxPreflightLoading || wsjtxHealthLoading" style="padding: 4px 8px; font-size: 10px; border-color: #60a5fa;">
-                                        {{ wsjtxPreflightLoading ? 'Testing...' : 'Self Test' }}
-                                    </button>
-                                    <button type="button" @click="launchPatchedWsjtxEngine" :disabled="wsjtxLaunchLoading || wsjtxPreflightLoading || wsjtxHealthLoading" title="Runs launch self-test first, then starts only if critical checks pass" style="padding: 4px 8px; font-size: 10px; border-color: #22c55e;">
-                                        {{ wsjtxLaunchLoading ? 'Starting...' : 'Preflight + Start' }}
-                                    </button>
                                     <button type="button" @click="haltWsjtxTx" :disabled="wsjtxHealthLoading" style="padding: 4px 8px; font-size: 10px; border-color: #ef4444;">Halt TX</button>
                                     <button type="button" @click="testWsjtxPrepareCommand" :disabled="wsjtxHealthLoading" style="padding: 4px 8px; font-size: 10px;">Test Prepare</button>
                                 </div>

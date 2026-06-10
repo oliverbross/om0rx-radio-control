@@ -20,6 +20,34 @@ logger = logging.getLogger(__name__)
 CONFIRMED_VALUES = {"Y", "YES", "TRUE", "1", "CONFIRMED"}
 
 
+def _band_from_mhz(mhz: float) -> str:
+    if 1.8 <= mhz < 2.0:
+        return "160m"
+    if 3.5 <= mhz < 4.0:
+        return "80m"
+    if 5.0 <= mhz < 5.5:
+        return "60m"
+    if 7.0 <= mhz < 7.3:
+        return "40m"
+    if 10.0 <= mhz < 10.2:
+        return "30m"
+    if 14.0 <= mhz < 14.35:
+        return "20m"
+    if 18.0 <= mhz < 18.2:
+        return "17m"
+    if 21.0 <= mhz < 21.45:
+        return "15m"
+    if 24.8 <= mhz < 25.0:
+        return "12m"
+    if 28.0 <= mhz < 29.7:
+        return "10m"
+    if 50.0 <= mhz < 54.0:
+        return "6m"
+    if 144.0 <= mhz < 148.0:
+        return "2m"
+    return f"{mhz:g}mhz"
+
+
 class DuckDBQSOStatusStore:
     """Small cached query layer for spot classification against Wavelog QSOs."""
 
@@ -85,7 +113,7 @@ class DuckDBQSOStatusStore:
         if not self._ensure_loaded():
             return None
 
-        band_value = (band or "").strip()
+        band_value = self._normalise_band(band)
         mode_value = (mode or "").strip().upper()
         call_worked = call_value in self.call_worked
         call_confirmed = call_value in self.call_confirmed
@@ -116,7 +144,7 @@ class DuckDBQSOStatusStore:
         """Return (new_band, new_mode, bandmode_confirmed) for a DXCC."""
         if dxcc is None:
             return False, False, False
-        band_value = (band or "").strip()
+        band_value = self._normalise_band(band)
         mode_value = (mode or "").strip().upper()
         if not band_value or not mode_value:
             return None
@@ -146,7 +174,7 @@ class DuckDBQSOStatusStore:
         if not self._ensure_loaded():
             return None
 
-        band_value = (band or "").strip()
+        band_value = self._normalise_band(band)
         mode_value = (mode or "").strip().upper()
         new_grid = grid_value not in self.grid_worked
         new_grid_band = bool(band_value) and (grid_value, band_value) not in self.grid_band_worked
@@ -161,7 +189,7 @@ class DuckDBQSOStatusStore:
         call_value = self._normalise_call(
             qso_data.get("callsign") or qso_data.get("call")
         )
-        band_value = str(qso_data.get("band") or "").strip()
+        band_value = self._normalise_band(qso_data.get("band"))
         mode_value = str(qso_data.get("submode") or qso_data.get("mode") or "").strip().upper()
         grid_value = self._normalise_grid(
             qso_data.get("gridsquare") or qso_data.get("grid")
@@ -216,6 +244,34 @@ class DuckDBQSOStatusStore:
     @staticmethod
     def _normalise_call(callsign: str | None) -> str:
         return "".join(str(callsign or "").upper().split())
+
+    @staticmethod
+    def _normalise_band(band: object) -> str:
+        value = "".join(str(band or "").lower().split())
+        if not value:
+            return ""
+        if value.endswith("meters"):
+            value = value[:-6] + "m"
+        elif value.endswith("meter"):
+            value = value[:-5] + "m"
+        if value.endswith("mhz"):
+            try:
+                mhz = float(value[:-3])
+            except ValueError:
+                return value
+            return _band_from_mhz(mhz)
+        if value.endswith("m"):
+            numeric = value[:-1]
+            if numeric.replace(".", "", 1).isdigit():
+                if "." in numeric:
+                    return _band_from_mhz(float(numeric))
+                return f"{int(numeric)}m"
+        if value.replace(".", "", 1).isdigit():
+            numeric = float(value)
+            if numeric > 1000:
+                numeric /= 1_000_000
+            return _band_from_mhz(numeric)
+        return value
 
     @staticmethod
     def _coerce_dxcc(dxcc: object) -> int | None:
@@ -391,7 +447,7 @@ class DuckDBQSOStatusStore:
             grid_mode_worked: set[tuple[str, str]] = set()
 
             for row in rows:
-                band_value = (row.get("band") or "").strip()
+                band_value = self._normalise_band(row.get("band"))
                 mode_value = (row.get("submode") or row.get("mode") or "").strip().upper()
                 confirmed = self._row_confirmed(row)
                 grid_value = self._normalise_grid(row.get("gridsquare"))

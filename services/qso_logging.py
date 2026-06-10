@@ -97,6 +97,21 @@ def build_qso_loose_dedupe_key(qso_data: Dict[str, Any]) -> str:
     return _build_qso_dedupe_key(qso_data, bucket_seconds=900, include_reports=False)
 
 
+def build_qso_loose_dedupe_keys(qso_data: Dict[str, Any]) -> list[str]:
+    """Build loose duplicate keys across adjacent buckets for near-boundary repeats."""
+    keys: list[str] = []
+    for bucket_offset in (-1, 0, 1):
+        key = _build_qso_dedupe_key(
+            qso_data,
+            bucket_seconds=900,
+            include_reports=False,
+            bucket_offset=bucket_offset,
+        )
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
 def normalise_digital_qso_mode(qso_data: Dict[str, Any]) -> str:
     """Return the logical FT mode for duplicate/status checks, not ADIF's raw family."""
     mode = str(qso_data.get("mode") or "").strip().upper()
@@ -128,7 +143,13 @@ def _qso_modes_duplicate_compatible(requested_mode: str, existing_mode: str) -> 
     return False
 
 
-def _build_qso_dedupe_key(qso_data: Dict[str, Any], *, bucket_seconds: int, include_reports: bool) -> str:
+def _build_qso_dedupe_key(
+    qso_data: Dict[str, Any],
+    *,
+    bucket_seconds: int,
+    include_reports: bool,
+    bucket_offset: int = 0,
+) -> str:
     callsign = str(qso_data.get("callsign") or qso_data.get("call") or "").strip().upper()
     own_call = str(qso_data.get("station_callsign") or config.MY_STATION or "").strip().upper()
     mode = normalise_digital_qso_mode(qso_data)
@@ -150,7 +171,7 @@ def _build_qso_dedupe_key(qso_data: Dict[str, Any], *, bucket_seconds: int, incl
         dt = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
     except Exception:
         dt = datetime.now(timezone.utc)
-    bucket = int(dt.timestamp() // bucket_seconds)
+    bucket = int(dt.timestamp() // bucket_seconds) + int(bucket_offset)
 
     payload = {
         "dx": callsign,
@@ -306,11 +327,13 @@ def _release_dedupe_keys(qso_keys: list[str]) -> None:
             _pending_dedupe_claims.pop(key, None)
 
 
-def _record_dedupe_entry(qso_key: str, qso_data: Dict[str, Any], result: Dict[str, Any]) -> None:
+def _record_dedupe_entries(qso_keys: list[str], qso_data: Dict[str, Any], result: Dict[str, Any]) -> None:
+    keys = [str(key or "").strip() for key in qso_keys if str(key or "").strip()]
+    if not keys:
+        return
     with _dedupe_lock:
         ledger = _load_dedupe_ledger()
-        _pending_dedupe_claims.pop(qso_key, None)
-        ledger[qso_key] = {
+        entry = {
             "recorded_at": datetime.now(timezone.utc).isoformat(),
             "callsign": str(qso_data.get("callsign") or "").upper(),
             "own_call": str(config.MY_STATION or "").upper(),
@@ -324,7 +347,14 @@ def _record_dedupe_entry(qso_key: str, qso_data: Dict[str, Any], result: Dict[st
             "adif_saved": bool(result.get("adif_saved")),
             "outbox_queued": bool(result.get("outbox_queued")),
         }
+        for qso_key in keys:
+            _pending_dedupe_claims.pop(qso_key, None)
+            ledger[qso_key] = dict(entry)
         _save_dedupe_ledger(ledger)
+
+
+def _record_dedupe_entry(qso_key: str, qso_data: Dict[str, Any], result: Dict[str, Any]) -> None:
+    _record_dedupe_entries([qso_key], qso_data, result)
 
 
 def _parse_adif_fields(adif_text: str) -> Dict[str, str]:
@@ -805,9 +835,10 @@ async def log_qso(qso: QSORequest):
         qso_dict = _enrich_qso_with_cty(qso_dict)
         requested_qso_key = qso_dict.get("qso_key")
         qso_key = requested_qso_key or build_qso_dedupe_key(qso_dict)
-        loose_qso_key = build_qso_loose_dedupe_key(qso_dict)
+        loose_qso_keys = build_qso_loose_dedupe_keys(qso_dict)
+        loose_qso_key = loose_qso_keys[1] if len(loose_qso_keys) > 1 else build_qso_loose_dedupe_key(qso_dict)
         qso_dict["qso_key"] = qso_key
-        dedupe_keys = [qso_key, loose_qso_key]
+        dedupe_keys = [qso_key, *loose_qso_keys]
 
         dedupe_entry = _claim_dedupe_keys(dedupe_keys, qso_dict)
         if dedupe_entry:
@@ -830,9 +861,7 @@ async def log_qso(qso: QSORequest):
         recent_duplicate = _recent_wavelog_duplicate_entry(qso_dict) if should_check_recent_wavelog else None
         if recent_duplicate:
             logger.info("Skipping QSO log already present in Wavelog/read-cache for %s on %s %s", qso.callsign, qso.band, qso.mode)
-            _record_dedupe_entry(qso_key, qso_dict, {"wavelog": {"success": True}, "adif_saved": True})
-            if loose_qso_key and loose_qso_key != qso_key:
-                _record_dedupe_entry(loose_qso_key, qso_dict, {"wavelog": {"success": True}, "adif_saved": True})
+            _record_dedupe_entries(dedupe_keys, qso_dict, {"wavelog": {"success": True}, "adif_saved": True})
             record_qso_in_local_read_cache(qso_dict)
             return {
                 "success": True,
@@ -894,9 +923,7 @@ async def log_qso(qso: QSORequest):
             "loose_qso_key": loose_qso_key,
         }
         if wavelog_result.get("success") or adif_saved or outbox_queued:
-            _record_dedupe_entry(qso_key, qso_dict, response)
-            if loose_qso_key and loose_qso_key != qso_key:
-                _record_dedupe_entry(loose_qso_key, qso_dict, response)
+            _record_dedupe_entries(dedupe_keys, qso_dict, response)
         else:
             _release_dedupe_keys(dedupe_keys)
         if response["success"]:

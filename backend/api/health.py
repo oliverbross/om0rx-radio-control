@@ -11,7 +11,6 @@ from backend.core import get_app_context
 from radio_control import config
 from radio_control.postgres_store import get_postgres_dsn, should_use_postgres
 from radio_control.qso_outbox import get_qso_outbox
-from services.ft8_service import get_ft8_service
 from services.rotator import get_rotator_service
 from services.wsjtx import get_wsjtx_service
 
@@ -150,31 +149,6 @@ async def _rotor_health() -> Dict[str, Any]:
         return _service("rotor", "Rotor", "warn", "error", str(exc), "rotor-refresh")
 
 
-def _ft8_health() -> Dict[str, Any]:
-    if not getattr(config, "FT8_ENABLED", True):
-        return _service("ft8", "Digital", "off", "disabled", "FT8/FT4 service is disabled in config", "config")
-
-    try:
-        stats = get_ft8_service().get_stats()
-        mode = stats.get("mode") or getattr(config, "FT8_MODE", "FT8")
-        decoded = int(stats.get("decoded_count") or 0)
-        decoder_status = stats.get("decoder_status") or "unknown"
-        if stats.get("enabled"):
-            status = "ok" if decoder_status == "available" else "warn"
-            return _service(
-                "ft8",
-                "Digital",
-                status,
-                f"{mode} {decoded}",
-                f"Decoder {decoder_status}; {decoded} decoded messages",
-                "digital",
-            )
-        return _service("ft8", "Digital", "off", str(mode), "Digital service is configured but stopped", "digital")
-    except Exception as exc:
-        logger.debug("Digital health check failed: %s", exc)
-        return _service("ft8", "Digital", "warn", "error", str(exc), "digital")
-
-
 def _wsjtx_health() -> Dict[str, Any]:
     try:
         health = get_wsjtx_service().get_health()
@@ -231,26 +205,33 @@ async def get_status(request: Request):
             logger.debug(f"Could not get cluster info: {e}")
     
     connected = bool(flex and flex.sock)
+    levels = {}
+    if connected:
+        try:
+            levels = await asyncio.to_thread(flex.get_current_levels, 0.45)
+        except Exception as e:
+            logger.debug(f"Could not refresh live radio status: {e}")
+
     current_mox = getattr(flex, "current_mox", None)
     return {
-        "frequency": getattr(flex, "current_freq", None) or 14.074,
-        "mode": getattr(flex, "current_mode", None) or "USB",
-        "filter_lo": getattr(flex, "current_filter_lo", None) or 100,
-        "filter_hi": getattr(flex, "current_filter_hi", None) or 2900,
-        "volume": getattr(flex, "current_volume", None) or 50,
-        "drive": getattr(flex, "current_rfpower", None) or 31,
-        "tune_power": getattr(flex, "current_tunepower", None) or 18,
-        "mic_level": getattr(flex, "current_miclevel", None) or 32,
-        "mox": bool(current_mox) if current_mox is not None else False,
-        "interlock_state": getattr(flex, "current_interlock_state", None) or "",
-        "vox_enabled": getattr(flex, "current_vox_enable", None) or False,
-        "agc_mode": "med",
-        "agc_threshold": 65,
-        "monitor": 0,
-        "nb_enabled": False,
-        "nr_enabled": False,
-        "anf_enabled": False,
-        "apf_enabled": False,
+        "frequency": levels.get("freq") or getattr(flex, "current_freq", None) or 14.074,
+        "mode": levels.get("mode") or getattr(flex, "current_mode", None) or "USB",
+        "filter_lo": levels.get("filter_lo") or getattr(flex, "current_filter_lo", None) or 100,
+        "filter_hi": levels.get("filter_hi") or getattr(flex, "current_filter_hi", None) or 2900,
+        "volume": levels.get("audio_level") or getattr(flex, "current_volume", None) or 50,
+        "drive": levels.get("rfpower") or getattr(flex, "current_rfpower", None) or 31,
+        "tune_power": levels.get("tunepower") or getattr(flex, "current_tunepower", None) or 18,
+        "mic_level": levels.get("miclevel") or getattr(flex, "current_miclevel", None) or 32,
+        "mox": bool(levels.get("mox") if "mox" in levels else current_mox) if (current_mox is not None or "mox" in levels) else False,
+        "interlock_state": levels.get("interlock_state") or getattr(flex, "current_interlock_state", None) or "",
+        "vox_enabled": levels.get("vox_enable") if "vox_enable" in levels else (getattr(flex, "current_vox_enable", None) or False),
+        "agc_mode": levels.get("agc_mode") or "med",
+        "agc_threshold": levels.get("agc_threshold") or 65,
+        "monitor": levels.get("mon") or 0,
+        "nb_enabled": levels.get("nb") or False,
+        "nr_enabled": levels.get("nr") or False,
+        "anf_enabled": levels.get("anf") or False,
+        "apf_enabled": levels.get("apf") or False,
         "connected": connected,
         "cluster_connected": cluster_status["connected"],
         "cluster_info": cluster_status,
@@ -363,7 +344,6 @@ async def get_service_health(request: Request):
             f"Legacy spots DB: {spots_db['path']}; QSO DB: {qso_db['path']}",
         ))
 
-    services.append(_ft8_health())
     services.append(_wsjtx_health())
     services.append(await _rotor_health())
 

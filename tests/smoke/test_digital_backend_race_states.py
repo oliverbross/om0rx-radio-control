@@ -476,30 +476,32 @@ def test_backend_logging_loose_dedupe_catches_adjacent_time_bucket(monkeypatch, 
     fake_wavelog = FakeWavelog()
     fake_adif = FakeAdif()
     monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+    monkeypatch.setattr(qlog, "_pending_dedupe_claims", {})
     monkeypatch.setattr(qlog, "wavelog_client", fake_wavelog)
     monkeypatch.setattr(qlog, "adif_handler", fake_adif)
     monkeypatch.setattr(qlog, "qrz_client", FakeQRZ())
 
     first = QSORequest(
-        callsign="CS2TU",
-        frequency=21.074,
-        band="15m",
+        callsign="CT1EOZ",
+        frequency=18.100,
+        band="17m",
         mode="FT8",
-        rst_sent="-18",
-        rst_received="-24",
-        date_time=datetime(2026, 6, 5, 10, 4, 59, tzinfo=timezone.utc).isoformat(),
+        rst_sent="-15",
+        rst_received="-15",
+        date_time=datetime(2026, 6, 6, 12, 29, 59, tzinfo=timezone.utc).isoformat(),
     )
     second = QSORequest(
-        callsign="CS2TU",
-        frequency=21.0755,
-        band="15m",
+        callsign="CT1EOZ",
+        frequency=18.1015,
+        band="17m",
         mode="FT8",
-        rst_sent="-18",
-        rst_received="-24",
-        date_time=datetime(2026, 6, 5, 10, 5, 1, tzinfo=timezone.utc).isoformat(),
+        rst_sent="-15",
+        rst_received="-15",
+        date_time=datetime(2026, 6, 6, 12, 30, 1, tzinfo=timezone.utc).isoformat(),
     )
 
     first_result = asyncio.run(qlog.log_qso(first))
+    qlog._pending_dedupe_claims.clear()
     second_result = asyncio.run(qlog.log_qso(second))
 
     assert first_result["success"] is True

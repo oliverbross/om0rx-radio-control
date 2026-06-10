@@ -5,6 +5,7 @@ Extracted from main.py - handles all background async operations
 
 import asyncio
 import logging
+import time as wall_time
 from dataclasses import dataclass, field
 from datetime import datetime, time, timezone
 from types import SimpleNamespace
@@ -169,6 +170,7 @@ async def poll_radio_status():
     context = service.context
     consecutive_failures = 0
     max_failures = 5
+    last_active_status_query = 0.0
     
     while True:
         try:
@@ -189,6 +191,47 @@ async def poll_radio_status():
 
                     # Get only actual state changes (no smeter spam)
                     status_update = flex.last_state_changed.copy() if flex.last_state_changed else {}
+
+                    # Subscription updates can be sparse, and a missed slice
+                    # update leaves the UI with stale frequency/mode. When the
+                    # radio stream is quiet, do a low-rate explicit snapshot.
+                    now = wall_time.time()
+                    radio_quiet_for = now - float(getattr(flex, "last_radio_message_time", 0) or 0)
+                    needs_snapshot = (
+                        not getattr(flex, "current_freq", None)
+                        or not getattr(flex, "current_mode", None)
+                        or radio_quiet_for > 5.0
+                    )
+                    recent_command = now - float(getattr(flex, "last_command_time", 0) or 0) < 2.5
+                    if success and needs_snapshot and not recent_command and now - last_active_status_query > 5.0:
+                        snapshot_started = wall_time.time()
+                        levels = await asyncio.to_thread(flex.get_current_levels, 0.6)
+                        last_active_status_query = now
+                        if float(getattr(flex, "last_command_time", 0) or 0) > snapshot_started:
+                            levels = {}
+                        if levels:
+                            if "freq" in levels:
+                                status_update.setdefault("freq", levels["freq"])
+                            if "mode" in levels:
+                                status_update.setdefault("mode", levels["mode"])
+                            if "filter_lo" in levels:
+                                status_update.setdefault("filter_lo", levels["filter_lo"])
+                            if "filter_hi" in levels:
+                                status_update.setdefault("filter_hi", levels["filter_hi"])
+                            if "audio_level" in levels:
+                                status_update.setdefault("volume", levels["audio_level"])
+                            if "rfpower" in levels:
+                                status_update.setdefault("drive", levels["rfpower"])
+                            if "tunepower" in levels:
+                                status_update.setdefault("tune_power", levels["tunepower"])
+                            if "miclevel" in levels:
+                                status_update.setdefault("mic_level", levels["miclevel"])
+                            if "mox" in levels:
+                                status_update.setdefault("mox", levels["mox"])
+                            if "interlock_state" in levels:
+                                status_update.setdefault("interlock_state", levels["interlock_state"])
+                            if "vox_enable" in levels:
+                                status_update.setdefault("vox_enabled", levels["vox_enable"])
 
                     # Map 'frequency' field if present (backend may use 'freq')
                     if 'freq' in status_update:

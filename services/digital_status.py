@@ -39,7 +39,14 @@ async def call_status_from_recent_qsos(callsign: str, band: Optional[str], mode:
         return None
 
     same_band = [qso for qso in qsos if _same_text(qso.get("band"), band)]
+    same_mode = [qso for qso in qsos if _same_text(qso.get("mode"), mode)]
     same_band_mode = [qso for qso in same_band if _same_text(qso.get("mode"), mode)]
     if same_band_mode:
         return "Confirmed" if any(_confirmed(qso) for qso in same_band_mode) else "Worked"
-    return "Confirmed" if any(_confirmed(qso) for qso in qsos) else "Worked"
+    if not same_band and not same_mode:
+        return "New Band+Mode"
+    if not same_band:
+        return "New Band"
+    if not same_mode:
+        return "New Mode"
+    return "Worked"

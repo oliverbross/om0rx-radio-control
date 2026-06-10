@@ -90,12 +90,148 @@ index 323a882..36741a5 100644
 -#if defined (WIN32)
 +#if OM0RX_BUILD_WITH_OMNIRIG
 diff --git a/widgets/displaytext.cpp b/widgets/displaytext.cpp
-index 965f6fe..c7daaf8 100644
+index 965f6fe..cd5d9dd 100644
 --- a/widgets/displaytext.cpp
 +++ b/widgets/displaytext.cpp
 @@ -18,0 +19 @@
 +#include <QFont>
-@@ -149,0 +151,48 @@ namespace
+@@ -21,0 +23 @@
++#include <QSet>
+@@ -75,0 +78,10 @@ DisplayText::DisplayText(QWidget *parent)
++  single_click_timer_.setSingleShot (true);
++  single_click_timer_.setInterval (225);
++  connect (&single_click_timer_, &QTimer::timeout, this, [this] {
++      auto call = pending_single_click_callsign_;
++      pending_single_click_callsign_.clear ();
++      if (!call.isEmpty ())
++        {
++          Q_EMIT decodedCallsignClicked (call);
++        }
++    });
+@@ -107,0 +120,119 @@ void DisplayText::setContentFont(QFont const& font)
++namespace
++{
++  QString normalize_om0rx_clicked_token (QString token)
++  {
++    token = token.trimmed ().toUpper ();
++    while (token.startsWith ('<') && token.endsWith ('>') && token.size () > 2)
++      {
++        token = token.mid (1, token.size () - 2);
++      }
++    token.remove (QRegularExpression {"^[^A-Z0-9/<]+|[^A-Z0-9/>]+$"});
++    token.remove ('<');
++    token.remove ('>');
++    return token;
++  }
++
++  bool is_om0rx_click_callsign (QString const& raw)
++  {
++    auto token = normalize_om0rx_clicked_token (raw);
++    if (token.size () < 3 || token.size () > 16)
++      {
++        return false;
++      }
++
++    static QSet<QString> const reserved {
++      "CQ", "QRZ", "DE", "DX", "RR73", "73", "RRR", "RR", "R",
++      "FT8", "FT4", "JT65", "JT9", "MSK", "MSK144", "Q65",
++      "UTC", "TX", "RX", "WORKED", "CONFIRMED", "CHECKING",
++      "NEW", "CALL", "BAND", "MODE", "DXCC", "STATUS"
++    };
++    if (reserved.contains (token))
++      {
++        return false;
++      }
++    if (QRegularExpression {"^[A-R]{2}[0-9]{2}([A-X]{2})?$"}.match (token).hasMatch ())
++      {
++        return false;
++      }
++    if (QRegularExpression {"^R?-?[0-9]{1,2}$"}.match (token).hasMatch ())
++      {
++        return false;
++      }
++    if (QRegularExpression {"^[0-9]+$"}.match (token).hasMatch ())
++      {
++        return false;
++      }
++    if (!QRegularExpression {"[A-Z]"}.match (token).hasMatch ()
++        || !QRegularExpression {"[0-9]"}.match (token).hasMatch ())
++      {
++        return false;
++      }
++    return QRegularExpression {"^[A-Z0-9]+(/[A-Z0-9]+)?$"}.match (token).hasMatch ();
++  }
++
++  QString om0rx_callsign_from_decode_line (QString const& line, QString const& clicked)
++  {
++    if (is_om0rx_click_callsign (clicked))
++      {
++        return normalize_om0rx_clicked_token (clicked);
++      }
++
++    auto words = line.simplified ().split (' ', Qt::SkipEmptyParts);
++    for (auto i = 0; i + 1 < words.size (); ++i)
++      {
++        if (words.at (i).toUpper () != "CQ")
++          {
++            continue;
++          }
++        auto next = i + 1;
++        if (next < words.size () && words.at (next).toUpper () == "DX")
++          {
++            ++next;
++          }
++        if (next < words.size () && is_om0rx_click_callsign (words.at (next)))
++          {
++            return normalize_om0rx_clicked_token (words.at (next));
++          }
++      }
++
++    for (auto const& word : words)
++      {
++        if (is_om0rx_click_callsign (word))
++          {
++            return normalize_om0rx_clicked_token (word);
++          }
++      }
++    return QString {};
++  }
++}
++
++void DisplayText::mousePressEvent(QMouseEvent *e)
++{
++  if (Qt::LeftButton == e->button ())
++    {
++      auto cursor = cursorForPosition (e->pos ());
++      auto block = cursor.block ();
++      auto line = block.text ();
++      auto offset = cursor.position () - block.position ();
++      auto start = qBound (0, offset, line.size ());
++      auto end = start;
++      while (start > 0 && !line.at (start - 1).isSpace ())
++        {
++          --start;
++        }
++      while (end < line.size () && !line.at (end).isSpace ())
++        {
++          ++end;
++        }
++      auto clicked = line.mid (start, end - start);
++      auto call = om0rx_callsign_from_decode_line (line, clicked);
++      auto my_call = m_config ? normalize_om0rx_clicked_token (m_config->my_callsign ()) : QString {};
++      if (!call.isEmpty () && call != my_call)
++        {
++          pending_single_click_callsign_ = call;
++          single_click_timer_.start ();
++        }
++    }
++  QTextEdit::mousePressEvent (e);
++}
++
+@@ -109,0 +241,2 @@ void DisplayText::mouseDoubleClickEvent(QMouseEvent *e)
++  single_click_timer_.stop ();
++  pending_single_click_callsign_.clear ();
+@@ -149,0 +283,48 @@ namespace
 +
 +  void normalize_om0rx_decode_colours (QColor * bg, QColor * fg)
 +  {
@@ -144,24 +280,24 @@ index 965f6fe..c7daaf8 100644
 +          }
 +      }
 +  }
-@@ -154,0 +204 @@ void DisplayText::insertText(QString const& text, QColor bg, QColor fg
+@@ -154,0 +336 @@ void DisplayText::insertText(QString const& text, QColor bg, QColor fg
 +  normalize_om0rx_decode_colours (&bg, &fg);
-@@ -511 +561,2 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
+@@ -511 +693,2 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
 -                                     int points, QString distance, bool alertsMuted, QString const& QSOgrid)
 +                                     int points, QString distance, bool alertsMuted, QString const& QSOgrid,
 +                                     bool include73AsCQ)
-@@ -528,0 +580 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
+@@ -528,0 +712 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
 +      || (include73AsCQ && is_73)
-@@ -549 +601,4 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
+@@ -549 +733,4 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
 -                         static_cast<int>(decodedText.timeInSeconds()));
 +                         static_cast<int>(decodedText.timeInSeconds()),
 +                         dxGrid,
 +                         decodedText.string(),
 +                         decodedText.snr());
-@@ -591 +646 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
+@@ -591 +778 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
 -  
 +
-@@ -861,0 +917,41 @@ namespace
+@@ -861,0 +1049,41 @@ namespace
 +
 +  QTextCharFormat om0rx_status_format (QString const& status)
 +  {
@@ -203,7 +339,7 @@ index 965f6fe..c7daaf8 100644
 +      }
 +    return label.left (12).leftJustified (12);
 +  }
-@@ -974,0 +1071,109 @@ void DisplayText::highlight_callsign (QString const& callsign, QColor const& bg,
+@@ -974,0 +1203,109 @@ void DisplayText::highlight_callsign (QString const& callsign, QColor const& bg,
 +void DisplayText::annotate_callsign (QString const& callsign, QString const& annotation,
 +                                     QColor const& fg)
 +{
@@ -314,33 +450,47 @@ index 965f6fe..c7daaf8 100644
 +}
 +
 diff --git a/widgets/displaytext.h b/widgets/displaytext.h
-index 6fcadb8..f064261 100644
+index 6fcadb8..6f93e5a 100644
 --- a/widgets/displaytext.h
 +++ b/widgets/displaytext.h
 @@ -35 +35,2 @@ public:
 -                          int points=-99, QString distance = "", bool alertsMuted=false, QString const& QSOgrid="");
 +                          int points=-99, QString distance = "", bool alertsMuted=false,
 +                          QString const& QSOgrid="", bool include73AsCQ=false);
-@@ -50 +51,2 @@ public:
+@@ -46,0 +48 @@ public:
++  Q_SIGNAL void decodedCallsignClicked (QString const& callsign);
+@@ -50 +52,2 @@ public:
 -  // appears as a label on the waterfall at its audio offset.
 +  // appears as a label on the waterfall at its audio offset, and to the
 +  // OM0RX enrichment lookup for local Wavelog status.
-@@ -53 +55,3 @@ public:
+@@ -53 +56,3 @@ public:
 -                                 bool is_cq, int time_sec);
 +                                 bool is_cq, int time_sec,
 +                                 QString const& grid, QString const& message,
 +                                 int snr);
-@@ -58,0 +63 @@ public:
+@@ -58,0 +64 @@ public:
 +  Q_SLOT void annotate_callsign (QString const& callsign, QString const& annotation, QColor const& fg);
+@@ -62,0 +69,2 @@ private:
++  QTimer single_click_timer_;
++  QString pending_single_click_callsign_;
+@@ -63,0 +72 @@ private:
++  void mousePressEvent (QMouseEvent *) override;
 diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
-index c75aa42..f6a383c 100644
+index c75aa42..71760a5 100644
 --- a/widgets/mainwindow.cpp
 +++ b/widgets/mainwindow.cpp
-@@ -52,0 +53,3 @@
+@@ -27,0 +28,3 @@
++#include <QDialog>
++#include <QDialogButtonBox>
++#include <QHeaderView>
+@@ -52,0 +56,6 @@
 +#include <QJsonDocument>
 +#include <QJsonObject>
 +#include <QJsonArray>
-@@ -116,0 +120,15 @@
++#include <QLabel>
++#include <QTableWidget>
++#include <QVBoxLayout>
+@@ -116,0 +126,15 @@
 +namespace
 +{
 +QString om0rx_decode_heading (QString const& prefix = QString {})
@@ -356,7 +506,7 @@ index c75aa42..f6a383c 100644
 +}
 +}
 +
-@@ -579,0 +598,21 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+@@ -579,0 +604,21 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
 +  auto decoded_pane_style = QString {
 +      "DisplayText {"
 +      "background: #111820;"
@@ -378,7 +528,7 @@ index c75aa42..f6a383c 100644
 +  ui->decodedTextBrowser2->setStyleSheet (decoded_pane_style);
 +  ui->lh_decodes_headings_label->setStyleSheet (decoded_heading_style);
 +  ui->rh_decodes_headings_label->setStyleSheet (decoded_heading_style);
-@@ -655 +694,7 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+@@ -655 +700,9 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
 -          m_wideGraph.data (), &WideGraph::addDecodeLabel);
 +          m_wideGraph.data (),
 +          [this] (double freq_hz, QString const& callsign, bool is_cq, int time_sec,
@@ -387,7 +537,9 @@ index c75aa42..f6a383c 100644
 +          });
 +  connect(ui->decodedTextBrowser, &DisplayText::decodedCallsign,
 +          this, &MainWindow::request_om0rx_decode_status);
-@@ -660 +705,7 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
++  connect(ui->decodedTextBrowser, &DisplayText::decodedCallsignClicked,
++          this, &MainWindow::request_om0rx_qso_history_popup);
+@@ -660 +713,9 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
 -          m_wideGraph.data (), &WideGraph::addDecodeLabel);
 +          m_wideGraph.data (),
 +          [this] (double freq_hz, QString const& callsign, bool is_cq, int time_sec,
@@ -396,7 +548,9 @@ index c75aa42..f6a383c 100644
 +          });
 +  connect(ui->decodedTextBrowser2, &DisplayText::decodedCallsign,
 +          this, &MainWindow::request_om0rx_decode_status);
-@@ -836,0 +888,48 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
++  connect(ui->decodedTextBrowser2, &DisplayText::decodedCallsignClicked,
++          this, &MainWindow::request_om0rx_qso_history_popup);
+@@ -836,0 +898,68 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
 +  connect (m_messageClient, &MessageClient::start_target_qso, this, &MainWindow::remote_start_target_qso);
 +  auto send_om0rx_policy = [this] {send_om0rx_automation_policy ();};
 +  auto stop_om0rx_when_disabled = [this] (bool checked) {
@@ -440,15 +594,35 @@ index c75aa42..f6a383c 100644
 +  connect (ui->cbOm0rxNeedBand, &QCheckBox::toggled, this, send_om0rx_policy);
 +  connect (ui->cbOm0rxNeedMode, &QCheckBox::toggled, this, send_om0rx_policy);
 +  connect (ui->cbOm0rxNeedGrid, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxFilterNewCall, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxFilterNewDxcc, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxFilterNewContinent, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxFilterNewGrid, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxFilterNewCqZone, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxFilterNewItuZone, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxFilterBandCall, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxFilterBandDxcc, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxFilterBandContinent, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxFilterBandGrid, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxFilterBandCqZone, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxFilterBandItuZone, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxContinentEurope, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxContinentAfrica, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxContinentOceania, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxContinentAsia, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxContinentSouthAmerica, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxContinentNorthAmerica, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxContinentAntarctica, &QCheckBox::toggled, this, send_om0rx_policy);
++  connect (ui->cbOm0rxLotwOnly, &QCheckBox::toggled, this, send_om0rx_policy);
 +  connect (ui->cbOm0rxPriority, static_cast<void (QComboBox::*) (int)> (&QComboBox::currentIndexChanged), this, [this] (int) {send_om0rx_automation_policy ();});
 +  connect (ui->teOm0rxBandPlan, &QPlainTextEdit::textChanged, this, send_om0rx_policy);
 +  connect (ui->teOm0rxIgnoreList, &QPlainTextEdit::textChanged, this, send_om0rx_policy);
 +  connect (&m_om0rx_automation_timer, &QTimer::timeout, this, &MainWindow::pulse_om0rx_automation);
 +  m_om0rx_automation_timer.setInterval (750);
-@@ -1193 +1292 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+@@ -1193 +1322 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
 -  auto t = "UTC   dB   DT Freq    " + tr ("Message");
 +  auto t = om0rx_decode_heading ();
-@@ -1196,0 +1296,12 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+@@ -1196,0 +1326,16 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
 +  QTimer::singleShot (0, this, [this] {
 +    ui->dxCallEntry->clear ();
 +    ui->dxGridEntry->clear ();
@@ -460,11 +634,15 @@ index c75aa42..f6a383c 100644
 +    m_rptRcvd.clear ();
 +    genStdMsgs (QString {});
 +    ui->labOm0rxAutomation->setText (tr ("OM0RX idle: startup cleared stale target"));
++    QNetworkRequest request {QUrl {"http://127.0.0.1:8080/api/ft8/tx/clear-qso"}};
++    request.setHeader (QNetworkRequest::ContentTypeHeader, "application/json");
++    auto reply = m_network_manager.post (request, QByteArray {"{}"});
++    connect (reply, &QNetworkReply::finished, reply, &QObject::deleteLater);
 +  });
-@@ -1270 +1381 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+@@ -1270 +1415 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
 -  
 +
-@@ -1513,2 +1624,5 @@ void MainWindow::on_the_minute ()
+@@ -1513,2 +1658,5 @@ void MainWindow::on_the_minute ()
 -  if (m_config.watchdog () && m_mode!="WSPR" && m_mode!="FST4W") {
 -    if (m_idleMinutes < m_config.watchdog ()) ++m_idleMinutes;
 +  om0rx_band_hopping_tick ();
@@ -472,7 +650,7 @@ index c75aa42..f6a383c 100644
 +  auto watchdog_minutes = om0rx_watchdog_minutes ();
 +  if (watchdog_minutes && m_mode!="WSPR" && m_mode!="FST4W") {
 +    if (m_idleMinutes < watchdog_minutes) ++m_idleMinutes;
-@@ -1654,0 +1769,22 @@ void MainWindow::writeSettings()
+@@ -1654,0 +1803,43 @@ void MainWindow::writeSettings()
 +  m_settings->setValue ("Om0rxAutoCQ", ui->cbOm0rxAutoCQ->isChecked ());
 +  m_settings->setValue ("Om0rxAutoCall", ui->cbOm0rxAutoCall->isChecked ());
 +  m_settings->setValue ("Om0rxMinSignal", ui->sbOm0rxMinSignal->value ());
@@ -492,10 +670,31 @@ index c75aa42..f6a383c 100644
 +  m_settings->setValue ("Om0rxNeedBand", ui->cbOm0rxNeedBand->isChecked ());
 +  m_settings->setValue ("Om0rxNeedMode", ui->cbOm0rxNeedMode->isChecked ());
 +  m_settings->setValue ("Om0rxNeedGrid", ui->cbOm0rxNeedGrid->isChecked ());
++  m_settings->setValue ("Om0rxFilterNewCall", ui->cbOm0rxFilterNewCall->isChecked ());
++  m_settings->setValue ("Om0rxFilterNewDxcc", ui->cbOm0rxFilterNewDxcc->isChecked ());
++  m_settings->setValue ("Om0rxFilterNewContinent", ui->cbOm0rxFilterNewContinent->isChecked ());
++  m_settings->setValue ("Om0rxFilterNewGrid", ui->cbOm0rxFilterNewGrid->isChecked ());
++  m_settings->setValue ("Om0rxFilterNewCqZone", ui->cbOm0rxFilterNewCqZone->isChecked ());
++  m_settings->setValue ("Om0rxFilterNewItuZone", ui->cbOm0rxFilterNewItuZone->isChecked ());
++  m_settings->setValue ("Om0rxFilterBandCall", ui->cbOm0rxFilterBandCall->isChecked ());
++  m_settings->setValue ("Om0rxFilterBandDxcc", ui->cbOm0rxFilterBandDxcc->isChecked ());
++  m_settings->setValue ("Om0rxFilterBandContinent", ui->cbOm0rxFilterBandContinent->isChecked ());
++  m_settings->setValue ("Om0rxFilterBandGrid", ui->cbOm0rxFilterBandGrid->isChecked ());
++  m_settings->setValue ("Om0rxFilterBandCqZone", ui->cbOm0rxFilterBandCqZone->isChecked ());
++  m_settings->setValue ("Om0rxFilterBandItuZone", ui->cbOm0rxFilterBandItuZone->isChecked ());
++  m_settings->setValue ("Om0rxContinentEurope", ui->cbOm0rxContinentEurope->isChecked ());
++  m_settings->setValue ("Om0rxContinentAfrica", ui->cbOm0rxContinentAfrica->isChecked ());
++  m_settings->setValue ("Om0rxContinentOceania", ui->cbOm0rxContinentOceania->isChecked ());
++  m_settings->setValue ("Om0rxContinentAsia", ui->cbOm0rxContinentAsia->isChecked ());
++  m_settings->setValue ("Om0rxContinentSouthAmerica", ui->cbOm0rxContinentSouthAmerica->isChecked ());
++  m_settings->setValue ("Om0rxContinentNorthAmerica", ui->cbOm0rxContinentNorthAmerica->isChecked ());
++  m_settings->setValue ("Om0rxContinentAntarctica", ui->cbOm0rxContinentAntarctica->isChecked ());
++  m_settings->setValue ("Om0rxLotwOnly", ui->cbOm0rxLotwOnly->isChecked ());
++  m_settings->setValue ("Om0rxQsoPopup", ui->cbOm0rxQsoPopup->isChecked ());
 +  m_settings->setValue ("Om0rxPriority", ui->cbOm0rxPriority->currentIndex ());
 +  m_settings->setValue ("Om0rxBandPlan", ui->teOm0rxBandPlan->toPlainText ());
 +  m_settings->setValue ("Om0rxIgnoreList", ui->teOm0rxIgnoreList->toPlainText ());
-@@ -2115,0 +2252,23 @@ void MainWindow::readSettings()
+@@ -2115,0 +2307,44 @@ void MainWindow::readSettings()
 +  ui->cbOm0rxAutoCQ->setChecked (m_settings->value ("Om0rxAutoCQ", false).toBool ());
 +  ui->cbOm0rxAutoCall->setChecked (m_settings->value ("Om0rxAutoCall", false).toBool ());
 +  ui->sbOm0rxMinSignal->setValue (m_settings->value ("Om0rxMinSignal", -30).toInt ());
@@ -515,163 +714,256 @@ index c75aa42..f6a383c 100644
 +  ui->cbOm0rxNeedBand->setChecked (m_settings->value ("Om0rxNeedBand", true).toBool ());
 +  ui->cbOm0rxNeedMode->setChecked (m_settings->value ("Om0rxNeedMode", true).toBool ());
 +  ui->cbOm0rxNeedGrid->setChecked (m_settings->value ("Om0rxNeedGrid", true).toBool ());
++  ui->cbOm0rxFilterNewCall->setChecked (m_settings->value ("Om0rxFilterNewCall", false).toBool ());
++  ui->cbOm0rxFilterNewDxcc->setChecked (m_settings->value ("Om0rxFilterNewDxcc", false).toBool ());
++  ui->cbOm0rxFilterNewContinent->setChecked (m_settings->value ("Om0rxFilterNewContinent", false).toBool ());
++  ui->cbOm0rxFilterNewGrid->setChecked (m_settings->value ("Om0rxFilterNewGrid", false).toBool ());
++  ui->cbOm0rxFilterNewCqZone->setChecked (m_settings->value ("Om0rxFilterNewCqZone", false).toBool ());
++  ui->cbOm0rxFilterNewItuZone->setChecked (m_settings->value ("Om0rxFilterNewItuZone", false).toBool ());
++  ui->cbOm0rxFilterBandCall->setChecked (m_settings->value ("Om0rxFilterBandCall", true).toBool ());
++  ui->cbOm0rxFilterBandDxcc->setChecked (m_settings->value ("Om0rxFilterBandDxcc", false).toBool ());
++  ui->cbOm0rxFilterBandContinent->setChecked (m_settings->value ("Om0rxFilterBandContinent", false).toBool ());
++  ui->cbOm0rxFilterBandGrid->setChecked (m_settings->value ("Om0rxFilterBandGrid", true).toBool ());
++  ui->cbOm0rxFilterBandCqZone->setChecked (m_settings->value ("Om0rxFilterBandCqZone", false).toBool ());
++  ui->cbOm0rxFilterBandItuZone->setChecked (m_settings->value ("Om0rxFilterBandItuZone", false).toBool ());
++  ui->cbOm0rxContinentEurope->setChecked (m_settings->value ("Om0rxContinentEurope", true).toBool ());
++  ui->cbOm0rxContinentAfrica->setChecked (m_settings->value ("Om0rxContinentAfrica", true).toBool ());
++  ui->cbOm0rxContinentOceania->setChecked (m_settings->value ("Om0rxContinentOceania", true).toBool ());
++  ui->cbOm0rxContinentAsia->setChecked (m_settings->value ("Om0rxContinentAsia", true).toBool ());
++  ui->cbOm0rxContinentSouthAmerica->setChecked (m_settings->value ("Om0rxContinentSouthAmerica", true).toBool ());
++  ui->cbOm0rxContinentNorthAmerica->setChecked (m_settings->value ("Om0rxContinentNorthAmerica", true).toBool ());
++  ui->cbOm0rxContinentAntarctica->setChecked (m_settings->value ("Om0rxContinentAntarctica", true).toBool ());
++  ui->cbOm0rxLotwOnly->setChecked (m_settings->value ("Om0rxLotwOnly", false).toBool ());
++  ui->cbOm0rxQsoPopup->setChecked (m_settings->value ("Om0rxQsoPopup", false).toBool ());
 +  ui->cbOm0rxPriority->setCurrentIndex (m_settings->value ("Om0rxPriority", 0).toInt ());
 +  ui->teOm0rxBandPlan->setPlainText (
 +    m_settings->value ("Om0rxBandPlan", "05:20m,17m,15m,12m,10m\n20:30m,40m,80m,160m").toString ());
 +  ui->teOm0rxIgnoreList->setPlainText (m_settings->value ("Om0rxIgnoreList", "").toString ());
-@@ -2502 +2661 @@ void MainWindow::dataSink(qint64 frames)
+@@ -2502 +2737 @@ void MainWindow::dataSink(qint64 frames)
 -  
 +
-@@ -2616 +2775 @@ void MainWindow::dataSink(qint64 frames)
+@@ -2616 +2851 @@ void MainWindow::dataSink(qint64 frames)
 -    dec_data.params.nagainfil=0;	
 +    dec_data.params.nagainfil=0;
-@@ -2710 +2869 @@ QString MainWindow::save_wave_file (QString const& name, short const * data, int
+@@ -2710 +2945 @@ QString MainWindow::save_wave_file (QString const& name, short const * data, int
 -    }  
 +    }
-@@ -3392 +3551,2 @@ void MainWindow::fastSink(qint64 frames)
+@@ -3392 +3627,2 @@ void MainWindow::fastSink(qint64 frames)
 -          haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid);
 +          haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid,
 +          ui->cbOm0rxTreat73AsCQ->isChecked ());
-@@ -4571 +4731 @@ void MainWindow::setup_status_bar (bool vhf)
+@@ -4571 +4807 @@ void MainWindow::setup_status_bar (bool vhf)
 -  } 
 +  }
-@@ -4725,0 +4886,4 @@ void MainWindow::on_stopButton_clicked()                       //stopButton
+@@ -4725,0 +4962,4 @@ void MainWindow::on_stopButton_clicked()                       //stopButton
 +  if (ui->cbOm0rxAutoCall->isChecked () || ui->cbOm0rxAutoCQ->isChecked ())
 +    {
 +      clear_om0rx_target_state ();
 +    }
-@@ -5560,2 +5724,2 @@ void MainWindow::decode()                                       //decode()
+@@ -5560,2 +5800,2 @@ void MainWindow::decode()                                       //decode()
 -    dec_data.params.lapcqonly= (isecs_since_tx > 300); 
 -  } else { 
 +    dec_data.params.lapcqonly= (isecs_since_tx > 300);
 +  } else {
-@@ -5686 +5850 @@ void MainWindow::decode()                                       //decode()
+@@ -5686 +5926 @@ void MainWindow::decode()                                       //decode()
 -    
 +
-@@ -5713 +5877 @@ void MainWindow::decode()                                       //decode()
+@@ -5713 +5953 @@ void MainWindow::decode()                                       //decode()
 -    dec_data.params.lcommonft8b=m_commonFT8b;    
 +    dec_data.params.lcommonft8b=m_commonFT8b;
-@@ -5761 +5925 @@ void MainWindow::decode()                                       //decode()
+@@ -5761 +6001 @@ void MainWindow::decode()                                       //decode()
 -  
 +
-@@ -5764 +5928 @@ void MainWindow::decode()                                       //decode()
+@@ -5764 +6004 @@ void MainWindow::decode()                                       //decode()
 -  if(hisCall.length()<3) { 
 +  if(hisCall.length()<3) {
-@@ -5766 +5930 @@ void MainWindow::decode()                                       //decode()
+@@ -5766 +6006 @@ void MainWindow::decode()                                       //decode()
 -    ::memcpy(dec_data.params.hisbcall,(hisCall+"            ").toLatin1(),12); 
 +    ::memcpy(dec_data.params.hisbcall,(hisCall+"            ").toLatin1(),12);
-@@ -5770 +5934 @@ void MainWindow::decode()                                       //decode()
+@@ -5770 +6010 @@ void MainWindow::decode()                                       //decode()
 -  ::memcpy(dec_data.params.hisgrid,(hisGrid+"      ").toLatin1(),6);    
 +  ::memcpy(dec_data.params.hisgrid,(hisGrid+"      ").toLatin1(),6);
-@@ -5772 +5936 @@ void MainWindow::decode()                                       //decode()
+@@ -5772 +6012 @@ void MainWindow::decode()                                       //decode()
 -  
 +
-@@ -7119 +7283,2 @@ void MainWindow::readFromStdout()                             //readFromStdout
+@@ -7119 +7359,2 @@ void MainWindow::readFromStdout()                             //readFromStdout
 -                                                        haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid);
 +                                                        haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid,
 +                                                        ui->cbOm0rxTreat73AsCQ->isChecked ());
-@@ -7128 +7293,2 @@ void MainWindow::readFromStdout()                             //readFromStdout
+@@ -7128 +7369,2 @@ void MainWindow::readFromStdout()                             //readFromStdout
 -                                                          haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid);
 +                                                          haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid,
 +                                                          ui->cbOm0rxTreat73AsCQ->isChecked ());
-@@ -7133 +7299,2 @@ void MainWindow::readFromStdout()                             //readFromStdout
+@@ -7133 +7375,2 @@ void MainWindow::readFromStdout()                             //readFromStdout
 -                                                          haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid);
 +                                                          haveFSpread, fSpread, bDisplayPoints, m_points, distance, m_muted, QSOgrid,
 +                                                          ui->cbOm0rxTreat73AsCQ->isChecked ());
-@@ -7780 +7947 @@ void MainWindow::pskPost (DecodedText const& decodedtext)
+@@ -7780 +8023 @@ void MainWindow::pskPost (DecodedText const& decodedtext)
 -    qSpotTime = QDateTime(QDateTime::currentDateTimeUtc().date(), time2, Qt::UTC); 
 +    qSpotTime = QDateTime(QDateTime::currentDateTimeUtc().date(), time2, Qt::UTC);
-@@ -7783,2 +7950,2 @@ void MainWindow::pskPost (DecodedText const& decodedtext)
+@@ -7783,2 +8026,2 @@ void MainWindow::pskPost (DecodedText const& decodedtext)
 -    qSpotTime = QDateTime((QDateTime::currentDateTimeUtc().addDays(-1)).date(), time2, Qt::UTC); 
 -  }    
 +    qSpotTime = QDateTime((QDateTime::currentDateTimeUtc().addDays(-1)).date(), time2, Qt::UTC);
 +  }
-@@ -7992,2 +8159,3 @@ void MainWindow::guiUpdate()
+@@ -7992,2 +8235,3 @@ void MainWindow::guiUpdate()
 -    if (m_config.watchdog() && m_mode!="WSPR" && m_mode!="FST4W"
 -        && m_idleMinutes >= m_config.watchdog ()) {
 +    auto watchdog_minutes = om0rx_watchdog_minutes ();
 +    if (watchdog_minutes && m_mode!="WSPR" && m_mode!="FST4W"
 +        && m_idleMinutes >= watchdog_minutes) {
-@@ -8046 +8214 @@ void MainWindow::guiUpdate()
+@@ -8046 +8290 @@ void MainWindow::guiUpdate()
 -      
 +
-@@ -8296,2 +8464 @@ void MainWindow::guiUpdate()
+@@ -8296,2 +8540 @@ void MainWindow::guiUpdate()
 -        ui->decodedTextBrowser2->displayTransmittedText(m_currentMessage.trimmed(),m_mode,
 -                     ui->TxFreqSpinBox->value(),m_bFastMode,m_TRperiod,m_config.superFox());
 +        display_om0rx_transmitted_text (m_currentMessage);
-@@ -8394 +8561 @@ void MainWindow::guiUpdate()
+@@ -8394 +8637 @@ void MainWindow::guiUpdate()
 -    if(m_config.watchdog () && m_mode!="WSPR" && m_mode!="FST4W"
 +    if(om0rx_watchdog_minutes () && m_mode!="WSPR" && m_mode!="FST4W"
-@@ -8405,2 +8572 @@ void MainWindow::guiUpdate()
+@@ -8405,2 +8648 @@ void MainWindow::guiUpdate()
 -            ui->decodedTextBrowser2->displayTransmittedText(current_message.trimmed(),
 -                  m_mode,ui->TxFreqSpinBox->value(),m_bFastMode,m_TRperiod,m_config.superFox());
 +            display_om0rx_transmitted_text (current_message);
-@@ -8733 +8899 @@ void MainWindow::startTx2()
+@@ -8733 +8975 @@ void MainWindow::startTx2()
 -{    
 +{
-@@ -10829 +10995 @@ void MainWindow::on_genStdMsgsPushButton_clicked()          //genStdMsgs button
+@@ -9263,0 +9506,71 @@ void MainWindow::processMessage (DecodedText const& message, Qt::KeyboardModifie
++  auto om0rx_decode_payload = message.clean_string ().mid (22).trimmed ().toUpper ();
++  om0rx_decode_payload.remove ('<');
++  om0rx_decode_payload.remove ('>');
++  auto const om0rx_decode_words = om0rx_decode_payload.split (' ', SkipEmptyParts);
++  auto om0rx_sender_call = hiscall.trimmed ().toUpper ();
++  om0rx_sender_call.remove ('<');
++  om0rx_sender_call.remove ('>');
++  if (om0rx_sender_call.isEmpty () && om0rx_decode_words.size () >= 3)
++    {
++      auto candidate = om0rx_decode_words.first ();
++      if (candidate != "CQ" && candidate != "QRZ" && candidate != "DE"
++          && candidate != m_baseCall && candidate != m_config.my_callsign ().toUpper ())
++        {
++          om0rx_sender_call = candidate;
++        }
++    }
++  auto om0rx_sender_base = Radio::base_callsign (om0rx_sender_call).toUpper ();
++  auto om0rx_recent_qso_text = ui->decodedTextBrowser2->toPlainText ().right (5000).toUpper ();
++  om0rx_recent_qso_text.remove ('<');
++  om0rx_recent_qso_text.remove ('>');
++  auto om0rx_final_73_for_us =
++      is_73
++      && om0rx_decode_words.size () >= 3
++      && "73" == om0rx_decode_words.last ()
++      && !om0rx_sender_base.isEmpty ()
++      && om0rx_sender_base != m_baseCall
++      && (om0rx_decode_words.contains (m_baseCall)
++          || om0rx_decode_words.contains (m_config.my_callsign ().toUpper ()));
++  auto om0rx_recent_exchange_with_sender =
++      !om0rx_sender_base.isEmpty ()
++      && (om0rx_recent_qso_text.contains (om0rx_sender_base + " " + m_baseCall)
++          || om0rx_recent_qso_text.contains (m_baseCall + " " + om0rx_sender_base));
++  if (om0rx_final_73_for_us
++      && (om0rx_recent_exchange_with_sender || m_QSOProgress >= ROGERS || m_auto || m_transmitting))
++    {
++      if (!om0rx_sender_call.isEmpty ())
++        {
++          auto active_base = Radio::base_callsign (ui->dxCallEntry->text ().trimmed ().remove ('<').remove ('>')).toUpper ();
++          if (active_base != om0rx_sender_base)
++            {
++              ui->dxCallEntry->setText (om0rx_sender_call);
++            }
++        }
++      auto normalized_grid = hisgrid.toUpper ();
++      if (hisgrid.contains (grid_regexp)
++          && normalized_grid != "CQ"
++          && normalized_grid != "DE"
++          && normalized_grid != "QRZ"
++          && normalized_grid != "RRR"
++          && normalized_grid != "RR73"
++          && normalized_grid != "73")
++        {
++          ui->dxGridEntry->setText (hisgrid);
++        }
++      m_hisGrid = ui->dxGridEntry->text ();
++      m_qsoStop = QDateTime::currentDateTimeUtc ().toString ("hhmm");
++      m_QSOProgress = SIGNOFF;
++      m_ntx = 6;
++      ui->txrb6->setChecked (true);
++      if ((m_config.prompt_to_log () || m_config.autoLog () || ui->cbOm0rxAutoLog->isChecked ())
++          && !m_tune)
++        {
++          logQSOTimer.start (0);
++        }
++      else
++        {
++          cease_auto_Tx_after_QSO ();
++        }
++      m_bDoubleClicked = false;
++      return;
++    }
+@@ -10829 +11142 @@ void MainWindow::on_genStdMsgsPushButton_clicked()          //genStdMsgs button
 -      
 +
-@@ -10917,0 +11084,4 @@ void MainWindow::on_logQSOButton_clicked()                 //Log QSO button
+@@ -10917,0 +11231,4 @@ void MainWindow::on_logQSOButton_clicked()                 //Log QSO button
 +  if (ui->cbOm0rxAutoLog->isChecked ())
 +    {
 +      QTimer::singleShot (0, m_logDlg.data (), SLOT (accept ()));
 +    }
-@@ -10962,0 +11133,4 @@ void MainWindow::acceptQSO (QDateTime const& QSO_date_off, QString const& call,
+@@ -10962,0 +11280,4 @@ void MainWindow::acceptQSO (QDateTime const& QSO_date_off, QString const& call,
 +  if (ui->cbOm0rxAutoLog->isChecked () || ui->cbOm0rxAutoCall->isChecked () || ui->cbOm0rxAutoCQ->isChecked ())
 +    {
 +      clear_om0rx_target_state ();
 +    }
-@@ -11149 +11323 @@ void MainWindow::on_actionFST4_triggered()
+@@ -11149 +11470 @@ void MainWindow::on_actionFST4_triggered()
 -  m_FFTSize = m_nsps / 2;  
 +  m_FFTSize = m_nsps / 2;
-@@ -11262 +11436 @@ void MainWindow::on_actionFT4_triggered()
+@@ -11262 +11583 @@ void MainWindow::on_actionFT4_triggered()
 -  ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
 +  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
-@@ -11272 +11446 @@ void MainWindow::on_actionFT4_triggered()
+@@ -11272 +11593 @@ void MainWindow::on_actionFT4_triggered()
 -  ui->lh_decodes_headings_label->setText( "  UTC   dB   DT Freq    " + tr ("Message"));
 +  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
-@@ -11331 +11505 @@ void MainWindow::on_actionFT2_triggered()
+@@ -11331 +11652 @@ void MainWindow::on_actionFT2_triggered()
 -  ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
 +  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
-@@ -11341 +11515 @@ void MainWindow::on_actionFT2_triggered()
+@@ -11341 +11662 @@ void MainWindow::on_actionFT2_triggered()
 -  ui->lh_decodes_headings_label->setText( "  UTC   dB   DT Freq    " + tr ("Message"));
 +  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
-@@ -11403 +11577 @@ void MainWindow::on_actionFT8_triggered()
+@@ -11403 +11724 @@ void MainWindow::on_actionFT8_triggered()
 -  ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
 +  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
-@@ -11417 +11591 @@ void MainWindow::on_actionFT8_triggered()
+@@ -11417 +11738 @@ void MainWindow::on_actionFT8_triggered()
 -    ui->lh_decodes_headings_label->setText( "  UTC   dB   DT Freq    " + tr ("Message"));
 +    ui->lh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
-@@ -11419 +11593 @@ void MainWindow::on_actionFT8_triggered()
+@@ -11419 +11740 @@ void MainWindow::on_actionFT8_triggered()
 -	
 +
-@@ -11570,2 +11744,2 @@ void MainWindow::on_actionJT4_triggered()
+@@ -11570,2 +11891,2 @@ void MainWindow::on_actionJT4_triggered()
 -  ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
 -  ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
 +  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
 +  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
-@@ -11645,2 +11819,2 @@ void MainWindow::on_actionJT9_triggered()
+@@ -11645,2 +11966,2 @@ void MainWindow::on_actionJT9_triggered()
 -    ui->lh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
 -    ui->rh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
 +    ui->lh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
 +    ui->rh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
-@@ -11652,2 +11826,2 @@ void MainWindow::on_actionJT9_triggered()
+@@ -11652,2 +11973,2 @@ void MainWindow::on_actionJT9_triggered()
 -        ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
 -        ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
 +        ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
 +        ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
-@@ -11795,2 +11969,2 @@ void MainWindow::on_actionQ65_triggered()
+@@ -11795,2 +12116,2 @@ void MainWindow::on_actionQ65_triggered()
 -  ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
 -  ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
 +  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
 +  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
-@@ -11889,2 +12063,2 @@ void MainWindow::on_actionMSK144_triggered()
+@@ -11889,2 +12210,2 @@ void MainWindow::on_actionMSK144_triggered()
 -  ui->lh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
 -  ui->rh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
 +  ui->lh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
 +  ui->rh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
-@@ -13302,23 +13476,23 @@ void MainWindow::on_actionShort_list_of_add_on_prefixes_and_suffixes_triggered()
+@@ -13302,23 +13623,23 @@ void MainWindow::on_actionShort_list_of_add_on_prefixes_and_suffixes_triggered()
 - 1A    1S    3A    3B6   3B8   3B9   3C    3C0   3D2   3D2C  3D2R  3DA   3V    3W    3X   
 - 3Y    3YB   3YP   4J    4L    4S    4U1I  4U1U  4W    4X    5A    5B    5H    5N    5R   
 - 5T    5U    5V    5W    5X    5Z    6W    6Y    7O    7P    7Q    7X    8P    8Q    8R   
@@ -718,27 +1010,27 @@ index c75aa42..f6a383c 100644
 + XT    XU    XW    XX9   XZ    YA    YB    YI    YJ    YK    YL    YN    YO    YS    YU
 + YV    YV0   Z2    Z3    ZA    ZB    ZC4   ZD7   ZD8   ZD9   ZF    ZK1N  ZK1S  ZK2   ZK3
 + ZL    ZL7   ZL8   ZL9   ZP    ZS    ZS8   KC4   E5
-@@ -13450 +13624 @@ void MainWindow::on_sbTR_valueChanged(int value)
+@@ -13450 +13771 @@ void MainWindow::on_sbTR_valueChanged(int value)
 -            ui->lh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
 +            ui->lh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
-@@ -13453 +13627 @@ void MainWindow::on_sbTR_valueChanged(int value)
+@@ -13453 +13774 @@ void MainWindow::on_sbTR_valueChanged(int value)
 -                ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
 +                ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
-@@ -13458 +13632 @@ void MainWindow::on_sbTR_valueChanged(int value)
+@@ -13458 +13779 @@ void MainWindow::on_sbTR_valueChanged(int value)
 -            ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
 +            ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
-@@ -13461 +13635 @@ void MainWindow::on_sbTR_valueChanged(int value)
+@@ -13461 +13782 @@ void MainWindow::on_sbTR_valueChanged(int value)
 -                ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
 +                ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
-@@ -14499 +14673 @@ void MainWindow::tx_watchdog (bool triggered)
+@@ -14499 +14820 @@ void MainWindow::tx_watchdog (bool triggered)
 -      if (m_config.watchdog () && m_mode!="WSPR" && m_mode!="FST4W") {
 +      if (om0rx_watchdog_minutes () && m_mode!="WSPR" && m_mode!="FST4W") {
-@@ -14505,0 +14680,4 @@ void MainWindow::tx_watchdog (bool triggered)
+@@ -14505,0 +14827,4 @@ void MainWindow::tx_watchdog (bool triggered)
 +      if (ui->cbOm0rxAutoCall->isChecked () || ui->cbOm0rxAutoCQ->isChecked ())
 +        {
 +          clear_om0rx_target_state ();
 +        }
-@@ -14515,0 +14694,16 @@ void MainWindow::tx_watchdog (bool triggered)
+@@ -14515,0 +14841,16 @@ void MainWindow::tx_watchdog (bool triggered)
 +int MainWindow::om0rx_watchdog_minutes () const
 +{
 +  if (ui)
@@ -755,28 +1047,28 @@ index c75aa42..f6a383c 100644
 +  return m_config.watchdog ();
 +}
 +
-@@ -14519 +14713,2 @@ void MainWindow::update_watchdog_label ()
+@@ -14519 +14860,2 @@ void MainWindow::update_watchdog_label ()
 -  if (m_config.watchdog () && m_mode!="WSPR" && m_mode!="FST4W")
 +  auto watchdog_minutes = om0rx_watchdog_minutes ();
 +  if (watchdog_minutes && m_mode!="WSPR" && m_mode!="FST4W")
-@@ -14521 +14716 @@ void MainWindow::update_watchdog_label ()
+@@ -14521 +14863 @@ void MainWindow::update_watchdog_label ()
 -      watchdog_label.setText (tr (" WD:%1m ").arg (m_config.watchdog () - m_idleMinutes));
 +      watchdog_label.setText (tr (" WD:%1m ").arg (watchdog_minutes - m_idleMinutes));
-@@ -14524 +14719 @@ void MainWindow::update_watchdog_label ()
+@@ -14524 +14866 @@ void MainWindow::update_watchdog_label ()
 -      if ((m_config.watchdog() - m_idleMinutes == 1) && (m_auto or m_tune))
 +      if ((watchdog_minutes - m_idleMinutes == 1) && (m_auto or m_tune))
-@@ -14526 +14721 @@ void MainWindow::update_watchdog_label ()
+@@ -14526 +14868 @@ void MainWindow::update_watchdog_label ()
 -      if (m_config.watchdog() - m_idleMinutes > 1) watchdog_label.setStyleSheet ("");
 +      if (watchdog_minutes - m_idleMinutes > 1) watchdog_label.setStyleSheet ("");
-@@ -14606 +14801 @@ void MainWindow::readWidebandDecodes()
+@@ -14606 +14948 @@ void MainWindow::readWidebandDecodes()
 -      qSpotTime = QDateTime(QDateTime::currentDateTimeUtc().date(), time2, Qt::UTC); 
 +      qSpotTime = QDateTime(QDateTime::currentDateTimeUtc().date(), time2, Qt::UTC);
-@@ -14609,2 +14804,2 @@ void MainWindow::readWidebandDecodes()
+@@ -14609,2 +14951,2 @@ void MainWindow::readWidebandDecodes()
 -      qSpotTime = QDateTime((QDateTime::currentDateTimeUtc().addDays(-1)).date(), time2, Qt::UTC); 
 -    }        
 +      qSpotTime = QDateTime((QDateTime::currentDateTimeUtc().addDays(-1)).date(), time2, Qt::UTC);
 +    }
-@@ -15827,0 +16023,37 @@ void MainWindow::configActiveStations()
+@@ -15827,0 +16170,37 @@ void MainWindow::configActiveStations()
 +void MainWindow::clear_om0rx_target_state ()
 +{
 +  auto_tx_mode (false);
@@ -814,14 +1106,14 @@ index c75aa42..f6a383c 100644
 +        ui->TxFreqSpinBox->value (), m_bFastMode, m_TRperiod, m_config.superFox ());
 +}
 +
-@@ -15887,0 +16120 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
+@@ -15887,0 +16267 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
 +      auto previous_call = ui->dxCallEntry->text ().trimmed ().toUpper ();
-@@ -15888,0 +16122,4 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
+@@ -15888,0 +16269,4 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
 +      if (previous_call != dx_call)
 +        {
 +          set_om0rx_active_status_pending (dx_call);
 +        }
-@@ -15912,0 +16150,571 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
+@@ -15912,0 +16297,864 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
 +void MainWindow::send_om0rx_automation_policy (bool planner_tick)
 +{
 +  auto auto_call = ui->cbOm0rxAutoCall->isChecked ();
@@ -846,6 +1138,7 @@ index c75aa42..f6a383c 100644
 +  automation.insert ("hopIntervalSeconds", ui->sbOm0rxHopInterval->value () * 60);
 +  automation.insert ("bandHopping", ui->cbOm0rxBandHopping->isChecked ());
 +  automation.insert ("modeSwitching", ui->cbOm0rxModeSwitching->isChecked ());
++  automation.insert ("currentBand", m_currentBand);
 +  automation.insert ("currentMode", m_mode);
 +  automation.insert ("treat73AsCQ", ui->cbOm0rxTreat73AsCQ->isChecked ());
 +  automation.insert ("avoidLogged", ui->cbOm0rxAvoidLogged->isChecked ());
@@ -856,6 +1149,33 @@ index c75aa42..f6a383c 100644
 +  automation.insert ("needBand", ui->cbOm0rxNeedBand->isChecked ());
 +  automation.insert ("needMode", ui->cbOm0rxNeedMode->isChecked ());
 +  automation.insert ("needGrid", ui->cbOm0rxNeedGrid->isChecked ());
++  automation.insert ("filterMatrixEnabled", true);
++  QJsonObject filter_new;
++  filter_new.insert ("call", ui->cbOm0rxFilterNewCall->isChecked ());
++  filter_new.insert ("dxcc", ui->cbOm0rxFilterNewDxcc->isChecked ());
++  filter_new.insert ("continent", ui->cbOm0rxFilterNewContinent->isChecked ());
++  filter_new.insert ("grid", ui->cbOm0rxFilterNewGrid->isChecked ());
++  filter_new.insert ("cqZone", ui->cbOm0rxFilterNewCqZone->isChecked ());
++  filter_new.insert ("ituZone", ui->cbOm0rxFilterNewItuZone->isChecked ());
++  automation.insert ("filterNew", filter_new);
++  QJsonObject filter_band;
++  filter_band.insert ("call", ui->cbOm0rxFilterBandCall->isChecked ());
++  filter_band.insert ("dxcc", ui->cbOm0rxFilterBandDxcc->isChecked ());
++  filter_band.insert ("continent", ui->cbOm0rxFilterBandContinent->isChecked ());
++  filter_band.insert ("grid", ui->cbOm0rxFilterBandGrid->isChecked ());
++  filter_band.insert ("cqZone", ui->cbOm0rxFilterBandCqZone->isChecked ());
++  filter_band.insert ("ituZone", ui->cbOm0rxFilterBandItuZone->isChecked ());
++  automation.insert ("filterNewOnBand", filter_band);
++  QJsonObject filter_continents;
++  filter_continents.insert ("EU", ui->cbOm0rxContinentEurope->isChecked ());
++  filter_continents.insert ("AF", ui->cbOm0rxContinentAfrica->isChecked ());
++  filter_continents.insert ("OC", ui->cbOm0rxContinentOceania->isChecked ());
++  filter_continents.insert ("AS", ui->cbOm0rxContinentAsia->isChecked ());
++  filter_continents.insert ("SA", ui->cbOm0rxContinentSouthAmerica->isChecked ());
++  filter_continents.insert ("NA", ui->cbOm0rxContinentNorthAmerica->isChecked ());
++  filter_continents.insert ("AN", ui->cbOm0rxContinentAntarctica->isChecked ());
++  automation.insert ("filterContinents", filter_continents);
++  automation.insert ("lotwOnly", ui->cbOm0rxLotwOnly->isChecked ());
 +  QString priority {"last"};
 +  if (1 == ui->cbOm0rxPriority->currentIndex ())
 +    {
@@ -898,6 +1218,7 @@ index c75aa42..f6a383c 100644
 +        QStringList detail;
 +        bool backend_has_active_target {false};
 +        QString panel_state;
++        int backend_eligible_count {0};
 +        auto automation = root.value ("automation").toObject ();
 +        auto panel = automation.value ("reason_panel").toObject ();
 +        if (!panel.isEmpty ())
@@ -915,6 +1236,7 @@ index c75aa42..f6a383c 100644
 +                    target.value ("mode").toString (),
 +                    QString::number (target.value ("score").toInt ()));
 +              }
++            backend_eligible_count = panel.value ("eligibility").toObject ().value ("eligible").toInt ();
 +            auto why_selected = panel.value ("why_selected").toString ();
 +            if (!why_selected.isEmpty ())
 +              {
@@ -947,6 +1269,24 @@ index c75aa42..f6a383c 100644
 +                  }
 +                detail << QString {"Rejected: %1"}.arg (counts.join (", "));
 +              }
++          }
++        m_om0rx_backend_has_active_target = backend_has_active_target;
++        m_om0rx_backend_eligible_count = backend_eligible_count;
++        m_om0rx_backend_panel_state = panel_state;
++        m_om0rx_backend_reason = reason;
++        m_om0rx_last_backend_planner_at = QDateTime::currentDateTimeUtc ();
++        if (!backend_has_active_target
++            && backend_eligible_count == 0
++            && (reason == "no-eligible-target" || panel_state == "idle"))
++          {
++            if (!m_om0rx_no_eligible_since.isValid ())
++              {
++                m_om0rx_no_eligible_since = m_om0rx_last_backend_planner_at;
++              }
++          }
++        else
++          {
++            m_om0rx_no_eligible_since = QDateTime {};
 +          }
 +        if (!backend_has_active_target
 +            && (ui->cbOm0rxAutoCall->isChecked () || ui->cbOm0rxAutoCQ->isChecked ())
@@ -1008,11 +1348,15 @@ index c75aa42..f6a383c 100644
 +                                              int snr)
 +{
 +  auto call = callsign.trimmed ().toUpper ();
-+  if (call.isEmpty () || call.startsWith ('<'))
++  call.remove ('<');
++  call.remove ('>');
++  if (call.isEmpty ())
 +    {
 +      return;
 +    }
 +  auto active_call = ui->dxCallEntry->text ().trimmed ().toUpper ();
++  active_call.remove ('<');
++  active_call.remove ('>');
 +  auto active_base = Radio::base_callsign (active_call).toUpper ();
 +  auto status_base = Radio::base_callsign (call).toUpper ();
 +  auto status_is_active_qso = active_call == call
@@ -1094,6 +1438,166 @@ index c75aa42..f6a383c 100644
 +  });
 +}
 +
++void MainWindow::request_om0rx_qso_history_popup (QString const& callsign)
++{
++  if (!ui->cbOm0rxQsoPopup->isChecked ())
++    {
++      return;
++    }
++
++  auto call = callsign.trimmed ().toUpper ();
++  call.remove ('<');
++  call.remove ('>');
++  if (call.isEmpty () || call == m_config.my_callsign ().trimmed ().toUpper ())
++    {
++      return;
++    }
++  if (m_om0rx_history_inflight.contains (call))
++    {
++      return;
++    }
++  m_om0rx_history_inflight.insert (call);
++
++  auto encoded = QString::fromUtf8 (QUrl::toPercentEncoding (call));
++  QNetworkRequest request {
++      QUrl {QString {"http://127.0.0.1:8080/api/wavelog-log/search/%1?station_id=1&limit=20"}.arg (encoded)}};
++  auto reply = m_network_manager.get (request);
++  connect (reply, &QNetworkReply::finished, this, [this, reply, call] {
++    m_om0rx_history_inflight.remove (call);
++    QJsonObject payload;
++    if (QNetworkReply::NoError == reply->error ())
++      {
++        payload = QJsonDocument::fromJson (reply->readAll ()).object ();
++      }
++    else
++      {
++        payload.insert ("success", false);
++        payload.insert ("detail", reply->errorString ());
++      }
++    reply->deleteLater ();
++    show_om0rx_qso_history_popup (call, payload);
++  });
++}
++
++void MainWindow::show_om0rx_qso_history_popup (QString const& callsign, QJsonObject const& payload)
++{
++  auto qsos = payload.value ("qsos").toArray ();
++  auto summary = payload.value ("summary").toObject ();
++  auto matrix = payload.value ("matrix").toObject ();
++
++  auto * dialog = new QDialog {this};
++  dialog->setAttribute (Qt::WA_DeleteOnClose);
++  dialog->setWindowTitle (tr ("Previous QSOs - %1").arg (callsign));
++  dialog->resize (880, 560);
++  dialog->setStyleSheet (
++      "QDialog { background: #141827; color: #e5e7eb; }"
++      "QLabel { color: #e5e7eb; }"
++      "QLabel#om0rxHistoryTitle { color: #10d59a; font-weight: 700; font-size: 14px; }"
++      "QLabel#om0rxHistorySummary { background: #24233f; border-left: 3px solid #10d59a; padding: 8px; font-weight: 700; }"
++      "QLabel#om0rxHistoryBadges { background: #24233f; padding: 8px; }"
++      "QTableWidget { background: #16172b; color: #e5e7eb; gridline-color: #3b3b4f; selection-background-color: #0d5ea8; }"
++      "QHeaderView::section { background: #0d3f6e; color: #ffffff; border: 0; padding: 4px; font-weight: 700; }"
++      "QPushButton { background: #2f3a44; color: #ffffff; border: 1px solid #465360; padding: 4px 12px; }");
++
++  auto * layout = new QVBoxLayout {dialog};
++  auto * title = new QLabel {tr ("Previous QSOs - %1").arg (callsign), dialog};
++  title->setObjectName ("om0rxHistoryTitle");
++  layout->addWidget (title);
++
++  auto * count = new QLabel {tr ("%1 times worked before").arg (qsos.size ()), dialog};
++  count->setObjectName ("om0rxHistorySummary");
++  layout->addWidget (count);
++
++  auto * qso_table = new QTableWidget {qsos.size (), 7, dialog};
++  qso_table->setHorizontalHeaderLabels ({tr ("Date"), tr ("Callsign"), tr ("Mode"),
++                                         tr ("RST (S)"), tr ("RST (R)"), tr ("Band"), tr ("LoTW")});
++  qso_table->verticalHeader ()->setVisible (false);
++  qso_table->setEditTriggers (QAbstractItemView::NoEditTriggers);
++  qso_table->setSelectionBehavior (QAbstractItemView::SelectRows);
++  qso_table->horizontalHeader ()->setSectionResizeMode (QHeaderView::Stretch);
++  for (auto row = 0; row < qsos.size (); ++row)
++    {
++      auto qso = qsos.at (row).toObject ();
++      auto mode = qso.value ("submode").toString ().trimmed ();
++      if (mode.isEmpty ())
++        {
++          mode = qso.value ("mode").toString ();
++        }
++      QStringList values {
++        qso.value ("time_on").toString (),
++        qso.value ("callsign").toString (),
++        mode,
++        qso.value ("rst_sent").toString (),
++        qso.value ("rst_rcvd").toString (),
++        qso.value ("band").toString (),
++        QString {"S:%1 R:%2"}.arg (qso.value ("lotw_sent").toString ("-"),
++                                   qso.value ("lotw_rcvd").toString ("-"))
++      };
++      for (auto column = 0; column < values.size (); ++column)
++        {
++          auto * item = new QTableWidgetItem {values.at (column)};
++          item->setTextAlignment (Qt::AlignCenter);
++          qso_table->setItem (row, column, item);
++        }
++    }
++  layout->addWidget (qso_table);
++
++  QStringList badges;
++  if (!summary.value ("country").toString ().isEmpty ())
++    {
++      badges << tr ("DXCC %1").arg (summary.value ("country").toString ().toUpper ());
++    }
++  if (!summary.value ("gridsquare").toString ().isEmpty ())
++    {
++      badges << tr ("Gridsquare %1").arg (summary.value ("gridsquare").toString ().toUpper ());
++    }
++  auto * badge_label = new QLabel {badges.isEmpty () ? tr ("No Wavelog summary for %1").arg (callsign) : badges.join ("   "), dialog};
++  badge_label->setObjectName ("om0rxHistoryBadges");
++  layout->addWidget (badge_label);
++
++  auto * matrix_label = new QLabel {tr ("Band/Mode Matrix"), dialog};
++  matrix_label->setObjectName ("om0rxHistoryTitle");
++  layout->addWidget (matrix_label);
++
++  QStringList bands {"160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m"};
++  QStringList modes {"CW", "FT8", "FT4", "RTTY", "SSB", "LSB", "USB"};
++  auto * matrix_table = new QTableWidget {modes.size (), bands.size (), dialog};
++  matrix_table->setHorizontalHeaderLabels (bands);
++  matrix_table->setVerticalHeaderLabels (modes);
++  matrix_table->setEditTriggers (QAbstractItemView::NoEditTriggers);
++  matrix_table->horizontalHeader ()->setSectionResizeMode (QHeaderView::Stretch);
++  matrix_table->verticalHeader ()->setSectionResizeMode (QHeaderView::Stretch);
++  for (auto row = 0; row < modes.size (); ++row)
++    {
++      auto mode_matrix = matrix.value (modes.at (row)).toObject ();
++      for (auto column = 0; column < bands.size (); ++column)
++        {
++          auto cell = mode_matrix.value (bands.at (column)).toObject ();
++          auto confirmed = cell.value ("confirmed").toBool ();
++          auto worked = cell.value ("worked").toBool ();
++          auto * item = new QTableWidgetItem {confirmed ? QString {"C"} : worked ? QString {"W"} : QString {"-"}};
++          item->setTextAlignment (Qt::AlignCenter);
++          if (confirmed)
++            {
++              item->setBackground (QColor {26, 188, 126});
++              item->setForeground (QColor {255, 255, 255});
++            }
++          else if (worked)
++            {
++              item->setBackground (QColor {215, 48, 55});
++              item->setForeground (QColor {255, 255, 255});
++            }
++          matrix_table->setItem (row, column, item);
++        }
++    }
++  layout->addWidget (matrix_table);
++
++  auto * buttons = new QDialogButtonBox {QDialogButtonBox::Close, dialog};
++  connect (buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
++  layout->addWidget (buttons);
++  dialog->show ();
++}
++
 +void MainWindow::set_om0rx_active_status_pending (QString const& callsign)
 +{
 +  auto call = callsign.trimmed ().toUpper ();
@@ -1131,6 +1635,9 @@ index c75aa42..f6a383c 100644
 +
 +void MainWindow::apply_om0rx_decode_status (QString const& callsign, QJsonObject const& status)
 +{
++  auto display_call = callsign.trimmed ().toUpper ();
++  display_call.remove ('<');
++  display_call.remove ('>');
 +  auto call_status = status.value ("call_status").toString ("Unknown");
 +  auto dxcc_status = status.value ("dxcc_status").toString ("Unknown");
 +  auto country = status.value ("country").toString ();
@@ -1149,10 +1656,12 @@ index c75aa42..f6a383c 100644
 +  compact_dxcc.replace ("New Band", "NewBand");
 +  compact_dxcc.replace ("New Mode", "NewMode");
 +  auto active_call = ui->dxCallEntry->text ().trimmed ().toUpper ();
++  active_call.remove ('<');
++  active_call.remove ('>');
 +  auto active_base = Radio::base_callsign (active_call).toUpper ();
-+  auto status_base = Radio::base_callsign (callsign).toUpper ();
++  auto status_base = Radio::base_callsign (display_call).toUpper ();
 +  auto status_is_active_qso = active_call.isEmpty ()
-+      || active_call == callsign
++      || active_call == display_call
 +      || (!active_base.isEmpty () && active_base == status_base);
 +
 +  auto status_colours = [] (QString const& text) {
@@ -1220,7 +1729,7 @@ index c75aa42..f6a383c 100644
 +    }
 +  if (status_is_active_qso)
 +    {
-+      auto status_text = QString {"%1  CALL %2  DXCC %3"}.arg (callsign, compact_call, compact_dxcc);
++      auto status_text = QString {"%1  CALL %2  DXCC %3"}.arg (display_call, compact_call, compact_dxcc);
 +      auto label_width = ui->labOm0rxAutomation->width ();
 +      if (label_width < 80)
 +        {
@@ -1230,21 +1739,21 @@ index c75aa42..f6a383c 100644
 +          ui->labOm0rxAutomation->fontMetrics ().elidedText (status_text, Qt::ElideRight, label_width - 8));
 +      ui->labOm0rxAutomation->setToolTip (
 +          QString {"%1: call %2 | DXCC %3%4%5%6"}.arg (
-+              callsign,
++              display_call,
 +              call_status,
 +              dxcc_status,
 +              country.isEmpty () ? QString {} : QString {" | %1"}.arg (country),
 +              cq_zone.isEmpty () ? QString {} : QString {" | CQ %1"}.arg (cq_zone),
 +              itu_zone.isEmpty () ? QString {} : QString {" | ITU %1"}.arg (itu_zone)));
 +      ui->labOm0rxCallStatus->setText (QString {"CALL %1"}.arg (compact_call));
-+      ui->labOm0rxCallStatus->setToolTip (QString {"%1 call status: %2"}.arg (callsign, call_status));
++      ui->labOm0rxCallStatus->setToolTip (QString {"%1 call status: %2"}.arg (display_call, call_status));
 +      ui->labOm0rxCallStatus->setStyleSheet (badge_style (call_colours.first, call_colours.second));
 +      ui->labOm0rxDxccStatus->setText (QString {"DXCC %1"}.arg (compact_dxcc));
-+      ui->labOm0rxDxccStatus->setToolTip (QString {"%1 DXCC status: %2"}.arg (callsign, dxcc_status));
++      ui->labOm0rxDxccStatus->setToolTip (QString {"%1 DXCC status: %2"}.arg (display_call, dxcc_status));
 +      ui->labOm0rxDxccStatus->setStyleSheet (badge_style (dxcc_colours.first, dxcc_colours.second));
 +      ui->labOm0rxEntityStatus->setText (
 +          ui->labOm0rxEntityStatus->fontMetrics ().elidedText (entity_summary, Qt::ElideRight, entity_width - 8));
-+      ui->labOm0rxEntityStatus->setToolTip (QString {"%1 entity: %2"}.arg (callsign, entity_summary));
++      ui->labOm0rxEntityStatus->setToolTip (QString {"%1 entity: %2"}.arg (display_call, entity_summary));
 +    }
 +
 +  auto combined = QString {"%1 %2"}.arg (call_status, dxcc_status).toLower ();
@@ -1271,10 +1780,10 @@ index c75aa42..f6a383c 100644
 +      fg = QColor {255, 255, 255};
 +    }
 +
-+  ui->decodedTextBrowser->highlight_callsign (callsign, bg, fg, false);
-+  ui->decodedTextBrowser2->highlight_callsign (callsign, bg, fg, false);
-+  ui->decodedTextBrowser->annotate_callsign (callsign, QString {"%1 | %2"}.arg (call_status, dxcc_status), fg);
-+  ui->decodedTextBrowser2->annotate_callsign (callsign, QString {"%1 | %2"}.arg (call_status, dxcc_status), fg);
++  ui->decodedTextBrowser->highlight_callsign (display_call, bg, fg, false);
++  ui->decodedTextBrowser2->highlight_callsign (display_call, bg, fg, false);
++  ui->decodedTextBrowser->annotate_callsign (display_call, QString {"%1 | %2"}.arg (call_status, dxcc_status), fg);
++  ui->decodedTextBrowser2->annotate_callsign (display_call, QString {"%1 | %2"}.arg (call_status, dxcc_status), fg);
 +}
 +
 +void MainWindow::remote_start_target_qso (QString const& payload_json)
@@ -1331,6 +1840,7 @@ index c75aa42..f6a383c 100644
 +  auto dx_grid = text_value ("dxGrid", text_value ("grid")).toUpper ();
 +  auto mode = text_value ("mode").toUpper ();
 +  auto submode = text_value ("submode").toUpper ();
++  auto target_band = text_value ("band").toLower ();
 +  auto frequency_tolerance = uint_value ("frequencyTolerance", quint32_max);
 +  auto tr_period = uint_value ("trPeriod", quint32_max);
 +  auto rx_df = uint_value ("rxDf", quint32_max);
@@ -1339,17 +1849,85 @@ index c75aa42..f6a383c 100644
 +  auto generate_messages = bool_value ("generateMessages", true);
 +  auto hold_tx_freq = bool_value ("holdTxFreq", true);
 +  auto enable_tx = bool_value ("enableTx", true);
++  auto listen_only = bool_value ("listenOnly", false);
 +  auto dial_frequency = frequency_value ("dialFrequency", 0u);
 +  auto tx_message = uint_value ("txMessageNumber", 1);
 +
-+  if (dx_call.isEmpty ())
++  if (dx_call.isEmpty () && !listen_only)
 +    {
 +      qDebug () << "OM0RX start target QSO ignored, missing target call";
 +      return;
 +    }
++  auto requested_call = dx_call.trimmed ().toUpper ();
++  requested_call.remove ('<');
++  requested_call.remove ('>');
++  auto requested_base = Radio::base_callsign (requested_call).toUpper ();
++  auto active_call = ui->dxCallEntry->text ().trimmed ().toUpper ();
++  active_call.remove ('<');
++  active_call.remove ('>');
++  auto active_base = Radio::base_callsign (active_call).toUpper ();
++  auto current_message = m_currentMessage.trimmed ().toUpper ();
++  current_message.remove ('<');
++  current_message.remove ('>');
++  auto active_qso_in_progress =
++      !active_base.isEmpty ()
++      && !requested_base.isEmpty ()
++      && active_base != requested_base
++      && (m_transmitting
++          || m_QSOProgress != CALLING
++          || !m_rptSent.isEmpty ()
++          || !m_rptRcvd.isEmpty ()
++          || m_sentFirst73
++          || current_message.contains (active_base));
++  if (active_qso_in_progress)
++    {
++      qDebug () << "OM0RX start target QSO ignored, active QSO in progress:"
++                << active_call << "->" << dx_call;
++      showStatusMessage (tr ("OM0RX ignored %1: active QSO with %2 is still in progress")
++                          .arg (dx_call, active_call));
++      return;
++    }
++
++  auto requested_band = target_band;
++  if (requested_band.isEmpty () && dial_frequency)
++    {
++      requested_band = m_config.bands ()->find (dial_frequency).trimmed ().toLower ();
++    }
++  auto current_band = m_currentBand.trimmed ().toLower ();
++  if (!ui->cbOm0rxBandHopping->isChecked ()
++      && !requested_band.isEmpty ()
++      && !current_band.isEmpty ()
++      && requested_band != current_band)
++    {
++      qDebug () << "OM0RX start target QSO ignored, band hopping disabled:"
++                << current_band << "->" << requested_band << dx_call;
++      showStatusMessage (tr ("OM0RX ignored %1: Band hopping is off (%2 -> %3)")
++                          .arg (dx_call, current_band, requested_band));
++      return;
++    }
++  if (!ui->cbOm0rxModeSwitching->isChecked ()
++      && !mode.isEmpty ()
++      && mode != m_mode.trimmed ().toUpper ())
++    {
++      qDebug () << "OM0RX start target QSO ignored, mode switching disabled:"
++                << m_mode << "->" << mode << dx_call;
++      showStatusMessage (tr ("OM0RX ignored %1: Mode switching is off (%2 -> %3)")
++                          .arg (dx_call, m_mode, mode));
++      return;
++    }
++
++  if (listen_only)
++    {
++      clear_om0rx_target_state ();
++      showStatusMessage (dx_call.isEmpty ()
++                          ? tr ("OM0RX listening for spotted activity")
++                          : tr ("OM0RX listening for %1 before calling").arg (dx_call));
++    }
 +
 +  remote_configure (mode, frequency_tolerance, submode, fast_mode, tr_period, rx_df
-+                    , dx_call, dx_grid, generate_messages);
++                    , listen_only ? QString {} : dx_call
++                    , listen_only ? QString {} : dx_grid
++                    , listen_only ? false : generate_messages);
 +
 +  if (dial_frequency)
 +    {
@@ -1373,6 +1951,13 @@ index c75aa42..f6a383c 100644
 +      ui->txFirstCheckBox->setChecked (bool_value ("txFirst", ui->txFirstCheckBox->isChecked ()));
 +    }
 +
++  if (listen_only)
++    {
++      tx_watchdog (false);
++      QApplication::alert (this);
++      return;
++    }
++
 +  switch (tx_message)
 +    {
 +    case 2: ui->txb2->click (); break;
@@ -1393,7 +1978,7 @@ index c75aa42..f6a383c 100644
 +  QApplication::alert (this);
 +}
 +
-@@ -16073,0 +16882,274 @@ void MainWindow::on_pb60E_clicked()
+@@ -16073,0 +17322,307 @@ void MainWindow::on_pb60E_clicked()
 +QStringList MainWindow::om0rx_current_band_plan () const
 +{
 +  struct PlanEntry
@@ -1584,9 +2169,31 @@ index c75aa42..f6a383c 100644
 +    {
 +      return;
 +    }
-+  if (!ui->dxCallEntry->text ().trimmed ().isEmpty () || (m_auto && !m_hisCall.trimmed ().isEmpty ()))
++  auto const backend_status_fresh =
++      m_om0rx_last_backend_planner_at.isValid ()
++      && m_om0rx_last_backend_planner_at.secsTo (QDateTime::currentDateTimeUtc ()) <= 5;
++  auto const backend_idle =
++      backend_status_fresh
++      && !m_om0rx_backend_has_active_target
++      && (m_om0rx_backend_panel_state.isEmpty ()
++          || m_om0rx_backend_panel_state == "idle"
++          || m_om0rx_backend_panel_state == "aborted"
++          || m_om0rx_backend_panel_state == "failed"
++          || m_om0rx_backend_panel_state == "completed");
++  auto const stale_target_fields =
++      !ui->dxCallEntry->text ().trimmed ().isEmpty () || (m_auto && !m_hisCall.trimmed ().isEmpty ());
++  auto const native_qso_progress =
++      m_QSOProgress != CALLING
++      || !m_rptSent.isEmpty ()
++      || !m_rptRcvd.isEmpty ()
++      || m_sentFirst73;
++  if (stale_target_fields && (m_om0rx_backend_has_active_target || native_qso_progress || !backend_idle))
 +    {
 +      return;
++    }
++  if (stale_target_fields && backend_idle)
++    {
++      clear_om0rx_target_state ();
 +    }
 +
 +  static QDateTime last_hop_at;
@@ -1596,7 +2203,8 @@ index c75aa42..f6a383c 100644
 +  auto const now = QDateTime::currentDateTimeUtc ();
 +  auto const interval_seconds = qMax (60, ui->sbOm0rxHopInterval->value () * 60);
 +  auto const no_decode_seconds = qMin (interval_seconds, 120);
-+  auto const no_workable_seconds = qMin (interval_seconds, 180);
++  auto const no_workable_seconds = qMin (interval_seconds, 75);
++  auto const no_eligible_seconds = qMin (interval_seconds, 45);
 +  auto const decode_signature =
 +      (ui->decodedTextBrowser->toPlainText ().right (4096)
 +       + ui->decodedTextBrowser2->toPlainText ().right (4096));
@@ -1607,7 +2215,10 @@ index c75aa42..f6a383c 100644
 +    }
 +  auto const has_workable_label =
 +      decode_signature.contains ("New Call", Qt::CaseInsensitive)
-+      || decode_signature.contains ("ATNO", Qt::CaseInsensitive);
++      || decode_signature.contains ("ATNO", Qt::CaseInsensitive)
++      || decode_signature.contains ("New Band", Qt::CaseInsensitive)
++      || decode_signature.contains ("New Mode", Qt::CaseInsensitive)
++      || decode_signature.contains ("NewB+Mode", Qt::CaseInsensitive);
 +  if (!last_workable_seen_at.isValid () || has_workable_label)
 +    {
 +      last_workable_seen_at = now;
@@ -1622,7 +2233,9 @@ index c75aa42..f6a383c 100644
 +      last_decode_activity_at.isValid () && last_decode_activity_at.secsTo (now) >= no_decode_seconds;
 +  auto const no_workable_due =
 +      last_workable_seen_at.isValid () && last_workable_seen_at.secsTo (now) >= no_workable_seconds;
-+  if (!fixed_interval_due && !no_decodes_due && !no_workable_due)
++  auto const no_eligible_due =
++      m_om0rx_no_eligible_since.isValid () && m_om0rx_no_eligible_since.secsTo (now) >= no_eligible_seconds;
++  if (!fixed_interval_due && !no_decodes_due && !no_workable_due && !no_eligible_due)
 +    {
 +      return;
 +    }
@@ -1663,20 +2276,25 @@ index c75aa42..f6a383c 100644
 +      last_hop_at = now;
 +      last_decode_activity_at = now;
 +      last_workable_seen_at = now;
++      m_om0rx_no_eligible_since = QDateTime {};
 +      last_decode_signature = decode_signature;
-+      showStatusMessage (tr ("OM0RX hunt hop: %1 %2").arg (target_slot.band, target_slot.mode));
++      QString hop_reason {"timer"};
++      if (no_eligible_due) hop_reason = "no eligible target";
++      else if (no_decodes_due) hop_reason = "no decodes";
++      else if (no_workable_due) hop_reason = "no workable target";
++      showStatusMessage (tr ("OM0RX hunt hop: %1 %2 (%3)").arg (target_slot.band, target_slot.mode, hop_reason));
 +    }
 +}
 +
 diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
-index 366e1a7..9a1920f 100644
+index 366e1a7..3d79d6b 100644
 --- a/widgets/mainwindow.h
 +++ b/widgets/mainwindow.h
 @@ -24,0 +25 @@
 +#include <QHash>
 @@ -84,0 +86 @@ class QHostInfo;
 +class QJsonObject;
-@@ -464,0 +467,9 @@ private slots:
+@@ -464,0 +467,11 @@ private slots:
 +  void remote_start_target_qso (QString const& payload_json);
 +  void send_om0rx_automation_policy (bool planner_tick = false);
 +  void pulse_om0rx_automation ();
@@ -1684,23 +2302,32 @@ index 366e1a7..9a1920f 100644
 +                                    bool is_cq, int time_sec,
 +                                    QString const& grid, QString const& message,
 +                                    int snr);
++  void request_om0rx_qso_history_popup (QString const& callsign);
++  void show_om0rx_qso_history_popup (QString const& callsign, QJsonObject const& payload);
 +  void set_om0rx_active_status_pending (QString const& callsign);
 +  void apply_om0rx_decode_status (QString const& callsign, QJsonObject const& status);
-@@ -502,0 +514,2 @@ private:
+@@ -502,0 +516,2 @@ private:
 +  void clear_om0rx_target_state ();
 +  void display_om0rx_transmitted_text (QString const& message);
-@@ -519,0 +533,2 @@ private:
+@@ -519,0 +535,9 @@ private:
 +  QSet<QString> m_om0rx_status_inflight;
++  QSet<QString> m_om0rx_history_inflight;
 +  QHash<QString, QString> m_om0rx_status_cache;
-@@ -821,0 +837 @@ private:
++  bool m_om0rx_backend_has_active_target {false};
++  int m_om0rx_backend_eligible_count {0};
++  QString m_om0rx_backend_panel_state;
++  QString m_om0rx_backend_reason;
++  QDateTime m_om0rx_last_backend_planner_at;
++  QDateTime m_om0rx_no_eligible_since;
+@@ -821,0 +846 @@ private:
 +  QTimer m_om0rx_automation_timer;
-@@ -1049,0 +1066,4 @@ private:
+@@ -1049,0 +1075,4 @@ private:
 +  int om0rx_watchdog_minutes () const;
 +  QStringList om0rx_current_band_plan () const;
 +  void om0rx_band_hopping_tick ();
 +  bool om0rx_qsy_to_band_mode (QString const& band, QString const& mode);
 diff --git a/widgets/mainwindow.ui b/widgets/mainwindow.ui
-index c7cfaa2..6cd4e04 100644
+index c7cfaa2..3d8e4be 100644
 --- a/widgets/mainwindow.ui
 +++ b/widgets/mainwindow.ui
 @@ -1566,0 +1567,168 @@ When not checked you can view the calibration results.</string>
@@ -1872,7 +2499,7 @@ index c7cfaa2..6cd4e04 100644
 +                    </item>
 +                   </layout>
 +                  </item>
-@@ -3594,3 +3762,445 @@ Double-click to reset to the standard 73 message</string>
+@@ -3594,3 +3762,706 @@ Double-click to reset to the standard 73 message</string>
 -                 </widget>
 -                </item>
 -               </layout>
@@ -2048,6 +2675,16 @@ index c7cfaa2..6cd4e04 100644
 +                         </property>
 +                         <property name="checked">
 +                          <bool>true</bool>
++                         </property>
++                        </widget>
++                       </item>
++                       <item row="5" column="1">
++                        <widget class="QCheckBox" name="cbOm0rxQsoPopup">
++                         <property name="toolTip">
++                          <string>Show previous-QSO history and band/mode matrix when single-clicking a decoded callsign.</string>
++                         </property>
++                         <property name="text">
++                          <string>QSO popup</string>
 +                         </property>
 +                        </widget>
 +                       </item>
@@ -2242,7 +2879,7 @@ index c7cfaa2..6cd4e04 100644
 +                      </layout>
 +                     </widget>
 +                    </item>
-+                    <item row="1" column="0" colspan="3">
++                    <item row="1" column="0" colspan="4">
 +                     <widget class="QGroupBox" name="gbOm0rxBandPlan">
 +                      <property name="title">
 +                       <string>Band plan</string>
@@ -2283,6 +2920,257 @@ index c7cfaa2..6cd4e04 100644
 +                     </widget>
 +                    </item>
 +                    <item row="0" column="2">
++                     <widget class="QGroupBox" name="gbOm0rxFiltering">
++                      <property name="title">
++                       <string>Filtering</string>
++                      </property>
++                      <layout class="QGridLayout" name="gridLayoutOm0rxFiltering">
++                       <property name="leftMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="topMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="rightMargin">
++                        <number>6</number>
++                       </property>
++                       <property name="bottomMargin">
++                        <number>6</number>
++                       </property>
++                       <item row="0" column="0">
++                        <widget class="QGroupBox" name="gbOm0rxFilterNew">
++                         <property name="title">
++                          <string>New</string>
++                         </property>
++                         <layout class="QVBoxLayout" name="verticalLayoutOm0rxFilterNew">
++                          <property name="leftMargin">
++                           <number>4</number>
++                          </property>
++                          <property name="topMargin">
++                           <number>4</number>
++                          </property>
++                          <property name="rightMargin">
++                           <number>4</number>
++                          </property>
++                          <property name="bottomMargin">
++                           <number>4</number>
++                          </property>
++                          <item>
++                           <widget class="QCheckBox" name="cbOm0rxFilterNewCall">
++                            <property name="text">
++                             <string>Call</string>
++                            </property>
++                           </widget>
++                          </item>
++                          <item>
++                           <widget class="QCheckBox" name="cbOm0rxFilterNewDxcc">
++                            <property name="text">
++                             <string>DXCC</string>
++                            </property>
++                           </widget>
++                          </item>
++                          <item>
++                           <widget class="QCheckBox" name="cbOm0rxFilterNewContinent">
++                            <property name="text">
++                             <string>Continent</string>
++                            </property>
++                           </widget>
++                          </item>
++                          <item>
++                           <widget class="QCheckBox" name="cbOm0rxFilterNewGrid">
++                            <property name="text">
++                             <string>Grid</string>
++                            </property>
++                           </widget>
++                          </item>
++                          <item>
++                           <widget class="QCheckBox" name="cbOm0rxFilterNewCqZone">
++                            <property name="text">
++                             <string>CQ zone</string>
++                            </property>
++                           </widget>
++                          </item>
++                          <item>
++                           <widget class="QCheckBox" name="cbOm0rxFilterNewItuZone">
++                            <property name="text">
++                             <string>ITU zone</string>
++                            </property>
++                           </widget>
++                          </item>
++                         </layout>
++                        </widget>
++                       </item>
++                       <item row="0" column="1">
++                        <widget class="QGroupBox" name="gbOm0rxFilterBand">
++                         <property name="title">
++                          <string>New on band</string>
++                         </property>
++                         <layout class="QVBoxLayout" name="verticalLayoutOm0rxFilterBand">
++                          <property name="leftMargin">
++                           <number>4</number>
++                          </property>
++                          <property name="topMargin">
++                           <number>4</number>
++                          </property>
++                          <property name="rightMargin">
++                           <number>4</number>
++                          </property>
++                          <property name="bottomMargin">
++                           <number>4</number>
++                          </property>
++                          <item>
++                           <widget class="QCheckBox" name="cbOm0rxFilterBandCall">
++                            <property name="text">
++                             <string>Call</string>
++                            </property>
++                            <property name="checked">
++                             <bool>true</bool>
++                            </property>
++                           </widget>
++                          </item>
++                          <item>
++                           <widget class="QCheckBox" name="cbOm0rxFilterBandDxcc">
++                            <property name="text">
++                             <string>DXCC</string>
++                            </property>
++                           </widget>
++                          </item>
++                          <item>
++                           <widget class="QCheckBox" name="cbOm0rxFilterBandContinent">
++                            <property name="text">
++                             <string>Continent</string>
++                            </property>
++                           </widget>
++                          </item>
++                          <item>
++                           <widget class="QCheckBox" name="cbOm0rxFilterBandGrid">
++                            <property name="text">
++                             <string>Grid</string>
++                            </property>
++                            <property name="checked">
++                             <bool>true</bool>
++                            </property>
++                           </widget>
++                          </item>
++                          <item>
++                           <widget class="QCheckBox" name="cbOm0rxFilterBandCqZone">
++                            <property name="text">
++                             <string>CQ zone</string>
++                            </property>
++                           </widget>
++                          </item>
++                          <item>
++                           <widget class="QCheckBox" name="cbOm0rxFilterBandItuZone">
++                            <property name="text">
++                             <string>ITU zone</string>
++                            </property>
++                           </widget>
++                          </item>
++                         </layout>
++                        </widget>
++                       </item>
++                       <item row="0" column="2">
++                        <widget class="QGroupBox" name="gbOm0rxFilterContinents">
++                         <property name="title">
++                          <string>Continents</string>
++                         </property>
++                         <layout class="QGridLayout" name="gridLayoutOm0rxFilterContinents">
++                          <property name="leftMargin">
++                           <number>4</number>
++                          </property>
++                          <property name="topMargin">
++                           <number>4</number>
++                          </property>
++                          <property name="rightMargin">
++                           <number>4</number>
++                          </property>
++                          <property name="bottomMargin">
++                           <number>4</number>
++                          </property>
++                          <item row="0" column="0">
++                           <widget class="QCheckBox" name="cbOm0rxContinentEurope">
++                            <property name="text">
++                             <string>Europe</string>
++                            </property>
++                            <property name="checked">
++                             <bool>true</bool>
++                            </property>
++                           </widget>
++                          </item>
++                          <item row="0" column="1">
++                           <widget class="QCheckBox" name="cbOm0rxContinentAfrica">
++                            <property name="text">
++                             <string>Africa</string>
++                            </property>
++                            <property name="checked">
++                             <bool>true</bool>
++                            </property>
++                           </widget>
++                          </item>
++                          <item row="1" column="0">
++                           <widget class="QCheckBox" name="cbOm0rxContinentOceania">
++                            <property name="text">
++                             <string>Oceania</string>
++                            </property>
++                            <property name="checked">
++                             <bool>true</bool>
++                            </property>
++                           </widget>
++                          </item>
++                          <item row="1" column="1">
++                           <widget class="QCheckBox" name="cbOm0rxContinentAsia">
++                            <property name="text">
++                             <string>Asia</string>
++                            </property>
++                            <property name="checked">
++                             <bool>true</bool>
++                            </property>
++                           </widget>
++                          </item>
++                          <item row="2" column="0">
++                           <widget class="QCheckBox" name="cbOm0rxContinentSouthAmerica">
++                            <property name="text">
++                             <string>S. America</string>
++                            </property>
++                            <property name="checked">
++                             <bool>true</bool>
++                            </property>
++                           </widget>
++                          </item>
++                          <item row="2" column="1">
++                           <widget class="QCheckBox" name="cbOm0rxContinentNorthAmerica">
++                            <property name="text">
++                             <string>N. America</string>
++                            </property>
++                            <property name="checked">
++                             <bool>true</bool>
++                            </property>
++                           </widget>
++                          </item>
++                          <item row="3" column="0">
++                           <widget class="QCheckBox" name="cbOm0rxContinentAntarctica">
++                            <property name="text">
++                             <string>Antarctica</string>
++                            </property>
++                            <property name="checked">
++                             <bool>true</bool>
++                            </property>
++                           </widget>
++                          </item>
++                         </layout>
++                        </widget>
++                       </item>
++                       <item row="1" column="0" colspan="3">
++                        <widget class="QCheckBox" name="cbOm0rxLotwOnly">
++                         <property name="text">
++                          <string>LOTW Only</string>
++                         </property>
++                        </widget>
++                       </item>
++                      </layout>
++                     </widget>
++                    </item>
++                    <item row="0" column="3">
 +                     <widget class="QGroupBox" name="gbOm0rxIgnoreList">
 +                      <property name="title">
 +                       <string>Ignore</string>

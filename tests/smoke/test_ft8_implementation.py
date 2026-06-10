@@ -1115,6 +1115,22 @@ def test_local_qso_status_cache_provides_call_slot_flags():
     assert store.call_flags("K3ZK", "20m", "FT8") == (False, False, True, True, False)
 
 
+def test_local_qso_status_cache_normalizes_band_values_for_slot_flags():
+    from radio_control.qso_status_store import DuckDBQSOStatusStore
+
+    store = DuckDBQSOStatusStore()
+    store._ensure_loaded = lambda: True
+    store.call_worked = {"AD9GE"}
+    store.call_confirmed = {"AD9GE"}
+    store.call_band_worked = {("AD9GE", "30m")}
+    store.call_mode_worked = {("AD9GE", "FT8")}
+    store.call_bandmode_confirmed = {("AD9GE", "30m", "FT8")}
+
+    assert store.call_flags("AD9GE", "20M", "FT8") == (True, True, True, False, False)
+    assert store.call_flags("AD9GE", "30 m", "FT8") == (True, True, False, False, True)
+    assert store.call_flags("AD9GE", "14.074 MHz", "FT8") == (True, True, True, False, False)
+
+
 def test_decoded_ft8_enrichment_uses_local_cache_before_wavelog_api():
     api = read_text("backend/api/ft8.py")
     store = read_text("radio_control/qso_status_store.py")

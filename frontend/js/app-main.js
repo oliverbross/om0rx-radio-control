@@ -1170,6 +1170,8 @@ function mountVueApp() {
             this.setupActivityIntelligenceRefresh();
             this.setupVisualGlobeRefresh();
             this.loadSpotSourceMuteState();
+            this.loadSpotSectionVisibility();
+            this.startSpotsCommandListener();
             this.loadCompactPanelPrefs();
             this.loadRblAlertRules();
             await this.loadServiceHealth();
@@ -2288,11 +2290,6 @@ function mountVueApp() {
             if (service.action === 'outbox-retry') {
                 await this.retryQsoOutbox();
                 await this.loadServiceHealth();
-                return;
-            }
-
-            if (service.action === 'digital') {
-                this.openDigitalWindow();
                 return;
             }
 

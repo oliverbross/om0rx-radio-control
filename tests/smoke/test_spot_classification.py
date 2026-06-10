@@ -11,6 +11,7 @@ from radio_control.classifier_api import ClassifierAPI
 from radio_control.cty_resolvers import CtyDatResolver
 from radio_control.qso_status_store import DuckDBQSOStatusStore
 from radio_control.spot_classification import (
+    classify_call_status,
     classify_dxcc_status,
     dxcc_confirmation_from_lookup,
 )
@@ -86,6 +87,15 @@ def test_dxcc_worked_status_comes_from_local_qso_log():
         )
         assert display.status == "Worked"
         assert display.tag == "Need LoTW"
+
+
+def test_call_status_preserves_new_band_and_mode_slots():
+    assert classify_call_status(False, True, True, False) == "New Call"
+    assert classify_call_status(True, True, True, False) == "New Band+Mode"
+    assert classify_call_status(True, True, False, False) == "New Band"
+    assert classify_call_status(True, False, True, False) == "New Mode"
+    assert classify_call_status(True, False, False, False) == "Worked"
+    assert classify_call_status(True, True, True, True) == "Confirmed"
 
 
 def test_dxcc_confirmed_status_accepts_eqsl_and_paper_qsl():
@@ -242,7 +252,7 @@ def test_classifier_does_not_invent_atno_when_worked_cache_unavailable():
     ) is None
 
 
-def test_digital_status_recent_qso_overrides_false_new_band(monkeypatch):
+def test_digital_status_recent_qso_is_band_and_mode_slot_aware(monkeypatch):
     import services.qso_logging as qlog
 
     def fake_wavelog_db(callsign, limit):
@@ -258,8 +268,9 @@ def test_digital_status_recent_qso_overrides_false_new_band(monkeypatch):
     monkeypatch.setattr(qlog, "_get_recent_qsos_from_wavelog_db", fake_wavelog_db)
 
     assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "20m", "FT8")) == "Worked"
-    assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "20m", "SSB")) == "Worked"
-    assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "15m", "FT8")) == "Worked"
+    assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "20m", "SSB")) == "New Mode"
+    assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "15m", "FT8")) == "New Band"
+    assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "15m", "SSB")) == "New Band+Mode"
 
 
 if __name__ == "__main__":

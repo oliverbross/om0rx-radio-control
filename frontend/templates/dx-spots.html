@@ -1,4 +1,13 @@
         <!-- DX Spots Section -->
+        <div v-if="spotsDetached" class="spots-detached-placeholder">
+            <div>
+                <strong>Filters are popped out</strong>
+                <span>Use the detached filters window, or dock it back into the main screen.</span>
+            </div>
+            <button @click="focusDetachedSpots" class="filter-btn">Focus</button>
+            <button @click="reattachSpots" class="detach-btn docked">Dock Filters</button>
+        </div>
+
         <div v-if="!spotsDetached" class="spots-container">
             <div class="spots-header">
                 <!-- View Mode Toggle (Log / Filters) -->
@@ -22,6 +31,13 @@
                 
                 <!-- Spots View: Filters Label -->
                 <span v-if="viewMode === 'spots' || viewMode === 'visual'" class="filter-options-label" style="font-weight: bold; font-size: 14px; margin-left: 10px;">Filter Options:</span>
+                <button
+                    v-if="(viewMode === 'spots' || viewMode === 'visual') && !isSpotsStandalone()"
+                    @click="detachSpots"
+                    class="detach-btn"
+                    title="Pop filters out into a separate movable window">
+                    ⇱ Pop out
+                </button>
                 
                 <!-- Log View: Controls -->
                 <div v-if="viewMode === 'log'" class="log-controls">
@@ -280,6 +296,25 @@
                     {{ wsjtxCandidateQueue.message }}
                 </span>
                 <a href="spots-database.html" target="_blank" class="spots-db-link">📊 Spots DB</a>
+                <div class="filter-dropdown">
+                    <button @click="toggleDropdown('spotRows')" class="filter-btn" title="Show or hide filter/status rows">
+                        Rows ▼
+                    </button>
+                    <div v-if="openDropdown === 'spotRows'" class="dropdown-menu spot-rows-menu">
+                        <div class="dropdown-list">
+                            <label v-for="item in getSpotSectionVisibilityItems()" :key="item.id">
+                                <input
+                                    type="checkbox"
+                                    :checked="isSpotSectionVisible(item.id)"
+                                    @change="toggleSpotSectionVisibility(item.id)">
+                                {{ item.label }}
+                            </label>
+                        </div>
+                        <div class="dropdown-footer">
+                            <button @click="showAllSpotSections">Show all</button>
+                        </div>
+                    </div>
+                </div>
                 <button @click="clearAllFilters" class="clear-all-btn">🗑️ Clear All</button>
                 </div>
                 
@@ -291,13 +326,13 @@
             
             <!-- SPOTS VIEW -->
             <div v-if="viewMode === 'spots' || viewMode === 'visual'" class="view-wrapper">
-                <div v-if="getActiveSpotFilterChips().length > 0" class="spot-filter-chips">
+                <div v-if="isSpotSectionVisible('activeFilters') && getActiveSpotFilterChips().length > 0" class="spot-filter-chips">
                     <button v-for="chip in getActiveSpotFilterChips()" :key="chip.type + ':' + chip.value" @click="removeSpotFilterChip(chip)" class="spot-filter-chip">
                         {{ chip.label }} ×
                     </button>
                 </div>
 
-                <div v-if="getBandActivityItems().length > 0" class="band-activity-strip">
+                <div v-if="isSpotSectionVisible('bandActivity') && getBandActivityItems().length > 0" class="band-activity-strip">
                     <button v-for="item in getBandActivityItems()" :key="item.band" @click="applyBandActivityFilter(item.band)" :class="['band-activity-btn', { active: spotsFilter.bands.includes(item.band) }]">
                         <strong>{{ item.band }}</strong>
                         <span>{{ item.total }}</span>
@@ -308,7 +343,7 @@
 
             <!-- @include templates/partials/spots-source-monitor.html -->
 
-            <div class="wsjtx-engine-strip">
+            <div v-if="isSpotSectionVisible('wsjtxEngine')" class="wsjtx-engine-strip">
                 <div class="wsjtx-engine-status" :class="getWsjtxEngineStatusClass()">
                     <strong>WSJT engine</strong>
                     <span>{{ getWsjtxEngineStatusText() }}</span>
@@ -328,7 +363,7 @@
                 <button @click="showConfigDialog('wsjtx')">WSJT tools</button>
             </div>
 
-            <div v-if="wsjtxPlanner.open" class="wsjtx-planner-panel">
+            <div v-if="isSpotSectionVisible('wsjtxPlanner') && wsjtxPlanner.open" class="wsjtx-planner-panel">
                 <div class="wsjtx-planner-header">
                         <div>
                             <strong>WSJT Planner</strong>
@@ -409,7 +444,7 @@
                     </div>
                 </div>
 
-                <div class="activity-intelligence-panel" v-if="activityIntelligence && !activityPanelCollapsed">
+                <div class="activity-intelligence-panel" v-if="isSpotSectionVisible('activityIntelligence') && activityIntelligence && !activityPanelCollapsed">
                     <div class="activity-panel-header">
                         <div>
                             <strong>Activity Intelligence</strong>
@@ -513,7 +548,7 @@
                         </div>
                     </div>
                 </div>
-                <div v-else-if="activityPanelCollapsed" class="activity-intelligence-compact">
+                <div v-else-if="isSpotSectionVisible('activityIntelligence') && activityPanelCollapsed" class="activity-intelligence-compact">
                     <button @click="activityPanelCollapsed = false">Show Activity Intelligence</button>
                     <span>{{ getActivitySourceStatusText() }}</span>
                 </div>

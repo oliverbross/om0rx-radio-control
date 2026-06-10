@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 LEGACY_SINGLE_PAGE_ROUTES = {
     "radio-control.html",
     "logging.html",
-    "spots.html",
     "launcher.html",
 }
 

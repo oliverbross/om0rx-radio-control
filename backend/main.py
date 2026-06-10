@@ -225,6 +225,51 @@ def init_wavelog_sync_manager():
         return False
 
 
+async def warm_qso_status_cache():
+    """Load the hot worked/confirmed sets without blocking application startup."""
+    try:
+        store = getattr(context.classifier, "qso_status_store", None) if context.classifier else None
+        if not store or not hasattr(store, "diagnostics"):
+            logging.info("WSJT-Z QSO status cache warmup skipped: no status store")
+            return
+        diagnostics = await asyncio.to_thread(store.diagnostics)
+        if diagnostics.get("loaded"):
+            logging.info(
+                "✅ WSJT-Z QSO status cache warmed: calls=%s dxcc=%s",
+                diagnostics.get("call_worked_count", 0),
+                diagnostics.get("dxcc_worked_count", 0),
+            )
+        else:
+            logging.warning("WSJT-Z QSO status cache warmup did not load: %s", diagnostics)
+    except Exception as e:
+        logging.error(f"❌ WSJT-Z QSO status cache warmup failed: {e}")
+
+
+async def init_wavelog_sync_manager_background():
+    """Initialize Wavelog sync after the API is allowed to start serving."""
+    try:
+        manager = await asyncio.to_thread(init_wavelog_sync)
+        context.wavelog_sync_manager = manager
+        logging.info("✅ Wavelog local read-cache sync initialized")
+        sync_runtime_state()
+
+        if context.background_task_service:
+            from radio_control.wavelog_duckdb_sync import periodic_wavelog_sync
+
+            async def delayed_periodic_wavelog_sync():
+                await asyncio.sleep(180)
+                await periodic_wavelog_sync()
+
+            wavelog_task = asyncio.create_task(
+                delayed_periodic_wavelog_sync(),
+                name="periodic_wavelog_sync",
+            )
+            context.background_task_service.tasks.append(wavelog_task)
+            logging.info("✅ Wavelog local read-cache periodic sync task scheduled")
+    except Exception as e:
+        logging.error(f"❌ Wavelog local sync initialization failed: {e}")
+
+
 # === Main Application Setup ===
 
 async def initialize_services():
@@ -264,10 +309,20 @@ async def initialize_services():
         broadcast_status,
         broadcast_spots,
     )
+    if context.background_task_service:
+        context.background_task_service.tasks.append(
+            asyncio.create_task(warm_qso_status_cache(), name="warm_qso_status_cache")
+        )
     sync_runtime_state()
 
     init_cluster_client()
-    init_wavelog_sync_manager()
+    if context.background_task_service:
+        context.background_task_service.tasks.append(
+            asyncio.create_task(
+                init_wavelog_sync_manager_background(),
+                name="init_wavelog_sync_manager",
+            )
+        )
     
     # Initialize rotator service (async)
     from services.rotator import get_rotator_service, init_rotator_service

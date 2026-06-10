@@ -19,6 +19,12 @@ class SpotTuneRequest(BaseModel):
     mode: Optional[str] = None
 
 
+class SpotPopoutCommandRequest(BaseModel):
+    id: str
+    action: str
+    spot: Dict[str, Any]
+
+
 class SpotFilterRequest(BaseModel):
     """Request model for filtered spot search"""
     limit: int = 100
@@ -41,6 +47,25 @@ class SpotMaintenanceRepairRequest(BaseModel):
     limit: Optional[int] = None
     dry_run: bool = True
     vacuum: bool = False
+
+
+def _radio_mode_for_spot(mode: Optional[str], frequency_mhz: Optional[float]) -> Optional[str]:
+    """Map spot/logging modes to modes accepted by the Flex slice API."""
+    value = (mode or "").strip().upper()
+    if not value:
+        return None
+
+    if value == "SSB":
+        try:
+            return "LSB" if float(frequency_mhz or 0) < 14 else "USB"
+        except (TypeError, ValueError):
+            return "USB"
+
+    if value in {"FT8", "FT4", "FT2", "JT65", "JT9", "PSK", "DIGI", "MFSK", "OLIVIA"}:
+        return "DIGU"
+
+    valid_modes = {"AM", "LSB", "USB", "CW", "NFM", "DIGL", "DIGU", "FM", "SAM", "DFM", "RTTY"}
+    return value if value in valid_modes else value
 
 
 def _spot_timestamp_seconds(spot: Dict[str, Any]) -> float:
@@ -389,6 +414,39 @@ async def get_live_spot_cache(request: Request, limit: int = 250):
     return {"spots": [dict(spot) for spot in dx_spots_cache[:safe_limit]]}
 
 
+@router.post("/api/spots/popout-command")
+async def post_spots_popout_command(command: SpotPopoutCommandRequest, request: Request):
+    """Relay a detached Filters window spot action to the main app window."""
+    commands = getattr(request.app.state, "spots_popout_commands", None)
+    if commands is None:
+        commands = []
+        request.app.state.spots_popout_commands = commands
+
+    payload = command.dict()
+    commands.append(payload)
+    if len(commands) > 50:
+        del commands[:-50]
+    try:
+        from services.websocket import websocket_manager
+
+        await websocket_manager.broadcast("spot-command", payload)
+    except Exception:
+        logger.exception("Failed to broadcast detached Filters spot command")
+    return {"ok": True, "id": command.id}
+
+
+@router.get("/api/spots/popout-command")
+async def get_spots_popout_commands(request: Request, since: Optional[str] = None):
+    """Return detached Filters window commands after the provided command id."""
+    commands = list(getattr(request.app.state, "spots_popout_commands", []))
+    if since:
+        for index, command in enumerate(commands):
+            if command.get("id") == since:
+                commands = commands[index + 1 :]
+                break
+    return {"ok": True, "commands": commands}
+
+
 @router.get("/api/spots/cty-prefixes")
 async def get_cty_prefixes():
     """Serve CTY prefix CSV for frontend-only visual spot location fallback."""
@@ -661,19 +719,21 @@ async def tune_to_spot(req: SpotTuneRequest, request: Request):
         if not success:
             raise HTTPException(status_code=400, detail="Tune command failed")
         
+        radio_mode = _radio_mode_for_spot(req.mode, req.frequency)
+
         # Set mode if provided
-        if req.mode:
-            mode_success = flex.set_mode(req.mode)
+        if radio_mode:
+            mode_success = flex.set_mode(radio_mode)
             if not mode_success:
-                logger.warning(f"Mode change to {req.mode} failed, but frequency changed")
+                logger.warning(f"Mode change to {radio_mode} failed, but frequency changed")
         
         # Broadcast status update
         update = {"frequency": req.frequency}
-        if req.mode:
-            update["mode"] = req.mode
+        if radio_mode:
+            update["mode"] = radio_mode
         await broadcast_status(update)
         
-        return {"success": True}
+        return {"success": True, "mode": radio_mode}
     except HTTPException:
         raise
     except Exception as e:
@@ -839,19 +899,21 @@ async def add_spot_to_radio(req: SpotTuneRequest, request: Request):
         if not success:
             return {"success": False, "error": "Tune command failed"}
         
+        radio_mode = _radio_mode_for_spot(req.mode, req.frequency)
+
         # Set mode if provided
-        if req.mode:
-            mode_success = flex.set_mode(req.mode)
+        if radio_mode:
+            mode_success = flex.set_mode(radio_mode)
             if not mode_success:
-                logger.warning(f"Mode change to {req.mode} failed, but frequency changed")
+                logger.warning(f"Mode change to {radio_mode} failed, but frequency changed")
         
         # Broadcast status update
         update = {"frequency": req.frequency}
-        if req.mode:
-            update["mode"] = req.mode
+        if radio_mode:
+            update["mode"] = radio_mode
         await broadcast_status(update)
         
-        return {"success": True}
+        return {"success": True, "mode": radio_mode}
     except Exception as e:
         logger.error(f"Add spot to radio error: {e}")
         return {"success": False, "error": str(e)}

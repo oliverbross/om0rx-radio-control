@@ -50,14 +50,6 @@
         </select>
     </div>
     <div class="compact-radio-right">
-        <button v-if="shouldShowCompactDigitalButton()" @click="openDigitalWindow" class="ft8-digi-button">DIGITAL</button>
-        <button v-if="shouldShowCompactDigitalButton()"
-                @click="launchPatchedWsjtxEngine"
-                :disabled="wsjtxLaunchLoading || wsjtxPreflightLoading"
-                class="ft8-digi-button wsjtx-launch-button"
-                title="Launch OM0RX patched WSJT-X">
-            WSJT-X
-        </button>
         <span class="utc-clock">{{ currentTime }} UTC</span>
     </div>
 </div>

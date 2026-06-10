@@ -58,6 +58,33 @@ is running, and writes startup logs to
 In the patched WSJT-X settings, enable UDP request handling before sending
 automation target commands from OM0RX Radio Control.
 
+## WSJT-Z Enrichment Build
+
+The WSJT-Z side-by-side build uses upstream `sq9fve/wsjt-z` plus the local
+`om0rx-wsjtz-enrichment.patch`. It adds OM0RX Wavelog enrichment display,
+compact `CS` and `DS` columns in the RX/TX decode panes, a right-click previous
+QSO popup, and the OM0RX hunter priority layer for Auto Call candidate ranking.
+Use `docs/wsjtx/WSJTZ_OM0RX_SOURCE_OF_TRUTH.md` as the source of truth for the
+current behavior and any differences from upstream WSJT-Z.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\wsjtz\prepare_om0rx_wsjtz.ps1 -Force
+powershell -ExecutionPolicy Bypass -File scripts\wsjtz\build_om0rx_wsjtz.ps1 -InstallMissingDependencies
+```
+
+The resulting side-by-side engine is written to:
+
+```text
+data\build\wsjt-z-om0rx\build-msys\wsjt-z.exe
+data\build\wsjt-z-om0rx\build-msys\jt9.exe
+```
+
+To start WSJT-Z outside the web UI:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\wsjtz\run_om0rx_wsjtz.ps1
+```
+
 ## Target Payload
 
 The app sends:
