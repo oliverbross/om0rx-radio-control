@@ -2700,6 +2700,20 @@ def register_wsjtx_endpoints(app):
             "matrix": matrix,
         }
 
+    @app.post("/api/wsjtx/launch-wsjtz-engine")
+    async def wsjtx_launch_wsjtz_engine(req: Dict[str, Any]):
+        """Launch the locally built OM0RX WSJT-Z engine."""
+        service = get_wsjtx_service()
+        return service.launch_wsjtz_engine(req)
+
+    @app.post("/api/wsjtx/launch-wsjtz-preflight")
+    async def wsjtx_launch_wsjtz_preflight(req: Dict[str, Any]):
+        """Dry-run OM0RX WSJT-Z launch/profile checks without starting the engine."""
+        service = get_wsjtx_service()
+        req = dict(req or {})
+        req["engine"] = "wsjtz"
+        return service.get_launch_preflight(req)
+
     @app.get("/api/wsjtx/launch-logs")
     async def wsjtx_launch_logs(rigName: str = "OM0RX-AUTO", lines: int = 120):
         """Read recent stdout/stderr lines from the local patched WSJT launcher logs."""

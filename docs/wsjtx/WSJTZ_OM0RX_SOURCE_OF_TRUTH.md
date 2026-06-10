@@ -229,9 +229,9 @@ This is an OM0RX safety fix for hunting mode.
   duplicate for `2026-06-10 02:14:15 N4MTB 40m`, confirming the contact is
   present remotely.
 - Removed the visible browser UI launch buttons for the abandoned built-in
-  `DIGITAL` window and patched WSJT launch experiments. The current native
-  WSJT-Z source/build, UDP bridge, enrichment, QSO-history popup, and
-  Wavelog logging endpoints remain in place.
+  `DIGITAL` window and patched WSJT-X launch experiment. The current native
+  WSJT-Z launcher button, source/build, UDP bridge, enrichment, QSO-history
+  popup, and Wavelog logging endpoints remain in place.
 - Removed the old built-in Digital service health pill so the browser status
   strip no longer advertises the failed Digital path.
 - Clarified bridge status behavior: `WSJT no client` means the Node bridge is

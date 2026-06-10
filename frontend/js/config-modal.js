@@ -603,6 +603,75 @@ window.RadioControlConfig = {
             return (data && (data.message || data.error)) || fallback;
         },
 
+        getWsjtzLaunchPayload() {
+            return {
+                engine: 'wsjtz',
+                rigName: 'OM0RX-WSJT-Z',
+                configName: 'OM0RX-WSJT-Z',
+                testMode: false,
+            };
+        },
+
+        async runWsjtzLaunchPreflight(options = {}) {
+            const response = await fetch('/api/wsjtx/launch-wsjtz-preflight', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.getWsjtzLaunchPayload()),
+            });
+            const data = await response.json();
+            this.wsjtxPreflight = data;
+            if (data.health) {
+                this.wsjtxHealth = data.health;
+            }
+            if (!response.ok || data.success === false) {
+                throw new Error(this.formatWsjtxCommandError(data, 'WSJT-Z launch self-test failed'));
+            }
+            if (options.requireReady && !data.ready) {
+                throw new Error(`Critical launch checks failed: ${this.formatWsjtxPreflightSummary()}`);
+            }
+            return data;
+        },
+
+        async launchWsjtzEngine() {
+            this.wsjtxLaunchLoading = true;
+            this.wsjtxHealthMessage = null;
+            this.wsjtxLaunchResult = null;
+            this.wsjtxLaunchLogs = null;
+            try {
+                this.wsjtxPreflightLoading = true;
+                const preflight = await this.runWsjtzLaunchPreflight({ requireReady: true });
+                this.wsjtxPreflightLoading = false;
+                this.wsjtxHealthMessage = {
+                    type: 'success',
+                    text: `WSJT-Z self-test passed: ${preflight.validation?.critical_ok || 0}/${preflight.validation?.critical_total || 0} critical checks ready.`,
+                };
+                const response = await fetch('/api/wsjtx/launch-wsjtz-engine', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.getWsjtzLaunchPayload()),
+                });
+                const data = await response.json();
+                if (!response.ok || data.success === false) {
+                    throw new Error(this.formatWsjtxCommandError(data, 'OM0RX WSJT-Z launch failed'));
+                }
+                this.wsjtxLaunchResult = data;
+                this.wsjtxHealthMessage = {
+                    type: 'success',
+                    text: data.message || 'OM0RX WSJT-Z launch command completed.',
+                };
+            } catch (error) {
+                const preflightBlocked = String(error.message || '').includes('Critical launch checks failed');
+                this.wsjtxHealthMessage = {
+                    type: preflightBlocked ? 'warning' : 'error',
+                    text: `${preflightBlocked ? 'OM0RX WSJT-Z start blocked' : 'OM0RX WSJT-Z launch failed'}: ${error.message}`,
+                };
+            } finally {
+                this.wsjtxPreflightLoading = false;
+                this.wsjtxLaunchLoading = false;
+                setTimeout(() => this.loadWsjtxHealth({ preserveMessage: true }), 1500);
+            }
+        },
+
         async loadWsjtxHealth(options = {}) {
             this.wsjtxHealthLoading = true;
             if (!options.preserveMessage) {
