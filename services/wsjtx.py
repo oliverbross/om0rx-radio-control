@@ -575,10 +575,11 @@ class WSJTXService:
             logger.warning("Immediate Wavelog outbox replay after WSJT-X log failed: %s", exc)
 
     def _schedule_wavelog_outbox_replay(self) -> None:
-        task = self._outbox_replay_task
-        if task and not task.done():
-            return
-        self._outbox_replay_task = asyncio.create_task(self._replay_wavelog_outbox_once())
+        # WSJT-Z sends logged-QSO UDP packets in the hot decode/TX path. Running
+        # Wavelog replay inside that request path can block the bridge long
+        # enough for retries and lost client state. The background outbox worker
+        # handles replay; this method stays as a compatibility no-op for callers.
+        return
 
     async def log_qso(self, req: Dict[str, Any]):
         """
@@ -607,11 +608,6 @@ class WSJTXService:
 
             if adif_text and _coerce_bool(req.get("async_upload")):
                 cty_data = {}
-                if self.cty_resolver:
-                    try:
-                        cty_data = self.cty_resolver.lookup(call) or {}
-                    except Exception as exc:
-                        logger.debug("CTY lookup failed for async WSJT-X QSO %s: %s", call, exc)
                 qso_data = {
                     "callsign": call,
                     "frequency": frequency_hz / 1_000_000 if frequency_hz else None,
@@ -652,7 +648,6 @@ class WSJTXService:
                         outbox_queued = False
                         if not dedupe_entry.get("wavelog_success"):
                             outbox_queued = get_qso_outbox().enqueue_adif(adif_text)
-                            self._schedule_wavelog_outbox_replay()
                             logger.info(
                                 "Retrying duplicate WSJT-X async QSO without confirmed Wavelog success: %s %s %s (Outbox: %s)",
                                 call,
@@ -660,7 +655,7 @@ class WSJTXService:
                                 mode,
                                 outbox_queued,
                             )
-                        self._record_logged_qso_in_status_cache(qso_data)
+                        asyncio.create_task(asyncio.to_thread(self._record_logged_qso_in_status_cache, qso_data))
                         return {
                             "success": True,
                             "duplicate": True,
@@ -679,7 +674,6 @@ class WSJTXService:
                     logger.debug("Async WSJT-X QSO dedupe guard unavailable for %s: %s", call, exc, exc_info=True)
 
                 outbox_queued = get_qso_outbox().enqueue_adif(adif_text)
-                self._schedule_wavelog_outbox_replay()
                 asyncio.create_task(
                     asyncio.to_thread(
                         self._finish_async_logged_qso,

@@ -152,8 +152,10 @@ This is an OM0RX safety fix for hunting mode.
 - The backend queues the ADIF text to the local Wavelog outbox first and
   returns immediately. Slower local ADIF/cache/dedupe bookkeeping runs in the
   background so the bridge is not held long enough to hit its upload timeout.
-- After accepting the record, the backend also schedules an immediate one-shot
-  outbox replay. The periodic retry worker remains as the safety net.
+- Upload replay is handled by the existing periodic Wavelog outbox worker. The
+  logged-QSO request path does not run Wavelog HTTP replay inline, because that
+  can hold the bridge long enough to trigger duplicate retries and stale client
+  state.
 - If the backend times out or rejects the request, the bridge writes the payload
   to `logs/wsjtx_logged_qso_pending.jsonl` and retries in the background.
 - This prevents a valid local WSJT-Z QSO from being lost just because the
@@ -164,9 +166,11 @@ This is an OM0RX safety fix for hunting mode.
 - WSJT-Z can receive exact duplicate decoded lines from the FT8 decoder path,
   especially around multi-threaded and AP decode passes.
 - OM0RX suppresses exact duplicate display rows within the same decode period.
-  The key is UTC, audio offset, mode, and message. SNR and DT are intentionally
-  ignored because duplicate decoder passes can report the same decoded message
-  with slightly different signal metrics.
+  The key is UTC, mode, and message with trailing AP markers such as `a1` or
+  `a9` stripped. SNR, DT, and audio offset are intentionally ignored because
+  duplicate decoder passes can report the same decoded message with slightly
+  different signal metrics, AP annotations, or a one-bin audio-offset
+  difference.
 - The dedupe set is cleared when the UTC period changes, when disk WAV decode
   starts, and on the normal FT8 period-boundary reset.
 - This is a display/processing guard only for exact duplicates in the same
@@ -218,6 +222,15 @@ This is an OM0RX safety fix for hunting mode.
 - Added a reply-priority guard so a received reply to OM0RX clears stale
   watchdog/Auto Call candidates and prevents starting a different station until
   the reply QSO is handled or the QSO state returns to idle.
+- Fixed the reply-priority guard so it no longer returns early from
+  `ZProcess()` while TX/auto-sequence is active. The guard now clears competing
+  Auto Call candidates but lets the active reply sequencing continue.
+- Tightened decode display deduplication to ignore audio-offset differences
+  within the same UTC period. Rows such as the same callsign/message at 670 Hz
+  and 671 Hz are now one displayed decode, not two.
+- Tightened decode display deduplication again to treat AP-suffixed variants
+  such as `EA1CQ AA4HV R-07 a9` and `EA1CQ AA4HV R-07` as the same displayed
+  decode within the same UTC period.
 - Added decode display deduplication for exact repeated decoder lines within
   one period, rebuilt WSJT-Z, killed the old process, replaced `wsjt-z.exe`,
   and relaunched the `OM0RX-WSJT-Z` profile.

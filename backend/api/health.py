@@ -151,15 +151,42 @@ async def _rotor_health() -> Dict[str, Any]:
 
 def _wsjtx_health() -> Dict[str, Any]:
     try:
-        health = get_wsjtx_service().get_health()
-        return _service(
-            "wsjtx",
-            "WSJT",
-            health.get("status") or "unknown",
-            health.get("value") or "",
-            health.get("detail") or "",
-            "wsjtx-config",
-        )
+        bridge_status = get_wsjtx_service().get_bridge_status()
+        if not bridge_status.get("success"):
+            return _service(
+                "wsjtx",
+                "WSJT",
+                "warn",
+                "bridge down",
+                str(bridge_status.get("error") or "WSJT bridge status is not reachable"),
+                "wsjtx-config",
+            )
+
+        client = bridge_status.get("client") if isinstance(bridge_status.get("client"), dict) else {}
+        client_id = str(client.get("id") or "").strip()
+        if not client_id:
+            return _service(
+                "wsjtx",
+                "WSJT",
+                "warn",
+                "no client",
+                "Bridge is running, but no WSJT client is attached",
+                "wsjtx-config",
+            )
+
+        last_seen_ms = int(client.get("lastSeenMs") or 999999999)
+        stats = bridge_status.get("stats") if isinstance(bridge_status.get("stats"), dict) else {}
+        last_decode = stats.get("lastDecode") if isinstance(stats.get("lastDecode"), dict) else {}
+        decode_text = str(last_decode.get("message") or "").strip()
+        detail = f"{client_id} seen {round(last_seen_ms / 1000)}s ago"
+        if decode_text:
+            detail += f"; last decode {decode_text}"
+
+        if last_seen_ms <= 300000:
+            value = "OM0RX" if "OM0RX" in client_id.upper() else client_id
+            return _service("wsjtx", "WSJT", "ok", value, detail, "wsjtx-config")
+
+        return _service("wsjtx", "WSJT", "warn", "stale", detail, "wsjtx-config")
     except Exception as exc:
         logger.debug("WSJT health check failed: %s", exc)
         return _service("wsjtx", "WSJT", "warn", "error", str(exc), "wsjtx-config")
