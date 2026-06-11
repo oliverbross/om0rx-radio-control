@@ -302,7 +302,7 @@
 
         .activity-panel-grid {
             display: grid;
-            grid-template-columns: repeat(4, minmax(180px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
             gap: 8px;
             margin-top: 8px;
         }
@@ -3152,16 +3152,20 @@
         body[data-spots-standalone="true"] .wsjtx-engine-strip {
             flex: 0 0 auto;
             max-width: 100%;
-            overflow-x: auto;
-            overflow-y: hidden;
+            overflow: visible;
             scrollbar-width: thin;
         }
 
-        body[data-spots-standalone="true"] .band-activity-strip,
         body[data-spots-standalone="true"] .source-diagnostics-strip,
         body[data-spots-standalone="true"] .rbl-monitor-strip,
         body[data-spots-standalone="true"] .wsjtx-engine-strip {
-            flex-wrap: nowrap;
+            flex-wrap: wrap;
+            gap: 6px;
+            padding: 6px 10px;
+        }
+
+        body[data-spots-standalone="true"] .band-activity-strip {
+            flex-wrap: wrap;
             gap: 6px;
             padding: 6px 10px;
         }
@@ -3186,8 +3190,9 @@
 
         body[data-spots-standalone="true"] .source-diagnostics-summary,
         body[data-spots-standalone="true"] .rbl-monitor-summary {
-            flex: 0 0 auto;
-            white-space: nowrap;
+            flex: 1 1 420px;
+            min-width: 0;
+            white-space: normal;
         }
 
         body[data-spots-standalone="true"] .spots-scroll {
@@ -3840,26 +3845,29 @@
         .source-diagnostics-strip {
             display: flex;
             align-items: center;
+            flex-wrap: wrap;
             gap: 7px;
             padding: 7px 14px;
             background: #182027;
             border-bottom: 1px solid #2d4558;
-            overflow-x: auto;
+            overflow: visible;
             min-height: 42px;
         }
 
         .source-diagnostics-summary {
             display: flex;
             align-items: center;
+            flex-wrap: wrap;
             gap: 8px;
-            flex: 0 0 auto;
+            flex: 1 1 520px;
+            min-width: 0;
             min-height: 28px;
             padding: 5px 9px;
             background: #1f2f3b;
             border: 1px solid #3b6b87;
             border-radius: 4px;
             color: #dbeafe;
-            white-space: nowrap;
+            white-space: normal;
         }
 
         .source-diagnostics-summary strong {
@@ -3874,6 +3882,11 @@
         }
 
         .source-diagnostics-summary small {
+            min-width: 0;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
             color: #fbbf24;
         }
 
