@@ -54,6 +54,10 @@ DIGITAL_TARGET_COLUMNS = [
     "heard",
     "direct_caller",
     "last_command_at",
+    "origin_band",
+    "origin_mode",
+    "origin_dial_frequency",
+    "return_command_at",
 ]
 
 

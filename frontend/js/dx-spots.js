@@ -819,6 +819,45 @@ const dxSpotsMethods = {
         return log.slice().reverse();
     },
 
+    getWsjtxPlannerDecisionSummary(entry) {
+        if (!entry) return '-';
+        const reason = entry.reason || entry.state || '-';
+        const rejected = entry.rejected && typeof entry.rejected === 'object'
+            ? Object.entries(entry.rejected)
+                .filter(([, count]) => Number(count || 0) > 0)
+                .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+                .slice(0, 3)
+                .map(([key, count]) => `${key} ${count}`)
+            : [];
+        const candidates = Number(entry.candidate_count || 0);
+        const parts = [reason];
+        if (candidates) parts.push(`${candidates} candidates`);
+        if (rejected.length) parts.push(`blocked: ${rejected.join(', ')}`);
+        return parts.filter(Boolean).join(' · ');
+    },
+
+    getWsjtxPlannerRejectedExamples(entry) {
+        const examples = entry && entry.rejected_examples && typeof entry.rejected_examples === 'object'
+            ? entry.rejected_examples
+            : {};
+        const rows = [];
+        Object.entries(examples).forEach(([reason, items]) => {
+            if (!Array.isArray(items)) return;
+            items.slice(0, 2).forEach(item => {
+                rows.push({
+                    reason,
+                    call: item.call || '-',
+                    band: item.band || '',
+                    mode: item.mode || '',
+                    score: item.score || 0,
+                    call_status: item.call_status || '',
+                    dxcc_status: item.dxcc_status || '',
+                });
+            });
+        });
+        return rows;
+    },
+
     formatWsjtxPlannerDecisionTime(timestamp) {
         if (!timestamp) return '--:--:--';
         const date = new Date(timestamp);
@@ -839,6 +878,10 @@ const dxSpotsMethods = {
             entry.queue_position !== undefined ? `queue ${entry.queue_position}` : '',
             entry.attempts !== undefined ? `attempts ${entry.attempts}` : '',
             entry.active_qso_state ? `state ${entry.active_qso_state}` : '',
+            this.getWsjtxPlannerDecisionSummary(entry),
+            this.getWsjtxPlannerRejectedExamples(entry)
+                .map(example => `${example.call} ${example.band || '-'} ${example.mode || '-'} ${example.reason}`)
+                .join(' | '),
         ].filter(Boolean);
         return pieces.join(' · ');
     },

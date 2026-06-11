@@ -51,10 +51,10 @@
     </div>
     <div class="compact-radio-right">
         <button v-if="shouldShowCompactDigitalButton()"
-                @click="launchWsjtzEngine"
+                @click="launchPatchedWsjtxEngine"
                 :disabled="wsjtxLaunchLoading || wsjtxPreflightLoading"
                 class="ft8-digi-button wsjtx-launch-button"
-                title="Launch OM0RX WSJT-Z">
+                title="Launch OM0RX WSJT-Z WSJT-X-compatible engine">
             WSJT-Z
         </button>
         <span class="utc-clock">{{ currentTime }} UTC</span>

@@ -594,6 +594,32 @@ window.RadioControlConfig = {
             }).filter(section => section.path);
         },
 
+        async loadWsjtxLaunchLogs(lines = 120) {
+            this.wsjtxLaunchLogsLoading = true;
+            try {
+                const payload = this.getWsjtxLaunchPayload();
+                const params = new URLSearchParams({
+                    rigName: payload.rigName || 'OM0RX-WSJT-Z',
+                    lines: String(lines),
+                });
+                const response = await fetch(`/api/wsjtx/launch-logs?${params.toString()}`);
+                const data = await response.json();
+                if (!response.ok || data.success === false) {
+                    throw new Error(this.formatWsjtxCommandError(data, 'WSJT launch logs unavailable'));
+                }
+                this.wsjtxLaunchLogs = data;
+                return data;
+            } catch (error) {
+                this.wsjtxHealthMessage = {
+                    type: 'error',
+                    text: `WSJT launch logs unavailable: ${error.message}`,
+                };
+                throw error;
+            } finally {
+                this.wsjtxLaunchLogsLoading = false;
+            }
+        },
+
         formatWsjtxCommandError(data, fallback) {
             const detail = data && data.detail;
             if (typeof detail === 'string') return detail;
@@ -603,7 +629,7 @@ window.RadioControlConfig = {
             return (data && (data.message || data.error)) || fallback;
         },
 
-        getWsjtzLaunchPayload() {
+        getWsjtxLaunchPayload() {
             return {
                 engine: 'wsjtz',
                 rigName: 'OM0RX-WSJT-Z',
@@ -612,11 +638,15 @@ window.RadioControlConfig = {
             };
         },
 
-        async runWsjtzLaunchPreflight(options = {}) {
-            const response = await fetch('/api/wsjtx/launch-wsjtz-preflight', {
+        getWsjtzLaunchPayload() {
+            return this.getWsjtxLaunchPayload();
+        },
+
+        async runWsjtxLaunchPreflight(options = {}) {
+            const response = await fetch('/api/wsjtx/launch-preflight', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(this.getWsjtzLaunchPayload()),
+                body: JSON.stringify(this.getWsjtxLaunchPayload()),
             });
             const data = await response.json();
             this.wsjtxPreflight = data;
@@ -632,23 +662,27 @@ window.RadioControlConfig = {
             return data;
         },
 
-        async launchWsjtzEngine() {
+        async runWsjtzLaunchPreflight(options = {}) {
+            return this.runWsjtxLaunchPreflight(options);
+        },
+
+        async launchPatchedWsjtxEngine() {
             this.wsjtxLaunchLoading = true;
             this.wsjtxHealthMessage = null;
             this.wsjtxLaunchResult = null;
             this.wsjtxLaunchLogs = null;
             try {
                 this.wsjtxPreflightLoading = true;
-                const preflight = await this.runWsjtzLaunchPreflight({ requireReady: true });
+                const preflight = await this.runWsjtxLaunchPreflight({ requireReady: true });
                 this.wsjtxPreflightLoading = false;
                 this.wsjtxHealthMessage = {
                     type: 'success',
                     text: `WSJT-Z self-test passed: ${preflight.validation?.critical_ok || 0}/${preflight.validation?.critical_total || 0} critical checks ready.`,
                 };
-                const response = await fetch('/api/wsjtx/launch-wsjtz-engine', {
+                const response = await fetch('/api/wsjtx/launch-patched-engine', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.getWsjtzLaunchPayload()),
+                    body: JSON.stringify(this.getWsjtxLaunchPayload()),
                 });
                 const data = await response.json();
                 if (!response.ok || data.success === false) {
@@ -669,6 +703,19 @@ window.RadioControlConfig = {
                 this.wsjtxPreflightLoading = false;
                 this.wsjtxLaunchLoading = false;
                 setTimeout(() => this.loadWsjtxHealth({ preserveMessage: true }), 1500);
+            }
+        },
+
+        async launchWsjtzEngine() {
+            return this.launchPatchedWsjtxEngine();
+        },
+
+        async testWsjtxLaunchPreflight() {
+            this.wsjtxPreflightLoading = true;
+            try {
+                await this.runWsjtxLaunchPreflight({ requireReady: false });
+            } finally {
+                this.wsjtxPreflightLoading = false;
             }
         },
 

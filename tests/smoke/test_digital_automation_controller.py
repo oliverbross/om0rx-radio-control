@@ -14,6 +14,7 @@ from services.digital_automation import (
     current_band_plan_bands,
     payload_matches_need_filters,
     score_payload,
+    target_has_dxcc_hunt_interest,
 )
 from services.wsjtx import WSJTXService, register_wsjtx_endpoints
 
@@ -1037,8 +1038,8 @@ def test_spot_hunt_does_not_cross_band_when_band_hopping_disabled():
         "mode": "FT8",
         "source": "rbl",
         "frequency_mhz": 10.136,
-        "call_status": "New Call",
-        "dxcc_status": "Confirmed",
+        "call_status": "New Band",
+        "dxcc_status": "ATNO",
     })
 
     listen = controller.next_listen_target(now=now)
@@ -1293,7 +1294,7 @@ def test_spot_hunt_probe_expires_when_not_heard():
     assert target is not None
     assert controller.next_listen_target(now=now) is not None
 
-    assert controller.next_listen_target(now=now + timedelta(seconds=31)) is None
+    assert controller.next_listen_target(now=now + timedelta(seconds=301)) is None
     assert target.state == "expired"
     assert target.reason == "spot-listen-not-heard"
 
@@ -1730,7 +1731,9 @@ def test_controller_decision_log_explains_skip_queue_and_selection():
     decisions = controller.status()["decision_log"]
     assert any(entry["reason"] == "below-min-signal" for entry in decisions)
     assert any(entry["decision"] == "queued" and entry["call"] == "E51ABC" for entry in decisions)
-    assert any(entry["decision"] == "selected" and entry["call"] == "E51ABC" for entry in decisions)
+    selected_decision = next(entry for entry in decisions if entry["decision"] == "selected" and entry["call"] == "E51ABC")
+    assert selected_decision["candidate_count"] == 1
+    assert selected_decision["candidate_order"][0]["call"] == "E51ABC"
 
 
 def test_controller_attempt_records_idempotent_command_metadata():
@@ -2230,6 +2233,201 @@ def test_wsjtx_automation_tick_sends_spot_probe_as_listen_only(monkeypatch):
     assert target_payload["generateMessages"] is False
 
 
+def test_cluster_new_call_only_is_not_cross_band_dxcc_hunt():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "enabled": True,
+            "spotHuntEnabled": True,
+            "bandHopping": True,
+            "needCall": True,
+            "needDxcc": True,
+            "bandPlan": "00:20m,40m",
+        }
+    })
+
+    target = controller.ingest_target({
+        "callsign": "N0CALL",
+        "grid": "FN42",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "cluster",
+        "frequency_mhz": 14.074,
+        "call_status": "New Call",
+        "dxcc_status": "Confirmed",
+    })
+
+    assert target is None
+    assert controller.last_decision["reason"] == "spot-not-dxcc-hunt-interest"
+
+
+def test_heard_cluster_dxcc_hunt_arms_wsjtz_priority_watchdog(monkeypatch):
+    import services.ft8_service as ft8_service_module
+    import services.wsjtx as wsjtx_module
+
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "enabled": True,
+            "spotHuntEnabled": True,
+            "bandHopping": True,
+            "bandPlan": "00:20m,40m",
+        }
+    })
+    queued = controller.ingest_target({
+        "callsign": "VK8RX",
+        "grid": "PH57",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "cluster",
+        "frequency_mhz": 14.074,
+        "call_status": "New Band",
+        "dxcc_status": "ATNO",
+    })
+    assert queued is not None
+    assert target_has_dxcc_hunt_interest(queued) is True
+    controller.set_target_origin(queued.key, band="40m", mode="FT8", dial_frequency=7_074_000)
+
+    heard = controller.ingest_target({
+        "message": "CQ VK8RX PH57",
+        "callsign": "VK8RX",
+        "grid": "PH57",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": -12,
+        "freq": 1170,
+        "frequency_mhz": 14.074,
+        "call_status": "New Band",
+        "dxcc_status": "ATNO",
+    })
+    assert heard is not None
+    assert heard.source == "cluster"
+    assert heard.heard is True
+
+    class FakeFt8Service:
+        automation_controller = controller
+        mode = "FT8"
+
+        def set_tx_options(self, **kwargs):
+            pass
+
+        def get_stats(self):
+            return {}
+
+    monkeypatch.setattr(ft8_service_module, "get_ft8_service", lambda: FakeFt8Service())
+
+    sent = []
+
+    class FakeWsjtxService(WSJTXService):
+        def send_bridge_command(self, command, payload=None):
+            sent.append((command, payload))
+            return {"success": True, "sent": command}
+
+    monkeypatch.setattr(wsjtx_module, "get_wsjtx_service", lambda: FakeWsjtxService())
+
+    app = FastAPI()
+    register_wsjtx_endpoints(app)
+    client = TestClient(app)
+
+    response = client.post("/api/wsjtx/automation/tick", json={
+        "automation": {
+            "autoCall": True,
+            "currentBand": "20m",
+            "currentMode": "FT8",
+            "bandHopping": True,
+            "enableTx": True,
+        }
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"] == "armed"
+    target_payload = sent[0][1]["target"]
+    assert target_payload["call"] == "VK8RX"
+    assert target_payload["enableTx"] is True
+    assert target_payload["priorityHunt"] is True
+    assert target_payload["watchdogMinutes"] == 20
+
+
+def test_completed_cluster_dxcc_hunt_returns_wsjtz_to_origin(monkeypatch):
+    import services.ft8_service as ft8_service_module
+    import services.wsjtx as wsjtx_module
+
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({
+        "automation": {
+            "enabled": True,
+            "spotHuntEnabled": True,
+            "bandHopping": True,
+            "bandPlan": "00:20m,40m",
+        }
+    })
+    target = controller.ingest_target({
+        "callsign": "VK8RX",
+        "grid": "PH57",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "cluster",
+        "frequency_mhz": 14.074,
+        "call_status": "New Band",
+        "dxcc_status": "ATNO",
+    })
+    assert target is not None
+    controller.set_target_origin(target.key, band="40m", mode="FT8", dial_frequency=7_074_000)
+    target.heard = True
+    target.sync_state("calling", active_state="calling")
+    controller.active_target_key = target.key
+    controller.mark_qso_complete("VK8RX", band="20m", mode="FT8", reason="wsjtx-logged-qso")
+    assert controller.pending_return_to_origin()["band"] == "40m"
+
+    class FakeFt8Service:
+        automation_controller = controller
+        mode = "FT8"
+
+        def set_tx_options(self, **kwargs):
+            pass
+
+        def get_stats(self):
+            return {}
+
+    monkeypatch.setattr(ft8_service_module, "get_ft8_service", lambda: FakeFt8Service())
+
+    sent = []
+
+    class FakeWsjtxService(WSJTXService):
+        def send_bridge_command(self, command, payload=None):
+            sent.append((command, payload))
+            return {"success": True, "sent": command}
+
+    monkeypatch.setattr(wsjtx_module, "get_wsjtx_service", lambda: FakeWsjtxService())
+
+    app = FastAPI()
+    register_wsjtx_endpoints(app)
+    client = TestClient(app)
+
+    response = client.post("/api/wsjtx/automation/tick", json={
+        "automation": {
+            "autoCall": True,
+            "currentBand": "20m",
+            "currentMode": "FT8",
+            "bandHopping": True,
+            "enableTx": True,
+        }
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"] == "returning"
+    target_payload = sent[0][1]["target"]
+    assert target_payload["listenOnly"] is True
+    assert target_payload["returnToOrigin"] is True
+    assert target_payload["dialFrequency"] == 7_074_000
+    assert target_payload["mode"] == "FT8"
+    assert controller.pending_return_to_origin() is None
+
+
 def test_wsjtx_automation_tick_holds_new_target_after_safe_tx_deadline(monkeypatch):
     import services.ft8_service as ft8_service_module
     import services.wsjtx as wsjtx_module
@@ -2346,6 +2544,67 @@ def test_controller_enriches_unknown_decode_from_local_status_cache():
     assert target.country == "North Cook Islands"
     assert "qso-call-cache" in target.status_source
     assert "qso-dxcc-cache" in target.status_source
+
+
+def test_controller_local_wavelog_status_overrides_stale_payload_dxcc_status():
+    controller = DigitalAutomationController(
+        mycall="OM0RX",
+        settings=DigitalAutomationSettings(avoid_logged=False),
+        qso_status_store=_FakeQsoStatusStore(
+            call_flags={("VK8RX", "20m", "FT8"): (False, False, True, True, False)},
+            dxcc_overall={150: (True, True)},
+            dxcc_bandmode={(150, "20m", "FT8"): (False, False, True)},
+        ),
+        cty_resolver=_FakeCtyResolver({
+            "VK8RX": {
+                "country": "Australia",
+                "dxcc": 150,
+                "continent": "OC",
+            }
+        }),
+    )
+
+    target = controller.ingest_target({
+        "callsign": "VK8RX",
+        "grid": "PH57",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "cluster",
+        "frequency_mhz": 14.074,
+        "call_status": "New Call",
+        "dxcc_status": "ATNO",
+        "needed": {"dxcc": True},
+        "needed_on_band": {"dxcc": True},
+    })
+
+    assert target is None
+    assert controller.last_decision["reason"] == "spot-not-dxcc-hunt-interest"
+    assert controller.last_decision["dxcc_status"] == "Confirmed"
+
+
+def test_controller_decision_log_includes_rejected_candidate_examples():
+    now = datetime.now(timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    target = controller.ingest_target({
+        "message": "CQ DL1ABC JO62",
+        "callsign": "DL1ABC",
+        "band": "40m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "snr": -5,
+        "call_status": "New Call",
+        "dxcc_status": "ATNO",
+    })
+    assert target is not None
+    target.last_attempt_at = now
+
+    assert controller.next_target(now=now + timedelta(seconds=1), auto_call_start_only=True, cq_only=True) is None
+
+    decision = controller.last_decision
+    assert decision["reason"] == "no-eligible-targets"
+    assert decision["rejected"]["dwell"] == 1
+    assert decision["rejected_examples"]["dwell"][0]["call"] == "DL1ABC"
 
 
 def test_controller_preserves_new_band_status_from_local_status_cache():

@@ -2156,6 +2156,27 @@
             white-space: nowrap;
         }
 
+        .wsjtx-rejected-examples {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            flex-wrap: wrap;
+            padding: 0 4px 2px 80px;
+        }
+
+        .wsjtx-rejected-examples span {
+            max-width: 280px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            padding: 2px 5px;
+            border: 1px solid #3f2f2f;
+            border-radius: 4px;
+            background: #1b1115;
+            color: #fecaca;
+            font-size: 10px;
+        }
+
         .wsjtx-planner-empty {
             padding: 12px;
             color: #94a3b8;

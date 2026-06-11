@@ -942,7 +942,7 @@ def test_wsjtx_health_reports_stale_client_as_check_warning(monkeypatch):
             "enabled": True,
             "client": {
                 "id": "WSJT-X - OM0RX-AUTO",
-                "lastSeenMs": 95_000,
+                "lastSeenMs": 310_000,
             },
             "stats": {
                 "lastDecode": {"message": "CQ TEST JN88"},

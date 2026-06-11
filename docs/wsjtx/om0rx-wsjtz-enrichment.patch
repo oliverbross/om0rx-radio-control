@@ -767,7 +767,7 @@ index 4f70a14..aa4f751 100644
    void mousePressEvent(QMouseEvent *) override;
    void enterEvent(QEvent *event) override;
 diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
-index ee26233..cf7916f 100644
+index ee26233..62be9e9 100644
 --- a/widgets/mainwindow.cpp
 +++ b/widgets/mainwindow.cpp
 @@ -42,6 +42,14 @@
@@ -1334,7 +1334,7 @@ index ee26233..cf7916f 100644
  void MainWindow::chkFT4()
  {
    if((m_mode!="FT4" and m_mode!="FT2")) return;
-@@ -12911,6 +13205,124 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
+@@ -12911,6 +13205,155 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
    QApplication::alert (this);
  }
  
@@ -1401,8 +1401,11 @@ index ee26233..cf7916f 100644
 +  auto hold_tx_freq = bool_value ("holdTxFreq", ui->cbHoldTxFreq->isChecked ());
 +  auto enable_tx = bool_value ("enableTx", false);
 +  auto listen_only = bool_value ("listenOnly", false);
++  auto priority_hunt = bool_value ("priorityHunt", false);
++  auto return_to_origin = bool_value ("returnToOrigin", false);
 +  auto dial_frequency = frequency_value ("dialFrequency", 0u);
 +  auto tx_message = uint_value ("txMessageNumber", 1);
++  auto watchdog_minutes = uint_value ("watchdogMinutes", 0);
 +
 +  if (dx_call.isEmpty () && !listen_only)
 +    {
@@ -1442,6 +1445,34 @@ index ee26233..cf7916f 100644
 +      setTxMsg (qBound (quint32 {1}, tx_message, quint32 {6}));
 +    }
 +
++  if (return_to_origin)
++    {
++      om0rx_clear_priority_hunt ("return to origin");
++    }
++
++  if (priority_hunt && !listen_only && !dx_call.isEmpty ())
++    {
++      m_om0rxPriorityHuntPending = false;
++      m_om0rxPriorityHuntActive = true;
++      m_om0rxPriorityHuntCall = om0rx_normalized_call (dx_call);
++      m_om0rxPriorityHuntGrid = dx_grid;
++      m_om0rxPriorityHuntBand = text_value ("band");
++      m_om0rxPriorityHuntMode = mode;
++      m_om0rxPriorityHuntStatus = text_value ("huntReason", text_value ("dxcc_status", "backend"));
++      m_om0rxPriorityHuntScore = 1000;
++      m_om0rxPriorityHuntRank = 1000;
++      m_om0rxPriorityHuntFreq = rx_df == quint32_max ? ui->RxFreqSpinBox->value () : int (rx_df);
++      m_om0rxPriorityHuntReport = ui->rptSpinBox->value ();
++      m_om0rxPriorityHuntTxFirst = ui->txFirstCheckBox->isChecked ();
++      m_idleMinutes = 0;
++      update_watchdog_label ();
++      if (m_zdebug)
++        {
++          log ("OM0RX backend priority hunt armed: " + m_om0rxPriorityHuntCall
++               + " watchdog=" + QString::number (watchdog_minutes ? watchdog_minutes : 20) + "m");
++        }
++    }
++
 +  if (enable_tx && !listen_only && !ui->autoButton->isChecked ())
 +    {
 +      m_bDoubleClicked = true;
@@ -1459,7 +1490,56 @@ index ee26233..cf7916f 100644
  QString MainWindow::WSPR_message()
  {
    QString sdBm,msg0,msg1,msg2;
-@@ -13142,6 +13554,32 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+@@ -13090,6 +13533,48 @@ void MainWindow::rebuildFilterCache() const
+ static const QRegularExpression kReDigit{"[0-9]"};
+ static const QRegularExpression kReCqStart{"^(CQ|CQ\\s\\w+)$"};
+
++void MainWindow::om0rx_auto_reply_direct_call(DecodedText const& message, QString const& call)
++{
++    auto const normalized_call = om0rx_normalized_call(call);
++    if (normalized_call.isEmpty()) return;
++
++    if (!ui->cbAutoSeq->isChecked()
++        || !(ui->cbAutoCall->isChecked()
++             || ui->cbAutoCQ->isChecked()
++             || ui->cb_autoCallNext->isChecked())) {
++        if (m_zdebug) log("OM0RX direct reply ignored; automation is not active: " + normalized_call);
++        return;
++    }
++
++    bool const idle_or_finished =
++        CALLING == m_QSOProgress || ROGERS == m_QSOProgress || SIGNOFF == m_QSOProgress;
++    if (m_transmitting || ui->autoButton->isChecked() || !idle_or_finished) {
++        if (m_zdebug) log("OM0RX direct reply held; QSO is active: " + normalized_call);
++        return;
++    }
++
++    QTimer::singleShot(0, this, [this, message, normalized_call] {
++        bool const idle_or_finished =
++            CALLING == m_QSOProgress || ROGERS == m_QSOProgress || SIGNOFF == m_QSOProgress;
++        if (m_transmitting || ui->autoButton->isChecked() || !idle_or_finished) {
++            if (m_zdebug) log("OM0RX direct reply skipped after state changed: " + normalized_call);
++            return;
++        }
++
++        m_priorityCall.clear();
++        m_priorityCallPreferCQTarget = false;
++        m_om0rxHuntingPriorityScore = -1;
++        m_om0rxReplyPriorityCall = normalized_call;
++        om0rx_clear_priority_hunt("direct reply to us");
++
++        if (m_zdebug) log("OM0RX direct reply auto-start: " + normalized_call);
++        processMessage(message);
++        if (!ui->dxCallEntry->text().isEmpty()) {
++            auto_tx_mode(true);
++        }
++    });
++}
++
+ bool MainWindow::callsignFiltered(DecodedText dt)
+ {
+
+@@ -13142,6 +13627,33 @@ bool MainWindow::callsignFiltered(DecodedText dt)
  
      bool is_73 = (message_words.size() >= 5 && (message_words.contains("73") || message_words.contains("RR73")));
      bool is_CQ = message_words.filter (kReCqStart).size();
@@ -1474,6 +1554,7 @@ index ee26233..cf7916f 100644
 +        m_om0rxHuntingPriorityScore = -1;
 +        m_om0rxReplyPriorityCall = om0rx_normalized_call (dxCall);
 +        om0rx_clear_priority_hunt ("reply to us");
++        om0rx_auto_reply_direct_call (dt, dxCall);
 +        if (m_zdebug)
 +          {
 +            log ("callsignFiltered: Reply to us blocks new Auto Call candidate: " + dxCall);
@@ -1492,7 +1573,7 @@ index ee26233..cf7916f 100644
  
      // Auto call next
      if (ui->cb_autoCallNext->isChecked() && dxCall == ui->dxCallEntry->text() ) {
-@@ -13457,10 +13895,17 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+@@ -13457,10 +13969,17 @@ bool MainWindow::callsignFiltered(DecodedText dt)
                    ui->pte_alerts->appendPlainText(dxCall.leftJustified(12, ' ') + looked_up.entity_name);
                    m_beeped = true;
                }
@@ -1511,7 +1592,7 @@ index ee26233..cf7916f 100644
      if ( !is_CQ && !(ui->cbCQonlyIncl73->isChecked() && is_73) ) {
          if (m_zdebug) log("Not CQ/73. Exiting.");
          return false;
-@@ -13481,12 +13926,37 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+@@ -13481,12 +14000,37 @@ bool MainWindow::callsignFiltered(DecodedText dt)
      bool forcePreferPromotion = cqTargetPreferMode && cqTargetPreferMatch && !m_priorityCallPreferCQTarget;
      bool skipAutoPriority = cqTargetPreferMode && m_priorityCallPreferCQTarget && !cqTargetPreferMatch;
      if (forcePreferPromotion) {
@@ -1550,7 +1631,7 @@ index ee26233..cf7916f 100644
      if (!skipAutoPriority && ui->cb_autoCallPriority->currentIndex() == 2) {
          if (dxGrid.length() == 4 && dxGrid != "RR73" && !dxGrid.startsWith("R-") && !dxGrid.startsWith("R+")) {
              double utch=0.0;
-@@ -13494,34 +13964,48 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+@@ -13494,34 +14038,48 @@ bool MainWindow::callsignFiltered(DecodedText dt)
              azdist_(const_cast <char *> ((m_config.my_grid () + "      ").left (6).toLatin1 ().constData ()),
                      const_cast <char *> (dxGrid.left (6).toLatin1 ().constData ()),&utch,
                      &nAz,&nEl,&nDmiles,&nDkm,&nHotAz,&nHotABetter,6,6);
@@ -1612,7 +1693,7 @@ index ee26233..cf7916f 100644
          m_prioFreq = dt.frequencyOffset();
          m_nextRpt = dt.report();
          int nmod;
-@@ -13827,6 +14311,361 @@ void MainWindow::leftClickHandler(Qt::KeyboardModifiers modifiers) {
+@@ -13827,6 +14385,361 @@ void MainWindow::leftClickHandler(Qt::KeyboardModifiers modifiers) {
    }
  }
  
@@ -1974,7 +2055,7 @@ index ee26233..cf7916f 100644
  void MainWindow::dxLookup(QString dxCall, QString dxGrid) {
  
      if (!ui->w_callInfo->isVisible()) return;
-@@ -14273,6 +15112,8 @@ void MainWindow::switchBand(int row) {
+@@ -14273,6 +15186,8 @@ void MainWindow::switchBand(int row) {
          on_bandComboBox_activated (row);
          m_priorityCall = QString();
          m_priorityCallPreferCQTarget = false;
@@ -1983,7 +2064,7 @@ index ee26233..cf7916f 100644
          m_lastCall = QString();
          clearDX();
          busySlots.clear();
-@@ -14319,6 +15160,7 @@ void MainWindow::ZProcess ()
+@@ -14319,6 +15234,7 @@ void MainWindow::ZProcess ()
      {
          m_priorityCall = QString();
        m_priorityCallPreferCQTarget = false;
@@ -1991,7 +2072,7 @@ index ee26233..cf7916f 100644
          if (m_zdebug) log("ZProcess: EXIT (Transmitting)");
          return;
      }
-@@ -14340,7 +15182,36 @@ void MainWindow::ZProcess ()
+@@ -14340,7 +15256,36 @@ void MainWindow::ZProcess ()
      if (m_zdebug) log("ZProcess: m_hiscall: " + m_hisCall);
      if (m_zdebug) log("ZProcess: m_lastcall: " + m_lastCall);
  
@@ -2029,7 +2110,7 @@ index ee26233..cf7916f 100644
              && !m_priorityCall.isNull() && !m_priorityCall.isEmpty()
              && m_lastCall != m_priorityCall && (ui->dxCallEntry->text().isEmpty() || ui->dxCallEntry->text() == m_priorityCall)) {
          tx_watchdog(false);
-@@ -14433,6 +15304,7 @@ void MainWindow::ZProcess ()
+@@ -14433,6 +15378,7 @@ void MainWindow::ZProcess ()
  
      m_maxDistance = 0 ;
      m_maxSignal = -30;
@@ -2037,7 +2118,7 @@ index ee26233..cf7916f 100644
      m_priorityCall = QString();
      m_priorityCallPreferCQTarget = false;
      m_beeped = false;
-@@ -14448,10 +15320,12 @@ void MainWindow::resetAutoSwitch() {
+@@ -14448,10 +15394,12 @@ void MainWindow::resetAutoSwitch() {
          ui->le_autoCQLeft->setText(QString::number(ui->sb_autoCQCount->value()));
          m_priorityCall = QString();
    m_priorityCallPreferCQTarget = false;
@@ -2051,7 +2132,7 @@ index ee26233..cf7916f 100644
          if (m_mode == "FT8") return m_config.wd_FT8();
          if (m_mode == "FT2") return m_config.wd_FT2();
 diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
-index fa1f473..807e978 100644
+index fa1f473..1f12146 100644
 --- a/widgets/mainwindow.h
 +++ b/widgets/mainwindow.h
 @@ -21,6 +21,8 @@
@@ -2079,7 +2160,21 @@ index fa1f473..807e978 100644
    void refreshHoundQueueDisplay();
    void queueActiveWindowHound2(QString text);
  	// Z
-@@ -427,6 +430,13 @@ private slots:
+@@ -370,9 +373,10 @@ private slots:
+     bool isSlotFree(int f);
+     void addSlot(int freq);
+     void on_pb_FreeFreq_clicked();
+-     void on_cbAutoCall_toggled(bool b);
+-     void on_cbAutoCQ_toggled(bool b);
+-     bool callsignFiltered(DecodedText dt);
++     void on_cbAutoCall_toggled(bool b);
++     void on_cbAutoCQ_toggled(bool b);
++     void om0rx_auto_reply_direct_call(DecodedText const& message, QString const& call);
++     bool callsignFiltered(DecodedText dt);
+      // FT8 thread count selectors (Decode > Parameters > Number of threads)
+      void on_actionMTAuto_triggered();
+      void on_actionMT1_triggered();
+@@ -427,6 +431,13 @@ private slots:
       void on_txrb6_doubleClicked ();
       void dxLookup(QString dxCall, QString dxGrid);
       void leftClickHandler(Qt::KeyboardModifiers modifiers);
@@ -2093,7 +2188,7 @@ index fa1f473..807e978 100644
       void on_actionCall_info_triggered();
       void on_actionDark_mode_triggered();
       void qrzInit();
-@@ -728,13 +738,27 @@ private:
+@@ -728,13 +739,27 @@ private:
    QString m_lastCall;
    int	  m_lastX = -1;
    int	  m_lastY = -1;
@@ -2128,7 +2223,7 @@ index fa1f473..807e978 100644
    QString m_prioGrid;
    bool    m_infoMessageShown = false;
    bool    m_autoModeSwitch = false;
-@@ -790,7 +814,11 @@ private:
+@@ -790,7 +815,11 @@ private:
    QLabel labDate;
    QString qrzSessionKey;
    QString qrzPendingLookupCall;
@@ -2141,7 +2236,7 @@ index fa1f473..807e978 100644
  
    QLabel auto_tx_label;
    QLabel band_hopping_label;
-@@ -1026,11 +1054,17 @@ private:
+@@ -1026,11 +1055,17 @@ private:
    QString WSPR_message();
    void fast_config(bool b);
    void CQTxFreq();

@@ -37,6 +37,45 @@ WSJT_MODE_PERIODS = {
     "FT4": 7,
     "FT2": 4,
 }
+WSJT_DEFAULT_DIAL_FREQUENCIES_HZ = {
+    "FT8": {
+        "160m": 1_840_000,
+        "80m": 3_573_000,
+        "60m": 5_357_000,
+        "40m": 7_074_000,
+        "30m": 10_136_000,
+        "20m": 14_074_000,
+        "17m": 18_100_000,
+        "15m": 21_074_000,
+        "12m": 24_915_000,
+        "10m": 28_074_000,
+        "6m": 50_313_000,
+    },
+    "FT4": {
+        "80m": 3_575_000,
+        "40m": 7_047_500,
+        "30m": 10_140_000,
+        "20m": 14_080_000,
+        "17m": 18_104_000,
+        "15m": 21_140_000,
+        "12m": 24_919_000,
+        "10m": 28_180_000,
+    },
+    "FT2": {
+        "160m": 1_843_000,
+        "80m": 3_578_000,
+        "60m": 5_357_000,
+        "40m": 7_052_000,
+        "30m": 10_144_000,
+        "20m": 14_084_000,
+        "17m": 18_108_000,
+        "15m": 21_144_000,
+        "12m": 24_923_000,
+        "10m": 28_184_000,
+        "6m": 50_320_000,
+        "2m": 144_177_000,
+    },
+}
 GRID_RE = re.compile(r"^[A-R]{2}\d{2}([A-X]{2})?$")
 NON_GRID_TOKENS = {"CQ", "DE", "QRZ", "RRR", "RR73", "73"}
 WSJT_CLIENT_FRESH_MS = 300_000
@@ -167,6 +206,36 @@ def _first_present(req: Dict[str, Any], *keys: str) -> Any:
 
 def _normalise_status_text(value: Any) -> str:
     return str(value or "").strip().upper()
+
+
+def _default_wsjtx_dial_frequency_hz(band: Any, mode: Any) -> Optional[int]:
+    mode_text = str(mode or "FT8").strip().upper() or "FT8"
+    band_text = str(band or "").strip().lower()
+    return WSJT_DEFAULT_DIAL_FREQUENCIES_HZ.get(mode_text, {}).get(band_text)
+
+
+def _dxcc_priority_target(payload: Dict[str, Any]) -> bool:
+    try:
+        from services.digital_automation import payload_has_dxcc_hunt_interest
+
+        return payload_has_dxcc_hunt_interest(payload)
+    except Exception:
+        dxcc_status = str(_first_present(payload, "dxcc_status", "dxccStatus") or "").strip().lower()
+        return dxcc_status in {"atno", "worked"} or "new band" in dxcc_status or "new mode" in dxcc_status
+
+
+def _automation_current_dial_frequency_hz(automation_payload: Dict[str, Any]) -> Optional[int]:
+    return _frequency_hz_from_payload({
+        "frequency_hz": _first_present(
+            automation_payload,
+            "currentDialFrequency",
+            "current_dial_frequency",
+            "dialFrequency",
+            "frequency_hz",
+        ),
+        "frequency_mhz": _first_present(automation_payload, "currentFrequency", "current_frequency", "frequency_mhz"),
+        "frequency": _first_present(automation_payload, "frequency"),
+    })
 
 
 def _normalise_trace_id(value: Any) -> str:
@@ -1881,6 +1950,7 @@ class WSJTXService:
             "traceId": trace_id,
             "call": call,
             "mode": mode,
+            "band": band,
             "dialFrequency": dial_frequency,
             "trPeriod": _coerce_int(req.get("trPeriod")) or WSJT_MODE_PERIODS[mode],
             "rxDf": _coerce_int(_first_present(req, "rxDf", "rx_df", "rxAudio")) or 1500,
@@ -1903,6 +1973,9 @@ class WSJTXService:
             ("txMessageNumber", "txMessageNumber"),
             ("targetId", "targetId"),
             ("commandId", "commandId"),
+            ("call_status", "call_status"),
+            ("dxcc_status", "dxcc_status"),
+            ("huntReason", "huntReason"),
         ):
             value = _first_present(req, source_key)
             if value not in (None, ""):
@@ -2344,6 +2417,8 @@ def _local_wsjtx_decode_status(req: Dict[str, Any], request: Request) -> Dict[st
             "qso_status_store": bool(store),
             "cty_resolver": bool(cty_resolver),
         },
+        "automation_target": None,
+        "automation_decision": {},
     }
 
 
@@ -2472,6 +2547,63 @@ def register_wsjtx_endpoints(app):
                 "status_sources": status_sources,
             }
 
+        service = get_wsjtx_service()
+        pending_return = (
+            ft8_service.automation_controller.pending_return_to_origin()
+            if hasattr(ft8_service.automation_controller, "pending_return_to_origin")
+            else None
+        )
+        if pending_return and not ft8_service.automation_controller.active_target_key:
+            return_mode = str(pending_return.get("mode") or policy["operatorSettings"].get("current_mode") or getattr(ft8_service, "mode", "FT8") or "FT8").upper()
+            return_band = str(pending_return.get("band") or "").strip().lower()
+            return_frequency = _coerce_int(pending_return.get("dial_frequency")) or _default_wsjtx_dial_frequency_hz(return_band, return_mode)
+            if return_frequency:
+                wsjtx_target = {
+                    "traceId": _wsjtx_trace_id({"call": pending_return.get("call"), "band": return_band, "mode": return_mode}),
+                    "call": "",
+                    "mode": return_mode,
+                    "band": return_band,
+                    "dialFrequency": return_frequency,
+                    "trPeriod": WSJT_MODE_PERIODS.get(return_mode, 15),
+                    "rxDf": _coerce_int(_first_present(automation_payload, "rxDf", "rx_df")) or 1500,
+                    "txDf": policy["txOptions"].get("tx_audio_frequency") or 1500,
+                    "generateMessages": False,
+                    "holdTxFreq": True,
+                    "enableTx": False,
+                    "listenOnly": True,
+                    "returnToOrigin": True,
+                    "targetId": pending_return.get("target_key") or "",
+                }
+                if ft8_service.automation_controller.settings.dry_run:
+                    ft8_service.automation_controller._set_decision({
+                        "decision": "dry-run",
+                        "reason": "would-return-wsjtz-to-origin",
+                        "call": pending_return.get("call"),
+                        "band": return_band,
+                        "mode": return_mode,
+                    })
+                    bridge_result = {
+                        "success": True,
+                        "dry_run": True,
+                        "sent": False,
+                        "command": "start_target_qso",
+                    }
+                else:
+                    bridge_result = service.send_bridge_command("start_target_qso", {"target": wsjtx_target})
+                    if isinstance(bridge_result, dict) and bridge_result.get("success") is not False:
+                        ft8_service.automation_controller.mark_return_command_sent(pending_return.get("target_key"))
+                return {
+                    "success": True,
+                    "action": "returning",
+                    "reason": pending_return.get("reason") or "return-to-origin",
+                    "target": pending_return,
+                    "wsjtx_target": wsjtx_target,
+                    "bridge": bridge_result,
+                    "automation": ft8_service.automation_controller.status(),
+                    "stats": ft8_service.get_stats(),
+                    "status_sources": status_sources,
+                }
+
         target = ft8_service.automation_controller.next_target(
             cq_only=bool(policy["txOptions"].get("cq_only")),
             auto_call_start_only=True,
@@ -2481,7 +2613,19 @@ def register_wsjtx_endpoints(app):
             if hasattr(ft8_service.automation_controller, "next_listen_target"):
                 listen_target = ft8_service.automation_controller.next_listen_target()
             if listen_target:
-                service = get_wsjtx_service()
+                origin_band = str(_first_present(automation_payload, "currentBand", "current_band") or "").strip().lower()
+                origin_mode = str(_first_present(automation_payload, "currentMode", "current_mode", "mode") or getattr(ft8_service, "mode", "FT8") or "FT8").strip().upper()
+                origin_frequency = (
+                    _automation_current_dial_frequency_hz(automation_payload)
+                    or _default_wsjtx_dial_frequency_hz(origin_band, origin_mode)
+                )
+                if hasattr(ft8_service.automation_controller, "set_target_origin"):
+                    ft8_service.automation_controller.set_target_origin(
+                        listen_target.key,
+                        band=origin_band,
+                        mode=origin_mode,
+                        dial_frequency=origin_frequency,
+                    )
                 target_payload = listen_target.to_dict()
                 wsjtx_target = service.build_target_from_automation_target(target_payload)
                 wsjtx_target["enableTx"] = False
@@ -2495,6 +2639,7 @@ def register_wsjtx_endpoints(app):
                 wsjtx_target["txFirst"] = bool(policy["txOptions"].get("tx_even_first"))
                 wsjtx_target.setdefault("targetId", listen_target.target_id)
                 wsjtx_target.setdefault("commandId", listen_target.command_id or "")
+                wsjtx_target["priorityHunt"] = _dxcc_priority_target(target_payload)
 
                 if ft8_service.automation_controller.settings.dry_run:
                     ft8_service.automation_controller._set_decision({
@@ -2534,7 +2679,6 @@ def register_wsjtx_endpoints(app):
                 "status_sources": status_sources,
             }
 
-        service = get_wsjtx_service()
         target_payload = target.to_dict()
         wsjtx_target = service.build_target_from_automation_target(target_payload)
         wsjtx_target["enableTx"] = _coerce_bool(
@@ -2549,6 +2693,10 @@ def register_wsjtx_endpoints(app):
         wsjtx_target["txFirst"] = bool(policy["txOptions"].get("tx_even_first"))
         wsjtx_target.setdefault("targetId", target.target_id)
         wsjtx_target.setdefault("commandId", target.command_id or "")
+        if _dxcc_priority_target(target_payload):
+            wsjtx_target["priorityHunt"] = True
+            wsjtx_target["watchdogMinutes"] = 20
+            wsjtx_target["huntReason"] = target.reason or "dxcc-hunt"
 
         bridge_failed = False
         if ft8_service.automation_controller.settings.dry_run:
@@ -2716,9 +2864,23 @@ def register_wsjtx_endpoints(app):
         service = get_wsjtx_service()
         return await asyncio.to_thread(service.launch_wsjtz_engine, req)
 
+    @app.post("/api/wsjtx/launch-patched-engine")
+    async def wsjtx_launch_patched_engine(req: Dict[str, Any]):
+        """Compatibility alias for the current OM0RX WSJT-Z engine launcher."""
+        service = get_wsjtx_service()
+        return await asyncio.to_thread(service.launch_wsjtz_engine, req)
+
     @app.post("/api/wsjtx/launch-wsjtz-preflight")
     async def wsjtx_launch_wsjtz_preflight(req: Dict[str, Any]):
         """Dry-run OM0RX WSJT-Z launch/profile checks without starting the engine."""
+        service = get_wsjtx_service()
+        req = dict(req or {})
+        req["engine"] = "wsjtz"
+        return await asyncio.to_thread(service.get_launch_preflight, req)
+
+    @app.post("/api/wsjtx/launch-preflight")
+    async def wsjtx_launch_preflight(req: Dict[str, Any]):
+        """Compatibility alias for OM0RX WSJT-Z launch/profile preflight."""
         service = get_wsjtx_service()
         req = dict(req or {})
         req["engine"] = "wsjtz"

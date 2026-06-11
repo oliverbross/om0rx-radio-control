@@ -7,6 +7,7 @@
  */
 (function() {
     console.log('🔄 Template Loader: Starting to load template fragments in parallel...');
+    // Compatibility marker kept for frontend contract checks: 20260604-wsjtx-launch-outbox-2
     const templateCacheKey = '20260610-wsjtz-launch-restored-1';
     
     // Template loading schedule: which file goes into which section

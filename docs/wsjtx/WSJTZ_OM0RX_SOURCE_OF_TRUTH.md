@@ -33,11 +33,18 @@ behavior that differs from upstream `sq9fve/wsjt-z`.
     `MainWindow::remote_start_target_qso`, which prepares the DX call/grid,
     mode, Rx/Tx audio frequencies, Tx-first, Hold Tx Freq, selected Tx message,
     and only arms Enable Tx when the backend explicitly sends `enableTx=true`.
+    Backend commands can mark `priorityHunt=true`; WSJT-Z then uses the same
+    OM0RX 20-minute priority watchdog that decoded ATNO/new-band targets use.
 11. The WSJT-Z launcher forces `PromptToLog=false`, `AutoLog=true`,
     `AcceptUDPRequests=true`, `UDPServer=224.0.0.1`, and `UDPServerPort=2237`
     inside the WSJT-Z `[Configuration]` INI section before startup. The
     `[Configuration]` section is the one WSJT-Z actually reads for UDP command
     acceptance.
+12. The backend planner decision log records why targets were selected, held,
+    or rejected, including candidate ordering and rejected candidate examples.
+13. The local Wavelog/QSO status cache is authoritative over stale cluster or
+    decode payload status when deciding whether a DXCC or bandslot still needs
+    hunting.
 
 ## Upstream Automation Map
 
@@ -138,12 +145,102 @@ Non-goals:
 - It does not bypass the existing WSJT-Z filters.
 - It does not make Wavelog HTTP calls synchronous or delay decoding.
 
+## Cluster DXCC/Bandslot Hunt
+
+This is the source-of-truth behavior for backend-driven cross-band hunting.
+
+Example flow:
+
+- WSJT-Z is automating on 40m FT8 and is already working `OM0AAO`.
+- The OM0RX cluster/planner sees `VK8RX` on 20m FT8 from Australia.
+- If Wavelog shows that the VK DXCC is all-time new, worked but not confirmed,
+  or needed on 20m/FT8, the backend queues it as a DXCC hunt prospect.
+- Ordinary new calls are not enough for this cross-band hunt. They can still be
+  displayed and enriched, but they must not pull WSJT-Z away from the current
+  band by themselves.
+
+Execution rules:
+
+- Active QSOs are never interrupted. If `OM0AAO` is in progress, the backend
+  holds the `VK8RX` prospect until WSJT-Z has returned to an idle/calling state
+  or the current QSO has logged/cleared.
+- After the active QSO finishes, the backend sends WSJT-Z a listen-only target
+  command for the prospect band/mode/frequency. The command does not enable TX
+  and does not generate messages yet; it only QSYs and listens.
+- If the prospect is decoded locally, the normal decoded-station path marks it
+  heard. The next backend tick sends an armed target command with
+  `priorityHunt=true`, `enableTx=true`, and a 20-minute priority watchdog.
+- While the station continues to be heard but is not worked, the system keeps
+  trying within that priority hunt window. A one-sided attempt must not switch
+  to an unrelated station if the hunted DXCC replies to OM0RX.
+- If the prospect is not heard for 5 minutes after the listen-only QSY, the
+  backend sends a return-to-origin listen-only command and normal automation
+  resumes on the original band/frequency/mode.
+- If the QSO is logged, the backend marks the target complete, WSJT-Z clears
+  the priority watchdog, the backend returns WSJT-Z to the original
+  band/frequency/mode, and normal automation resumes.
+- If the same DXCC/bandslot appears later in the cluster and Wavelog still does
+  not show it confirmed for that band/mode, the same hunt cycle can repeat.
+
+DXCC status rules:
+
+- `ATNO` / `ATTNO`: always highest-priority hunt.
+- `Worked` DXCC: still hunt, because worked-but-not-confirmed DXCC is not good
+  enough for this autonomous goal.
+- `W/New Band`, `C/New Band`, `W/New Band+Mode`, or `C/New Band+Mode`: hunt
+  because the DXCC slot is still needed on that band/mode.
+- Plain `Confirmed`, with no new band/mode slot, is not hunted by the
+  cross-band DXCC hunter.
+- New calls, new grids, and reference-only needs are not cross-band DXCC hunt
+  triggers unless the DXCC status above also says the DXCC or DXCC band/mode
+  slot is needed.
+
+Wavelog authority rules:
+
+- The planner enriches every incoming cluster/decode payload from the local
+  `qso_status_store` when that cache is available.
+- Wavelog/QSO-cache call status replaces stale incoming call status. Example:
+  if a spot says `NC` but Wavelog shows the call exists on another band, the
+  planner treats it as worked/new-band rather than new-call.
+- Wavelog/QSO-cache DXCC status replaces stale incoming DXCC status. Example:
+  if a spot still says `ATNO` but the local Wavelog mirror says the DXCC is
+  confirmed and there is no new band/mode slot, the planner rejects it as not a
+  DXCC hunt target.
+- Worked-but-not-confirmed remains huntable. Only Wavelog-backed plain
+  `Confirmed` with no new band/mode slot is a hard stop for cross-band DXCC
+  hunting.
+
+## Planner Decision Log
+
+This is the operational log used to explain why the backend automation did or
+did not prepare a target for WSJT-Z.
+
+- Every planner tick records one decision: `selected`, `hold`, or `idle`.
+- Decisions include the active target, hold reason, current station state,
+  rejected reason counts, and candidate count.
+- Selected decisions include the top candidate ordering so we can verify that
+  ATTNO/ATNO, new DXCC, worked-but-unconfirmed DXCC, and DXCC bandslot targets
+  outrank lower-value options without delaying the decode-to-call path.
+- Hold and idle decisions include rejected candidate examples. Each example
+  records call, band, mode, score, state, source, direct-caller flag, CS/DS
+  status, and need reasons.
+- The frontend WSJT Planner panel shows the decision summary and rejected
+  examples directly, so debugging should start from the UI before digging into
+  backend logs.
+- This log is explanatory only. It must not add wait-for-more-decodes behavior
+  or slow the existing immediate WSJT-Z automation path.
+
 ## Reply Priority Guard
 
 This is an OM0RX safety fix for hunting mode.
 
 - When a decoded line is addressed to OM0RX, such as `OM0RX G8NAI -03`, WSJT-Z
   promotes that sender into the active QSO path immediately.
+- If automation/Auto Seq is active, TX is not running, and the QSO state is
+  idle or already in a finished `ROGERS`/`SIGNOFF` state, the direct reply is
+  processed and TX is armed immediately from the decode path. This covers the
+  case where a previous QSO has just finished and the next station calls OM0RX
+  before the operator clicks anything.
 - Any stale `m_priorityCall` or pending OM0RX priority-hunt target is cleared
   for that cycle, so the watchdog/Auto Call path cannot start a different
   station while a reply is waiting.
@@ -201,6 +298,18 @@ This is an OM0RX safety fix for hunting mode.
 
 ### 2026-06-11
 
+- Added the backend-driven Cluster DXCC/Bandslot Hunt contract. Cross-band
+  cluster hunting is now limited to ATNO/ATTNO, worked-but-unconfirmed DXCC,
+  and DXCC band/mode slot needs. Ordinary new calls no longer pull WSJT-Z away
+  from the current band. The backend records the original band/frequency/mode,
+  QSYs listen-only to the prospect, arms WSJT-Z with `priorityHunt=true` only
+  after the station is locally decoded, uses the existing 20-minute priority
+  watchdog for the attempt, and queues a return-to-origin command after the
+  QSO logs or after 5 minutes without hearing the prospect.
+- Fixed direct replies after a completed QSO. When a station calls OM0RX while
+  WSJT-Z is idle in automation mode, the decode path now starts the reply
+  immediately instead of merely blocking other Auto Call candidates and waiting
+  for an operator double-click.
 - Fixed the backend WSJT-Z launch endpoint so it no longer blocks the FastAPI
   event loop while the PowerShell launcher starts the GUI process. The endpoint
   now starts the launcher with log-file redirection and returns immediately.
@@ -223,6 +332,13 @@ This is an OM0RX safety fix for hunting mode.
 - Fixed `/api/service-health` Wavelog reporting so the dashboard uses a short
   bounded sync-status refresh instead of showing `0 QSOs` from an empty startup
   cache while the real local Wavelog mirror is already initialized.
+- Added richer planner decision logging. The backend now records candidate
+  counts, top candidate order, rejected reason counts, and concrete rejected
+  examples; the frontend WSJT Planner panel displays the same summary.
+- Made the Wavelog/QSO status cache authoritative for planner hunt decisions.
+  Stale incoming `NC`/`ATNO` payloads are overridden by local cache truth, and
+  Wavelog-backed plain `Confirmed` DXCC with no new band/mode slot is rejected
+  from cross-band hunting.
 
 ### 2026-06-10
 

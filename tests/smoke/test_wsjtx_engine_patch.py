@@ -46,6 +46,10 @@ def test_current_wsjtz_source_accepts_om0rx_target_qso_command():
     assert "MessageClient::start_target_qso" in mainwindow_cpp
     assert "remote_configure (mode, frequency_tolerance" in mainwindow_cpp
     assert "ui->autoButton->click" in mainwindow_cpp
+    assert 'bool_value ("priorityHunt", false)' in mainwindow_cpp
+    assert "OM0RX backend priority hunt armed" in mainwindow_cpp
+    assert "om0rx_auto_reply_direct_call" in mainwindow_h
+    assert "OM0RX direct reply auto-start" in mainwindow_cpp
 
 
 def test_wsjtz_enrichment_patch_accepts_om0rx_target_qso_command():
@@ -58,6 +62,10 @@ def test_wsjtz_enrichment_patch_accepts_om0rx_target_qso_command():
     assert "MessageClient::start_target_qso" in text
     assert "remote_configure (mode, frequency_tolerance" in text
     assert "ui->autoButton->click" in text
+    assert 'bool_value ("priorityHunt", false)' in text
+    assert "OM0RX backend priority hunt armed" in text
+    assert "om0rx_auto_reply_direct_call" in text
+    assert "OM0RX direct reply auto-start" in text
 
 
 def test_wsjtx_engine_patch_contains_om0rx_hunting_controls():

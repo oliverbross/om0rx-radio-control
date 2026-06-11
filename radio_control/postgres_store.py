@@ -275,7 +275,11 @@ def initialize_schema() -> None:
                     completion_reason TEXT,
                     heard BOOLEAN DEFAULT false,
                     direct_caller BOOLEAN DEFAULT false,
-                    last_command_at TIMESTAMPTZ
+                    last_command_at TIMESTAMPTZ,
+                    origin_band TEXT,
+                    origin_mode TEXT,
+                    origin_dial_frequency DOUBLE PRECISION,
+                    return_command_at TIMESTAMPTZ
                 )
                 """
             )
@@ -290,6 +294,10 @@ def initialize_schema() -> None:
                 ("completion_reason", "TEXT"),
                 ("direct_caller", "BOOLEAN DEFAULT false"),
                 ("last_command_at", "TIMESTAMPTZ"),
+                ("origin_band", "TEXT"),
+                ("origin_mode", "TEXT"),
+                ("origin_dial_frequency", "DOUBLE PRECISION"),
+                ("return_command_at", "TIMESTAMPTZ"),
             ):
                 cur.execute(f"ALTER TABLE digital_targets ADD COLUMN IF NOT EXISTS {column} {definition}")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_updated ON digital_targets(updated_at DESC)")

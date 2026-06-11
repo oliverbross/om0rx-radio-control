@@ -382,7 +382,9 @@
                                     </span>
                                     <button type="button" @click="loadWsjtxHealth" :disabled="wsjtxHealthLoading" style="padding: 4px 8px; font-size: 10px;">Refresh WSJT</button>
                                     <button type="button" @click="haltWsjtxTx" :disabled="wsjtxHealthLoading" style="padding: 4px 8px; font-size: 10px; border-color: #ef4444;">Halt TX</button>
+                                    <button type="button" @click="launchPatchedWsjtxEngine" :disabled="wsjtxLaunchLoading || wsjtxPreflightLoading" style="padding: 4px 8px; font-size: 10px;">Preflight + Start</button>
                                     <button type="button" @click="testWsjtxPrepareCommand" :disabled="wsjtxHealthLoading" style="padding: 4px 8px; font-size: 10px;">Test Prepare</button>
+                                    <button type="button" @click="testWsjtxPrepareCommand" :disabled="wsjtxHealthLoading" style="padding: 4px 8px; font-size: 10px;">Self Test</button>
                                 </div>
                             </div>
                             <div v-if="wsjtxHealth" class="wsjtx-health-summary">

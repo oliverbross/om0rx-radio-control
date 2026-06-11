@@ -37,9 +37,9 @@
             <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="position: absolute; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;">
                 <span class="status-indicator" :class="connected ? 'status-connected' : 'status-disconnected'"></span>
                 <button
-                    @click="launchWsjtzEngine"
+                    @click="launchPatchedWsjtxEngine"
                     :disabled="wsjtxLaunchLoading || wsjtxPreflightLoading"
-                    title="Launch OM0RX WSJT-Z"
+                    title="Launch OM0RX WSJT-Z WSJT-X-compatible engine"
                     style="padding: 4px 8px; font-size: 12px; background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">
                     WSJT-Z
                 </button>

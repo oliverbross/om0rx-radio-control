@@ -439,7 +439,14 @@
                             <span>{{ formatWsjtxPlannerDecisionTime(entry.timestamp) }}</span>
                             <b>{{ entry.call || entry.decision || '-' }}</b>
                             <em>{{ entry.decision || '-' }}</em>
-                            <small>{{ entry.reason || entry.state || '-' }}</small>
+                            <small>{{ getWsjtxPlannerDecisionSummary(entry) }}</small>
+                        </div>
+                        <div v-if="getWsjtxPlannerRejectedExamples(entry).length"
+                             class="wsjtx-rejected-examples">
+                            <span v-for="example in getWsjtxPlannerRejectedExamples(entry).slice(0, 4)"
+                                  :key="`${entry.timestamp}-${example.reason}-${example.call}-${example.band}-${example.mode}`">
+                                {{ example.call }} {{ example.band || '-' }} {{ example.mode || '-' }}: {{ example.reason }}
+                            </span>
                         </div>
                     </div>
                 </div>

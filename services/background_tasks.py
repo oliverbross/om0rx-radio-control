@@ -86,13 +86,13 @@ def _should_queue_digital_spot_for_automation(spot: Dict[str, Any]) -> bool:
     mode = str(spot.get("mode") or "").strip().upper()
     if mode not in {"FT8", "FT4", "FT2"}:
         return False
-    status_text = f"{spot.get('call_status') or ''} {spot.get('dxcc_status') or ''}".lower()
-    dxcc_status = str(spot.get("dxcc_status") or "").strip().lower()
-    has_new_slot = "new band" in status_text or "new mode" in status_text or "atno" in status_text
-    has_unconfirmed_dxcc = dxcc_status == "worked"
-    if dxcc_status == "confirmed" and not has_new_slot:
-        return False
-    return has_new_slot or has_unconfirmed_dxcc
+    try:
+        from services.digital_automation import payload_has_dxcc_hunt_interest
+
+        return payload_has_dxcc_hunt_interest(spot)
+    except Exception:
+        dxcc_status = str(spot.get("dxcc_status") or "").strip().lower()
+        return dxcc_status in {"atno", "worked"} or "new band" in dxcc_status or "new mode" in dxcc_status
 
 
 def _queue_digital_spot_for_automation(context: Any, spot: Dict[str, Any]) -> None:
