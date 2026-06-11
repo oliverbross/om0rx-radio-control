@@ -1883,6 +1883,7 @@
         .wsjtx-engine-strip {
             display: flex;
             align-items: center;
+            flex-wrap: wrap;
             gap: 8px;
             margin: 6px 10px 0;
             padding: 6px 8px;
@@ -1891,8 +1892,8 @@
             background: #101923;
             color: #cbd5e1;
             font-size: 11px;
-            overflow-x: auto;
-            white-space: nowrap;
+            overflow: visible;
+            white-space: normal;
         }
 
         .wsjtx-engine-status,
@@ -1900,6 +1901,8 @@
             display: inline-flex;
             align-items: center;
             gap: 5px;
+            flex: 0 1 auto;
+            min-width: 0;
             min-height: 24px;
             padding: 3px 8px;
             border: 1px solid #374151;
@@ -1941,6 +1944,7 @@
         }
 
         .wsjtx-engine-strip button {
+            flex: 0 0 auto;
             min-height: 24px;
             padding: 3px 9px;
             border: 1px solid #3b4a60;
