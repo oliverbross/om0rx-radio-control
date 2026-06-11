@@ -2037,6 +2037,31 @@
             cursor: pointer;
         }
 
+        .wsjtx-dry-run-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 8px;
+            border: 1px solid #4b617e;
+            border-radius: 4px;
+            background: #263244;
+            color: #cbd5e1;
+            font-size: 11px;
+            font-weight: 700;
+            cursor: pointer;
+            min-height: 25px;
+        }
+
+        .wsjtx-dry-run-toggle.active {
+            border-color: #f59e0b;
+            background: #5f3b10;
+            color: #fde68a;
+        }
+
+        .wsjtx-dry-run-toggle input {
+            margin: 0;
+        }
+
         .wsjtx-planner-actions select {
             min-height: 25px;
             padding-right: 20px;
@@ -2175,6 +2200,221 @@
             background: #1b1115;
             color: #fecaca;
             font-size: 10px;
+        }
+
+        .wsjtx-why-panel {
+            display: grid;
+            gap: 6px;
+            padding: 8px;
+            border: 1px solid #2f3b52;
+            border-radius: 6px;
+            background: #111827;
+        }
+
+        .wsjtx-why-panel > strong {
+            color: #e2e8f0;
+            font-size: 12px;
+        }
+
+        .wsjtx-why-list {
+            display: grid;
+            gap: 3px;
+        }
+
+        .wsjtx-why-row {
+            display: grid;
+            grid-template-columns: 72px minmax(72px, 96px) minmax(70px, 90px) minmax(160px, 1fr) minmax(120px, 180px);
+            gap: 7px;
+            align-items: center;
+            min-height: 22px;
+            padding: 3px 6px;
+            border-left: 3px solid #64748b;
+            background: #0f172a;
+            color: #cbd5e1;
+            font-size: 11px;
+        }
+
+        .wsjtx-why-row span,
+        .wsjtx-why-row em,
+        .wsjtx-why-row i {
+            font-family: 'Courier New', monospace;
+            font-style: normal;
+        }
+
+        .wsjtx-why-row b,
+        .wsjtx-why-row small,
+        .wsjtx-why-row i {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .wsjtx-why-row b {
+            color: #f8fafc;
+        }
+
+        .wsjtx-why-row small {
+            color: #dbeafe;
+        }
+
+        .wsjtx-why-row i {
+            color: #a7f3d0;
+        }
+
+        .wsjtx-why-active,
+        .wsjtx-why-selected {
+            border-left-color: #22c55e;
+            background: #102319;
+        }
+
+        .wsjtx-why-candidate {
+            border-left-color: #38bdf8;
+        }
+
+        .wsjtx-why-waiting {
+            border-left-color: #fbbf24;
+            background: #211c10;
+        }
+
+        .wsjtx-why-blocked {
+            border-left-color: #ef4444;
+            background: #201217;
+        }
+
+        .wsjtx-priority-panel {
+            display: grid;
+            gap: 6px;
+            padding: 8px;
+            border: 1px solid #26384f;
+            border-radius: 6px;
+            background: #0f172a;
+        }
+
+        .wsjtx-priority-panel > strong {
+            color: #e2e8f0;
+            font-size: 12px;
+        }
+
+        .wsjtx-priority-list {
+            display: grid;
+            gap: 3px;
+        }
+
+        .wsjtx-priority-row {
+            display: grid;
+            grid-template-columns: 44px minmax(72px, 96px) minmax(70px, 90px) minmax(130px, 180px) minmax(120px, 1fr);
+            gap: 7px;
+            align-items: center;
+            min-height: 22px;
+            padding: 3px 6px;
+            border-left: 3px solid #64748b;
+            background: #111827;
+            color: #cbd5e1;
+            font-size: 11px;
+        }
+
+        .wsjtx-priority-row.eligible {
+            border-left-color: #22c55e;
+        }
+
+        .wsjtx-priority-row.blocked {
+            border-left-color: #f97316;
+            opacity: 0.86;
+        }
+
+        .wsjtx-priority-row span,
+        .wsjtx-priority-row em,
+        .wsjtx-priority-row i {
+            font-family: 'Courier New', monospace;
+            font-style: normal;
+        }
+
+        .wsjtx-priority-row b,
+        .wsjtx-priority-row small,
+        .wsjtx-priority-row i {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .wsjtx-priority-row b {
+            color: #f8fafc;
+        }
+
+        .wsjtx-priority-row small {
+            color: #a7f3d0;
+        }
+
+        .wsjtx-priority-row i {
+            color: #bfdbfe;
+        }
+
+        .wsjtx-event-panel {
+            display: grid;
+            gap: 6px;
+            padding: 8px;
+            border: 1px solid #2f3b52;
+            border-radius: 6px;
+            background: #111827;
+        }
+
+        .wsjtx-event-panel > strong {
+            color: #e2e8f0;
+            font-size: 12px;
+        }
+
+        .wsjtx-event-table {
+            display: grid;
+            gap: 2px;
+        }
+
+        .wsjtx-event-row {
+            display: grid;
+            grid-template-columns: 72px minmax(90px, 120px) minmax(96px, 150px) minmax(160px, 1fr) minmax(100px, 140px);
+            gap: 7px;
+            align-items: center;
+            min-height: 22px;
+            padding: 3px 6px;
+            background: #0f172a;
+            color: #cbd5e1;
+            font-size: 11px;
+        }
+
+        .wsjtx-event-row.header {
+            min-height: 20px;
+            background: #172033;
+            color: #93c5fd;
+            font-weight: 700;
+            text-transform: uppercase;
+            font-size: 10px;
+        }
+
+        .wsjtx-event-row span,
+        .wsjtx-event-row em,
+        .wsjtx-event-row i {
+            font-family: 'Courier New', monospace;
+            font-style: normal;
+        }
+
+        .wsjtx-event-row b,
+        .wsjtx-event-row em,
+        .wsjtx-event-row small,
+        .wsjtx-event-row i {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .wsjtx-event-row b {
+            color: #f8fafc;
+        }
+
+        .wsjtx-event-row small {
+            color: #a7f3d0;
+        }
+
+        .wsjtx-event-row i {
+            color: #bfdbfe;
         }
 
         .wsjtx-planner-empty {

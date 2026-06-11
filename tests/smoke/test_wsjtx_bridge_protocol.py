@@ -122,6 +122,58 @@ def test_wsjtx_parser_extracts_logged_adif_fields():
     assert payload["reportReceived"] == "-07"
 
 
+def test_wsjtx_parser_extracts_optional_om0rx_qso_state_from_status():
+    payload = run_node_protocol_script(
+        """
+        import { QtStreamWriter, MESSAGE_TYPES } from './bridge/wsjtx-protocol.js';
+        import { WsjtxParser } from './bridge/wsjtx-parser.js';
+        const writer = new QtStreamWriter();
+        writer.writeUInt32(0xadbccbda)
+          .writeUInt32(3)
+          .writeUInt32(MESSAGE_TYPES.STATUS)
+          .writeByteArray('OM0RX-WSJT-Z')
+          .writeUInt64(7074000)
+          .writeByteArray('FT8')
+          .writeByteArray('PA3DRI')
+          .writeByteArray('-10')
+          .writeByteArray('FT8')
+          .writeBool(true)
+          .writeBool(false)
+          .writeBool(false)
+          .writeUInt32(992)
+          .writeUInt32(1450)
+          .writeByteArray('OM0RX')
+          .writeByteArray('JN88')
+          .writeByteArray('JO21')
+          .writeBool(false)
+          .writeByteArray('')
+          .writeBool(false)
+          .writeUInt8(0)
+          .writeUInt32(100)
+          .writeUInt32(15)
+          .writeByteArray('OM0RX-AUTO')
+          .writeByteArray('PA3DRI OM0RX R-10')
+          .writeByteArray('waiting_rrr');
+        const parsed = new WsjtxParser().parse(writer.buffer());
+        process.env.OM0RX_BRIDGE_TEST_MODE = '1';
+        const bridge = await import('./bridge/sdc-bridge-server.js?state-contract');
+        console.log(JSON.stringify({
+          parsed,
+          derived: bridge.__deriveWsjtxQsoStateForTest(parsed),
+          fallback: bridge.__deriveWsjtxQsoStateForTest({ txEnabled: true, dxCall: 'PA3DRI' })
+        }));
+        """
+    )
+
+    assert payload["parsed"]["type"] == "STATUS"
+    assert payload["parsed"]["id"] == "OM0RX-WSJT-Z"
+    assert payload["parsed"]["dxCall"] == "PA3DRI"
+    assert payload["parsed"]["txMessage"] == "PA3DRI OM0RX R-10"
+    assert payload["parsed"]["qsoState"] == "waiting_rrr"
+    assert payload["derived"] == "waiting_rrr"
+    assert payload["fallback"] == "in_qso"
+
+
 def test_wsjtx_bridge_server_exposes_command_timeline_contract():
     bridge = (PROJECT_ROOT / "bridge" / "sdc-bridge-server.js").read_text(encoding="utf-8")
 
@@ -201,7 +253,7 @@ def test_wsjtx_decode_status_returns_native_decode_enrichment(monkeypatch):
     assert payload["call"] == "E51ABC"
     assert payload["call_status"] == "New Call"
     assert payload["needed"]["call"] is True
-    assert "automation_target" not in payload
+    assert payload.get("automation_target") is None
 
 
 def test_wsjtx_decode_status_reports_new_band_for_worked_call_on_other_band(monkeypatch):
@@ -237,7 +289,7 @@ def test_wsjtx_decode_status_reports_new_band_for_worked_call_on_other_band(monk
     assert payload["success"] is True
     assert payload["call_status"] == "New Band"
     assert payload["needed_on_band"]["call"] is True
-    assert "automation_target" not in payload
+    assert payload.get("automation_target") is None
 
 
 def test_wsjtx_bridge_logged_qso_upload_payload_prefers_adif_fields():

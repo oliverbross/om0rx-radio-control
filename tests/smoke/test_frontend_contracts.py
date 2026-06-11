@@ -485,6 +485,9 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "WSJT Planner" in template
     assert "toggleWsjtxPlannerPanel" in template
     assert "Prepare best" in template
+    assert "Dry run" in template
+    assert "setWsjtxPlannerDryRun" in template
+    assert "Simulate best" in template
     assert 'value="actionable"' in template
     assert 'value="heard"' in template
     assert 'value="backoff"' in template
@@ -512,12 +515,18 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "WSJT Planner" in section
     assert "toggleWsjtxPlannerPanel" in section
     assert "Prepare best" in section
+    assert "Dry run" in section
+    assert "setWsjtxPlannerDryRun" in section
+    assert "Simulate best" in section
     assert 'value="actionable"' in section
     assert 'value="heard"' in section
     assert 'value="backoff"' in section
     assert "prepareWsjtxPlannerTarget(target)" in section
     assert "promoteWsjtxPlannerTarget(target)" in section
     assert "skipWsjtxPlannerTarget(target)" in section
+    assert "isWsjtxPlannerDryRun()" in script
+    assert "/api/ft8/automation/settings" in script
+    assert "Would prepare" in script
     assert "wsjtxSpotPrepare.message" in section
     assert "wsjtxSpotPrepare.traceId" in section
     assert "openWsjtxTraceInConfig(wsjtxSpotPrepare.traceId)" in section

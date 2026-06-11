@@ -373,10 +373,18 @@
                         </div>
                         <div class="wsjtx-planner-actions">
                             <span v-if="wsjtxPlanner.message">{{ wsjtxPlanner.message }}</span>
+                            <label :class="['wsjtx-dry-run-toggle', { active: isWsjtxPlannerDryRun() }]"
+                                   title="Show what the planner would do without sending WSJT commands">
+                                <input type="checkbox"
+                                       :checked="isWsjtxPlannerDryRun()"
+                                       :disabled="wsjtxPlanner.actionKey === 'dry-run-toggle'"
+                                       @change="setWsjtxPlannerDryRun($event.target.checked)">
+                                Dry run
+                            </label>
                             <button @click="prepareBestWsjtxPlannerTarget"
                                     :disabled="wsjtxPlanner.actionKey.startsWith('prepare:') || getWsjtxPlannerTargets().length === 0"
                                     title="Prepare the top shown planner target with TX disabled">
-                                Prepare best
+                                {{ isWsjtxPlannerDryRun() ? 'Simulate best' : 'Prepare best' }}
                             </button>
                             <select v-model="wsjtxPlanner.filter" title="Planner target filter">
                                 <option value="actionable">Actionable</option>
@@ -393,7 +401,55 @@
                     <div v-if="getWsjtxPlannerTargets().length === 0" class="wsjtx-planner-empty">
                         No queued WSJT targets. Use Queue WSJT from the current filtered spots.
                     </div>
-                    <div v-else class="wsjtx-planner-list">
+                    <div class="wsjtx-why-panel" v-if="getWsjtxWhyNotTxRows().length">
+                        <strong>Why not TX?</strong>
+                        <div class="wsjtx-why-list">
+                            <div v-for="row in getWsjtxWhyNotTxRows().slice(0, 12)"
+                                 :key="`why-${row.call}-${row.band}-${row.mode}-${row.reason}`"
+                                 :class="getWsjtxWhyRowClass(row)"
+                                 :title="getWsjtxWhyRowTitle(row)">
+                                <span>{{ formatWsjtxPlannerDecisionTime(row.updated_at) }}</span>
+                                <b>{{ row.call || '-' }}</b>
+                                <em>{{ row.band || '-' }} {{ row.mode || '-' }}</em>
+                                <small>{{ row.reason || '-' }}</small>
+                                <i>{{ row.score_trace?.label || row.score_reason || ('score ' + (row.score || 0)) }}</i>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="wsjtx-priority-panel" v-if="getWsjtxPriorityTraceRows().length">
+                        <strong>Priority score trace</strong>
+                        <div class="wsjtx-priority-list">
+                            <div v-for="(row, index) in getWsjtxPriorityTraceRows().slice(0, 10)"
+                                 :key="`priority-${index}-${row.call}-${row.band}-${row.mode}`"
+                                 :class="['wsjtx-priority-row', row.eligible ? 'eligible' : 'blocked']"
+                                 :title="getWsjtxPriorityRowTitle(row)">
+                                <span>#{{ index + 1 }}</span>
+                                <b>{{ row.call || '-' }}</b>
+                                <em>{{ row.band || '-' }} {{ row.mode || '-' }}</em>
+                                <small>{{ row.score_trace?.label || row.score_reason || ('score ' + (row.score || 0)) }}</small>
+                                <i>{{ row.eligible ? 'eligible' : (row.reasons || []).join(', ') }}</i>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="wsjtx-event-panel" v-if="getWsjtxAutomationEventRows().length">
+                        <strong>Automation event log</strong>
+                        <div class="wsjtx-event-table">
+                            <div class="wsjtx-event-row header">
+                                <span>Time</span><span>Event</span><span>Station</span><span>Reason</span><span>Action</span>
+                            </div>
+                            <div v-for="event in getWsjtxAutomationEventRows().slice(0, 14)"
+                                 :key="`${event.timestamp}-${event.event}-${event.call}-${event.reason}`"
+                                 class="wsjtx-event-row"
+                                 :title="getWsjtxAutomationEventTitle(event)">
+                                <span>{{ formatWsjtxPlannerDecisionTime(event.timestamp) }}</span>
+                                <b>{{ event.event || '-' }}</b>
+                                <em>{{ event.call || '-' }} {{ event.band || '' }} {{ event.mode || '' }}</em>
+                                <small>{{ event.reason || '-' }}</small>
+                                <i>{{ event.state || event.action || '-' }}</i>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-if="getWsjtxPlannerTargets().length" class="wsjtx-planner-list">
                         <div v-for="target in getWsjtxPlannerTargets().slice(0, 8)"
                              :key="target.key"
                              class="wsjtx-planner-row"
@@ -414,8 +470,8 @@
                             <div class="wsjtx-planner-row-actions">
                                 <button @click="prepareWsjtxPlannerTarget(target)"
                                         :disabled="wsjtxPlanner.actionKey === 'prepare:' + target.key"
-                                        title="Prepare this target in WSJT-X with TX disabled">
-                                    Prepare
+                                        :title="isWsjtxPlannerDryRun() ? 'Simulate preparing this target without sending WSJT commands' : 'Prepare this target in WSJT-X with TX disabled'">
+                                    {{ isWsjtxPlannerDryRun() ? 'Simulate' : 'Prepare' }}
                                 </button>
                                 <button @click="promoteWsjtxPlannerTarget(target)"
                                         :disabled="wsjtxPlanner.actionKey === 'promote:' + target.key"
@@ -440,13 +496,13 @@
                             <b>{{ entry.call || entry.decision || '-' }}</b>
                             <em>{{ entry.decision || '-' }}</em>
                             <small>{{ getWsjtxPlannerDecisionSummary(entry) }}</small>
-                        </div>
-                        <div v-if="getWsjtxPlannerRejectedExamples(entry).length"
-                             class="wsjtx-rejected-examples">
-                            <span v-for="example in getWsjtxPlannerRejectedExamples(entry).slice(0, 4)"
-                                  :key="`${entry.timestamp}-${example.reason}-${example.call}-${example.band}-${example.mode}`">
-                                {{ example.call }} {{ example.band || '-' }} {{ example.mode || '-' }}: {{ example.reason }}
-                            </span>
+                            <div v-if="getWsjtxPlannerRejectedExamples(entry).length"
+                                 class="wsjtx-rejected-examples">
+                                <span v-for="example in getWsjtxPlannerRejectedExamples(entry).slice(0, 4)"
+                                      :key="`${entry.timestamp}-${example.reason}-${example.call}-${example.band}-${example.mode}`">
+                                    {{ example.call }} {{ example.band || '-' }} {{ example.mode || '-' }}: {{ example.reason }}
+                                </span>
+                            </div>
                         </div>
                     </div>
                 </div>

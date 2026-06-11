@@ -45,6 +45,16 @@ behavior that differs from upstream `sq9fve/wsjt-z`.
 13. The local Wavelog/QSO status cache is authoritative over stale cluster or
     decode payload status when deciding whether a DXCC or bandslot still needs
     hunting.
+14. The browser WSJT Planner panel exposes a `Why not TX?` table, a priority
+    score trace, and a compact automation event log for live troubleshooting.
+15. OM0RX WSJT-Z appends an optional QSO-state heartbeat field to its UDP
+    Status message. The bridge reads it when present and safely derives a state
+    for stock clients when it is absent.
+16. Replay fixtures under `tests/fixtures/wsjtz_replays` capture real
+    decode/QSO cycles so regressions like "finished QSO, then direct caller was
+    not answered" can be replayed by tests.
+17. The backend planner has a browser-visible dry-run mode. In dry-run the UI
+    shows what would be prepared or QSYed, but no WSJT bridge command is sent.
 
 ## Upstream Automation Map
 
@@ -216,6 +226,11 @@ This is the operational log used to explain why the backend automation did or
 did not prepare a target for WSJT-Z.
 
 - Every planner tick records one decision: `selected`, `hold`, or `idle`.
+- Every queued or rejected candidate carries a single score trace. Current
+  headline scores are: `reply-to-us=99999`, `ATNO=10000`,
+  `DXCC worked-not-confirmed=9000`, `DXCC new band=8000`,
+  non-EU `New Call=7500`, `New Band=6500`, references `6000`, grid `5000`,
+  new mode `3500`, and plain new call `2000`.
 - Decisions include the active target, hold reason, current station state,
   rejected reason counts, and candidate count.
 - Selected decisions include the top candidate ordering so we can verify that
@@ -227,8 +242,53 @@ did not prepare a target for WSJT-Z.
 - The frontend WSJT Planner panel shows the decision summary and rejected
   examples directly, so debugging should start from the UI before digging into
   backend logs.
+- The `Why not TX?` table explains each visible decode or target with operator
+  language such as `blocked: Europe filter`, `blocked: active QSO with <CALL>`,
+  `blocked: DXCC already confirmed`, `waiting: target not heard`, or
+  `selected: ATNO`.
+- The `Priority score trace` table shows the sorted candidate list for the
+  current cycle, including score label, eligibility, and blocker reasons.
+- The `Automation event log` table shows recent planner events in the browser:
+  time, event, station, reason, and action/state.
 - This log is explanatory only. It must not add wait-for-more-decodes behavior
   or slow the existing immediate WSJT-Z automation path.
+
+## QSO State Heartbeat
+
+- OM0RX WSJT-Z sends a direct QSO-state heartbeat as an optional trailing field
+  in the normal UDP Status packet.
+- Supported states are `idle`, `calling`, `in_qso`, `waiting_rrr`,
+  `waiting_73`, `logged`, and `blocked`.
+- The backend planner trusts this field when it is present. It should no longer
+  infer critical QSO ownership only from selected fields, UDP command history,
+  or timers.
+- The bridge remains backward-compatible: when the optional field is missing,
+  it derives a coarse state from Status fields (`watchdogTimeout`,
+  `transmitting`, `txEnabled`, and `dxCall`).
+
+## Replay Tests
+
+- Replay tests must use the same controller path as live automation:
+  ingest decode/spot, select target, record attempt, process WSJT status, and
+  mark logged/completed.
+- The `ha0aa_pa3dri_direct_reply.json` fixture records the bug class where a
+  QSO completes and the next decoded line is addressed directly to `OM0RX`.
+  The expected result is that the direct caller gets `reply-to-us=99999` and is
+  selected immediately.
+- New recurring screenshots/log sequences should become replay fixtures before
+  changing the priority rules again.
+
+## Dry-Run Planner Mode
+
+- Dry-run is controlled by backend automation setting `dryRun` / `dry_run` and
+  is visible as a `Dry run` toggle in the browser WSJT Planner panel.
+- When enabled, preparing the best target returns `dry-run` / `would-*`
+  decisions and does not call the WSJT bridge command endpoint.
+- Dry-run examples should read like: `Would prepare VK8RX; no WSJT command
+  sent`, `would-send-spot-listen-qsy`, or `would-return-wsjtz-to-origin`.
+- Dry-run is for planner validation before unattended operation. It must not
+  bypass filters, change priority scores, or alter the normal live execution
+  rules when disabled.
 
 ## Reply Priority Guard
 

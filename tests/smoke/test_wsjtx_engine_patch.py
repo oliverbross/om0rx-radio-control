@@ -50,6 +50,11 @@ def test_current_wsjtz_source_accepts_om0rx_target_qso_command():
     assert "OM0RX backend priority hunt armed" in mainwindow_cpp
     assert "om0rx_auto_reply_direct_call" in mainwindow_h
     assert "OM0RX direct reply auto-start" in mainwindow_cpp
+    assert "qso_state" in message_client_h
+    assert "QSO state:" in message_client_cpp
+    assert "om0rx_qso_state" in mainwindow_h
+    assert "waiting_rrr" in mainwindow_cpp
+    assert "waiting_73" in mainwindow_cpp
 
 
 def test_wsjtz_enrichment_patch_accepts_om0rx_target_qso_command():
@@ -66,6 +71,11 @@ def test_wsjtz_enrichment_patch_accepts_om0rx_target_qso_command():
     assert "OM0RX backend priority hunt armed" in text
     assert "om0rx_auto_reply_direct_call" in text
     assert "OM0RX direct reply auto-start" in text
+    assert "qso_state" in text
+    assert "QSO state:" in text
+    assert "om0rx_qso_state" in text
+    assert "waiting_rrr" in text
+    assert "waiting_73" in text
 
 
 def test_wsjtx_engine_patch_contains_om0rx_hunting_controls():

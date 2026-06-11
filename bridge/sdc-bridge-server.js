@@ -98,11 +98,15 @@ function parseSKMTEXT(line) {
 
 // Extract key fields from WSJT-X Status message
 function extractStatusFields(msg) {
+  const qsoState = deriveWsjtxQsoState(msg);
   return {
     type: 'Status',
     source: 'wsjtx',
     dialFrequency: msg.dialFrequency,
     txEnabled: msg.txEnabled,
+    transmitting: msg.transmitting || false,
+    decoding: msg.decoding || false,
+    qsoState,
     dxCall: msg.dxCall || '',
     dxGrid: msg.dxGrid || '',
     mode: msg.mode || '',
@@ -226,6 +230,36 @@ function commandCapabilities() {
     reply: true,
     start_target_qso: true,
   };
+}
+
+function normalizeWsjtxQsoState(value) {
+  const raw = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const aliases = {
+    ready: 'idle',
+    tx: 'calling',
+    transmitting: 'calling',
+    active: 'in_qso',
+    inqso: 'in_qso',
+    wait_rrr: 'waiting_rrr',
+    waiting_for_rrr: 'waiting_rrr',
+    wait_73: 'waiting_73',
+    waiting_for_73: 'waiting_73',
+    log: 'logged',
+    paused: 'blocked',
+  };
+  const normalized = aliases[raw] || raw;
+  return ['idle', 'calling', 'in_qso', 'waiting_rrr', 'waiting_73', 'logged', 'blocked'].includes(normalized)
+    ? normalized
+    : '';
+}
+
+function deriveWsjtxQsoState(msg = {}) {
+  const explicit = normalizeWsjtxQsoState(msg.qsoState || msg.qso_state || msg.om0rxQsoState);
+  if (explicit) return explicit;
+  if (msg.watchdogTimeout) return 'blocked';
+  if (msg.transmitting) return 'calling';
+  if (msg.txEnabled && msg.dxCall) return 'in_qso';
+  return 'idle';
 }
 
 function getWsjtxClientSnapshot() {
@@ -513,6 +547,7 @@ function startWSJTXListener() {
 
       if (msg.type === 'STATUS') {
         wsjtxStats.statuses += 1;
+        const qsoState = deriveWsjtxQsoState(msg);
         broadcastData = {
           type: 'wsjtx_status',
           source: 'wsjtx',
@@ -520,6 +555,10 @@ function startWSJTXListener() {
           dxCall: msg.dxCall || '',
           dxGrid: msg.dxGrid || '',
           txEnabled: msg.txEnabled || false,
+          transmitting: msg.transmitting || false,
+          decoding: msg.decoding || false,
+          qsoState,
+          qso_state: qsoState,
           txRst: msg.txRst || '',
           rxRst: msg.rxRst || '',
           ts: Date.now()
@@ -533,6 +572,7 @@ function startWSJTXListener() {
           dxGrid: broadcastData.dxGrid,
           dialFrequency: broadcastData.dialFrequency,
           txEnabled: broadcastData.txEnabled,
+          qsoState: broadcastData.qsoState,
         });
       } else if (msg.type === 'DECODE') {
         wsjtxStats.decodes += 1;
@@ -1070,6 +1110,10 @@ export function __getWsjtxStatusForTest() {
 
 export function __buildLoggedQsoUploadForTest(loggedData) {
   return buildLoggedQsoUpload(loggedData);
+}
+
+export function __deriveWsjtxQsoStateForTest(msg = {}) {
+  return deriveWsjtxQsoState(msg);
 }
 
 // ============= STARTUP =============

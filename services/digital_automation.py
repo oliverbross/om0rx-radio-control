@@ -32,8 +32,16 @@ TX_AUDIO_HIGH_HZ = 3000
 TX_AUDIO_STEP_HZ = 50
 TX_AUDIO_GUARD_HZ = 90
 DECISION_LOG_LIMIT = 200
-DIRECT_CALLER_SCORE_BOOST = 900
-NON_EU_NEW_CALL_SCORE = 750
+DIRECT_CALLER_SCORE = 99999
+ATNO_SCORE = 10000
+DXCC_WORKED_NOT_CONFIRMED_SCORE = 9000
+DXCC_NEW_BAND_SCORE = 8000
+NON_EU_NEW_CALL_SCORE = 7500
+CALL_NEW_BAND_SCORE = 6500
+REFERENCE_SCORE = 6000
+GRID_SCORE = 5000
+MODE_SCORE = 3500
+NEW_CALL_SCORE = 2000
 DXCC_SPOT_SILENCE_SECONDS = 300
 SPOT_HUNT_SOURCES = {"spot", "cluster", "rbl", "selected-spot", "dx-cluster", "reverse-beacon"}
 
@@ -59,11 +67,15 @@ ACTIVE_QSO_STATES = {
     "command_sent",
     "waiting_for_tx",
     "calling",
+    "in_qso",
+    "waiting_rrr",
+    "waiting_73",
     "reply_received",
     "report_sent",
     "rr73_seen",
     "logged",
     "completed",
+    "blocked",
     "failed",
     "aborted",
 }
@@ -726,6 +738,8 @@ class DigitalTarget:
     need_reasons: set[str] = field(default_factory=set)
     reference_items: list[dict[str, str]] = field(default_factory=list)
     score: int = 0
+    score_reason: str = ""
+    score_trace: dict[str, Any] = field(default_factory=dict)
     snr: Optional[float] = None
     audio_offset: Optional[int] = None
     dial_frequency: Optional[float] = None
@@ -798,6 +812,8 @@ class DigitalTarget:
             "reference_items": [dict(item) for item in self.reference_items],
             "references": [dict(item) for item in self.reference_items],
             "score": self.score,
+            "score_reason": self.score_reason,
+            "score_trace": dict(self.score_trace),
             "snr": self.snr,
             "audio_offset": self.audio_offset,
             "dial_frequency": self.dial_frequency,
@@ -939,6 +955,8 @@ class DigitalAutomationController:
             "mode": target.mode,
             "state": target.state,
             "score": target.score,
+            "score_reason": target.score_reason,
+            "score_trace": dict(target.score_trace),
             "heard": target.heard,
             "direct_caller": target.direct_caller,
             "source": target.source,
@@ -1001,6 +1019,8 @@ class DigitalAutomationController:
             "last_decision": self.last_decision,
             "last_cancel_or_abort_reason": self._last_cancel_or_abort_reason(),
             "eligibility": self._eligibility_summary(now, cq_only=True, auto_call_start_only=True),
+            "why_not_tx": self._why_not_tx_rows(now, active=active),
+            "priority_trace": self._priority_trace(now),
         }
         if target:
             panel["current_target_eligibility"] = self._target_eligibility(
@@ -1020,6 +1040,202 @@ class DigitalAutomationController:
             panel["why_selected"] = ""
             panel["why_not_tx_now"] = self.last_decision.get("reason", "idle")
         return panel
+
+    def _why_not_tx_rows(
+        self,
+        now: datetime,
+        *,
+        active: Optional[DigitalTarget],
+        limit: int = 40,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for target in self._ordered_targets()[: max(1, limit)]:
+            eligibility = self._target_eligibility(
+                target,
+                now,
+                cq_only=True,
+                auto_call_start_only=True,
+            )
+            reason_text = self._why_not_tx_text(target, eligibility, active=active)
+            rows.append({
+                "call": target.call,
+                "band": target.band,
+                "mode": target.mode,
+                "source": target.source,
+                "state": target.state,
+                "action": self._why_not_tx_action(target, eligibility, active=active),
+                "reason": reason_text,
+                "reason_codes": eligibility.get("reasons") or [],
+                "score": target.score,
+                "score_reason": target.score_reason,
+                "score_trace": dict(target.score_trace),
+                "call_status": target.call_status,
+                "dxcc_status": target.dxcc_status,
+                "heard": target.heard,
+                "direct_caller": target.direct_caller,
+                "need_reasons": sorted(target.need_reasons),
+                "updated_at": _iso(target.updated_at),
+                "last_heard_at": _iso(target.last_heard_at),
+            })
+        seen = {(row.get("call"), row.get("band"), row.get("mode"), row.get("reason")) for row in rows}
+        for entry in reversed(self.decision_log[-limit:]):
+            if len(rows) >= limit:
+                break
+            if str(entry.get("decision") or "") not in {"skip", "hold", "idle", "selected", "expired"}:
+                continue
+            row = self._decision_why_not_tx_row(entry)
+            key = (row.get("call"), row.get("band"), row.get("mode"), row.get("reason"))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
+        return rows
+
+    def _decision_why_not_tx_row(self, entry: Mapping[str, Any]) -> dict[str, Any]:
+        decision = str(entry.get("decision") or "")
+        reason = str(entry.get("reason") or "")
+        blockers = [str(item) for item in (entry.get("blockers") or []) if str(item)]
+        if decision == "selected":
+            text = f"selected: {entry.get('score_reason') or reason or 'eligible'}"
+            action = "selected"
+        elif reason == "active-qso-in-progress":
+            text = f"blocked: active QSO with {entry.get('call') or '-'}"
+            action = "blocked"
+        elif reason == "not-needed-by-filter":
+            text = f"blocked: {blockers[0]}" if blockers else "blocked: not needed by filters"
+            action = "blocked"
+        elif reason == "require-heard":
+            text = "waiting: target not heard"
+            action = "waiting"
+        elif decision == "idle":
+            text = f"waiting: {reason or 'idle'}"
+            action = "waiting"
+        elif decision == "expired":
+            text = f"blocked: {reason or 'expired'}"
+            action = "blocked"
+        else:
+            text = f"blocked: {reason or decision or 'unknown'}"
+            action = "blocked"
+        return {
+            "call": str(entry.get("call") or entry.get("decision") or "-"),
+            "band": str(entry.get("band") or ""),
+            "mode": str(entry.get("mode") or ""),
+            "source": str(entry.get("source") or "decision-log"),
+            "state": str(entry.get("state") or entry.get("active_qso_state") or ""),
+            "action": action,
+            "reason": text,
+            "reason_codes": [reason] if reason else [],
+            "score": _int(entry.get("score"), 0),
+            "score_reason": str(entry.get("score_reason") or ""),
+            "score_trace": dict(entry.get("score_trace") or {}),
+            "call_status": str(entry.get("call_status") or ""),
+            "dxcc_status": str(entry.get("dxcc_status") or ""),
+            "heard": _bool(entry.get("heard"), False),
+            "direct_caller": _bool(entry.get("direct_caller"), False),
+            "need_reasons": list(entry.get("need_reasons") or []),
+            "updated_at": str(entry.get("timestamp") or ""),
+            "last_heard_at": "",
+        }
+
+    def _priority_trace(self, now: Optional[datetime] = None, limit: int = 40) -> list[dict[str, Any]]:
+        now = now or utc_now()
+        rows: list[dict[str, Any]] = []
+        for target in self.targets.values():
+            eligibility = self._target_eligibility(
+                target,
+                now,
+                cq_only=True,
+                auto_call_start_only=True,
+            )
+            rows.append({
+                "call": target.call,
+                "band": target.band,
+                "mode": target.mode,
+                "score": target.score,
+                "score_reason": target.score_reason,
+                "score_trace": dict(target.score_trace),
+                "eligible": bool(eligibility.get("eligible")),
+                "reasons": eligibility.get("reasons") or [],
+                "state": target.state,
+                "source": target.source,
+                "heard": target.heard,
+                "direct_caller": target.direct_caller,
+                "updated_at": _iso(target.updated_at),
+            })
+        rows.sort(
+            key=lambda row: (
+                1 if row.get("direct_caller") else 0,
+                1 if row.get("eligible") else 0,
+                _int(row.get("score"), 0),
+                str(row.get("updated_at") or ""),
+            ),
+            reverse=True,
+        )
+        return rows[: max(1, limit)]
+
+    def _why_not_tx_action(
+        self,
+        target: DigitalTarget,
+        eligibility: Mapping[str, Any],
+        *,
+        active: Optional[DigitalTarget],
+    ) -> str:
+        if active and active.key == target.key:
+            return "active"
+        if active and active.key != target.key:
+            return "blocked"
+        if target.direct_caller and eligibility.get("eligible"):
+            return "selected"
+        if eligibility.get("eligible"):
+            return "selected" if target.state == "selected" else "candidate"
+        reasons = set(eligibility.get("reasons") or [])
+        if "require-heard" in reasons:
+            return "waiting"
+        return "blocked"
+
+    def _why_not_tx_text(
+        self,
+        target: DigitalTarget,
+        eligibility: Mapping[str, Any],
+        *,
+        active: Optional[DigitalTarget],
+    ) -> str:
+        if active and active.key != target.key:
+            return f"blocked: active QSO with {active.call}"
+        if active and active.key == target.key:
+            return f"active: {self.active_qso_state}"
+        if target.direct_caller and eligibility.get("eligible"):
+            return "selected: reply-to-us"
+        if eligibility.get("eligible"):
+            if target.score_reason:
+                return f"selected: {target.score_reason}"
+            return "selected: eligible"
+
+        reasons = list(eligibility.get("reasons") or [])
+        if not reasons:
+            return "blocked: unknown"
+        if "require-heard" in reasons:
+            return "waiting: target not heard"
+        if "mode-disabled" in reasons:
+            return "blocked: mode disabled"
+        if "outside-active-band-plan" in reasons:
+            return "blocked: outside active band plan"
+        if "not-auto-call-start-message" in reasons:
+            return "blocked: not CQ/73 start message"
+        if "cq-only-non-cq" in reasons:
+            return "blocked: CQ-only filter"
+        if "dwell" in reasons:
+            return "waiting: dwell timer"
+        if "backoff" in reasons:
+            return "waiting: retry backoff"
+        if "already-worked-call" in reasons or "worked-or-unneeded" in reasons:
+            if normalise_status(target.dxcc_status) == "Confirmed":
+                return "blocked: DXCC already confirmed"
+            return "blocked: already worked"
+        if "not-needed-by-filter" in reasons:
+            blockers = payload_need_filter_blockers(target.to_dict(), self.settings)
+            return f"blocked: {blockers[0]}" if blockers else "blocked: not needed by filters"
+        return f"blocked: {reasons[0]}"
 
     def _last_cancel_or_abort_reason(self) -> str:
         for entry in reversed(self.decision_log):
@@ -1150,7 +1366,8 @@ class DigitalAutomationController:
         payload = self._enrich_payload_from_local_status(payload, call=call, band=band, mode=mode)
         key = target_key(call, band, mode)
         existing_target = self.targets.get(key)
-        score = score_payload(payload)
+        score_info = score_payload_trace(payload)
+        score = _int(score_info.get("score"), 0)
         raw_call_status = normalise_status(payload.get("call_status") or payload.get("callStatus"))
         dxcc_status = normalise_status(payload.get("dxcc_status") or payload.get("dxccStatus"))
         call_status = canonical_call_status(raw_call_status, dxcc_status)
@@ -1165,7 +1382,14 @@ class DigitalAutomationController:
         direct_caller = message_is_directed_to_mycall(message, self.mycall)
         if direct_caller and self.settings.answer_direct_callers:
             source = "incoming"
-            score = max(score, DIRECT_CALLER_SCORE_BOOST)
+            if score < DIRECT_CALLER_SCORE:
+                score_info = {
+                    "score": DIRECT_CALLER_SCORE,
+                    "reason": "reply-to-us",
+                    "label": f"reply-to-us={DIRECT_CALLER_SCORE}",
+                    "base": score_info,
+                }
+            score = max(score, DIRECT_CALLER_SCORE)
         if (
             source in {"decoded", "wsjtx-decode-status"}
             and message
@@ -1219,6 +1443,7 @@ class DigitalAutomationController:
             })
             return None
         if not direct_caller and score > 0 and not payload_matches_need_filters(payload, self.settings):
+            blockers = payload_need_filter_blockers(payload, self.settings)
             target = self.targets.get(key)
             if target and target.state not in {"selected", "calling"}:
                 target.sync_state("skipped")
@@ -1234,6 +1459,11 @@ class DigitalAutomationController:
                 "mode": mode,
                 "call_status": call_status,
                 "dxcc_status": dxcc_status,
+                "blockers": blockers,
+                "score": score,
+                "score_reason": str(score_info.get("reason") or ""),
+                "score_trace": dict(score_info),
+                "source": source,
             })
             return None
 
@@ -1264,6 +1494,9 @@ class DigitalAutomationController:
         target.need_reasons = need_reasons
         if direct_caller:
             target.need_reasons.add("direct")
+        if score >= target.score or not target.score_reason:
+            target.score_reason = str(score_info.get("reason") or "")
+            target.score_trace = dict(score_info)
         target.score = max(target.score, score)
         target.snr = snr if snr is not None else target.snr
         target.audio_offset = _int(payload.get("freq", payload.get("audio_offset")), target.audio_offset or 0) or None
@@ -1293,6 +1526,8 @@ class DigitalAutomationController:
             "band": band,
             "mode": mode,
             "score": target.score,
+            "score_reason": target.score_reason,
+            "score_trace": dict(target.score_trace),
             "state": target.state,
             "reason": target.reason,
             "source": target.source,
@@ -1438,6 +1673,46 @@ class DigitalAutomationController:
         listening = self._active_listen_target(now)
         active = self.targets.get(self.active_target_key) if self.active_target_key else None
         if active and active.state not in {"done", "skipped", "expired", "backoff"}:
+            direct_override = self._best_direct_caller(now, exclude_key=active.key)
+            if (
+                direct_override
+                and self.active_qso_state in {"idle", "completed", "logged", "failed", "aborted"}
+                and active.state not in {"calling", "command_sent", "in_progress"}
+            ):
+                active.sync_state("backoff")
+                active.reason = "overridden-by-direct-reply"
+                active.backoff_until = now + timedelta(seconds=max(15, self.settings.dwell_seconds))
+                active.updated_at = now
+                self._persist_target(active)
+                self.active_target_key = None
+                self.active_qso_state = "idle"
+                self._set_decision({
+                    "decision": "override",
+                    "reason": "direct-reply-emergency",
+                    "call": direct_override.call,
+                    "band": direct_override.band,
+                    "mode": direct_override.mode,
+                    "overrode": active.call,
+                    "score": direct_override.score,
+                    "score_reason": direct_override.score_reason,
+                    "score_trace": dict(direct_override.score_trace),
+                    "priority_trace": self._priority_trace(now),
+                })
+                active = None
+            elif direct_override and self.active_qso_state not in {"idle", "completed", "logged", "failed", "aborted"}:
+                self._set_decision({
+                    "decision": "hold",
+                    "reason": "active-qso-protects-against-direct-reply",
+                    "call": active.call,
+                    "band": active.band,
+                    "mode": active.mode,
+                    "direct_reply": direct_override.call,
+                    "state": active.state,
+                    "active_state": active.active_state,
+                    "priority_trace": self._priority_trace(now),
+                })
+                return None
+        if active and active.state not in {"done", "skipped", "expired", "backoff"}:
             if self._expire_stale_active_target(active, now):
                 active = None
             else:
@@ -1450,6 +1725,7 @@ class DigitalAutomationController:
                     "state": active.state,
                     "active_state": active.active_state,
                     "attempts": active.attempts,
+                    "priority_trace": self._priority_trace(now),
                 })
                 return None
         active_bands = current_band_plan_bands(self.settings.band_plan, now) if self.settings.band_hopping else []
@@ -1469,6 +1745,8 @@ class DigitalAutomationController:
                 "band": target.band,
                 "mode": target.mode,
                 "score": target.score,
+                "score_reason": target.score_reason,
+                "score_trace": dict(target.score_trace),
                 "state": target.state,
                 "source": target.source,
                 "call_status": target.call_status,
@@ -1570,6 +1848,7 @@ class DigitalAutomationController:
                 reject("cq-only-non-cq", target)
                 continue
             if target.score > 0 and not target.direct_caller and not payload_matches_need_filters(target.to_dict(), self.settings):
+                blockers = payload_need_filter_blockers(target.to_dict(), self.settings)
                 target.sync_state("skipped")
                 target.reason = "not-needed-by-filter"
                 target.skip_reason = "not-needed-by-filter"
@@ -1583,6 +1862,11 @@ class DigitalAutomationController:
                     "mode": target.mode,
                     "call_status": target.call_status,
                     "dxcc_status": target.dxcc_status,
+                    "blockers": blockers,
+                    "score": target.score,
+                    "score_reason": target.score_reason,
+                    "score_trace": dict(target.score_trace),
+                    "source": target.source,
                 })
                 reject("not-needed-by-filter", target)
                 continue
@@ -1619,6 +1903,7 @@ class DigitalAutomationController:
                     "remaining_seconds": remaining,
                     "rejected": rejected,
                     "rejected_examples": rejected_examples,
+                    "priority_trace": self._priority_trace(now),
                 })
                 return None
             if self.active_target_key and self.active_target_key not in self.targets:
@@ -1629,6 +1914,7 @@ class DigitalAutomationController:
                 "reason": "no-eligible-targets",
                 "rejected": rejected,
                 "rejected_examples": rejected_examples,
+                "priority_trace": self._priority_trace(now),
             })
             return None
 
@@ -1655,6 +1941,8 @@ class DigitalAutomationController:
             "band": chosen.band,
             "mode": chosen.mode,
             "score": chosen.score,
+            "score_reason": chosen.score_reason,
+            "score_trace": dict(chosen.score_trace),
             "reason": chosen.reason,
             "source": chosen.source,
             "direct_caller": chosen.direct_caller,
@@ -1668,17 +1956,42 @@ class DigitalAutomationController:
                     "band": candidate.band,
                     "mode": candidate.mode,
                     "score": candidate.score,
+                    "score_reason": candidate.score_reason,
+                    "score_trace": dict(candidate.score_trace),
                     "reason": candidate.reason,
                     "source": candidate.source,
                     "direct_caller": candidate.direct_caller,
                     "need_reasons": sorted(candidate.need_reasons),
                 }
-                for candidate in candidates[:5]
+                for candidate in candidates[:25]
             ],
+            "priority_trace": self._priority_trace(now),
             "rejected": rejected,
             "rejected_examples": rejected_examples,
         })
         return chosen
+
+    def _best_direct_caller(self, now: datetime, *, exclude_key: str = "") -> Optional[DigitalTarget]:
+        direct_targets = [
+            target
+            for target in self.targets.values()
+            if target.key != exclude_key
+            and target.direct_caller
+            and target.state not in {"done", "skipped", "expired", "backoff"}
+            and not target.is_backed_off(now)
+            and target.mode in self.settings.allowed_modes
+        ]
+        if not direct_targets:
+            return None
+        direct_targets.sort(
+            key=lambda target: (
+                target.score,
+                target.snr if self.settings.priority == "signal" and target.snr is not None else 0,
+                target.updated_at.timestamp(),
+            ),
+            reverse=True,
+        )
+        return direct_targets[0]
 
     def _expire_stale_active_target(self, target: DigitalTarget, now: datetime) -> bool:
         protected_states = {
@@ -2200,6 +2513,27 @@ class DigitalAutomationController:
         """Apply WSJT-X status changes and pause automation on manual override signals."""
         payload = dict(status or {})
         active = self.targets.get(self.active_target_key) if self.active_target_key else None
+        heartbeat_state = normalise_wsjtz_qso_state(payload)
+        if heartbeat_state:
+            if active and heartbeat_state == "logged":
+                completed = self.mark_done(active.key, reason="wsjtz-heartbeat-logged")
+                return {
+                    "status": "logged",
+                    "target": completed.to_dict() if completed else active.to_dict(),
+                    "decision": self.last_decision,
+                    "qso_state": heartbeat_state,
+                }
+            self.transition_active_qso(
+                heartbeat_state,
+                reason="wsjtz-heartbeat",
+                target=active,
+            )
+            return {
+                "status": heartbeat_state,
+                "target": active.to_dict() if active else None,
+                "decision": self.last_decision,
+                "qso_state": heartbeat_state,
+            }
         if not active:
             self._set_decision({"decision": "status-observed", "reason": "no-active-target"})
             return {"status": "idle", "decision": self.last_decision}
@@ -2419,6 +2753,7 @@ class DigitalAutomationController:
             "listen_target": listening.to_dict() if listening else None,
             "pending_return": self.pending_return_to_origin(),
             "active_qso_state": self.active_qso_state,
+            "qso_state": self.active_qso_state,
             "queue_length": len(self.targets),
             "eligible_count": sum(
                 1
@@ -2576,6 +2911,42 @@ def _status_unknown(value: Any) -> bool:
     return normalise_status(value).lower() in {"", "unknown", "-"}
 
 
+def normalise_wsjtz_qso_state(payload: Mapping[str, Any]) -> str:
+    raw = _first_present(
+        payload,
+        "qso_state",
+        "qsoState",
+        "wsjtz_qso_state",
+        "wsjtzQsoState",
+        "om0rx_qso_state",
+        "om0rxQsoState",
+    )
+    state = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "": "",
+        "none": "",
+        "idle": "idle",
+        "ready": "idle",
+        "calling": "calling",
+        "tx": "calling",
+        "transmitting": "calling",
+        "in_qso": "in_qso",
+        "inqso": "in_qso",
+        "active": "in_qso",
+        "waiting_rrr": "waiting_rrr",
+        "wait_rrr": "waiting_rrr",
+        "waiting_for_rrr": "waiting_rrr",
+        "waiting_73": "waiting_73",
+        "wait_73": "waiting_73",
+        "waiting_for_73": "waiting_73",
+        "logged": "logged",
+        "log": "logged",
+        "blocked": "blocked",
+        "paused": "blocked",
+    }
+    return aliases.get(state, state if state in ACTIVE_QSO_STATES else "")
+
+
 def _is_cq_message(message: Any) -> bool:
     tokens = _message_tokens(str(message or ""))
     return bool(tokens and tokens[0] in {"CQ", "QRZ"})
@@ -2659,7 +3030,7 @@ def normalise_reference_items(payload: Mapping[str, Any]) -> list[dict[str, str]
     return list(deduped.values())
 
 
-def score_payload(payload: Mapping[str, Any]) -> int:
+def score_payload_trace(payload: Mapping[str, Any]) -> dict[str, Any]:
     call_status = normalise_status(payload.get("call_status") or payload.get("callStatus"))
     dxcc_status = normalise_status(payload.get("dxcc_status") or payload.get("dxccStatus"))
     status_text = f"{call_status} {dxcc_status}".lower()
@@ -2672,27 +3043,40 @@ def score_payload(payload: Mapping[str, Any]) -> int:
         else {}
     )
 
+    def result(score: int, reason: str) -> dict[str, Any]:
+        return {
+            "score": score,
+            "reason": reason,
+            "label": f"{reason}={score}",
+            "call_status": call_status,
+            "dxcc_status": dxcc_status,
+        }
+
     if dxcc_status == "ATNO" or _bool(needed.get("dxcc")):
-        return 1000
+        return result(ATNO_SCORE, "ATNO")
     if dxcc_status == "Worked":
-        return 900
+        return result(DXCC_WORKED_NOT_CONFIRMED_SCORE, "DXCC worked-not-confirmed")
     if _bool(needed_on_band.get("dxcc")) or "new band" in dxcc_status.lower():
-        return 800
+        return result(DXCC_NEW_BAND_SCORE, "DXCC new band")
     if call_status == "New Call":
         continent = str(payload.get("continent") or "").strip().upper()
         if continent and continent != "EU":
-            return NON_EU_NEW_CALL_SCORE
+            return result(NON_EU_NEW_CALL_SCORE, "non-EU new call")
     if _bool(needed_on_band.get("call")) or "new band" in call_status.lower():
-        return 650
+        return result(CALL_NEW_BAND_SCORE, "new band")
     if any(reference_is_needed(item) for item in normalise_reference_items(payload)):
-        return 600
+        return result(REFERENCE_SCORE, "reference")
     if _bool(needed.get("grid")) or _bool(needed_on_band.get("grid")) or "grid" in status_text:
-        return 500
+        return result(GRID_SCORE, "grid")
     if _bool(needed.get("mode")) or _bool(needed_on_band.get("mode")) or "new mode" in status_text:
-        return 350
+        return result(MODE_SCORE, "new mode")
     if _bool(needed.get("call")) or call_status == "New Call":
-        return 200
-    return 0
+        return result(NEW_CALL_SCORE, "new call")
+    return result(0, "worked-or-unneeded")
+
+
+def score_payload(payload: Mapping[str, Any]) -> int:
+    return _int(score_payload_trace(payload).get("score"), 0)
 
 
 def payload_need_reasons(payload: Mapping[str, Any]) -> set[str]:
@@ -2754,16 +3138,33 @@ def payload_need_reasons(payload: Mapping[str, Any]) -> set[str]:
 
 def payload_matches_need_filters(payload: Mapping[str, Any], settings: DigitalAutomationSettings) -> bool:
     """Return whether a decoded/spot target matches the enabled hunting reasons."""
+    return not payload_need_filter_blockers(payload, settings)
+
+
+def payload_need_filter_blockers(payload: Mapping[str, Any], settings: DigitalAutomationSettings) -> list[str]:
+    """Return operator-readable reasons why a payload does not match need filters."""
+    blockers: list[str] = []
     if settings.filter_matrix_enabled:
         continent = str(payload.get("continent") or "").strip().upper()
         if settings.filter_continents and continent and continent not in settings.filter_continents:
-            return False
+            continent_name = {
+                "EU": "Europe",
+                "AF": "Africa",
+                "OC": "Oceania",
+                "AS": "Asia",
+                "SA": "South America",
+                "NA": "North America",
+                "AN": "Antarctica",
+            }.get(continent, continent)
+            blockers.append(f"{continent_name} filter")
         if settings.filter_continents and len(settings.filter_continents) < 7 and not continent:
-            return False
+            blockers.append("continent unknown")
         if settings.filter_lotw_only:
             lotw_value = _first_present(payload, "lotw_member", "lotwMember", "lotw", "lotw_user", "lotwUser")
             if not _bool(lotw_value):
-                return False
+                blockers.append("LoTW-only filter")
+        if blockers:
+            return blockers
 
         call_status = normalise_status(payload.get("call_status") or payload.get("callStatus"))
         dxcc_status = normalise_status(payload.get("dxcc_status") or payload.get("dxccStatus"))
@@ -2791,7 +3192,15 @@ def payload_matches_need_filters(payload: Mapping[str, Any], settings: DigitalAu
             settings.filter_band_cq_zone and (_bool(needed_on_band.get("cq_zone")) or _bool(needed_on_band.get("cqZone")) or "band_cq_zone" in reasons),
             settings.filter_band_itu_zone and (_bool(needed_on_band.get("itu_zone")) or _bool(needed_on_band.get("ituZone")) or "band_itu_zone" in reasons),
         ]
-        return any(selected_matches)
+        if any(selected_matches):
+            return []
+        if dxcc_status == "Confirmed" and not (_bool(needed_on_band.get("dxcc")) or "new band" in dxcc_status.lower()):
+            blockers.append("DXCC already confirmed")
+        elif call_status == "Confirmed" and dxcc_status == "Confirmed":
+            blockers.append("call and DXCC already confirmed")
+        else:
+            blockers.append("not selected by filter matrix")
+        return blockers
 
     enabled_filters = {
         "call": settings.need_call,
@@ -2810,8 +3219,17 @@ def payload_matches_need_filters(payload: Mapping[str, Any], settings: DigitalAu
         "award": settings.need_reference,
     }
     if not any(enabled_filters.values()):
-        return False
-    return any(enabled_filters.get(reason, False) for reason in payload_need_reasons(payload))
+        return ["all need filters disabled"]
+    reasons = payload_need_reasons(payload)
+    if any(enabled_filters.get(reason, False) for reason in reasons):
+        return []
+    dxcc_status = normalise_status(payload.get("dxcc_status") or payload.get("dxccStatus"))
+    call_status = normalise_status(payload.get("call_status") or payload.get("callStatus"))
+    if dxcc_status == "Confirmed":
+        return ["DXCC already confirmed"]
+    if call_status == "Confirmed":
+        return ["call already confirmed"]
+    return ["not needed by filters"]
 
 
 def _need_reasons_match_filters(reasons: Iterable[str], settings: DigitalAutomationSettings) -> bool:

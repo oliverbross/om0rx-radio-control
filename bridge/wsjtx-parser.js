@@ -186,6 +186,58 @@ class WsjtxParser {
       msg.dxGrid = result.str;
       offset = result.offset;
 
+      // 15+. Later WSJT-X schemas append fields after DX grid. Keep parsing
+      // optional fields so OM0RX-patched WSJT-Z can expose a direct QSO state
+      // heartbeat while stock clients remain compatible.
+      if (offset < buffer.length) {
+        msg.watchdogTimeout = buffer[offset] !== 0;
+        offset++;
+      }
+
+      if (offset < buffer.length) {
+        result = this.readString(buffer, offset);
+        msg.subMode = result.str;
+        offset = result.offset;
+      }
+
+      if (offset < buffer.length) {
+        msg.fastMode = buffer[offset] !== 0;
+        offset++;
+      }
+
+      if (offset < buffer.length) {
+        msg.specialOpMode = buffer[offset];
+        offset++;
+      }
+
+      if (offset + 4 <= buffer.length) {
+        msg.frequencyTolerance = buffer.readUInt32BE(offset);
+        offset += 4;
+      }
+
+      if (offset + 4 <= buffer.length) {
+        msg.trPeriod = buffer.readUInt32BE(offset);
+        offset += 4;
+      }
+
+      if (offset < buffer.length) {
+        result = this.readString(buffer, offset);
+        msg.configurationName = result.str;
+        offset = result.offset;
+      }
+
+      if (offset < buffer.length) {
+        result = this.readString(buffer, offset);
+        msg.txMessage = result.str;
+        offset = result.offset;
+      }
+
+      if (offset < buffer.length) {
+        result = this.readString(buffer, offset);
+        msg.qsoState = result.str;
+        offset = result.offset;
+      }
+
       return msg;
     } catch (e) {
       return msg;

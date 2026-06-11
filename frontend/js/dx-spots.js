@@ -735,10 +735,14 @@ const dxSpotsMethods = {
         return `Automation ${active} · ${avoid} · WD ${wd}${dryRun}`;
     },
 
+    isWsjtxPlannerDryRun() {
+        return Boolean(this.wsjtxPlanner.status?.settings?.dry_run);
+    },
+
     getWsjtxPlannerStateText() {
         const status = this.wsjtxPlanner.status || {};
         const active = status.active_target || {};
-        const state = status.active_qso_state || active.active_state || 'idle';
+        const state = status.qso_state || status.active_qso_state || active.active_state || 'idle';
         const call = active.call ? ` · ${active.call}` : '';
         const command = active.command_id ? ` · ${active.command_id}` : '';
         return `State ${state}${call}${command}`;
@@ -801,7 +805,7 @@ const dxSpotsMethods = {
         const pieces = [
             `${target.call || '-'}`,
             `${target.band || '-'} ${target.mode || '-'}`,
-            `Score ${target.score || 0}`,
+            target.score_trace?.label || target.score_reason || `Score ${target.score || 0}`,
             target.reason || '',
             target.call_status || '',
             target.dxcc_status || '',
@@ -817,6 +821,84 @@ const dxSpotsMethods = {
         const status = this.wsjtxPlanner.status || {};
         const log = Array.isArray(status.decision_log) ? status.decision_log : [];
         return log.slice().reverse();
+    },
+
+    getWsjtxWhyNotTxRows() {
+        const status = this.wsjtxPlanner.status || {};
+        const panel = status.reason_panel || {};
+        const rows = Array.isArray(panel.why_not_tx) ? panel.why_not_tx : [];
+        return rows.slice().sort((a, b) => {
+            const actionRank = { active: 5, selected: 4, candidate: 3, waiting: 2, blocked: 1 };
+            const aRank = actionRank[a.action] || 0;
+            const bRank = actionRank[b.action] || 0;
+            if (aRank !== bRank) return bRank - aRank;
+            return Number(b.score || 0) - Number(a.score || 0);
+        });
+    },
+
+    getWsjtxWhyRowClass(row) {
+        return [
+            'wsjtx-why-row',
+            row?.action ? `wsjtx-why-${row.action}` : 'wsjtx-why-blocked',
+        ];
+    },
+
+    getWsjtxWhyRowTitle(row) {
+        if (!row) return '';
+        const trace = row.score_trace || {};
+        return [
+            row.call || '',
+            `${row.band || '-'} ${row.mode || '-'}`,
+            row.reason || '',
+            trace.label || row.score_reason || `score ${row.score || 0}`,
+            row.call_status ? `CS ${row.call_status}` : '',
+            row.dxcc_status ? `DS ${row.dxcc_status}` : '',
+            row.heard ? 'heard' : 'not heard',
+            row.direct_caller ? 'reply to us' : '',
+            Array.isArray(row.reason_codes) && row.reason_codes.length ? `codes ${row.reason_codes.join(', ')}` : '',
+        ].filter(Boolean).join(' · ');
+    },
+
+    getWsjtxPriorityTraceRows() {
+        const status = this.wsjtxPlanner.status || {};
+        const panel = status.reason_panel || {};
+        const rows = Array.isArray(panel.priority_trace) ? panel.priority_trace : [];
+        return rows;
+    },
+
+    getWsjtxPriorityRowTitle(row) {
+        if (!row) return '';
+        const trace = row.score_trace || {};
+        return [
+            row.call || '',
+            `${row.band || '-'} ${row.mode || '-'}`,
+            trace.label || row.score_reason || `score ${row.score || 0}`,
+            row.eligible ? 'eligible' : 'blocked',
+            Array.isArray(row.reasons) && row.reasons.length ? `reasons ${row.reasons.join(', ')}` : '',
+            row.direct_caller ? 'reply-to-us' : '',
+            row.heard ? 'heard' : 'not heard',
+            row.source || '',
+        ].filter(Boolean).join(' · ');
+    },
+
+    getWsjtxAutomationEventRows() {
+        const status = this.wsjtxPlanner.status || {};
+        const rows = Array.isArray(status.event_timeline) ? status.event_timeline : [];
+        return rows.slice().reverse();
+    },
+
+    getWsjtxAutomationEventTitle(event) {
+        if (!event) return '';
+        return [
+            event.timestamp || '',
+            event.event || '',
+            event.call || '',
+            `${event.band || '-'} ${event.mode || '-'}`,
+            event.reason || '',
+            event.state || '',
+            event.score !== undefined ? `score ${event.score}` : '',
+            event.candidate_count !== undefined ? `${event.candidate_count} candidates` : '',
+        ].filter(Boolean).join(' · ');
     },
 
     getWsjtxPlannerDecisionSummary(entry) {
@@ -910,6 +992,36 @@ const dxSpotsMethods = {
         }
     },
 
+    async setWsjtxPlannerDryRun(enabled) {
+        const dryRun = Boolean(enabled);
+        this.wsjtxPlanner.actionKey = 'dry-run-toggle';
+        try {
+            const response = await fetch('/api/ft8/automation/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ operatorSettings: { automation: { dryRun } } }),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || result.status === 'error') {
+                throw new Error(result.detail || result.error || response.statusText);
+            }
+            if (result.automation) {
+                this.updateWsjtxPlannerFromStatus(result.automation);
+            } else {
+                await this.refreshWsjtxPlannerStatus({ force: true });
+            }
+            this.wsjtxPlanner.message = dryRun
+                ? 'Dry run enabled: planner will explain actions without sending WSJT commands'
+                : 'Dry run disabled: planner can send WSJT commands';
+            this.showStatus(this.wsjtxPlanner.message, dryRun ? 'warning' : 'success');
+        } catch (error) {
+            this.wsjtxPlanner.message = error.message || 'Dry-run toggle failed';
+            this.showStatus(`WSJT planner dry-run update failed: ${this.wsjtxPlanner.message}`, 'error');
+        } finally {
+            this.wsjtxPlanner.actionKey = '';
+        }
+    },
+
     async promoteWsjtxPlannerTarget(target) {
         if (!target?.key) return;
         try {
@@ -989,13 +1101,18 @@ const dxSpotsMethods = {
                 throw new Error(detail);
             }
             const traceId = this.extractWsjtxTraceId(result);
+            const dryRun = Boolean(result.bridge?.dry_run || result.dry_run || result.status === 'dry-run');
             this.setWsjtxSpotPrepareState('prepared', `${target.call} prepared`, {
                 call: target.call,
-                detail: 'WSJT target ready; TX remains disabled until explicitly armed',
+                detail: dryRun
+                    ? 'Dry run: no WSJT command sent'
+                    : 'WSJT target ready; TX remains disabled until explicitly armed',
                 traceId,
             });
-            this.wsjtxPlanner.message = `${target.call} prepared without TX`;
-            this.showStatus(this.wsjtxPlanner.message, 'success');
+            this.wsjtxPlanner.message = dryRun
+                ? `Would prepare ${target.call}; no WSJT command sent`
+                : `${target.call} prepared without TX`;
+            this.showStatus(this.wsjtxPlanner.message, dryRun ? 'warning' : 'success');
         } catch (error) {
             this.setWsjtxSpotPrepareState('error', error.message, { call: target.call });
             this.wsjtxPlanner.message = error.message || 'Prepare failed';

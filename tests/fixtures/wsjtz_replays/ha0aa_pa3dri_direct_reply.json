@@ -1,0 +1,52 @@
+[
+  {
+    "type": "decode",
+    "message": "CQ HA0AA JN97",
+    "callsign": "HA0AA",
+    "grid": "JN97",
+    "band": "40m",
+    "mode": "FT8",
+    "snr": -13,
+    "freq": 1001,
+    "dxcc_status": "C/New Band"
+  },
+  {
+    "type": "select",
+    "cq_only": true,
+    "auto_call_start_only": true
+  },
+  {
+    "type": "attempt",
+    "key": "HA0AA|40m|FT8"
+  },
+  {
+    "type": "status",
+    "qso_state": "waiting_73",
+    "dxCall": "HA0AA",
+    "band": "40m",
+    "mode": "FT8"
+  },
+  {
+    "type": "logged",
+    "call": "HA0AA",
+    "band": "40m",
+    "mode": "FT8"
+  },
+  {
+    "type": "decode",
+    "message": "OM0RX PA3DRI KO86",
+    "callsign": "PA3DRI",
+    "grid": "KO86",
+    "band": "40m",
+    "mode": "FT8",
+    "snr": -10,
+    "freq": 992,
+    "call_status": "New Band",
+    "dxcc_status": "Confirmed"
+  },
+  {
+    "type": "select",
+    "cq_only": true,
+    "auto_call_start_only": true
+  }
+]
