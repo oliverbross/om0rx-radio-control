@@ -436,6 +436,20 @@ def test_activity_intelligence_frontend_static_contracts():
     assert "activity-rbn-bar-row" in styles
     assert "activity-contest-banner" in styles
     assert "activity-source-row" in styles
+    assert "repeat(auto-fit, minmax(180px, 1fr))" in styles
+
+
+def test_docked_spots_panel_can_shrink_without_clipping_status_rows():
+    root = Path(__file__).resolve().parents[2]
+    styles = (root / "frontend" / "main-styles.css").read_text(encoding="utf-8")
+
+    assert "body:not([data-spots-standalone=\"true\"]):not([data-visual-map-standalone=\"true\"]) #dx-spots-section" in styles
+    assert "flex: 1 1 760px;" in styles
+    assert "min-width: 0;" in styles
+    assert ".spots-container" in styles
+    assert ".view-wrapper" in styles
+    assert ".source-diagnostics-strip" in styles
+    assert "flex-wrap: wrap;" in styles
 
 
 def test_database_config_modal_exposes_postgres_controls():

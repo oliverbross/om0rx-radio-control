@@ -302,7 +302,7 @@
 
         .activity-panel-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
             gap: 8px;
             margin-top: 8px;
         }
@@ -1504,6 +1504,8 @@
             flex-direction: column;
             flex: 1;
             min-height: 0;
+            min-width: 0;
+            max-width: 100%;
             overflow: hidden;
         }
 
@@ -4266,6 +4268,8 @@
             display: flex;
             flex-direction: column;
             min-height: 0;
+            min-width: 0;
+            max-width: 100%;
             overflow: hidden;
         }
         
@@ -5903,7 +5907,9 @@
         }
 
         body:not([data-spots-standalone="true"]):not([data-visual-map-standalone="true"]) #dx-spots-section {
-            flex: 1 0 760px;  /* Keeps the live spots table usable when the logging panel is tall */
+            flex: 1 1 760px;  /* Keeps the live spots table usable when the logging panel is tall */
+            min-width: 0;
+            max-width: 100%;
             min-height: 760px;
             overflow: hidden;  /* Prevents content from expanding section */
             display: flex;
