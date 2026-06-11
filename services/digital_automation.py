@@ -1393,6 +1393,7 @@ class DigitalAutomationController:
         if (
             source in {"decoded", "wsjtx-decode-status"}
             and message
+            and not direct_caller
             and not _is_auto_call_start_message(message, treat_73_as_cq=self.settings.treat_73_as_cq)
         ):
             self._set_decision({

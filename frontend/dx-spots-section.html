@@ -387,14 +387,15 @@
                             </button>
                         </div>
                     </div>
-                    <div class="wsjtx-decision-log" v-if="getWsjtxPlannerDecisionLog().length">
-                        <strong>Decision Log</strong>
-                        <div v-for="entry in getWsjtxPlannerDecisionLog().slice(0, 6)"
-                             :key="`${entry.timestamp}-${entry.call || entry.reason || entry.decision}`"
-                             class="wsjtx-decision-row"
-                             :title="getWsjtxPlannerDecisionTitle(entry)">
-                            <span>{{ formatWsjtxPlannerDecisionTime(entry.timestamp) }}</span>
-                            <b>{{ entry.call || entry.decision || '-' }}</b>
+                </div>
+                <div class="wsjtx-decision-log" v-if="getWsjtxPlannerDecisionLog().length">
+                    <strong>Decision Log</strong>
+                    <div v-for="entry in getWsjtxPlannerDecisionLog().slice(0, 6)"
+                         :key="`${entry.timestamp}-${entry.call || entry.reason || entry.decision}`"
+                         class="wsjtx-decision-row"
+                         :title="getWsjtxPlannerDecisionTitle(entry)">
+                        <span>{{ formatWsjtxPlannerDecisionTime(entry.timestamp) }}</span>
+                        <b>{{ entry.call || entry.decision || '-' }}</b>
                         <em>{{ entry.decision || '-' }}</em>
                         <small>{{ getWsjtxPlannerDecisionSummary(entry) }}</small>
                         <div v-if="getWsjtxPlannerRejectedExamples(entry).length"
@@ -406,7 +407,6 @@
                         </div>
                     </div>
                 </div>
-            </div>
             </div>
 
             <div v-if="selectedSpot" style="display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr); gap: 10px; padding: 10px 14px; background: #20242a; border-bottom: 1px solid #3f4652;">
