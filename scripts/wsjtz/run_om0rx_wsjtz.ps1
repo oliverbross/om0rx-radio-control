@@ -69,6 +69,48 @@ function Set-IniValue {
     return @($Lines + "$Key=$Value")
 }
 
+function Set-IniSectionValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string[]]$Lines,
+        [Parameter(Mandatory = $true)]
+        [string]$Section,
+        [Parameter(Mandatory = $true)]
+        [string]$Key,
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    $sectionPattern = "^\[$([regex]::Escape($Section))\]$"
+    $keyPattern = "^$([regex]::Escape($Key))="
+    $sectionIndex = -1
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -match $sectionPattern) {
+            $sectionIndex = $i
+            break
+        }
+    }
+
+    if ($sectionIndex -lt 0) {
+        return @($Lines + "" + "[$Section]" + "$Key=$Value")
+    }
+
+    for ($i = $sectionIndex + 1; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i] -match '^\[.+\]$') {
+            $before = if ($i -gt 0) { $Lines[0..($i - 1)] } else { @() }
+            $after = $Lines[$i..($Lines.Count - 1)]
+            return @($before + "$Key=$Value" + $after)
+        }
+        if ($Lines[$i] -match $keyPattern) {
+            $Lines[$i] = "$Key=$Value"
+            return $Lines
+        }
+    }
+
+    return @($Lines + "$Key=$Value")
+}
+
 if (-not $NoAutoLog) {
     $profileDir = Join-Path $env:LOCALAPPDATA "WSJT-X - $RigName"
     $profileIni = Join-Path $profileDir "WSJT-X - $RigName.ini"
@@ -79,6 +121,11 @@ if (-not $NoAutoLog) {
         $profileLines = Set-IniValue -Lines $profileLines -Key "AcceptUDPRequests" -Value "true"
         $profileLines = Set-IniValue -Lines $profileLines -Key "UDPServer" -Value "224.0.0.1"
         $profileLines = Set-IniValue -Lines $profileLines -Key "UDPServerPort" -Value "2237"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "Configuration" -Key "PromptToLog" -Value "false"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "Configuration" -Key "AutoLog" -Value "true"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "Configuration" -Key "AcceptUDPRequests" -Value "true"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "Configuration" -Key "UDPServer" -Value "224.0.0.1"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "Configuration" -Key "UDPServerPort" -Value "2237"
         Set-Content -LiteralPath $profileIni -Value $profileLines -Encoding UTF8
         Write-Host "Automation logging enabled for $RigName profile."
     }

@@ -12,7 +12,9 @@ from services.wsjtx import WSJTXService
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PATCH_PATH = PROJECT_ROOT / "docs" / "wsjtx" / "om0rx-start-target-qso.patch"
+WSJTZ_PATCH_PATH = PROJECT_ROOT / "docs" / "wsjtx" / "om0rx-wsjtz-enrichment.patch"
 SOURCE_ARCHIVE = PROJECT_ROOT / "data" / "research" / "wsjtx-improved-3.1.0" / "src" / "wsjtx.tgz"
+WSJTZ_SOURCE_ROOT = PROJECT_ROOT / "data" / "build" / "wsjt-z-om0rx" / "src"
 
 
 def test_wsjtx_engine_patch_contains_target_qso_extension():
@@ -25,6 +27,37 @@ def test_wsjtx_engine_patch_contains_target_qso_extension():
     assert "ui->autoButton->click" in text
     assert "OM0RX_BUILD_WITH_OMNIRIG" in text
     assert "TransceiverFactory.cpp" in text
+
+
+def test_current_wsjtz_source_accepts_om0rx_target_qso_command():
+    if not WSJTZ_SOURCE_ROOT.exists():
+        return
+
+    network_message = (WSJTZ_SOURCE_ROOT / "Network" / "NetworkMessage.hpp").read_text(encoding="utf-8")
+    message_client_h = (WSJTZ_SOURCE_ROOT / "Network" / "MessageClient.hpp").read_text(encoding="utf-8")
+    message_client_cpp = (WSJTZ_SOURCE_ROOT / "Network" / "MessageClient.cpp").read_text(encoding="utf-8")
+    mainwindow_h = (WSJTZ_SOURCE_ROOT / "widgets" / "mainwindow.h").read_text(encoding="utf-8")
+    mainwindow_cpp = (WSJTZ_SOURCE_ROOT / "widgets" / "mainwindow.cpp").read_text(encoding="utf-8")
+
+    assert "OM0RXStartTargetQSO" in network_message
+    assert "start_target_qso" in message_client_h
+    assert "NetworkMessage::OM0RXStartTargetQSO" in message_client_cpp
+    assert "remote_start_target_qso" in mainwindow_h
+    assert "MessageClient::start_target_qso" in mainwindow_cpp
+    assert "remote_configure (mode, frequency_tolerance" in mainwindow_cpp
+    assert "ui->autoButton->click" in mainwindow_cpp
+
+
+def test_wsjtz_enrichment_patch_accepts_om0rx_target_qso_command():
+    text = WSJTZ_PATCH_PATH.read_text(encoding="utf-8")
+
+    assert "OM0RXStartTargetQSO" in text
+    assert "start_target_qso" in text
+    assert "remote_start_target_qso" in text
+    assert "NetworkMessage::OM0RXStartTargetQSO" in text
+    assert "MessageClient::start_target_qso" in text
+    assert "remote_configure (mode, frequency_tolerance" in text
+    assert "ui->autoButton->click" in text
 
 
 def test_wsjtx_engine_patch_contains_om0rx_hunting_controls():
@@ -232,6 +265,11 @@ def test_wsjtx_engine_build_scripts_are_present():
     assert "$appName.lock" in run
     assert "already running" in run
     assert "RedirectStandardOutput" in run
+
+    wsjtz_run = (PROJECT_ROOT / "scripts" / "wsjtz" / "run_om0rx_wsjtz.ps1").read_text(encoding="utf-8")
+    assert "function Set-IniSectionValue" in wsjtz_run
+    assert '-Section "Configuration" -Key "AcceptUDPRequests" -Value "true"' in wsjtz_run
+    assert '-Section "Configuration" -Key "AutoLog" -Value "true"' in wsjtz_run
 
 
 def test_wsjtx_launch_logs_tail_stdout_and_missing_stderr():

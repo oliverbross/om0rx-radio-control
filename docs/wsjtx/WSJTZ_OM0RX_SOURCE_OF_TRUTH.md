@@ -28,6 +28,16 @@ behavior that differs from upstream `sq9fve/wsjt-z`.
    station changes.
 9. WSJT-Z logged-QSO bridge uploads are retried from a persisted queue if the
    OM0RX backend is busy or times out.
+10. WSJT-Z accepts backend planner target commands over the WSJT UDP protocol
+    as OM0RX message type `17`. The command payload is JSON and is handled by
+    `MainWindow::remote_start_target_qso`, which prepares the DX call/grid,
+    mode, Rx/Tx audio frequencies, Tx-first, Hold Tx Freq, selected Tx message,
+    and only arms Enable Tx when the backend explicitly sends `enableTx=true`.
+11. The WSJT-Z launcher forces `PromptToLog=false`, `AutoLog=true`,
+    `AcceptUDPRequests=true`, `UDPServer=224.0.0.1`, and `UDPServerPort=2237`
+    inside the WSJT-Z `[Configuration]` INI section before startup. The
+    `[Configuration]` section is the one WSJT-Z actually reads for UDP command
+    acceptance.
 
 ## Upstream Automation Map
 
