@@ -13,6 +13,7 @@ import os
 import re
 import socket
 import subprocess
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -575,11 +576,17 @@ class WSJTXService:
             logger.warning("Immediate Wavelog outbox replay after WSJT-X log failed: %s", exc)
 
     def _schedule_wavelog_outbox_replay(self) -> None:
-        # WSJT-Z sends logged-QSO UDP packets in the hot decode/TX path. Running
-        # Wavelog replay inside that request path can block the bridge long
-        # enough for retries and lost client state. The background outbox worker
-        # handles replay; this method stays as a compatibility no-op for callers.
-        return
+        # Return the WSJT-Z UDP request immediately, but kick the queued Wavelog
+        # upload outside the request path so logged QSOs do not sit in the
+        # offline outbox until the periodic retry wakes up.
+        task = self._outbox_replay_task
+        if task and not task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._outbox_replay_task = loop.create_task(self._replay_wavelog_outbox_once())
 
     async def log_qso(self, req: Dict[str, Any]):
         """
@@ -648,6 +655,7 @@ class WSJTXService:
                         outbox_queued = False
                         if not dedupe_entry.get("wavelog_success"):
                             outbox_queued = get_qso_outbox().enqueue_adif(adif_text)
+                            self._schedule_wavelog_outbox_replay()
                             logger.info(
                                 "Retrying duplicate WSJT-X async QSO without confirmed Wavelog success: %s %s %s (Outbox: %s)",
                                 call,
@@ -674,6 +682,7 @@ class WSJTXService:
                     logger.debug("Async WSJT-X QSO dedupe guard unavailable for %s: %s", call, exc, exc_info=True)
 
                 outbox_queued = get_qso_outbox().enqueue_adif(adif_text)
+                self._schedule_wavelog_outbox_replay()
                 asyncio.create_task(
                     asyncio.to_thread(
                         self._finish_async_logged_qso,
@@ -1321,29 +1330,36 @@ class WSJTXService:
         ]
         if test_mode:
             script_command.append("-TestMode")
+        out_handle = None
+        err_handle = None
         try:
-            completed = subprocess.run(
+            log_paths["stdout"].parent.mkdir(parents=True, exist_ok=True)
+            out_handle = open(log_paths["stdout"], "a", encoding="utf-8")
+            err_handle = open(log_paths["stderr"], "a", encoding="utf-8")
+            process = subprocess.Popen(
                 script_command,
                 cwd=str(PROJECT_ROOT),
+                stdout=out_handle,
+                stderr=err_handle,
                 text=True,
-                capture_output=True,
-                timeout=30,
-                check=False,
                 creationflags=_process_creation_flags(),
+                close_fds=False,
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Could not start OM0RX WSJT-Z: {exc}") from exc
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "WSJT-Z launcher script failed").strip()
-            raise HTTPException(status_code=500, detail=detail)
+        finally:
+            if out_handle:
+                out_handle.close()
+            if err_handle:
+                err_handle.close()
 
+        time.sleep(1.0)
         launched_pids = _wsjt_engine_process_ids("wsjt-z.exe", rig_name, test_mode=test_mode)
 
         result.update({
+            "launcher_pid": process.pid,
             "pid": launched_pids[0] if launched_pids else None,
             "script_command": script_command,
-            "script_stdout": completed.stdout,
-            "script_stderr": completed.stderr,
             "message": "OM0RX WSJT-Z launch command completed",
         })
         return result
@@ -2698,7 +2714,7 @@ def register_wsjtx_endpoints(app):
     async def wsjtx_launch_wsjtz_engine(req: Dict[str, Any]):
         """Launch the locally built OM0RX WSJT-Z engine."""
         service = get_wsjtx_service()
-        return service.launch_wsjtz_engine(req)
+        return await asyncio.to_thread(service.launch_wsjtz_engine, req)
 
     @app.post("/api/wsjtx/launch-wsjtz-preflight")
     async def wsjtx_launch_wsjtz_preflight(req: Dict[str, Any]):
@@ -2706,7 +2722,7 @@ def register_wsjtx_endpoints(app):
         service = get_wsjtx_service()
         req = dict(req or {})
         req["engine"] = "wsjtz"
-        return service.get_launch_preflight(req)
+        return await asyncio.to_thread(service.get_launch_preflight, req)
 
     @app.get("/api/wsjtx/launch-logs")
     async def wsjtx_launch_logs(rigName: str = "OM0RX-AUTO", lines: int = 120):

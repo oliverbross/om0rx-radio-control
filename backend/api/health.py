@@ -317,7 +317,7 @@ async def get_service_health(request: Request):
         None if cluster["connected"] else "cluster-reconnect",
     ))
 
-    sync_status = _cached_sync_status(context)
+    sync_status = await _sync_status_fast(context)
     wavelog_configured = bool(getattr(config, "WAVELOG_ENABLED", True) and config.WAVELOG_API_URL and config.WAVELOG_API_KEY)
     outbox_status = get_qso_outbox().status()
     outbox_queued = int(outbox_status.get("queued") or 0)

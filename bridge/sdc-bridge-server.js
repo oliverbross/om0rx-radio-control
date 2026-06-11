@@ -42,6 +42,7 @@ const WSJTX_ENABLED = process.env.WSJTX_ENABLED !== 'false';
 const BRIDGE_TEST_MODE = process.env.OM0RX_BRIDGE_TEST_MODE === '1';
 const OM0RX_BACKEND_URL = (process.env.OM0RX_BACKEND_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '');
 const LOGGED_QSO_RETRY_INTERVAL_MS = parseInt(process.env.WSJTX_LOGGED_QSO_RETRY_INTERVAL_MS || '15000');
+const LOGGED_QSO_RETRY_BATCH_SIZE = Math.max(1, parseInt(process.env.WSJTX_LOGGED_QSO_RETRY_BATCH_SIZE || '25'));
 const LOGGED_QSO_PENDING_PATH = process.env.WSJTX_LOGGED_QSO_PENDING_PATH
   || path.join(process.cwd(), 'logs', 'wsjtx_logged_qso_pending.jsonl');
 
@@ -802,6 +803,7 @@ function loadLoggedQsoUploadQueue() {
       .split(/\r?\n/)
       .map(line => line.trim())
       .filter(Boolean);
+    const now = Date.now();
     loggedQsoUploadQueue = lines
       .map(line => {
         try {
@@ -811,8 +813,15 @@ function loadLoggedQsoUploadQueue() {
         }
       })
       .filter(item => item && item.payload && loggedQsoIdentity(item.payload));
+    for (const item of loggedQsoUploadQueue) {
+      const lastError = String(item.lastError || '').toLowerCase();
+      if (lastError.includes('econnrefused') || lastError.includes('etimedout') || lastError.includes('socket hang up')) {
+        item.nextAttemptAt = now;
+      }
+    }
     if (loggedQsoUploadQueue.length) {
       console.log(`📝 Loaded ${loggedQsoUploadQueue.length} pending WSJT-X logged QSO upload(s)`);
+      persistLoggedQsoUploadQueue();
     }
   } catch (error) {
     console.warn(`⚠️  Could not load WSJT-X logged QSO retry queue: ${error.message || error}`);
@@ -840,10 +849,7 @@ function enqueueLoggedQsoUpload(payload, reason = '') {
   persistLoggedQsoUploadQueue();
 }
 
-async function retryOneLoggedQsoUpload() {
-  const now = Date.now();
-  const item = loggedQsoUploadQueue.find(entry => (entry.nextAttemptAt || 0) <= now);
-  if (!item) return;
+async function retryLoggedQsoUploadItem(item) {
   item.attempts = (item.attempts || 0) + 1;
   try {
     const result = await postJson(`${OM0RX_BACKEND_URL}/api/wsjtx/log-qso`, item.payload, 15000);
@@ -861,19 +867,41 @@ async function retryOneLoggedQsoUpload() {
       retry: true,
     };
     console.log(`✅ Retried WSJT-X logged QSO upload succeeded: ${item.payload.call}`);
+    return true;
   } catch (error) {
     item.lastError = error.message || String(error);
     item.nextAttemptAt = Date.now() + Math.min(300000, LOGGED_QSO_RETRY_INTERVAL_MS * Math.max(1, item.attempts));
     persistLoggedQsoUploadQueue();
     console.warn(`⚠️  Retried WSJT-X logged QSO upload failed for ${item.payload.call}: ${item.lastError}`);
+    return false;
+  }
+}
+
+async function retryLoggedQsoUploadBatch() {
+  const now = Date.now();
+  const dueItems = loggedQsoUploadQueue
+    .filter(entry => (entry.nextAttemptAt || 0) <= now)
+    .sort((a, b) => (a.queuedAt || 0) - (b.queuedAt || 0))
+    .slice(0, LOGGED_QSO_RETRY_BATCH_SIZE);
+  if (!dueItems.length) return;
+
+  console.log(`🔁 Retrying ${dueItems.length}/${loggedQsoUploadQueue.length} pending WSJT-X logged QSO upload(s)`);
+  for (const item of dueItems) {
+    const ok = await retryLoggedQsoUploadItem(item);
+    if (!ok) {
+      break;
+    }
   }
 }
 
 function startLoggedQsoRetryLoop() {
   if (loggedQsoRetryTimer || BRIDGE_TEST_MODE) return;
   loadLoggedQsoUploadQueue();
+  retryLoggedQsoUploadBatch().catch(error => {
+    console.warn(`⚠️  WSJT-X logged QSO retry startup pass failed: ${error.message || error}`);
+  });
   loggedQsoRetryTimer = setInterval(() => {
-    retryOneLoggedQsoUpload().catch(error => {
+    retryLoggedQsoUploadBatch().catch(error => {
       console.warn(`⚠️  WSJT-X logged QSO retry loop failed: ${error.message || error}`);
     });
   }, LOGGED_QSO_RETRY_INTERVAL_MS);

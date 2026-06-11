@@ -189,6 +189,31 @@ This is an OM0RX safety fix for hunting mode.
 
 ## Change Log
 
+### 2026-06-11
+
+- Fixed the backend WSJT-Z launch endpoint so it no longer blocks the FastAPI
+  event loop while the PowerShell launcher starts the GUI process. The endpoint
+  now starts the launcher with log-file redirection and returns immediately.
+- Changed bridge logged-QSO recovery from one queued QSO per retry interval to
+  a bounded batch retry. Queued entries caused by backend `ECONNREFUSED`,
+  timeout, or socket reset are made due immediately on bridge startup.
+- Restored immediate backend Wavelog outbox replay after accepting an async
+  WSJT-Z logged-QSO packet. The UDP request still returns quickly; the upload
+  is triggered in a background task.
+- Replayed the persisted WSJT-Z logged-QSO retry queue from
+  `logs/wsjtx_logged_qso_pending.jsonl`. The file had 62 records that were
+  captured while the backend was unavailable; after replay the bridge pending
+  queue and local Wavelog outbox were both empty.
+- Verified the real WSJT UDP `LoggedAdif` path with a duplicate `M0KEE` ADIF.
+  The bridge received it, the backend accepted it, Wavelog duplicate handling
+  resolved it, and no test QSO remained in Wavelog.
+- Verified live service state after restart: FlexRadio status endpoint
+  connected, WSJT-Z bridge client `WSJT-X - OM0RX-WSJT-Z` fresh, Wavelog outbox
+  empty, and cluster source stats showing fresh cluster and RBL spots.
+- Fixed `/api/service-health` Wavelog reporting so the dashboard uses a short
+  bounded sync-status refresh instead of showing `0 QSOs` from an empty startup
+  cache while the real local Wavelog mirror is already initialized.
+
 ### 2026-06-10
 
 - Added this document as the source of truth for OM0RX WSJT-Z behavior.
