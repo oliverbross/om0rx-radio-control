@@ -7,10 +7,15 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+bin/
+obj/
+**/bin/
+**/obj/
 
 # Logs directory
 /logs/
 /artifacts/
+/tmp/
 *.log
 *.log.*
 
@@ -38,6 +43,12 @@ node_modules/
 config-local.py
 config_local.py
 settings/local_secrets.json
+settings/local_secrets.json.*
+settings/local_settings.json
+settings/local_settings.json.*
+settings/runtime_state.json
+settings/runtime_state.json.*
+settings/window_layout.json
 
 # Database files
 data/*

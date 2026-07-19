@@ -23,11 +23,16 @@ let wsjtxData = {
 };
 
 let previousDxCall = '';
+let wsjtxHandlerInitialized = false;
 
 /**
  * Initialize WSJT-X handler
  */
 function initWsjtxHandler() {
+  if (wsjtxHandlerInitialized) {
+    return;
+  }
+  wsjtxHandlerInitialized = true;
   if (debugEnabled) log('info', 'wsjtx', 'Handler initialized');
   
   // Listen for messages from sdc-ticker (which receives them from bridge WebSocket)
@@ -57,6 +62,10 @@ function handleWsjtxMessage(event) {
     
     case 'wsjtx_logged_adif':
       handleWsjtxLoggedAdif(data);
+      break;
+
+    case 'wsjtx_log_result':
+      handleWsjtxLogResult(data);
       break;
     
     default:
@@ -114,7 +123,50 @@ function handleWsjtxDecode(data) {
  */
 function handleWsjtxLoggedAdif(data) {
   log('info', 'wsjtx', `QSO Logged: ${data.dxCall} (${data.dxGrid})`);
-  logQsoToWavelog(data);
+  // The bridge posts LoggedADIF directly to the backend. Keeping this handler
+  // display-only prevents the browser from creating a second Wavelog QSO.
+  wsjtxData = {
+    ...wsjtxData,
+    dxCall: data.dxCall || wsjtxData.dxCall,
+    dxGrid: data.dxGrid || wsjtxData.dxGrid,
+    dialFrequency: data.dialFrequency || wsjtxData.dialFrequency,
+    mode: data.mode || wsjtxData.mode,
+    txRst: data.txRst || wsjtxData.txRst,
+    rxRst: data.rxRst || wsjtxData.rxRst,
+    lastUpdate: Date.now()
+  };
+}
+
+/**
+ * Handle the bridge/backend result after a LoggedAdif QSO was sent to Wavelog.
+ */
+function handleWsjtxLogResult(data) {
+  const qso = data.qso_data || {};
+  const call = (qso.callsign || data.dxCall || wsjtxData.dxCall || '').toUpperCase();
+  const status = data.success ? 'success' : 'error';
+  const modalData = {
+    callsign: call || 'Unknown',
+    frequency: qso.frequency || (data.dialFrequency ? data.dialFrequency / 1_000_000 : ''),
+    mode: qso.mode || data.mode || wsjtxData.mode || 'FT8',
+    grid: qso.gridsquare || data.dxGrid || wsjtxData.dxGrid || '',
+    rst_sent: qso.rst_sent || data.txRst || wsjtxData.txRst || '',
+    rst_received: qso.rst_received || data.rxRst || wsjtxData.rxRst || '',
+    country: qso.country || 'N/A',
+    message: data.message || (data.queued ? 'QSO queued for retry' : 'QSO log failed')
+  };
+
+  log(
+    status === 'success' ? 'info' : 'error',
+    'wavelog',
+    `WSJT-X QSO log result: ${status.toUpperCase()} ${modalData.callsign} - ${modalData.message}`
+  );
+  showWsjtxSaveModal(status, modalData);
+
+  if (status === 'success' && window.vueInstance && typeof window.vueInstance.clearLoggingForm === 'function') {
+    setTimeout(() => {
+      window.vueInstance.clearLoggingForm();
+    }, 2000);
+  }
 }
 
 /**
@@ -424,11 +476,16 @@ function logQsoToWavelog(loggedAdifData) {
 
 /**
  * Show a beautiful modal with QSO save status
- * Auto-closes after 10 seconds or when user clicks X
+ * Auto-closes after 6 seconds or when user clicks X
  */
 function showWsjtxSaveModal(status, data) {
   try {
     log('debug', 'wsjtx', 'Showing QSO save modal');
+
+    const existingOverlay = document.getElementById('wsjtx-modal-overlay');
+    if (existingOverlay?.parentNode) {
+      existingOverlay.parentNode.removeChild(existingOverlay);
+    }
     
     // Create overlay
     const overlay = document.createElement('div');
@@ -534,7 +591,7 @@ function showWsjtxSaveModal(status, data) {
     // Modal footer with timer
     const footer = document.createElement('div');
     footer.className = 'wsjtx-modal-footer';
-    footer.innerHTML = 'Auto-closing in <span class="wsjtx-modal-timer">10</span>s or press ✕';
+    footer.innerHTML = 'Auto-closing in <span class="wsjtx-modal-timer">6</span>s or press ✕';
     
     // Assemble modal
     modal.appendChild(closeBtn);
@@ -547,7 +604,7 @@ function showWsjtxSaveModal(status, data) {
     document.body.appendChild(overlay);
     
     // Timer logic
-    let timeLeft = 10;
+    let timeLeft = 6;
     const timerElement = footer.querySelector('.wsjtx-modal-timer');
     
     const updateTimer = () => {
@@ -597,7 +654,7 @@ function showWsjtxSaveModal(status, data) {
       }
     });
     
-    log('debug', 'wsjtx', 'Modal displayed - auto-close in 10 seconds');
+    log('debug', 'wsjtx', 'Modal displayed - auto-close in 6 seconds');
     
   } catch (e) {
     log('error', 'wsjtx', `Error showing modal: ${e.message}`);
@@ -615,7 +672,8 @@ function getWsjtxData() {
 window.wsjtxHandler = {
   init: initWsjtxHandler,
   handle: handleWsjtxMessage,
-  getData: getWsjtxData
+  getData: getWsjtxData,
+  showSaveModal: showWsjtxSaveModal
 };
 
 // Auto-initialize when DOM is ready

@@ -70,12 +70,12 @@ foreach ($port in $portsToClean) {
                 continue
             }
 
-            try {
-                Stop-Process -Id $proc -Force -ErrorAction SilentlyContinue
-                Write-Host "   ✓ Killed process on port $port (PID: $proc)" -ForegroundColor Green
-            } catch {
-                # Silent fail
+            $owner = Get-CimInstance Win32_Process -Filter "ProcessId = $proc" -ErrorAction SilentlyContinue
+            if (-not $owner.CommandLine -or $owner.CommandLine -notmatch [regex]::Escape($ProjectRoot)) {
+                throw "Port $port is owned by unrelated PID $proc ($($owner.Name)). Stop it manually or choose another port."
             }
+            Stop-Process -Id $proc -Force -ErrorAction SilentlyContinue
+            Write-Host "   ✓ Stopped owned process on port $port (PID: $proc)" -ForegroundColor Green
         }
     }
 }
@@ -86,6 +86,7 @@ $backendProcesses = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue 
     Where-Object {
         $protectedProcessIds -notcontains [int]$_.ProcessId -and
         $_.CommandLine -and
+        $_.CommandLine -match [regex]::Escape($ProjectRoot) -and
         $_.CommandLine -like "*backend.main:app*"
     }
 
@@ -97,9 +98,6 @@ foreach ($process in $backendProcesses) {
         # Silent fail
     }
 }
-
-# Also kill any stray Node.js processes
-Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 Write-Host "✅ Ports cleaned" -ForegroundColor Green
 Write-Host ""
@@ -183,9 +181,16 @@ $env:WSJTX_UDP_MULTICAST = "224.0.0.1"
 $env:WS_PORT = "8091"
 $env:WSJTX_COMMAND_PORT = "8092"
 $env:WSJTX_ENABLED = "true"
+$localSecretsPath = Join-Path $ProjectRoot "settings\local_secrets.json"
+if (-not $env:WSJTX_BRIDGE_TOKEN -and (Test-Path -LiteralPath $localSecretsPath)) {
+    try {
+        $localSecrets = Get-Content -LiteralPath $localSecretsPath -Raw | ConvertFrom-Json
+        if ($localSecrets.WSJTX_BRIDGE_TOKEN) { $env:WSJTX_BRIDGE_TOKEN = [string]$localSecrets.WSJTX_BRIDGE_TOKEN }
+    } catch { Write-Warning "Could not read the local bridge token; bridge commands will remain loopback-only." }
+}
 
 $job = Start-Job -ScriptBlock {
-    param($script, $root, $tcp_host, $tcp_port, $wsjtx_udp_port, $wsjtx_multicast, $ws_port, $wsjtx_command_port, $wsjtx_enabled)
+    param($script, $root, $tcp_host, $tcp_port, $wsjtx_udp_port, $wsjtx_multicast, $ws_port, $wsjtx_command_port, $wsjtx_enabled, $bridge_token)
     
     # Set environment variables in the job context
     $env:TCP_HOST = $tcp_host
@@ -195,10 +200,11 @@ $job = Start-Job -ScriptBlock {
     $env:WS_PORT = $ws_port
     $env:WSJTX_COMMAND_PORT = $wsjtx_command_port
     $env:WSJTX_ENABLED = $wsjtx_enabled
+    $env:WSJTX_BRIDGE_TOKEN = $bridge_token
     
     Set-Location $root
     & node $script
-} -ArgumentList $bridgeScript, $ProjectRoot, $env:TCP_HOST, $env:TCP_PORT, $env:WSJTX_UDP_PORT, $env:WSJTX_UDP_MULTICAST, $env:WS_PORT, $env:WSJTX_COMMAND_PORT, $env:WSJTX_ENABLED -Name "Bridge-Server"
+} -ArgumentList $bridgeScript, $ProjectRoot, $env:TCP_HOST, $env:TCP_PORT, $env:WSJTX_UDP_PORT, $env:WSJTX_UDP_MULTICAST, $env:WS_PORT, $env:WSJTX_COMMAND_PORT, $env:WSJTX_ENABLED, $env:WSJTX_BRIDGE_TOKEN -Name "Bridge-Server"
 
 # Give it a moment to start
 Start-Sleep -Seconds 2

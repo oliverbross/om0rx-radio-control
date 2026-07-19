@@ -3,21 +3,22 @@
 
 console.log('✅ Loading dx-spots.js module...');
 
-const SPOT_SECTION_VISIBILITY_STORAGE_KEY = 'om0rx.spots.sectionVisibility';
+const SPOT_SECTION_VISIBILITY_STORAGE_KEY = 'om0rx.spots.sectionVisibility.v2';
 const SPOTS_POPOUT_STATE_STORAGE_KEY = 'om0rx.spots.popoutState';
-const SPOTS_POPOUT_COMMAND_STORAGE_KEY = 'om0rx.spots.popoutCommand';
 const SPOTS_POPOUT_COMMAND_CHANNEL = 'om0rx-spots-popout-command';
+const HF_LOW_BANDS = ['160m', '80m', '60m', '40m', '30m'];
+const HF_HIGH_BANDS = ['20m', '17m', '15m', '12m', '10m'];
 
 function getDefaultSpotSectionVisibility() {
     return {
         activeFilters: true,
-        bandActivity: true,
-        sourceDiagnostics: true,
-        rblMonitor: true,
+        bandActivity: false,
+        sourceDiagnostics: false,
+        rblMonitor: false,
         rblAlerts: true,
-        wsjtxEngine: true,
+        wsjtxEngine: false,
         wsjtxPlanner: true,
-        activityIntelligence: true,
+        activityIntelligence: false,
     };
 }
 
@@ -40,7 +41,6 @@ const dxSpotsData = {
     maxSpots: 100, // Maximum number of spots to display
     availableSpotCounts: [10, 25, 50, 100, 200],
     hoveredSpotId: null, // Track which spot is being hovered
-    workedCallsigns: {}, // Store worked QSOs: { callsign: { qso_date, time_on } }
     spotsFilter: {
         callsign: '',
         bands: [],
@@ -81,6 +81,7 @@ const dxSpotsData = {
     activityReferenceResults: [],
     activityReferenceLoading: false,
     activityPanelCollapsed: false,
+    spotsAdvancedFiltersOpen: false,
     spotSourceMuted: {
         cluster: false,
         rbl: false,
@@ -129,6 +130,23 @@ const dxSpotsData = {
         message: '',
         updatedAt: null,
     },
+    referenceHunter: {
+        enabled: false,
+        busy: false,
+        programs: {
+            POTA: true,
+            SOTA: true,
+            IOTA: true,
+            WWFF: true,
+            WWBOTA: true,
+            ARLHS: true,
+        },
+        minSpotScore: 50,
+        huntWatchdogMinutes: 5,
+        restoreWatchdogMinutes: 2,
+        message: '',
+        updatedAt: null,
+    },
     wsjtxPlanner: {
         open: false,
         loading: false,
@@ -173,9 +191,6 @@ const dxSpotsData = {
     visualGlobeVisibleMarkers: [],
     visualGlobeVisiblePaths: [],
     visualGlobeHover: null,
-    visualFallbackSpots: [],
-    visualFallbackLoading: false,
-    visualFallbackFilterKey: '',
     visualGlobeMaxZoom: 9,
     visualOverlayPalette: [
         'rgba(121, 201, 176, 0.58)',
@@ -212,7 +227,7 @@ const dxSpotsData = {
     queuedRealtimeSpots: [],
     
     // Filter options
-    availableBands: ['160m', '80m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m'],
+    availableBands: ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m'],
     availableModes: ['CW', 'SSB', 'FT8', 'FT4', 'FT2', 'RTTY', 'PSK', 'DIGI', 'AM', 'FM', 'JT65', 'SSTV'],
     availableContinents: [
         {id: 'EU', name: 'Europe'},
@@ -613,6 +628,119 @@ const dxSpotsMethods = {
     updateWsjtxPlannerFromStatus(status) {
         this.wsjtxPlanner.status = status || null;
         this.wsjtxPlanner.updatedAt = new Date().toISOString();
+        const settings = status?.settings || {};
+        if (settings.reference_hunter_enabled !== undefined) {
+            this.referenceHunter.enabled = Boolean(settings.reference_hunter_enabled);
+            this.referenceHunter.minSpotScore = Number(settings.hunter_min_spot_score ?? this.referenceHunter.minSpotScore);
+            this.referenceHunter.huntWatchdogMinutes = Number(settings.hunter_watchdog_minutes ?? 5);
+            this.referenceHunter.restoreWatchdogMinutes = Number(settings.hunter_restore_watchdog_minutes ?? 2);
+            const enabledPrograms = new Set(settings.hunter_programs || []);
+            for (const program of Object.keys(this.referenceHunter.programs)) {
+                this.referenceHunter.programs[program] = enabledPrograms.has(program);
+            }
+            this.referenceHunter.updatedAt = new Date().toISOString();
+        }
+    },
+
+    referenceHunterFilterSnapshot() {
+        const filter = this.spotsFilter || {};
+        return {
+            callsign: filter.callsign || '',
+            bands: [...(filter.bands || [])],
+            modes: [...(filter.modes || [])],
+            continents: [...(filter.continents || [])],
+            cqs: [...(filter.cqs || [])],
+            callStatuses: [...(filter.callStatuses || [])],
+            dxccStatuses: [...(filter.dxccStatuses || [])],
+            specials: [...(filter.specials || [])],
+            spotSources: [...(filter.spotSources || [])],
+            rblModes: [...(filter.rblModes || [])],
+            rblMinSnr: filter.rblMinSnr || '',
+            workedB4Include: Boolean(filter.workedB4Include),
+            workedB4Exclude: Boolean(filter.workedB4Exclude),
+        };
+    },
+
+    referenceHunterProgramLabels() {
+        return {
+            POTA: 'POTA',
+            SOTA: 'SOTA',
+            IOTA: 'IOTA',
+            WWFF: 'WWFF',
+            WWBOTA: 'Bunker',
+            ARLHS: 'Lighthouse',
+        };
+    },
+
+    referenceHunterStatusLabel() {
+        if (this.referenceHunter.busy) return 'Hunter updating…';
+        if (!this.referenceHunter.enabled) return 'Hunter off';
+        const programs = Object.entries(this.referenceHunter.programs)
+            .filter(([, enabled]) => enabled)
+            .map(([program]) => this.referenceHunterProgramLabels()[program] || program);
+        return `Hunter on · ${programs.join('/')} · score ${this.referenceHunter.minSpotScore}+`;
+    },
+
+    async toggleReferenceHunter() {
+        await this.saveReferenceHunterSettings(!this.referenceHunter.enabled);
+    },
+
+    async saveReferenceHunterSettings(enabled = this.referenceHunter.enabled) {
+        if (this.referenceHunter.busy) return;
+        const programs = Object.entries(this.referenceHunter.programs)
+            .filter(([, selected]) => selected)
+            .map(([program]) => program);
+        if (enabled && programs.length === 0) {
+            this.referenceHunter.message = 'Select at least one reference program';
+            this.showStatus(this.referenceHunter.message, 'warning');
+            return;
+        }
+        this.referenceHunter.busy = true;
+        try {
+            const response = await fetch('/api/ft8/automation/reference-hunter', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    enabled: Boolean(enabled),
+                    programs,
+                    min_spot_score: Math.max(0, Math.min(100, Number(this.referenceHunter.minSpotScore || 0))),
+                    hunt_watchdog_minutes: Math.max(1, Number(this.referenceHunter.huntWatchdogMinutes || 5)),
+                    restore_watchdog_minutes: Math.max(1, Number(this.referenceHunter.restoreWatchdogMinutes || 2)),
+                    spot_filters: this.referenceHunterFilterSnapshot(),
+                }),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(result.detail || result.error || response.statusText);
+            }
+            if (result.automation) this.updateWsjtxPlannerFromStatus(result.automation);
+            this.referenceHunter.enabled = Boolean(result.enabled);
+            if (this.ft8?.automation) {
+                Object.assign(this.ft8.automation, {
+                    enabled: this.referenceHunter.enabled || this.ft8.automation.enabled,
+                    spotHuntEnabled: this.referenceHunter.enabled || this.ft8.automation.spotHuntEnabled,
+                    referenceHunterEnabled: this.referenceHunter.enabled,
+                    hunterPrograms: programs,
+                    hunterMinSpotScore: Number(this.referenceHunter.minSpotScore || 0),
+                    hunterWatchdogMinutes: Number(this.referenceHunter.huntWatchdogMinutes || 5),
+                    hunterRestoreWatchdogMinutes: Number(this.referenceHunter.restoreWatchdogMinutes || 2),
+                    hunterSpotFilters: this.referenceHunterFilterSnapshot(),
+                    bandHopping: this.referenceHunter.enabled || this.ft8.automation.bandHopping,
+                    needReference: this.referenceHunter.enabled || this.ft8.automation.needReference,
+                });
+                if (typeof this.ft8PersistOperatorSettings === 'function') this.ft8PersistOperatorSettings();
+            }
+            this.referenceHunter.message = this.referenceHunter.enabled
+                ? 'Reference hunter armed with the current Filters snapshot'
+                : 'Reference hunter disabled; an active QSO will still finish safely';
+            this.showStatus(this.referenceHunter.message, this.referenceHunter.enabled ? 'success' : 'warning');
+        } catch (error) {
+            this.referenceHunter.message = error.message || 'Reference hunter update failed';
+            this.showStatus(`Reference hunter: ${this.referenceHunter.message}`, 'error');
+        } finally {
+            this.referenceHunter.busy = false;
+            this.referenceHunter.updatedAt = new Date().toISOString();
+        }
     },
 
     async refreshWsjtxEngineHealth(options = {}) {
@@ -1382,6 +1510,14 @@ const dxSpotsMethods = {
     selectAllInFilter(filterArray, allItems) {
         filterArray.splice(0, filterArray.length, ...allItems);
     },
+
+    selectHFBandGroup(group) {
+        const bands = group === 'low' ? HF_LOW_BANDS : HF_HIGH_BANDS;
+        this.selectAllInFilter(
+            this.spotsFilter.bands,
+            bands.filter(band => this.availableBands.includes(band))
+        );
+    },
     
     // Clear specific filter
     clearFilter(filterArray) {
@@ -1397,13 +1533,28 @@ const dxSpotsMethods = {
         this.filteredSearchRetryAfter = 0;
     },
 
+    hasAdvancedSpotFilters() {
+        return Boolean(
+            this.spotsFilter.continents.length ||
+            this.spotsFilter.cqs.length ||
+            this.spotsFilter.callStatuses.length ||
+            this.spotsFilter.dxccStatuses.length ||
+            this.spotsFilter.specials.length ||
+            this.spotsFilter.workedB4Include ||
+            this.spotsFilter.workedB4Exclude
+        );
+    },
+
+    toggleAdvancedSpotFilters() {
+        this.spotsAdvancedFiltersOpen = !this.spotsAdvancedFiltersOpen;
+        this.openDropdown = null;
+    },
+
     resetSpotSearchCache() {
         this.filteredSearchResults = [];
         this.lastSearchFilter = null;
         this.filteredSearchWarning = '';
         this.filteredSearchRetryAfter = 0;
-        this.visualFallbackSpots = [];
-        this.visualFallbackFilterKey = '';
     },
 
     applySpotPreset(presetId) {
@@ -1571,55 +1722,8 @@ const dxSpotsMethods = {
         );
     },
 
-    async loadVisualFallbackSpots() {
-        const fallbackLimit = Math.max(Number(this.maxSpots || 100), 100);
-        const filterKey = JSON.stringify({
-            ...this.buildSpotFilterCriteria(),
-            visual_window_minutes: this.visualSpotWindowMinutes || 60,
-            fallback_limit: fallbackLimit,
-        });
-        if (this.visualFallbackLoading || (this.visualFallbackFilterKey === filterKey && this.visualFallbackSpots.length > 0)) {
-            return;
-        }
-
-        this.visualFallbackLoading = true;
-        try {
-            const fetchJson = async (url, timeoutMs = 12000) => {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-                try {
-                    const response = await fetch(url, { signal: controller.signal });
-                    if (!response.ok) {
-                        throw new Error(`API error: ${response.statusText}`);
-                    }
-                    return await response.json();
-                } finally {
-                    clearTimeout(timeoutId);
-                }
-            };
-
-            const result = await fetchJson(`/api/spots/live-cache?limit=${fallbackLimit}`, 8000);
-            const spots = result.spots || [];
-            this.visualFallbackSpots = spots;
-            this.visualFallbackFilterKey = filterKey;
-        } catch (error) {
-            console.warn('Visual spot fallback search failed:', error);
-            this.visualFallbackSpots = [];
-            this.visualFallbackFilterKey = filterKey;
-        } finally {
-            this.visualFallbackLoading = false;
-            this.queueVisualGlobeDraw();
-        }
-    },
-
-    ensureVisualSpotCandidates() {
-        if (this.viewMode !== 'visual') return;
-        if (this.getVisualCandidateSpots().length > 0) return;
-        this.loadVisualFallbackSpots();
-    },
-
     isVisualMapResolving() {
-        if (this.visualFallbackLoading || this.visualCtyLoading) {
+        if (this.visualCtyLoading) {
             return true;
         }
         if (this.visualCtyError) {
@@ -1636,9 +1740,6 @@ const dxSpotsMethods = {
     },
 
     getVisualMapResolvingText() {
-        if (this.visualFallbackLoading) {
-            return 'Loading recent spot map...';
-        }
         if (this.visualCtyLoading || !this.visualCtyReady) {
             return 'Resolving spot locations...';
         }
@@ -1733,7 +1834,7 @@ const dxSpotsMethods = {
         
         // Worked b4 filter (requires local QSO data)
         if (this.spotsFilter.workedB4Include || this.spotsFilter.workedB4Exclude) {
-            const isWorked = !!this.getWorkedDate(spot.callsign, spot.band, spot.mode);
+            const isWorked = !!this.getWorkedDate(spot);
             
             if (this.spotsFilter.workedB4Include && this.spotsFilter.workedB4Exclude) {
                 // Both selected = show all
@@ -1807,19 +1908,14 @@ const dxSpotsMethods = {
 
     saveSpotsPopoutState() {
         try {
-            const cloneSpot = spot => ({ ...(spot || {}) });
-            const limit = Math.max(500, Number(this.maxSpots || 100));
             window.localStorage.setItem(SPOTS_POPOUT_STATE_STORAGE_KEY, JSON.stringify({
                 spotsFilter: this.spotsFilter,
                 maxSpots: this.maxSpots,
                 viewMode: this.viewMode === 'visual' ? 'visual' : 'spots',
-                clusterConnected: this.clusterConnected,
-                clusterStatus: this.clusterStatus,
-                spotSourceStats: this.spotSourceStats,
-                dxSpots: (this.dxSpots || []).slice(0, limit).map(cloneSpot),
-                filteredSearchResults: (this.filteredSearchResults || []).slice(0, limit).map(cloneSpot),
+                version: Number(this.spotsPopoutStateVersion || 0) + 1,
                 savedAt: Date.now(),
             }));
+            this.spotsPopoutStateVersion = Number(this.spotsPopoutStateVersion || 0) + 1;
         } catch (error) {
             console.warn('Could not save filters pop-out state:', error);
         }
@@ -1828,13 +1924,6 @@ const dxSpotsMethods = {
     startSpotsPopoutSync() {
         this.stopSpotsPopoutSync();
         this.saveSpotsPopoutState();
-        this.spotsPopoutSyncTimer = setInterval(() => {
-            if (!this.spotsDetached) {
-                this.stopSpotsPopoutSync();
-                return;
-            }
-            this.saveSpotsPopoutState();
-        }, 1000);
     },
 
     stopSpotsPopoutSync() {
@@ -1883,15 +1972,6 @@ const dxSpotsMethods = {
             this.spotsCommandChannel.onmessage = event => handleCommand(event.data);
         }
 
-        window.addEventListener('storage', event => {
-            if (event.key !== SPOTS_POPOUT_COMMAND_STORAGE_KEY || !event.newValue) return;
-            try {
-                handleCommand(JSON.parse(event.newValue));
-            } catch (error) {
-                console.warn('Could not parse detached filters command:', error);
-            }
-        });
-
         const pollCommands = async () => {
             try {
                 const suffix = this.lastSpotsCommandId
@@ -1928,8 +2008,10 @@ const dxSpotsMethods = {
             }
         };
 
-        pollCommands();
-        this.spotsCommandPollTimer = setInterval(pollCommands, 750);
+        if (!this.spotsCommandChannel) {
+            pollCommands();
+            this.spotsCommandPollTimer = setInterval(pollCommands, 2000);
+        }
     },
     
     async detachSpots() {
@@ -3578,68 +3660,28 @@ const dxSpotsMethods = {
     // === Worked QSO Lookup (matches by CALL + BAND + MODE) ===
     
     async loadWorkedCallsigns() {
-        try {
-            const response = await fetch('/api/wavelog-log/entries?limit=5000');
-            if (!response.ok) {
-                console.warn('Failed to load worked callsigns');
-                return;
-            }
-            
-            const result = await response.json();
-            if (result.success && Array.isArray(result.entries)) {
-                this.workedCallsigns = window.WavelogQsoNormalizer.buildWorkedMap(result.entries);
-                console.log(`✅ Loaded ${Object.keys(this.workedCallsigns).length} worked band/mode combinations from ${result.entries.length} Wavelog QSOs`);
-                
-                // Log sample for debugging
-                const keys = Object.keys(this.workedCallsigns);
-                if (keys.length > 0) {
-                    console.log(`📝 Sample keys: ${keys.slice(0, 5).join(', ')}`);
-                }
-            } else {
-                console.warn('API response missing success or entries:', result);
-            }
-        } catch (e) {
-            console.error('Error loading worked callsigns:', e);
-        }
+        // Compatibility hook retained for callers. Worked-before dates now
+        // arrive on each spot from the backend's complete local QSO index.
     },
     
-    getWorkedDate(callsign, band, mode) {
-        if (!callsign || !band || !mode) return '';
-        // Create composite key matching the spot: CALL-BAND-MODE
-        const call = callsign.toUpperCase();
-        const bandUpper = band.toUpperCase();
-        const modeUpper = mode.toUpperCase();
-        const key = `${call}-${bandUpper}-${modeUpper}`;
-        
-        const qso = this.workedCallsigns[key];
-        if (qso && qso.qso_date) {
-            // Format date from YYYYMMDD to DD/MM/YYYY
-            const date = qso.qso_date;
-            if (date.length === 8) {
-                const year = date.substring(0, 4);
-                const month = date.substring(4, 6);
-                const day = date.substring(6, 8);
-                return `✓ ${day}/${month}/${year}`;
-            }
+    getWorkedDate(spot) {
+        const date = String(spot?.worked_before_date || '').replaceAll('-', '').slice(0, 8);
+        if (/^\d{8}$/.test(date)) {
+            const year = date.substring(0, 4);
+            const month = date.substring(4, 6);
+            const day = date.substring(6, 8);
+            return `✓ ${day}/${month}/${year}`;
         }
         return '';
     },
     
-    isWorkedToday(callsign, band, mode) {
+    isWorkedToday(spot) {
         /**
          * Check if a callsign/band/mode combination was worked today
          * Returns true if the QSO date matches today's date
          */
-        if (!callsign || !band || !mode) return false;
-        
-        // Create composite key matching the spot: CALL-BAND-MODE
-        const call = callsign.toUpperCase();
-        const bandUpper = band.toUpperCase();
-        const modeUpper = mode.toUpperCase();
-        const key = `${call}-${bandUpper}-${modeUpper}`;
-        
-        const qso = this.workedCallsigns[key];
-        if (qso && qso.qso_date) {
+        const qsoDate = String(spot?.worked_before_date || '').replaceAll('-', '').slice(0, 8);
+        if (/^\d{8}$/.test(qsoDate)) {
             // Get today's date in YYYYMMDD format
             const today = new Date();
             const todayStr = 
@@ -3648,7 +3690,7 @@ const dxSpotsMethods = {
                 String(today.getDate()).padStart(2, '0');
             
             // Compare with QSO date
-            return qso.qso_date === todayStr;
+            return qsoDate === todayStr;
         }
         return false;
     },
@@ -3689,7 +3731,6 @@ const dxSpotsMethods = {
         this.ensureVisualCtyData();
         this.visualGlobeRefreshTimer = setInterval(() => {
             if (this.viewMode === 'visual' && this.visualMapMode === 'globe') {
-                this.ensureVisualSpotCandidates();
                 this.queueVisualGlobeDraw();
             }
         }, 2000);
@@ -5389,22 +5430,10 @@ const dxSpotsMethods = {
 
     getVisualCandidateSpots() {
         const visible = Array.isArray(this.filteredSpots) ? this.filteredSpots : [];
-        if (visible.length > 0) return visible;
-
         const searched = Array.isArray(this.filteredSearchResults) ? this.filteredSearchResults : [];
-        if (searched.length > 0 && this.hasDatabaseBackedSpotResults()) {
+        if (this.lastSearchFilter && Array.isArray(this.lastSearchFilter.spot_sources)) {
             return this.applySourceAndRblFilters(searched);
         }
-
-        const fallback = Array.isArray(this.visualFallbackSpots) ? this.visualFallbackSpots : [];
-        if (fallback.length > 0) {
-            return fallback.filter(spot => this.matchesCurrentFilters(spot));
-        }
-
-        if (this.viewMode === 'visual' && !this.visualFallbackLoading) {
-            setTimeout(() => this.loadVisualFallbackSpots(), 0);
-        }
-
         return visible;
     },
 
@@ -5414,14 +5443,9 @@ const dxSpotsMethods = {
         const candidates = this.getVisualCandidateSpots();
         let spots = candidates.filter(spot => {
             const timestamp = this.getSpotTimestamp(spot);
-            if (!timestamp) return true;
+            if (!timestamp) return false;
             return nowSeconds - timestamp <= windowSeconds;
         });
-
-        const hasTimestampedCandidates = candidates.some(spot => Boolean(this.getSpotTimestamp(spot)));
-        if (spots.length === 0 && candidates.length > 0 && !hasTimestampedCandidates) {
-            spots = candidates.slice(0, this.maxSpots || candidates.length);
-        }
 
         if (this.visualSpotLatestOnly) {
             const latestByCall = new Map();
@@ -5641,7 +5665,7 @@ const dxSpotsComputed = {
             // Worked b4 filter (requires local QSO data)
             if (this.spotsFilter.workedB4Include || this.spotsFilter.workedB4Exclude) {
                 filtered = filtered.filter(spot => {
-                    const isWorked = !!this.getWorkedDate(spot.callsign, spot.band, spot.mode);
+                    const isWorked = !!this.getWorkedDate(spot);
                     
                     if (this.spotsFilter.workedB4Include && this.spotsFilter.workedB4Exclude) {
                         return true;
@@ -5729,7 +5753,7 @@ const dxSpotsComputed = {
         // Worked b4 filter
         if (this.spotsFilter.workedB4Include || this.spotsFilter.workedB4Exclude) {
             filtered = filtered.filter(spot => {
-                const isWorked = !!this.getWorkedDate(spot.callsign, spot.band, spot.mode);
+                const isWorked = !!this.getWorkedDate(spot);
                 
                 if (this.spotsFilter.workedB4Include && this.spotsFilter.workedB4Exclude) {
                     // Both checked: include all spots (no filter)

@@ -16,7 +16,7 @@ def test_log_service():
         # Test 1: Get log statistics
         print("📊 Test 1: Getting log statistics...")
         stats = service.get_log_stats()
-        print(f"✅ Statistics retrieved:")
+        print("✅ Statistics retrieved:")
         print(f"   - Total QSOs: {stats['total_qsos']}")
         print(f"   - Unique DXCC: {stats['unique_dxcc']}")
         print(f"   - Unique Calls: {stats['unique_calls']}")

@@ -30,13 +30,6 @@ async def _prepare_for_process_exit(request: Request, reason: str) -> None:
                 pass
         websocket_clients.clear()
 
-    try:
-        from radio_control.wavelog_sync import stop_wavelog_sync
-
-        await stop_wavelog_sync()
-    except Exception:
-        pass
-
     if flex:
         try:
             flex.close()
@@ -59,13 +52,9 @@ async def get_config():
             "config": public_config_from_module(config),
         }
         return config_data
-    except Exception as e:
-        logger.error(f"Error loading config: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "config": {}
-        }
+    except Exception:
+        logger.exception("Error loading public configuration")
+        raise HTTPException(status_code=500, detail="Configuration could not be loaded")
 
 
 @router.post("/api/config")
@@ -75,11 +64,8 @@ async def save_config(request: Request):
         body = await request.json()
         config_updates = body.get('config', {})
         
-        if not config_updates:
-            return {
-                "success": False,
-                "error": "No configuration data provided"
-            }
+        if not isinstance(config_updates, dict) or not config_updates:
+            raise HTTPException(status_code=422, detail="A non-empty configuration object is required")
         
         save_result = save_config_updates(config_updates)
 
@@ -100,12 +86,13 @@ async def save_config(request: Request):
             "rejected_keys": save_result["rejected_keys"],
         }
         
-    except Exception as e:
-        logger.error(f"Error saving configuration: {e}", exc_info=True)
-        return {
-            "success": False,
-            "error": str(e)
-        }
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("Error saving configuration")
+        raise HTTPException(status_code=500, detail="Configuration could not be saved")
 
 
 @router.post("/api/config/postgres/test")
@@ -161,7 +148,7 @@ async def shutdown_server(request: Request):
 
     except Exception as e:
         logger.error(f"❌ Shutdown error: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        raise HTTPException(status_code=500, detail="Shutdown request could not be persisted") from e
 
 
 @router.post("/api/restart")
@@ -194,4 +181,4 @@ async def restart_server(request: Request):
 
     except Exception as e:
         logger.error(f"❌ Restart error: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        raise HTTPException(status_code=500, detail="Restart request could not be persisted") from e

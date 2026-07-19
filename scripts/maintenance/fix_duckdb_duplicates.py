@@ -7,9 +7,7 @@ For each duplicate group, we keep the first record (lowest ID) and delete the re
 """
 
 import duckdb
-import os
 from pathlib import Path
-from datetime import datetime
 import _bootstrap  # noqa: F401
 from radio_control import config
 
@@ -76,7 +74,7 @@ def fix_duplicates():
         print(f"\n📈 Current total records: {before_count:,}")
         
         # Step 3: Remove duplicates
-        print(f"\n🔄 Removing duplicates...")
+        print("\n🔄 Removing duplicates...")
         
         # Strategy: For each duplicate group, keep the record with the lowest ID
         # and delete all others
@@ -98,14 +96,14 @@ def fix_duplicates():
         after_count = conn.execute("SELECT COUNT(*) FROM qso_records").fetchone()[0]
         removed_count = before_count - after_count
         
-        print(f"✅ Duplicates removed successfully!")
-        print(f"\n📊 Summary:")
+        print("✅ Duplicates removed successfully!")
+        print("\n📊 Summary:")
         print(f"   Before: {before_count:,} records")
         print(f"   After:  {after_count:,} records")
         print(f"   Removed: {removed_count:,} duplicate records")
         
         # Step 5: Verify no more duplicates
-        print(f"\n🔍 Verifying no duplicates remain...")
+        print("\n🔍 Verifying no duplicates remain...")
         remaining_dupes = conn.execute("""
             SELECT COUNT(DISTINCT call) as groups_with_dupes
             FROM (
@@ -126,14 +124,14 @@ def fix_duplicates():
         
         # Step 6: Get updated unique callsigns
         unique_calls = conn.execute("SELECT COUNT(DISTINCT call) FROM qso_records").fetchone()[0]
-        print(f"\n📋 Database statistics:")
+        print("\n📋 Database statistics:")
         print(f"   Total QSOs: {after_count:,}")
         print(f"   Unique callsigns: {unique_calls:,}")
         
         # Close connection
         conn.close()
         
-        print(f"\n✅ All done! Database cleaned successfully.")
+        print("\n✅ All done! Database cleaned successfully.")
         print(f"{'='*80}\n")
         return True
         

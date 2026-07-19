@@ -8,6 +8,8 @@ import json
 from typing import List, Dict, Iterable
 from fastapi import WebSocket, WebSocketDisconnect
 
+from backend.core.security import authorize_websocket
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,14 +48,16 @@ class ConnectionManager:
             return
 
         message = json.dumps({"type": message_type, "data": data})
-        disconnected = []
-
-        for client in clients:
+        async def send(client):
             try:
                 await asyncio.wait_for(client.send_text(message), timeout=0.5)
-            except Exception as e:
-                logger.warning("Failed to send %s WebSocket message: %s", message_type, e)
-                disconnected.append(client)
+                return None
+            except Exception as exc:
+                logger.warning("Failed to send %s WebSocket message: %s", message_type, exc)
+                return client
+
+        results = await asyncio.gather(*(send(client) for client in clients))
+        disconnected = [client for client in results if client is not None]
 
         if disconnected:
             await self.disconnect_many(disconnected)
@@ -72,11 +76,12 @@ class ConnectionManager:
             if self._legacy_clients is not None:
                 self._legacy_clients.clear()
 
-        for client in clients:
+        async def close(client):
             try:
-                await client.close(code=1001, reason=reason)
+                await asyncio.wait_for(client.close(code=1001, reason=reason), timeout=0.5)
             except Exception:
                 pass
+        await asyncio.gather(*(close(client) for client in clients))
 
 
 # Compatibility list while older code still reads app.state.websocket_clients.
@@ -105,49 +110,34 @@ def register_websocket_endpoint(app, flex=None, dx_spots_cache=None, ws_clients=
     @app.websocket("/ws/radio")
     async def websocket_endpoint(websocket: WebSocket):
         """WebSocket for real-time updates"""
+        if not await authorize_websocket(websocket):
+            return
         await websocket.accept()
         total_clients = await websocket_manager.connect(websocket)
         logger.info(f"✅ WebSocket connected (total: {total_clients})")
 
         try:
+            runtime_context = getattr(app.state, "context", None)
+            active_flex = getattr(runtime_context, "flex", None) or flex
+            active_spots = getattr(runtime_context, "dx_spots_cache", None) or dx_spots_cache
             # Send initial status
-            if flex:
-                levels = await asyncio.to_thread(flex.get_current_levels, timeout=0.5)
-                initial_status = {
-                    "frequency": flex.current_freq or levels.get("freq", 14.074),
-                    "mode": flex.current_mode or levels.get("mode", "USB"),
-                    "filter_lo": flex.current_filter_lo or levels.get("filter_lo", 100),
-                    "filter_hi": flex.current_filter_hi or levels.get("filter_hi", 2900),
-                    "volume": levels.get("audio_level", 50),
-                    "drive": flex.current_rfpower or levels.get("rfpower", 31),
-                    "tune_power": flex.current_tunepower or levels.get("tunepower", 18),
-                    "mic_level": flex.current_miclevel or levels.get("miclevel", 32),
-                    "mox": bool(flex.current_mox if flex.current_mox is not None else levels.get("mox", False)),
-                    "monitor": levels.get("mon", 0),
-                    "vox_enabled": flex.current_vox_enable or False,
-                    "agc_mode": levels.get("agc_mode", "med"),
-                    "nb_enabled": levels.get("nb", False),
-                    "nr_enabled": levels.get("nr", False),
-                    "anf_enabled": levels.get("anf", False),
-                    "apf_enabled": levels.get("apf", False),
-                    "rx2_enabled": levels.get("rx2", False),
-                    "split_enabled": levels.get("split", False),
-                }
+            if active_flex:
+                initial_status = dict(getattr(runtime_context, "radio_snapshot", {}) or {})
                 await asyncio.wait_for(
                     websocket.send_text(json.dumps({"type": "status", "data": initial_status})),
                     timeout=0.5,
                 )
 
             # Send initial spots
-            if dx_spots_cache:
+            if active_spots:
                 await asyncio.wait_for(
-                    websocket.send_text(json.dumps({"type": "spots", "data": dx_spots_cache})),
+                    websocket.send_text(json.dumps({"type": "spots", "data": active_spots})),
                     timeout=0.5,
                 )
 
             # Keep alive
             while True:
-                data = await websocket.receive_text()
+                await websocket.receive_text()
                 # Handle ping/pong if needed
 
         except WebSocketDisconnect:

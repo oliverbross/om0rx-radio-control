@@ -7,41 +7,16 @@ module intentionally stays small so startup ownership remains clear.
 
 import logging
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from radio_control import config
 from radio_control.settings_store import LEGACY_ROTOR_CONFIG_PATH, load_legacy_json, save_config_updates
 
 from .context import AppContext, get_app_context, install_app_context, sync_app_state
-from .models import (
-    AGCRequest,
-    BandRequest,
-    ConfigUpdate,
-    DSPLevelRequest,
-    DSPRequest,
-    FilterRequest,
-    FrequencyRequest,
-    ModeRequest,
-    QSORequest,
-    RITXITRequest,
-    RX2Request,
-    RecentQSOsRequest,
-    RotorAutoConfigRequest,
-    RotorAutoModeRequest,
-    RotorBearingRequest,
-    RotorConfigRequest,
-    RotorDirectionRequest,
-    RotorGotoRequest,
-    SliderRequest,
-    SplitRequest,
-    SpotAddRequest,
-    SpotTuneRequest,
-    ToggleRequest,
-    WSJTXAutoRotateRequest,
-    WSJTXQSORequest,
-)
+from .security import ControlBoundaryMiddleware
 
 
 logging.basicConfig(
@@ -63,6 +38,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(ControlBoundaryMiddleware)
 
 logger.info("CORS allowed origins: %s", CORS_ALLOWED_ORIGINS)
 install_app_context(app, context)
@@ -70,16 +46,54 @@ install_app_context(app, context)
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Log detailed validation errors for backend/API contract debugging."""
-    logger.error("Validation error on %s", request.url.path)
-    logger.error("Errors: %s", exc.errors())
-    logger.error("Body: %s", await request.body())
-
-    return {
+    """Return stable validation details without logging request secrets."""
+    errors = exc.errors()
+    logger.warning(
+        "Validation error method=%s path=%s fields=%s",
+        request.method,
+        request.url.path,
+        [".".join(str(part) for part in error.get("loc", ())) for error in errors],
+    )
+    return JSONResponse(status_code=422, content={
         "success": False,
+        "code": "VALIDATION_ERROR",
         "detail": "Request validation failed",
-        "errors": exc.errors(),
-    }
+        "errors": errors,
+    })
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    message = (
+        str(exc.detail) if exc.status_code < 500 and isinstance(exc.detail, str)
+        else "The request could not be completed"
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        headers=exc.headers,
+        content={
+            "success": False,
+            "code": f"HTTP_{exc.status_code}",
+            "message": message,
+            "detail": message,
+            "request_id": getattr(request.state, "request_id", None),
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    request_id = getattr(request.state, "request_id", None)
+    logger.exception("Unhandled request failure path=%s request_id=%s", request.url.path, request_id)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "code": "INTERNAL_ERROR",
+            "message": "The request could not be completed",
+            "request_id": request_id,
+        },
+    )
 
 
 flex = context.flex
@@ -156,29 +170,4 @@ __all__ = [
     "rotor",
     "sync_status",
     "_load_rotor_config",
-    "AGCRequest",
-    "BandRequest",
-    "ConfigUpdate",
-    "DSPLevelRequest",
-    "DSPRequest",
-    "FilterRequest",
-    "FrequencyRequest",
-    "ModeRequest",
-    "QSORequest",
-    "RITXITRequest",
-    "RX2Request",
-    "RecentQSOsRequest",
-    "RotorAutoConfigRequest",
-    "RotorAutoModeRequest",
-    "RotorBearingRequest",
-    "RotorConfigRequest",
-    "RotorDirectionRequest",
-    "RotorGotoRequest",
-    "SliderRequest",
-    "SplitRequest",
-    "SpotAddRequest",
-    "SpotTuneRequest",
-    "ToggleRequest",
-    "WSJTXAutoRotateRequest",
-    "WSJTXQSORequest",
 ]

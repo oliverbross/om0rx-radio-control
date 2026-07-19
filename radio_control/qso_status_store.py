@@ -17,7 +17,7 @@ from radio_control.postgres_store import should_use_postgres
 
 logger = logging.getLogger(__name__)
 
-CONFIRMED_VALUES = {"Y", "YES", "TRUE", "1", "CONFIRMED"}
+CONFIRMED_VALUES = {"Y", "V", "YES", "TRUE", "1", "CONFIRMED"}
 
 
 def _band_from_mhz(mhz: float) -> str:
@@ -68,6 +68,7 @@ class DuckDBQSOStatusStore:
         self.call_band_worked: set[tuple[str, str]] = set()
         self.call_mode_worked: set[tuple[str, str]] = set()
         self.call_bandmode_confirmed: set[tuple[str, str, str]] = set()
+        self.call_bandmode_latest_date: dict[tuple[str, str, str], str] = {}
         self.grid_worked: set[str] = set()
         self.grid_band_worked: set[tuple[str, str]] = set()
         self.grid_mode_worked: set[tuple[str, str]] = set()
@@ -95,6 +96,7 @@ class DuckDBQSOStatusStore:
             "call_band_worked_count": len(self.call_band_worked),
             "call_mode_worked_count": len(self.call_mode_worked),
             "call_bandmode_confirmed_count": len(self.call_bandmode_confirmed),
+            "call_bandmode_latest_date_count": len(self.call_bandmode_latest_date),
             "grid_worked_count": len(self.grid_worked),
             "grid_band_worked_count": len(self.grid_band_worked),
             "grid_mode_worked_count": len(self.grid_mode_worked),
@@ -125,6 +127,22 @@ class DuckDBQSOStatusStore:
             and (call_value, band_value, mode_value) in self.call_bandmode_confirmed
         )
         return call_worked, call_confirmed, new_band, new_mode, bandmode_confirmed
+
+    def worked_before_date(
+        self,
+        callsign: str | None,
+        band: str | None,
+        mode: str | None,
+    ) -> Optional[str]:
+        """Return the latest YYYYMMDD date for an exact call/band/mode slot."""
+        call_value = self._normalise_call(callsign)
+        band_value = self._normalise_band(band)
+        mode_value = str(mode or "").strip().upper()
+        if not call_value or not band_value or not mode_value:
+            return None
+        if not self._ensure_loaded():
+            return None
+        return self.call_bandmode_latest_date.get((call_value, band_value, mode_value))
 
     def dxcc_overall(self, dxcc: int | None) -> Optional[tuple[bool, bool]]:
         """Return (worked, confirmed) for a DXCC, or None when the DB is unavailable."""
@@ -195,6 +213,7 @@ class DuckDBQSOStatusStore:
             qso_data.get("gridsquare") or qso_data.get("grid")
         )
         confirmed = self._row_confirmed(qso_data)
+        qso_date = self._normalise_qso_date(qso_data)
 
         changed = False
         if call_value:
@@ -207,6 +226,11 @@ class DuckDBQSOStatusStore:
                 changed |= self._add(self.call_mode_worked, (call_value, mode_value))
             if band_value and mode_value and confirmed:
                 changed |= self._add(self.call_bandmode_confirmed, (call_value, band_value, mode_value))
+            if band_value and mode_value and qso_date:
+                slot = (call_value, band_value, mode_value)
+                if qso_date > self.call_bandmode_latest_date.get(slot, ""):
+                    self.call_bandmode_latest_date[slot] = qso_date
+                    changed = True
 
         dxcc_value = self._coerce_dxcc(qso_data.get("dxcc") or qso_data.get("dxcc_id"))
         if dxcc_value is not None:
@@ -283,6 +307,12 @@ class DuckDBQSOStatusStore:
             return None
 
     @staticmethod
+    def _normalise_qso_date(row: dict[str, object]) -> str:
+        value = row.get("time_on") or row.get("qso_datetime") or row.get("qso_date")
+        digits = "".join(char for char in str(value or "")[:10] if char.isdigit())
+        return digits[:8] if len(digits) >= 8 else ""
+
+    @staticmethod
     def _confirmed_value(value: object) -> bool:
         return str(value or "").strip().upper() in CONFIRMED_VALUES
 
@@ -293,8 +323,6 @@ class DuckDBQSOStatusStore:
             for field in (
                 "lotw_qsl_rcvd",
                 "lotw_qsl",
-                "eqsl_qsl_rcvd",
-                "eqsl_qsl",
                 "qsl_rcvd",
             )
         )
@@ -325,7 +353,7 @@ class DuckDBQSOStatusStore:
                             """
                             SELECT call, dxcc, band, mode, submode,
                                    lotw_qsl_rcvd, eqsl_qsl_rcvd, qsl_rcvd,
-                                   gridsquare
+                                   gridsquare, time_on
                             FROM qso_records
                             WHERE NULLIF(call, '') IS NOT NULL
                                OR dxcc IS NOT NULL
@@ -343,6 +371,7 @@ class DuckDBQSOStatusStore:
                                 "eqsl_qsl_rcvd": eqsl_qsl_rcvd,
                                 "qsl_rcvd": qsl_rcvd,
                                 "gridsquare": gridsquare,
+                                "time_on": time_on,
                             }
                             for (
                                 call,
@@ -354,6 +383,7 @@ class DuckDBQSOStatusStore:
                                 eqsl_qsl_rcvd,
                                 qsl_rcvd,
                                 gridsquare,
+                                time_on,
                             ) in cur.fetchall()
                         ]
             elif self._use_duckdb:
@@ -367,6 +397,15 @@ class DuckDBQSOStatusStore:
                     call_where = "NULLIF(call, '') IS NOT NULL OR" if "call" in columns else ""
                     eqsl_expr = "eqsl_qsl_rcvd" if "eqsl_qsl_rcvd" in columns else "NULL AS eqsl_qsl_rcvd"
                     qsl_expr = "qsl_rcvd" if "qsl_rcvd" in columns else "NULL AS qsl_rcvd"
+                    time_expr = (
+                        "time_on"
+                        if "time_on" in columns
+                        else "qso_datetime"
+                        if "qso_datetime" in columns
+                        else "qso_date"
+                        if "qso_date" in columns
+                        else "NULL AS time_on"
+                    )
                     rows = [
                         {
                             "call": call,
@@ -378,11 +417,13 @@ class DuckDBQSOStatusStore:
                             "eqsl_qsl_rcvd": eqsl_qsl_rcvd,
                             "qsl_rcvd": qsl_rcvd,
                             "gridsquare": gridsquare,
+                            "time_on": time_on,
                         }
-                        for call, dxcc, band, mode, submode, lotw_qsl_rcvd, eqsl_qsl_rcvd, qsl_rcvd, gridsquare in conn.execute(
+                        for call, dxcc, band, mode, submode, lotw_qsl_rcvd, eqsl_qsl_rcvd, qsl_rcvd, gridsquare, time_on in conn.execute(
                             f"""
                             SELECT {call_expr}, dxcc, band, mode, submode,
-                                   lotw_qsl_rcvd, {eqsl_expr}, {qsl_expr}, gridsquare
+                                   lotw_qsl_rcvd, {eqsl_expr}, {qsl_expr}, gridsquare,
+                                   {time_expr}
                             FROM qso_records
                             WHERE {call_where}
                                dxcc IS NOT NULL
@@ -417,7 +458,8 @@ class DuckDBQSOStatusStore:
                                    COL_LOTW_QSL_RCVD AS lotw_qsl_rcvd,
                                    COL_EQSL_QSL_RCVD AS eqsl_qsl_rcvd,
                                    COL_QSL_RCVD AS qsl_rcvd,
-                                   COL_GRIDSQUARE AS gridsquare
+                                   COL_GRIDSQUARE AS gridsquare,
+                                   COL_TIME_ON AS time_on
                             FROM TABLE_HRD_CONTACTS_V01
                             WHERE station_id = %s
                               AND (
@@ -442,6 +484,7 @@ class DuckDBQSOStatusStore:
             call_band_worked: set[tuple[str, str]] = set()
             call_mode_worked: set[tuple[str, str]] = set()
             call_bandmode_confirmed: set[tuple[str, str, str]] = set()
+            call_bandmode_latest_date: dict[tuple[str, str, str], str] = {}
             grid_worked: set[str] = set()
             grid_band_worked: set[tuple[str, str]] = set()
             grid_mode_worked: set[tuple[str, str]] = set()
@@ -452,6 +495,7 @@ class DuckDBQSOStatusStore:
                 confirmed = self._row_confirmed(row)
                 grid_value = self._normalise_grid(row.get("gridsquare"))
                 call_value = self._normalise_call(row.get("call"))
+                qso_date = self._normalise_qso_date(row)
 
                 if call_value:
                     call_worked.add(call_value)
@@ -463,6 +507,10 @@ class DuckDBQSOStatusStore:
                         call_mode_worked.add((call_value, mode_value))
                     if band_value and mode_value and confirmed:
                         call_bandmode_confirmed.add((call_value, band_value, mode_value))
+                    if band_value and mode_value and qso_date:
+                        slot = (call_value, band_value, mode_value)
+                        if qso_date > call_bandmode_latest_date.get(slot, ""):
+                            call_bandmode_latest_date[slot] = qso_date
 
                 if row.get("dxcc") is not None:
                     dxcc_int = int(row.get("dxcc"))
@@ -492,6 +540,7 @@ class DuckDBQSOStatusStore:
             self.call_band_worked = call_band_worked
             self.call_mode_worked = call_mode_worked
             self.call_bandmode_confirmed = call_bandmode_confirmed
+            self.call_bandmode_latest_date = call_bandmode_latest_date
             self.grid_worked = grid_worked
             self.grid_band_worked = grid_band_worked
             self.grid_mode_worked = grid_mode_worked
@@ -504,7 +553,7 @@ class DuckDBQSOStatusStore:
             else:
                 source = "Wavelog DB"
             logger.info(
-                "Loaded QSO status sets from %s: calls=%d dxcc=%d confirmed=%d band=%d mode=%d bandmode_cnf=%d grids=%d",
+                "Loaded QSO status sets from %s: calls=%d dxcc=%d confirmed=%d band=%d mode=%d bandmode_cnf=%d worked_dates=%d grids=%d",
                 source,
                 len(self.call_worked),
                 len(self.dxcc_worked),
@@ -512,6 +561,7 @@ class DuckDBQSOStatusStore:
                 len(self.dxcc_band_worked),
                 len(self.dxcc_mode_worked),
                 len(self.dxcc_bandmode_confirmed),
+                len(self.call_bandmode_latest_date),
                 len(self.grid_worked),
             )
             return True

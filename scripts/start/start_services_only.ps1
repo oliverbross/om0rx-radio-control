@@ -27,6 +27,13 @@ if ($env:BACKEND_PORT) {
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $ScriptDir)
+$LocalSecretsPath = Join-Path $ProjectRoot "settings\local_secrets.json"
+if (-not $env:WSJTX_BRIDGE_TOKEN -and (Test-Path -LiteralPath $LocalSecretsPath)) {
+    try {
+        $LocalSecrets = Get-Content -LiteralPath $LocalSecretsPath -Raw | ConvertFrom-Json
+        if ($LocalSecrets.WSJTX_BRIDGE_TOKEN) { $env:WSJTX_BRIDGE_TOKEN = [string]$LocalSecrets.WSJTX_BRIDGE_TOKEN }
+    } catch { Write-Warning "Could not read the local bridge token; bridge commands will remain loopback-only." }
+}
 $BridgeScript = Join-Path $ProjectRoot "bridge\sdc-bridge-server.js"
 $LifecycleRequestPath = Join-Path $ProjectRoot "logs\app_lifecycle_request.json"
 
@@ -96,10 +103,14 @@ function Stop-ProcessId {
 function Stop-ProcessesOnPort {
     param([int]$Port)
 
-    $owners = @(Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue |
+    $owners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty OwningProcess -Unique)
 
     foreach ($owner in $owners) {
+        $ownerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $owner" -ErrorAction SilentlyContinue
+        if (-not $ownerProcess.CommandLine -or $ownerProcess.CommandLine -notmatch [regex]::Escape($ProjectRoot)) {
+            throw "Port $Port is owned by unrelated PID $owner ($($ownerProcess.Name)). Stop it manually or choose another port."
+        }
         Stop-ProcessId -ProcessId $owner -Reason "port $Port is already in use"
     }
 }
@@ -121,8 +132,8 @@ function Stop-ProjectProcesses {
             $protectedProcessIds -notcontains [int]$_.ProcessId -and
             $commandLine -and
             (
-                ($commandLine -match [regex]::Escape($ProjectRoot) -and ($patterns | Where-Object { $commandLine -like "*$_*" })) -or
-                $commandLine -like "*backend.main:app*"
+                $commandLine -match [regex]::Escape($ProjectRoot) -and
+                ($patterns | Where-Object { $commandLine -like "*$_*" })
             )
         }
 

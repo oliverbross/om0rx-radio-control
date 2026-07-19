@@ -2,7 +2,6 @@
 """Quick check of DuckDB sync status"""
 
 import duckdb
-import time
 import _bootstrap  # noqa: F401
 from radio_control import config
 
@@ -21,7 +20,7 @@ try:
         
         # Show recent records
         recent = conn.execute("SELECT call, qso_date, qso_datetime FROM qso_records LIMIT 5").fetchall()
-        print(f"\n📝 Recent records:")
+        print("\n📝 Recent records:")
         for call, date, dt in recent:
             print(f"   {call} - {date} {dt}")
             

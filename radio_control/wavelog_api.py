@@ -8,13 +8,12 @@ import aiohttp
 import logging
 import re
 import json
-import os
-from pathlib import Path
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime
 from radio_control import config
 from radio_control.utils import generate_callsign_variants
 from radio_control.wavelog_db import get_wavelog_db
+from radio_control.persistence import atomic_write_json, atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -139,13 +138,11 @@ class WavelogClient:
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
             
             # Save to disk
-            with open(ADIF_CACHE_FILE, 'w', encoding='utf-8') as f:
-                f.write(adif_data)
+            atomic_write_text(ADIF_CACHE_FILE, adif_data)
             
             # Save metadata
             cache_time = datetime.utcnow()
-            with open(ADIF_CACHE_META_FILE, 'w') as f:
-                json.dump({'timestamp': cache_time.isoformat()}, f)
+            atomic_write_json(ADIF_CACHE_META_FILE, {'timestamp': cache_time.isoformat()})
             
             logger.debug(f"Cached ADIF data to disk ({len(adif_data)} bytes) at {ADIF_CACHE_FILE}")
         except Exception as e:
@@ -280,6 +277,13 @@ class WavelogClient:
         wwff = (qso_data.get('wwff') or '').strip()
         if wwff:
             adif_parts.append(f"<wwff_ref:{len(wwff)}>{wwff}")
+
+        sig = (qso_data.get('sig') or '').strip().upper()
+        sig_info = (qso_data.get('sig_info') or '').strip().upper()
+        if sig:
+            adif_parts.append(f"<sig:{len(sig)}>{sig}")
+        if sig_info:
+            adif_parts.append(f"<sig_info:{len(sig_info)}>{sig_info}")
         
         # General/Location information
         continent = (qso_data.get('continent') or '').strip()
@@ -334,7 +338,7 @@ class WavelogClient:
         
         # LoTW Member
         if qso_data.get('lotw_member'):
-            adif_parts.append(f"<lotw_member:1>Y")
+            adif_parts.append("<lotw_member:1>Y")
         
         # Satellite & Propagation information
         prop_mode = (qso_data.get('prop_mode') or '').strip()
@@ -1001,7 +1005,7 @@ class WavelogClient:
                     logger.info(f"📊 Found latest QSOs near ID {last_id}")
                 else:
                     # Fallback: use current approach with a reasonable high ID
-                    logger.warning(f"⚠️ Could not locate exact last ID, using safe fallback")
+                    logger.warning("⚠️ Could not locate exact last ID, using safe fallback")
                     last_id = limit * 10  # Reasonable estimate
                 
                 # Step 2: Calculate the starting ID to get the LAST N records
@@ -1076,7 +1080,7 @@ class WavelogClient:
                         pass
                     
         except asyncio.TimeoutError:
-            logger.error(f"⏱️ Wavelog API timeout - request took too long. Try accessing Wavelog directly for full logbook.")
+            logger.error("⏱️ Wavelog API timeout - request took too long. Try accessing Wavelog directly for full logbook.")
             return {'success': False, 'message': 'Wavelog API request timed out. Please try again or access Wavelog directly.'}
         except Exception as e:
             logger.error(f"Error fetching contacts from Wavelog API: {str(e)}")
@@ -1115,7 +1119,7 @@ class WavelogClient:
                 logger.info(f"✅ Retrieved {len(qsos)} contacts from Wavelog database")
                 return {'success': True, 'data': qsos}
             else:
-                logger.debug(f"ℹ️ No contacts found in database")
+                logger.debug("ℹ️ No contacts found in database")
                 return {'success': True, 'data': []}
                         
         except Exception as e:
@@ -1139,7 +1143,7 @@ class WavelogClient:
             return result
         
         # If main callsign didn't match, try variants (with/without prefixes/suffixes)
-        logger.debug(f"No QSOs found for main callsign, trying variants...")
+        logger.debug("No QSOs found for main callsign, trying variants...")
         variants = generate_callsign_variants(callsign)
         
         for variant in variants:
@@ -1175,7 +1179,7 @@ class WavelogClient:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status in [200, 201]:  # Wavelog returns 201 for statistics
                     data = await response.json()
-                    logger.info(f"✅ Statistics fetched successfully")
+                    logger.info("✅ Statistics fetched successfully")
                     logger.debug(f"  Statistics data: {data}")
                     return {'success': True, 'data': data}
                 else:
@@ -1225,7 +1229,7 @@ class WavelogClient:
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    logger.info(f"✅ WP Statistics fetched successfully")
+                    logger.info("✅ WP Statistics fetched successfully")
                     logger.debug(f"  WP Statistics data: {data}")
                     return {'success': True, 'data': data}
                 else:

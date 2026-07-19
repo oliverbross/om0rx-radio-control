@@ -8,11 +8,13 @@ values are stored in settings/local_secrets.json, which is ignored by Git.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, Iterable, Tuple
+
+from radio_control.persistence import atomic_write_json, read_json_object
 
 
 logger = logging.getLogger(__name__)
@@ -20,8 +22,10 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SETTINGS_DIR = PROJECT_ROOT / "settings"
-APP_SETTINGS_PATH = Path(os.environ.get("OM0RX_APP_SETTINGS_PATH", SETTINGS_DIR / "app_settings.json"))
+APP_SETTINGS_PATH = Path(os.environ.get("OM0RX_APP_SETTINGS_PATH", SETTINGS_DIR / "local_settings.json"))
 LOCAL_SECRETS_PATH = Path(os.environ.get("OM0RX_LOCAL_SECRETS_PATH", SETTINGS_DIR / "local_secrets.json"))
+RUNTIME_STATE_PATH = Path(os.environ.get("OM0RX_RUNTIME_STATE_PATH", SETTINGS_DIR / "runtime_state.json"))
+LEGACY_TRACKED_SETTINGS_PATH = SETTINGS_DIR / "app_settings.json"
 LEGACY_ROTOR_CONFIG_PATH = SETTINGS_DIR / "rotor_config.json"
 LEGACY_FT8_CONFIG_PATH = PROJECT_ROOT / "logs" / "ft8_config.json"
 
@@ -44,7 +48,12 @@ SECRET_KEYS = {
     "WAVELOG_API_KEY",
     "QRZ_USERNAME",
     "QRZ_PASSWORD",
+    "CONTROL_TOKEN",
+    "WSJTX_BRIDGE_TOKEN",
 }
+
+UNCHANGED_SECRET = "__OM0RX_SECRET_UNCHANGED__"
+_settings_lock = threading.RLock()
 
 
 ALLOWED_CONFIG_KEYS = {
@@ -69,6 +78,7 @@ ALLOWED_CONFIG_KEYS = {
     "BACKEND_HOST",
     "BACKEND_PORT",
     "FLEX_ENABLED_DEFAULT",
+    "FLEX_ANTENNA_POLICY",
     "FLEX_TCP_HOST",
     "FLEX_TCP_PORT",
     "FT8_AUDIO_INPUT",
@@ -139,42 +149,62 @@ ALLOWED_CONFIG_KEYS = {
     "WSJTX_UDP_MULTICAST",
     "WSJTX_UDP_PORT",
     "WSJTX_WS_PORT",
+    "CONTROL_TOKEN",
+    "REMOTE_CONTROL_ENABLED",
+    "WSJTX_BRIDGE_TOKEN",
 }
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
-    if not path.exists():
-        return {}
-
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except json.JSONDecodeError as exc:
-        logger.warning("Ignoring invalid JSON settings file %s: %s", path, exc)
-        return {}
-
-    if not isinstance(data, dict):
-        logger.warning("Ignoring non-object JSON settings file %s", path)
-        return {}
-
-    return data
+    return read_json_object(path, quarantine_corrupt=True)
 
 
 def _write_json(path: Path, data: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2, sort_keys=True)
-        handle.write("\n")
+    atomic_write_json(path, data, backup=True)
 
 
 def load_app_settings() -> Dict[str, Any]:
     """Return non-secret UI-edited settings."""
+    migrate_legacy_tracked_settings()
     return _read_json(APP_SETTINGS_PATH)
 
 
 def load_local_secrets() -> Dict[str, Any]:
     """Return ignored local secret settings."""
     return _read_json(LOCAL_SECRETS_PATH)
+
+
+def load_runtime_state() -> Dict[str, Any]:
+    return _read_json(RUNTIME_STATE_PATH)
+
+
+def migrate_legacy_tracked_settings() -> bool:
+    """One-time migration from the formerly tracked station settings file."""
+    if APP_SETTINGS_PATH.exists() or not LEGACY_TRACKED_SETTINGS_PATH.exists():
+        return False
+    legacy = _read_json(LEGACY_TRACKED_SETTINGS_PATH)
+    if not legacy:
+        return False
+    app_values, secret_values, _ = split_config_updates(legacy)
+    runtime_values: Dict[str, Any] = {}
+    operator = app_values.get("FT8_OPERATOR_SETTINGS")
+    if isinstance(operator, dict) and isinstance(operator.get("automation"), dict):
+        automation = dict(operator["automation"])
+        for key in ("autoCQRemaining", "autoCallRemaining", "lastHopAt", "lastHopKey"):
+            if key in automation:
+                runtime_values[key] = automation.pop(key)
+        operator = {**operator, "automation": automation}
+        app_values["FT8_OPERATOR_SETTINGS"] = operator
+    if app_values:
+        _write_json(APP_SETTINGS_PATH, app_values)
+    if secret_values:
+        secrets = _read_json(LOCAL_SECRETS_PATH)
+        secrets.update(secret_values)
+        _write_json(LOCAL_SECRETS_PATH, secrets)
+    if runtime_values:
+        _write_json(RUNTIME_STATE_PATH, {"ft8_automation": runtime_values})
+    logger.info("Migrated legacy tracked settings into station-local stores")
+    return True
 
 
 def load_runtime_settings() -> Dict[str, Any]:
@@ -196,6 +226,8 @@ def split_config_updates(updates: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[
             continue
 
         if key in SECRET_KEYS:
+            if value == UNCHANGED_SECRET:
+                continue
             secret_updates[key] = value
         else:
             app_updates[key] = value
@@ -205,18 +237,36 @@ def split_config_updates(updates: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[
 
 def save_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
     """Persist allowed config updates without modifying Python source files."""
+    if not isinstance(updates, dict):
+        raise ValueError("Configuration update must be an object")
     app_updates, secret_updates, rejected = split_config_updates(updates)
+    with _settings_lock:
+        app_settings = load_app_settings()
+        local_secrets = load_local_secrets()
+        _validate_updates({**app_updates, **secret_updates})
+        operator = app_updates.get("FT8_OPERATOR_SETTINGS")
+        if isinstance(operator, dict) and isinstance(operator.get("automation"), dict):
+            automation = dict(operator["automation"])
+            runtime_values = {
+                key: automation.pop(key)
+                for key in ("autoCQRemaining", "autoCallRemaining", "lastHopAt", "lastHopKey")
+                if key in automation
+            }
+            if runtime_values:
+                runtime_state = load_runtime_state()
+                runtime_state["ft8_automation"] = {
+                    **runtime_state.get("ft8_automation", {}),
+                    **runtime_values,
+                }
+                _write_json(RUNTIME_STATE_PATH, runtime_state)
+            app_updates["FT8_OPERATOR_SETTINGS"] = {**operator, "automation": automation}
+        app_settings.update(app_updates)
+        local_secrets.update(secret_updates)
 
-    app_settings = load_app_settings()
-    local_secrets = load_local_secrets()
-
-    app_settings.update(app_updates)
-    local_secrets.update(secret_updates)
-
-    if app_updates:
-        _write_json(APP_SETTINGS_PATH, app_settings)
-    if secret_updates:
-        _write_json(LOCAL_SECRETS_PATH, local_secrets)
+        if app_updates:
+            _write_json(APP_SETTINGS_PATH, app_settings)
+        if secret_updates:
+            _write_json(LOCAL_SECRETS_PATH, local_secrets)
 
     return {
         "app_settings_path": str(APP_SETTINGS_PATH),
@@ -231,11 +281,35 @@ def save_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
 def public_config_from_module(config_module: Any, keys: Iterable[str] | None = None) -> Dict[str, Any]:
     """Build a serializable config dictionary from the active config module."""
     selected_keys = keys or sorted(ALLOWED_CONFIG_KEYS)
-    return {
+    public = {
         key: getattr(config_module, key)
         for key in selected_keys
-        if hasattr(config_module, key)
+        if key not in SECRET_KEYS and hasattr(config_module, key)
     }
+    for key in sorted(SECRET_KEYS):
+        public[f"{key}_CONFIGURED"] = bool(getattr(config_module, key, None))
+    public["SECRET_UNCHANGED_SENTINEL"] = UNCHANGED_SECRET
+    return public
+
+
+def _validate_updates(updates: Dict[str, Any]) -> None:
+    """Reject structurally unsafe settings before changing live configuration."""
+    bool_keys = {
+        key for key in ALLOWED_CONFIG_KEYS
+        if key.endswith("_ENABLED") or key.endswith("_DEFAULT")
+    } | {"FT8_AUTO_SEQUENCE", "REMOTE_CONTROL_ENABLED", "WSJTX_AUTO_LOG", "WSJTX_AUTO_ROTATE"}
+    port_keys = {key for key in ALLOWED_CONFIG_KEYS if key.endswith("_PORT")}
+    for key, value in updates.items():
+        if key in bool_keys and not isinstance(value, bool):
+            raise ValueError(f"{key} must be a boolean")
+        if key in port_keys and (isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535):
+            raise ValueError(f"{key} must be an integer between 1 and 65535")
+        if key in {"ROTOR_HOME_LAT"} and value is not None and not -90 <= float(value) <= 90:
+            raise ValueError(f"{key} must be between -90 and 90")
+        if key in {"ROTOR_HOME_LON"} and value is not None and not -180 <= float(value) <= 180:
+            raise ValueError(f"{key} must be between -180 and 180")
+        if key in SECRET_KEYS and value is not None and not isinstance(value, (str, dict, list)):
+            raise ValueError(f"{key} has an invalid secret value")
 
 
 def load_legacy_json(path: Path) -> Dict[str, Any]:

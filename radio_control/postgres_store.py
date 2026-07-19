@@ -256,9 +256,13 @@ def initialize_schema() -> None:
                     need_reasons TEXT[],
                     reference_items TEXT,
                     score INTEGER DEFAULT 0,
+                    spot_score INTEGER DEFAULT 0,
                     snr DOUBLE PRECISION,
                     audio_offset INTEGER,
                     dial_frequency DOUBLE PRECISION,
+                    propagation_score DOUBLE PRECISION,
+                    propagation_label TEXT,
+                    propagation_confidence TEXT,
                     created_at TIMESTAMPTZ,
                     updated_at TIMESTAMPTZ,
                     first_heard_at TIMESTAMPTZ,
@@ -276,10 +280,14 @@ def initialize_schema() -> None:
                     heard BOOLEAN DEFAULT false,
                     direct_caller BOOLEAN DEFAULT false,
                     last_command_at TIMESTAMPTZ,
+                    command_ack_at TIMESTAMPTZ,
                     origin_band TEXT,
                     origin_mode TEXT,
                     origin_dial_frequency DOUBLE PRECISION,
-                    return_command_at TIMESTAMPTZ
+                    return_command_at TIMESTAMPTZ,
+                    campaign_started_at TIMESTAMPTZ,
+                    campaign_expires_at TIMESTAMPTZ,
+                    campaign_count INTEGER DEFAULT 0
                 )
                 """
             )
@@ -288,16 +296,24 @@ def initialize_schema() -> None:
                 ("command_id", "TEXT"),
                 ("need_reasons", "TEXT[]"),
                 ("reference_items", "TEXT"),
+                ("spot_score", "INTEGER DEFAULT 0"),
                 ("lifecycle", "TEXT DEFAULT 'queued'"),
                 ("active_state", "TEXT DEFAULT 'idle'"),
                 ("skip_reason", "TEXT"),
                 ("completion_reason", "TEXT"),
                 ("direct_caller", "BOOLEAN DEFAULT false"),
                 ("last_command_at", "TIMESTAMPTZ"),
+                ("command_ack_at", "TIMESTAMPTZ"),
                 ("origin_band", "TEXT"),
                 ("origin_mode", "TEXT"),
                 ("origin_dial_frequency", "DOUBLE PRECISION"),
                 ("return_command_at", "TIMESTAMPTZ"),
+                ("propagation_score", "DOUBLE PRECISION"),
+                ("propagation_label", "TEXT"),
+                ("propagation_confidence", "TEXT"),
+                ("campaign_started_at", "TIMESTAMPTZ"),
+                ("campaign_expires_at", "TIMESTAMPTZ"),
+                ("campaign_count", "INTEGER DEFAULT 0"),
             ):
                 cur.execute(f"ALTER TABLE digital_targets ADD COLUMN IF NOT EXISTS {column} {definition}")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_pg_digital_targets_updated ON digital_targets(updated_at DESC)")

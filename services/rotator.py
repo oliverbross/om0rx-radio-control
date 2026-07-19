@@ -119,19 +119,19 @@ class RotatorService:
             logger.error(f"Rotor config retrieval error: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
-    async def get_rotor_status(self):
+    async def get_rotor_status(self, fresh: bool = False):
         """Get rotator status (enabled and current azimuth if available)"""
         try:
             if not self.rotor:
                 return {"ok": False, "enabled": False, "message": "Rotator not enabled"}
 
             now = time.monotonic()
-            if self._status_cache and now - self._status_cache_time < 2.0:
+            if not fresh and self._status_cache and now - self._status_cache_time < 2.0:
                 return self._status_cache
 
             async with self._status_lock:
                 now = time.monotonic()
-                if self._status_cache and now - self._status_cache_time < 2.0:
+                if not fresh and self._status_cache and now - self._status_cache_time < 2.0:
                     return self._status_cache
 
                 try:
@@ -199,7 +199,7 @@ class RotatorService:
             return result
         except Exception as e:
             logger.error(f"Rotor ping error: {e}")
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": "Rotor status is unavailable"}
 
     # === Rotor AUTO Control ===
 

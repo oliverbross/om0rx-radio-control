@@ -63,6 +63,8 @@ class QSORequest(BaseModel):
     sota: Optional[str] = None
     iota: Optional[str] = None
     wwff: Optional[str] = None
+    sig: Optional[str] = None
+    sig_info: Optional[str] = None
     date_time: Optional[str] = None
     continent: Optional[str] = None
     cq_zone: Optional[int] = None
@@ -330,6 +332,11 @@ def _release_dedupe_keys(qso_keys: list[str]) -> None:
 def _record_dedupe_entries(qso_keys: list[str], qso_data: Dict[str, Any], result: Dict[str, Any]) -> None:
     keys = [str(key or "").strip() for key in qso_keys if str(key or "").strip()]
     if not keys:
+        return
+    wavelog_result = result.get("wavelog") or {}
+    durable = bool(wavelog_result.get("success") or result.get("outbox_queued"))
+    if not durable:
+        _release_dedupe_keys(keys)
         return
     with _dedupe_lock:
         ledger = _load_dedupe_ledger()
@@ -861,7 +868,12 @@ async def log_qso(qso: QSORequest):
         recent_duplicate = _recent_wavelog_duplicate_entry(qso_dict) if should_check_recent_wavelog else None
         if recent_duplicate:
             logger.info("Skipping QSO log already present in Wavelog/read-cache for %s on %s %s", qso.callsign, qso.band, qso.mode)
-            _record_dedupe_entries(dedupe_keys, qso_dict, {"wavelog": {"success": True}, "adif_saved": True})
+            try:
+                adif_saved = bool(adif_handler.add_qso(qso_dict))
+            except Exception:
+                logger.warning("Unable to archive Wavelog duplicate locally", exc_info=True)
+                adif_saved = False
+            _record_dedupe_entries(dedupe_keys, qso_dict, {"wavelog": {"success": True}, "adif_saved": adif_saved})
             record_qso_in_local_read_cache(qso_dict)
             return {
                 "success": True,
@@ -871,7 +883,7 @@ async def log_qso(qso: QSORequest):
                 "loose_qso_key": loose_qso_key,
                 "dedupe": recent_duplicate,
                 "wavelog": {"success": True},
-                "adif_saved": True,
+                "adif_saved": adif_saved,
                 "outbox_queued": False,
                 "outbox": get_qso_outbox().status(),
             }
@@ -922,7 +934,7 @@ async def log_qso(qso: QSORequest):
             "qso_key": qso_key,
             "loose_qso_key": loose_qso_key,
         }
-        if wavelog_result.get("success") or adif_saved or outbox_queued:
+        if wavelog_result.get("success") or outbox_queued:
             _record_dedupe_entries(dedupe_keys, qso_dict, response)
         else:
             _release_dedupe_keys(dedupe_keys)
@@ -1137,6 +1149,25 @@ async def wavelog_recent_qsos(req: RecentQSOsRequest):
 async def qso_outbox_status():
     """Return the offline Wavelog upload outbox status."""
     return {"success": True, "outbox": get_qso_outbox().status()}
+
+
+@router.get("/api/qso/worked-status")
+async def qso_worked_status():
+    """Return only non-sensitive worked matching fields from the local archive."""
+    global adif_handler
+    handler = adif_handler or ADIFHandler()
+    records = await asyncio.to_thread(handler.read_all_qsos)
+    worked = [
+        {
+            "call": str(record.get("call") or "").upper(),
+            "band": str(record.get("band") or "").lower(),
+            "mode": str(record.get("mode") or record.get("submode") or "").upper(),
+            "qso_date": str(record.get("qso_date") or ""),
+        }
+        for record in records
+        if record.get("call")
+    ]
+    return {"success": True, "data": worked, "count": len(worked)}
 
 
 @router.post("/api/qso/outbox/retry")

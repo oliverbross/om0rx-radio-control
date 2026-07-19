@@ -4,10 +4,8 @@ Caches all Wavelog ADIF data locally with automatic 5-minute sync
 """
 
 import sqlite3
-import json
 import logging
 import asyncio
-from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 from contextlib import contextmanager
@@ -194,7 +192,7 @@ class WavelogDatabase:
                         cursor.execute(f"UPDATE qsos SET {field} = TRIM({field})")
                     
                     conn.commit()
-                    logger.info(f"✅ Whitespace cleanup complete")
+                    logger.info("✅ Whitespace cleanup complete")
         except Exception as e:
             logger.debug(f"Note: Whitespace cleanup not needed or skipped: {str(e)}")
     

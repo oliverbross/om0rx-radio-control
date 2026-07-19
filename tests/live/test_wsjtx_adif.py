@@ -11,7 +11,6 @@ from services.wsjtx import WSJTXService
 from radio_control.adif_handler import ADIFHandler
 from radio_control.wavelog_api import WavelogClient
 from radio_control.qrz_api import QRZClient
-from radio_control.rotor_api import RotorController
 from radio_control.cty_resolvers import CtyDatResolver
 
 
@@ -63,7 +62,7 @@ async def test_wsjtx_qso_with_adif():
     if service.adif_handler:
         print(f"   ✅ ADIF handler is SET: {service.adif_handler}")
     else:
-        print(f"   ❌ ADIF handler is NOT SET!")
+        print("   ❌ ADIF handler is NOT SET!")
     
     # Simulate a WSJT-X QSO (similar to your screenshot)
     print("\n3️⃣  Simulating WSJT-X QSO...")
@@ -105,13 +104,13 @@ async def test_wsjtx_qso_with_adif():
         try:
             with open(adif_handler.log_path, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
-                print(f"\n   📄 Last 20 lines of ADIF file:")
+                print("\n   📄 Last 20 lines of ADIF file:")
                 for line in lines[-20:]:
                     print(f"      {line.rstrip()}")
         except Exception as e:
             print(f"   ❌ Failed to read file: {e}")
     else:
-        print(f"   ❌ ADIF file does not exist or handler not set")
+        print("   ❌ ADIF file does not exist or handler not set")
     
     print("\n" + "=" * 60)
     print("✅ Test completed!")

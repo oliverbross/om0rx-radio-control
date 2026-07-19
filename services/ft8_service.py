@@ -26,7 +26,7 @@ from services.ft8_rx_decoder import (
     normalise_decode_mode,
 )
 from services.ft8_tx import FT8TxEngine, ntp_offset
-from services.digital_automation import DigitalAutomationController, extract_callsign
+from services.digital_automation import DigitalAutomationController, DigitalAutomationSettings, extract_callsign
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +194,20 @@ class FT8Service:
             target_store = get_digital_target_store()
         except Exception as exc:
             logger.debug("Digital target persistence not attached: %s", exc)
-        self.automation_controller = DigitalAutomationController(mycall=self.mycall, target_store=target_store)
+        operator_settings: Dict[str, Any] = {}
+        try:
+            from radio_control import config as app_config
+
+            configured = getattr(app_config, "FT8_OPERATOR_SETTINGS", {})
+            if isinstance(configured, dict):
+                operator_settings = configured
+        except Exception as exc:
+            logger.debug("Digital automation startup settings unavailable: %s", exc)
+        self.automation_controller = DigitalAutomationController(
+            mycall=self.mycall,
+            settings=DigitalAutomationSettings.from_operator_settings(operator_settings),
+            target_store=target_store,
+        )
         
         # Decoded messages
         self.decoded_messages: List[Dict[str, Any]] = []
@@ -684,7 +697,9 @@ class FT8Service:
 
     async def _automation_tick(self):
         settings = self.automation_controller.settings
-        if not (settings.spot_hunt_enabled or self.auto_call_enabled):
+        # Spot/DXCC hunting is executed by WSJT-Z through the always-on bridge
+        # planner. The built-in TX engine must not arm from spot-hunt settings.
+        if not self.auto_call_enabled:
             self.automation_status = "standby"
             return
         if self.tx_inhibit_reason:
@@ -720,6 +735,25 @@ class FT8Service:
             return
 
         await self._automation_prepare_radio(target)
+
+        final_eligibility = self.automation_controller._target_eligibility(
+            target,
+            cq_only=self.auto_call_cq_only,
+            auto_call_start_only=True,
+        )
+        if not final_eligibility.get("eligible"):
+            self.automation_controller.release_target(
+                target.key,
+                reason="final-transmit-eligibility-failed",
+            )
+            self.automation_status = "blocked: final transmit eligibility failed"
+            self._record_decision(
+                "automation-skip",
+                "final-transmit-eligibility-failed",
+                call=target.call,
+                eligibility_reasons=final_eligibility.get("reasons", []),
+            )
+            return
 
         if not self.tx_enabled:
             self.tx_enabled = True
@@ -1497,11 +1531,9 @@ class FT8Service:
             logger.error("Digital QSO backend logging failed for %s: %s", qso.their_call, exc, exc_info=True)
 
     def _automation_should_keep_tx_armed(self) -> bool:
-        settings = self.automation_controller.settings
         return bool(
-            self.auto_call_enabled
-            or self.auto_cq_enabled
-            or settings.spot_hunt_enabled
+            self.auto_cq_enabled
+            or self.auto_call_enabled
         )
     
     async def _handle_tx_cycle(self, playback_delay_seconds: Optional[float] = None):

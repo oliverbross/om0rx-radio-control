@@ -15,7 +15,7 @@
                     <button 
                         @click="switchViewMode('spots')" 
                         :class="['view-mode-btn', { active: viewMode === 'spots' }]">
-                        🎯 Filters
+                        🎯 Spots
                     </button>
                     <button
                         @click="switchViewMode('visual')"
@@ -29,8 +29,7 @@
                     </button>
                 </div>
                 
-                <!-- Spots View: Filters Label -->
-                <span v-if="viewMode === 'spots' || viewMode === 'visual'" class="filter-options-label" style="font-weight: bold; font-size: 14px; margin-left: 10px;">Filter Options:</span>
+                <span v-if="viewMode === 'spots' || viewMode === 'visual'" class="spots-workspace-title">Live DX spots</span>
                 <button
                     v-if="(viewMode === 'spots' || viewMode === 'visual') && !isSpotsStandalone()"
                     @click="detachSpots"
@@ -101,6 +100,10 @@
                                 <button @click="selectAllInFilter(spotsFilter.bands, availableBands)">All</button>
                                 <button @click="clearFilter(spotsFilter.bands)">Clear</button>
                             </div>
+                            <div class="dropdown-footer band-range-footer">
+                                <button @click="selectHFBandGroup('low')">HF Low</button>
+                                <button @click="selectHFBandGroup('high')">HF High</button>
+                            </div>
                         </div>
                     </div>
                     
@@ -122,9 +125,15 @@
                             </div>
                         </div>
                     </div>
+
+                    <button @click="toggleAdvancedSpotFilters"
+                            :class="['filter-btn', 'advanced-filter-toggle', { active: spotsAdvancedFiltersOpen || hasAdvancedSpotFilters() }]"
+                            :title="spotsAdvancedFiltersOpen ? 'Hide advanced filters' : 'Show continent, zone, status, special and worked filters'">
+                        Advanced {{ spotsAdvancedFiltersOpen ? '▲' : '▼' }}
+                    </button>
                     
                     <!-- Spotter From (Continents) -->
-                    <div class="filter-dropdown">
+                    <div v-if="spotsAdvancedFiltersOpen" class="filter-dropdown advanced-filter-control">
                         <button @click="toggleDropdown('continents')" :class="['filter-btn', { active: isFilterActive('continents') }]">
                             🌍 Spotter from ▼
                         </button>
@@ -143,7 +152,7 @@
                     </div>
                     
                     <!-- Zones (CQ) -->
-                    <div class="filter-dropdown">
+                    <div v-if="spotsAdvancedFiltersOpen" class="filter-dropdown advanced-filter-control">
                         <button @click="toggleDropdown('zones')" :class="['filter-btn', { active: isFilterActive('zones') }]">
                             🌐 Zones ▼
                         </button>
@@ -162,7 +171,7 @@
                     </div>
                     
                     <!-- Call Status -->
-                    <div class="filter-dropdown">
+                    <div v-if="spotsAdvancedFiltersOpen" class="filter-dropdown advanced-filter-control">
                         <button @click="toggleDropdown('callStatus')" :class="['filter-btn', { active: isFilterActive('callStatus') }]">
                             📞 Call Status ▼
                         </button>
@@ -181,7 +190,7 @@
                     </div>
                     
                     <!-- DXCC Status -->
-                    <div class="filter-dropdown">
+                    <div v-if="spotsAdvancedFiltersOpen" class="filter-dropdown advanced-filter-control">
                         <button @click="toggleDropdown('dxccStatus')" :class="['filter-btn', { active: isFilterActive('dxccStatus') }]">
                             🏆 DXCC Status ▼
                         </button>
@@ -205,7 +214,7 @@
                     </div>
                     
                     <!-- Special -->
-                    <div class="filter-dropdown">
+                    <div v-if="spotsAdvancedFiltersOpen" class="filter-dropdown advanced-filter-control">
                         <button @click="toggleDropdown('special')" :class="['filter-btn', { active: isFilterActive('special') }]">
                             ⭐ Special ▼
                         </button>
@@ -224,7 +233,7 @@
                     </div>
                     
                     <!-- Worked b4 -->
-                    <div class="filter-dropdown">
+                    <div v-if="spotsAdvancedFiltersOpen" class="filter-dropdown advanced-filter-control">
                         <button @click="toggleDropdown('workedB4')" :class="['filter-btn', { active: isFilterActive('workedB4') }]">
                             📋 Worked b4 ▼
                         </button>
@@ -278,27 +287,68 @@
                     </div>
                 </div>
                 <!-- @include templates/partials/spots-rbl-dropdown.html -->
-                <button @click="queueVisibleWsjtxCandidates(25)"
-                        :disabled="wsjtxCandidateQueue.busy"
-                        class="wsjtx-queue-btn"
-                        title="Queue the best visible FT8/FT4/FT2 cluster and RBL candidates in the backend planner only. This does not arm transmit.">
-                    {{ wsjtxCandidateQueue.busy ? 'Queueing...' : 'Queue WSJT' }}
-                </button>
-                <button @click="toggleWsjtxPlannerPanel"
-                        class="wsjtx-planner-toggle-btn"
-                        :class="{ active: wsjtxPlanner.open }"
-                        title="Show the backend WSJT planner queue">
-                    Planner
-                </button>
+                <div class="filter-dropdown">
+                    <button @click="toggleDropdown('spotTools')"
+                            :class="['filter-btn', { active: referenceHunter.enabled }]">
+                        Tools {{ referenceHunter.enabled ? '· Hunter' : '' }} ▼
+                    </button>
+                    <div v-if="openDropdown === 'spotTools'" class="dropdown-menu spots-tools-menu">
+                        <div class="dropdown-list">
+                            <div class="reference-hunter-tools" @click.stop>
+                                <div class="reference-hunter-heading">
+                                    <strong>FT8 reference hunter</strong>
+                                    <button @click="toggleReferenceHunter"
+                                            :disabled="referenceHunter.busy"
+                                            :class="['reference-hunter-toggle', { active: referenceHunter.enabled }]">
+                                        {{ referenceHunter.busy ? 'Updating…' : (referenceHunter.enabled ? 'Disable' : 'Enable') }}
+                                    </button>
+                                </div>
+                                <small>Uses the current Filters selections when applied.</small>
+                                <div class="reference-hunter-programs">
+                                    <label v-for="(label, program) in referenceHunterProgramLabels()" :key="program">
+                                        <input type="checkbox" v-model="referenceHunter.programs[program]">
+                                        {{ label }}
+                                    </label>
+                                </div>
+                                <label class="reference-hunter-number">
+                                    Minimum score
+                                    <input type="number" min="0" max="100" step="1" v-model.number="referenceHunter.minSpotScore">
+                                </label>
+                                <div class="reference-hunter-watchdogs">
+                                    <label>Hunt WD min <input type="number" min="1" max="60" v-model.number="referenceHunter.huntWatchdogMinutes"></label>
+                                    <label>Normal WD min <input type="number" min="1" max="60" v-model.number="referenceHunter.restoreWatchdogMinutes"></label>
+                                </div>
+                                <button @click="saveReferenceHunterSettings()" :disabled="referenceHunter.busy">
+                                    Apply current filters
+                                </button>
+                                <span v-if="referenceHunter.message" class="reference-hunter-message">{{ referenceHunter.message }}</span>
+                            </div>
+                            <button @click="queueVisibleWsjtxCandidates(25); openDropdown = null"
+                                    :disabled="wsjtxCandidateQueue.busy"
+                                    class="wsjtx-queue-btn"
+                                    title="Queue the best visible digital candidates without arming transmit">
+                                {{ wsjtxCandidateQueue.busy ? 'Queueing...' : 'Queue WSJT candidates' }}
+                            </button>
+                            <button @click="toggleWsjtxPlannerPanel(); openDropdown = null"
+                                    :class="['wsjtx-planner-toggle-btn', { active: wsjtxPlanner.open }]">
+                                {{ wsjtxPlanner.open ? 'Hide WSJT planner' : 'Open WSJT planner' }}
+                            </button>
+                            <a href="spots-database.html" target="_blank" class="spots-db-link">Open Spots database</a>
+                        </div>
+                    </div>
+                </div>
                 <span v-if="wsjtxCandidateQueue.message"
                       class="wsjtx-queue-status"
                       :title="wsjtxCandidateQueue.message">
                     {{ wsjtxCandidateQueue.message }}
                 </span>
-                <a href="spots-database.html" target="_blank" class="spots-db-link">📊 Spots DB</a>
+                <span :class="['wsjtx-queue-status', { active: referenceHunter.enabled }]"
+                      :title="referenceHunter.message || 'Automatic FT8 POTA/SOTA/IOTA/WWFF/bunker/lighthouse hunter'">
+                    {{ referenceHunterStatusLabel() }}
+                </span>
                 <div class="filter-dropdown">
-                    <button @click="toggleDropdown('spotRows')" class="filter-btn" title="Show or hide filter/status rows">
-                        Rows ▼
+                    <button @click="toggleDropdown('spotRows')" class="filter-btn" title="Show or hide optional status panels">
+                        Panels ▼
                     </button>
                     <div v-if="openDropdown === 'spotRows'" class="dropdown-menu spot-rows-menu">
                         <div class="dropdown-list">
@@ -315,7 +365,12 @@
                         </div>
                     </div>
                 </div>
-                <button @click="clearAllFilters" class="clear-all-btn">🗑️ Clear All</button>
+                <button @click="toggleSpotSectionVisibility('activityIntelligence')"
+                        :class="['filter-btn', { active: isSpotSectionVisible('activityIntelligence') }]"
+                        title="Show or hide Activity Intelligence below the spots table">
+                    Intelligence
+                </button>
+                <button v-if="hasActiveFilters()" @click="clearAllFilters" class="clear-all-btn">Clear filters</button>
                 </div>
                 
                 <!-- Log View: Stats -->
@@ -516,7 +571,7 @@
                         <div class="activity-panel-actions">
                             <span>{{ getActivityRbnSummaryText() }}</span>
                             <button @click="refreshActivityIntelligence" :disabled="activityIntelligenceLoading" title="Refresh activity sources">Refresh</button>
-                            <button @click="activityPanelCollapsed = true" title="Hide Activity Intelligence">Hide</button>
+                            <button @click="toggleSpotSectionVisibility('activityIntelligence')" title="Hide Activity Intelligence">Hide</button>
                         </div>
                     </div>
                     <div v-if="getActivityContestBanner()" class="activity-contest-banner">
@@ -972,7 +1027,7 @@
                     </thead>
                     <tbody>
                         <tr v-for="spot in filteredSpots" :key="spot.aggregate_key || spot.id || (spot.callsign + ':' + spot.frequency)"
-                            :class="['spot-row', getSpotRowClass(spot), { 'spot-worked-today': isWorkedToday(spot.callsign, spot.band, spot.mode), 'spot-rbl-alert': isRblAlertSpot(spot) }]"
+                            :class="['spot-row', getSpotRowClass(spot), { 'spot-worked-today': isWorkedToday(spot), 'spot-rbl-alert': isRblAlertSpot(spot) }]"
                             @click="tuneToSpot(spot)">
                             <td style="font-size: 12px;"><button @click.stop="showSpotDetails(spot, $event)" title="Spot details">ⓘ</button></td>
                             <td style="font-size: 13px;">{{ formatSpotTime(spot.timestamp) }}</td>
@@ -1015,7 +1070,7 @@
                                     {{ getSpotPropagationLabel(spot) }}
                                 </span>
                             </td>
-                            <td style="font-size: 12px; color: #10b981; font-weight: 500;">{{ getWorkedDate(spot.callsign, spot.band, spot.mode) }}</td>
+                            <td style="font-size: 12px; color: #10b981; font-weight: 500;">{{ getWorkedDate(spot) }}</td>
                             <td style="font-size: 13px; color: #aaa;">{{ spot.comment }}</td>
                         </tr>
                         <tr v-if="filteredSpots.length === 0">

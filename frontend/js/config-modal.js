@@ -66,6 +66,21 @@ window.RadioControlConfig = {
             },
             RADIO_SHOW_DETAILED_CONTROLS: false,
             RADIO_LAYOUT_PRESET: 'compact',
+            FLEX_ANTENNA_POLICY: {
+                enabled: true,
+                bands: {
+                    '160m': 'ANT2',
+                    '80m': 'ANT2',
+                    '60m': 'ANT2',
+                    '40m': 'ANT2',
+                    '30m': 'ANT2',
+                    '20m': 'ANT1',
+                    '17m': 'ANT1',
+                    '15m': 'ANT1',
+                    '12m': 'ANT1',
+                    '10m': 'ANT1',
+                },
+            },
             RBL_COMMAND_PROFILE: 'dxspider',
             RBL_COMMAND_PROFILES: {},
             ACTIVITY_INTELLIGENCE: {
@@ -145,9 +160,11 @@ window.RadioControlConfig = {
             { id: 'specials', name: 'Special Stations' },
         ],
 
-        availableSpecialsList: ['POTA', 'SOTA', 'IOTA', 'WWFF', 'CASTLE', 'LIGHTHOUSE', 'CONTEST', 'IARU'],
-        enabledSpecials: ['POTA', 'SOTA', 'IOTA', 'WWFF', 'CONTEST', 'LIGHTHOUSE', 'CASTLE', 'IARU'],
+        availableSpecialsList: ['POTA', 'SOTA', 'IOTA', 'WWFF', 'BUNKER', 'CASTLE', 'LIGHTHOUSE', 'CONTEST', 'IARU'],
+        enabledSpecials: ['POTA', 'SOTA', 'IOTA', 'WWFF', 'BUNKER', 'CONTEST', 'LIGHTHOUSE', 'CASTLE', 'IARU'],
         newSpecialName: '',
+        configuredSecretKeys: [],
+        secretUnchangedSentinel: '__OM0RX_SECRET_UNCHANGED__',
     },
 
     computed: {
@@ -184,8 +201,8 @@ window.RadioControlConfig = {
 
                 if (data.success) {
                     this.configData = { ...this.configData, ...data.config };
+                    this.captureConfiguredSecrets(data.config);
                     this.syncActivityIntelligenceConfigFromSettings();
-                    console.log('Configuration loaded:', this.configData);
                 }
             } catch (error) {
                 console.error('Failed to load configuration:', error);
@@ -211,16 +228,23 @@ window.RadioControlConfig = {
         },
 
         async saveConfiguration() {
-            console.log('Saving configuration...', this.configData);
+            console.log('Saving configuration');
             this.configMessage = null;
 
             try {
+                const configForSave = { ...this.configData };
+                for (const key of this.configuredSecretKeys || []) {
+                    if (configForSave[key] === '' || configForSave[key] == null ||
+                        (Array.isArray(configForSave[key]) && configForSave[key].length === 0)) {
+                        configForSave[key] = this.secretUnchangedSentinel;
+                    }
+                }
                 const response = await fetch('/api/config', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ config: this.configData }),
+                    body: JSON.stringify({ config: configForSave }),
                 });
 
                 const data = await response.json();
@@ -254,6 +278,17 @@ window.RadioControlConfig = {
                     text: 'Error saving configuration: ' + error.message,
                 };
             }
+        },
+
+        captureConfiguredSecrets(publicConfig = {}) {
+            this.secretUnchangedSentinel = publicConfig.SECRET_UNCHANGED_SENTINEL || this.secretUnchangedSentinel;
+            this.configuredSecretKeys = Object.entries(publicConfig)
+                .filter(([key, value]) => key.endsWith('_CONFIGURED') && value === true)
+                .map(([key]) => key.slice(0, -'_CONFIGURED'.length));
+            for (const key of this.configuredSecretKeys) {
+                this.configData[key] = key === 'CLUSTERS' ? [] : '';
+            }
+            delete this.configData.SECRET_UNCHANGED_SENTINEL;
         },
 
         async testPostgresConnection() {
@@ -905,8 +940,8 @@ window.RadioControlConfig = {
                 if (response.ok) {
                     const data = await response.json();
                     if (data.success && data.config) {
-                        console.log('Configuration loaded:', data.config);
                         this.configData = { ...this.configData, ...data.config };
+                        this.captureConfiguredSecrets(data.config);
                         console.log('ROTOR_ENABLED from config:', this.configData.ROTOR_ENABLED);
                         this.syncWinKeyerConfigFromSettings();
                         this.syncActivityIntelligenceConfigFromSettings();

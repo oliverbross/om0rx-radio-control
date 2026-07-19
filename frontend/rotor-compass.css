@@ -1,0 +1,159 @@
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+
+body[data-rotor-compass-standalone="true"] {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #111;
+    color: #f5f5f5;
+}
+
+.rotor-compass-app,
+.rotor-compass-shell {
+    width: 100%;
+    height: 100%;
+}
+
+.rotor-compass-shell {
+    position: relative;
+    min-width: 260px;
+    min-height: 260px;
+    background:
+        radial-gradient(circle at 50% 45%, rgba(255, 255, 255, 0.08), transparent 42%),
+        linear-gradient(180deg, #202020 0%, #151515 100%);
+}
+
+#rotorCompassCanvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.rotor-compass-toolbar {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    display: flex;
+    gap: 5px;
+    padding: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: rgba(12, 12, 12, 0.72);
+    backdrop-filter: blur(8px);
+}
+
+.rotor-compass-toolbar button {
+    min-width: 32px;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 3px;
+    background: #262626;
+    color: #f5f5f5;
+    font-size: 12px;
+    font-weight: 900;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.rotor-compass-toolbar button:hover {
+    background: #343434;
+}
+
+.rotor-compass-toolbar button.active {
+    border-color: #38bdf8;
+    background: #0c4a6e;
+    color: #e0f2fe;
+}
+
+.rotor-compass-readout {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(58px, 1fr)) minmax(74px, auto);
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(12, 12, 12, 0.68);
+    backdrop-filter: blur(8px);
+}
+
+.rotor-compass-readout > div,
+.rotor-compass-state {
+    min-width: 0;
+}
+
+.rotor-compass-label {
+    display: block;
+    margin-bottom: 3px;
+    color: #a8a8a8;
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1;
+    text-transform: uppercase;
+    letter-spacing: 0;
+}
+
+.rotor-compass-readout strong {
+    display: block;
+    overflow: hidden;
+    color: #fff;
+    font-size: clamp(14px, 4.3vh, 24px);
+    font-weight: 900;
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rotor-compass-state {
+    justify-self: end;
+    max-width: 120px;
+    overflow: hidden;
+    color: #d4d4d4;
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1.15;
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rotor-compass-state.ok {
+    color: #5cff8d;
+}
+
+.rotor-compass-state.warn {
+    color: #ffca5c;
+}
+
+.rotor-compass-state.off {
+    color: #ff7b7b;
+}
+
+@media (max-width: 430px), (max-height: 430px) {
+    .rotor-compass-readout {
+        left: 8px;
+        right: 8px;
+        bottom: 8px;
+        grid-template-columns: repeat(3, minmax(46px, 1fr));
+        gap: 6px;
+        padding: 6px;
+    }
+
+    .rotor-compass-state {
+        grid-column: 1 / -1;
+        justify-self: start;
+        max-width: 100%;
+        text-align: left;
+    }
+}

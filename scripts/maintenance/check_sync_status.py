@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import sqlite3
-import json
 import _bootstrap  # noqa: F401
 from radio_control import config
 
@@ -15,7 +14,7 @@ try:
         print(f"  Row: {row}")
         cursor.execute("PRAGMA table_info(sync_status)")
         columns = cursor.fetchall()
-        print(f"\n  Columns:")
+        print("\n  Columns:")
         for col in columns:
             print(f"    {col[1]}: {col[2]}")
     conn.close()

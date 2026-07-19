@@ -268,18 +268,22 @@ class PostgresSpotsLogger:
         columns = ["country", "total_spots", "unique_callsigns", "bands", "min_freq", "max_freq"]
         return [dict(zip(columns, row)) for row in rows]
 
-    def get_recent_spots(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_recent_spots(self, limit: int = 100, before: str | None = None) -> List[Dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        where = "WHERE received_at < %s" if before else ""
+        params: list[Any] = [before, limit] if before else [limit]
         rows = self._execute_rows(
-            """
+            f"""
             SELECT received_at::text, date_utc::text, time_utc::text,
                    frequency_khz, band, mode, COALESCE(spot_source, 'cluster'),
                    COALESCE(rbl_mode_group, ''), callsign, spotter, country, zone_cq,
                    comment, special_tags
             FROM spots
+            {where}
             ORDER BY received_at DESC
             LIMIT %s
             """,
-            [limit],
+            params,
         )
         columns = [
             "received_at",

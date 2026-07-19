@@ -200,6 +200,34 @@ class ClassifierAPI:
         if data:
             call_worked, call_confirmed = call_overall_from_lookup(data)
             new_band, new_mode, bandmode_conf = call_bandmode_from_lookup(data)
+            resolved_call = str(data.get("callsign") or callsign).strip().upper()
+            try:
+                local_flags = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.qso_status_store.call_flags,
+                        resolved_call,
+                        band,
+                        mode,
+                    ),
+                    timeout=0.75,
+                )
+            except asyncio.TimeoutError:
+                logger.debug(
+                    "Timed out reading call band/mode confirmation cache for %s %s %s",
+                    resolved_call,
+                    band,
+                    mode,
+                )
+                local_flags = None
+            if local_flags is not None:
+                # Wavelog's API applies all account-default confirmation
+                # methods. Spots intentionally accepts only LoTW/paper, which
+                # is derived from the synced QSO rows by the local store.
+                bandmode_conf = local_flags[4]
+            else:
+                # The API flag does not expose which confirmation method
+                # matched, so it cannot safely prove the LoTW/paper-only rule.
+                bandmode_conf = False
             return call_worked, call_confirmed, new_band, new_mode, bandmode_conf
 
         return False, False, True, False, False
@@ -269,16 +297,8 @@ class ClassifierAPI:
         if local_status is not None:
             return local_status
 
-        if not callsign:
-            return (False, False) if allow_unconfirmed_fallback else None
-        
-        # Fallback: Wavelog private_lookup can only prove confirmed, not worked.
-        data = await self._lookup(callsign.upper())
-        if data:
-            dxcc_confirmed, _, _ = dxcc_confirmation_from_lookup(data)
-            if dxcc_confirmed:
-                return True, True
-        
+        # private_lookup does not identify which confirmation method matched,
+        # so it cannot safely satisfy the LoTW/paper-only Spots policy.
         return (False, False) if allow_unconfirmed_fallback else None
     
     async def dxcc_bandmode_flags(self, dxcc: Optional[int], band: str, 
@@ -311,23 +331,10 @@ class ClassifierAPI:
             local_flags = None
         if local_flags is not None:
             return local_flags
-        
-        # Fallback: use Wavelog confirmations as the minimum known worked state.
-        data = await self._lookup(callsign.upper(), band=band, mode=mode)
-        
-        if data:
-            _, band_confirmed, bandmode_conf = dxcc_confirmation_from_lookup(data)
-            
-            if not band_confirmed and not bandmode_conf and not allow_unconfirmed_fallback:
-                return None
 
-            new_band = not band_confirmed
-            new_mode = band_confirmed and not bandmode_conf
-            
-            return new_band, new_mode, bandmode_conf
-        
-        # If lookup fails, do not invent an ATNO/new-band result unless the
-        # caller explicitly accepts unsafe fallbacks.
+        # private_lookup does not identify which confirmation method matched,
+        # so it cannot safely satisfy the LoTW/paper-only Spots policy. Do not
+        # invent a confirmed/new-slot result when the QSO mirror is unavailable.
         return (True, False, False) if allow_unconfirmed_fallback else None
 
     async def grid_flags(self, grid: Optional[str], band: str, mode: str) -> Optional[Tuple[bool, bool, bool]]:

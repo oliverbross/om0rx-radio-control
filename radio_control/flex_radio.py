@@ -6,49 +6,6 @@ import socket
 import threading
 import time
 
-class FlexSpots:
-    def __init__(self, host: str, port: int):
-        self.host = host; self.port = int(port); self.sock=None; self.seq=100
-    def connect(self):
-        try:
-            self.sock = socket.create_connection((self.host, self.port), timeout=3.0)
-            self.sock.settimeout(1.0)
-            try: self.sock.recv(1024); self.sock.recv(1024)
-            except Exception: pass
-            logging.info("Flex TCP connected: %s:%s", self.host, self.port)
-            return True
-        except Exception as e:
-            logging.warning("Flex TCP connect failed: %s", e); self.sock=None; return False
-    @staticmethod
-    def _enc(v:str)->str: return (v or "").replace(" ", "\x7F")
-    def add_spot(self, rx_mhz, callsign, mode, source, spotter, comment, lifetime=3600, priority=3, color=None, ts_epoch=None):
-        if not self.sock: return False
-        self.seq+=1; ts = ts_epoch if ts_epoch is not None else int(time.time())
-        parts=[
-            f"C{self.seq}|spot add", f"rx_freq={rx_mhz:.6f}",
-            f"callsign={self._enc(callsign)}", f"mode={self._enc(mode)}",
-            f"source={self._enc(source)}", f"spotter_callsign={self._enc(spotter)}",
-            f"timestamp={ts}", f"lifetime_seconds={int(lifetime)}",
-            f"priority={int(priority)}", f"comment={self._enc(comment)}",
-        ]
-        if color: parts.append(f"color={color}")
-        try:
-            self.sock.sendall((" ".join(parts) + "\r").encode("ascii", errors="ignore"))
-            try:
-                resp=self.sock.recv(256).decode(errors="ignore").strip()
-                if resp: logging.debug("Flex RESP: %s", resp)
-            except Exception: pass
-            return True
-        except Exception as e:
-            logging.warning("Flex TCP send failed: %s", e); return False
-    def close(self):
-        if self.sock:
-            try: self.sock.close()
-            except: pass
-            self.sock=None
-
-
-
 class FlexCtl:
     """
     Minimal SmartSDR TCP client for one slice (default: Slice A = id 0).
@@ -62,6 +19,34 @@ class FlexCtl:
         '160m': 1.840000, '80m': 3.650000, '60m': 5.357000, '40m': 7.074000,
         '30m': 10.120000, '20m': 14.074000, '17m': 18.100000, '15m': 21.074000,
         '12m': 24.915000, '10m': 28.074000, '6m': 50.313000
+    }
+    BAND_RANGES = {
+        "160m": (1.8, 2.0),
+        "80m": (3.5, 4.0),
+        "60m": (5.0, 5.5),
+        "40m": (7.0, 7.3),
+        "30m": (10.1, 10.15),
+        "20m": (14.0, 14.35),
+        "17m": (18.068, 18.168),
+        "15m": (21.0, 21.45),
+        "12m": (24.89, 24.99),
+        "10m": (28.0, 29.7),
+        "6m": (50.0, 54.0),
+    }
+    DEFAULT_ANTENNA_POLICY = {
+        "enabled": True,
+        "bands": {
+            "160m": "ANT2",
+            "80m": "ANT2",
+            "60m": "ANT2",
+            "40m": "ANT2",
+            "30m": "ANT2",
+            "20m": "ANT1",
+            "17m": "ANT1",
+            "15m": "ANT1",
+            "12m": "ANT1",
+            "10m": "ANT1",
+        },
     }
     
     def __init__(self, host: str, port: int, slice_id: int = 0):
@@ -78,6 +63,10 @@ class FlexCtl:
         self.current_freq = None
         self.current_mode = None
         self.current_volume = None  # Volume/audio_level
+        self.current_rx_ant = None
+        self.current_tx_ant = None
+        self._last_antenna_policy = None
+        self._pending_antenna_policy_freq = None
         # Transmit state tracking (for 2-way sync)
         self.current_rfpower = None
         self.current_tunepower = None
@@ -93,7 +82,197 @@ class FlexCtl:
         self.last_resubscribe_time = 0
         self.last_radio_message_time = 0
         self.last_command_time = 0
+        self.last_tx_active_time = 0
+        # SmartSDR is a byte stream: one recv() may contain several records or
+        # only part of one. Keep framing state across polls and command replies.
+        self._receive_buffer = b""
+        self._pending_lines = []
         logging.info(f"FlexCtl initialized for {host}:{port} slice {slice_id}")
+
+    def _queue_received(self, chunk: bytes) -> None:
+        """Frame complete CR/LF-delimited SmartSDR records from a TCP chunk."""
+        if not chunk:
+            return
+        self._receive_buffer += chunk
+        parts = re.split(rb"[\r\n]+", self._receive_buffer)
+        if self._receive_buffer.endswith((b"\r", b"\n")):
+            self._receive_buffer = b""
+        else:
+            self._receive_buffer = parts.pop() if parts else self._receive_buffer
+        self._pending_lines.extend(
+            part.decode(errors="ignore").strip() for part in parts if part.strip()
+        )
+
+    @staticmethod
+    def band_for_frequency(mhz: float):
+        try:
+            freq = float(mhz)
+        except Exception:
+            return None
+        for band, (lo, hi) in FlexCtl.BAND_RANGES.items():
+            if lo <= freq <= hi:
+                return band
+        return None
+
+    @staticmethod
+    def _normalize_antenna_policy(policy):
+        if not isinstance(policy, dict):
+            policy = {}
+        default = FlexCtl.DEFAULT_ANTENNA_POLICY
+        enabled = policy.get("enabled", default["enabled"])
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
+        bands = policy.get("bands")
+        if not isinstance(bands, dict):
+            bands = {}
+        merged_bands = dict(default["bands"])
+        for band, value in bands.items():
+            clean_band = str(band or "").strip().lower()
+            if clean_band not in FlexCtl.BAND_RANGES:
+                continue
+            if isinstance(value, dict):
+                rx = str(value.get("rx") or value.get("rxAnt") or value.get("antenna") or "").strip().upper()
+                tx = str(value.get("tx") or value.get("txAnt") or value.get("antenna") or rx).strip().upper()
+                if rx or tx:
+                    merged_bands[clean_band] = {"rx": rx or tx, "tx": tx or rx}
+            else:
+                antenna = str(value or "").strip().upper()
+                if antenna:
+                    merged_bands[clean_band] = antenna
+        return {"enabled": bool(enabled), "bands": merged_bands}
+
+    @staticmethod
+    def _policy_entry_to_rx_tx(entry):
+        if isinstance(entry, dict):
+            rx = str(entry.get("rx") or entry.get("rxAnt") or entry.get("antenna") or "").strip().upper()
+            tx = str(entry.get("tx") or entry.get("txAnt") or entry.get("antenna") or rx).strip().upper()
+            if rx or tx:
+                return {"rx": rx or tx, "tx": tx or rx}
+            return None
+        antenna = str(entry or "").strip().upper()
+        if not antenna:
+            return None
+        return {"rx": antenna, "tx": antenna}
+
+    @staticmethod
+    def desired_antennas_for_frequency(mhz: float, policy=None):
+        """Return configured OM0RX SmartSDR RX/TX antenna policy for a frequency."""
+        normalized = FlexCtl._normalize_antenna_policy(policy or FlexCtl.DEFAULT_ANTENNA_POLICY)
+        if not normalized.get("enabled", True):
+            return None
+        band = FlexCtl.band_for_frequency(mhz)
+        if not band:
+            return None
+        entry = normalized.get("bands", {}).get(band)
+        antennas = FlexCtl._policy_entry_to_rx_tx(entry)
+        if not antennas:
+            return None
+        return {"band": band, **antennas}
+
+    def desired_antennas_for_current_config(self, mhz: float):
+        try:
+            from radio_control import config as app_config
+            policy = getattr(app_config, "FLEX_ANTENNA_POLICY", self.DEFAULT_ANTENNA_POLICY)
+        except Exception:
+            policy = self.DEFAULT_ANTENNA_POLICY
+        return self.desired_antennas_for_frequency(mhz, policy)
+
+    @staticmethod
+    def _is_transmitting_state(state) -> bool:
+        return str(state or "").upper() in {"TRANSMITTING", "PTT_REQUESTED"}
+
+    def _tx_active_recently(self) -> bool:
+        """Return whether antenna switching must remain blocked.
+
+        An active TX state never expires heuristically. Unknown state also fails
+        closed until the radio explicitly reports receive/ready.
+        """
+        if self.current_mox is True or self._is_transmitting_state(self.current_interlock_state):
+            return True
+        receive_state = str(self.current_interlock_state or "").upper() in {
+            "READY", "RECEIVE", "NOT_READY", "TIMEOUT", "TX_FAULT"
+        }
+        return self.current_mox is None and not receive_state
+
+    def _record_antenna_values(self, text: str, levels: dict | None = None, state_changed: dict | None = None) -> None:
+        if not text:
+            return
+        m_rx = re.search(r"\brxant=([A-Z0-9_]+)", text)
+        if m_rx:
+            new_rx = m_rx.group(1)
+            if self.current_rx_ant is None or new_rx != self.current_rx_ant:
+                if state_changed is not None:
+                    state_changed["rx_ant"] = new_rx
+                logging.info("FlexCtl: RX ANT CHANGED: %s -> %s", self.current_rx_ant, new_rx)
+            self.current_rx_ant = new_rx
+            if levels is not None:
+                levels["rx_ant"] = new_rx
+
+        m_tx = re.search(r"\b(?:txant|tx_antenna)=([A-Z0-9_]+)", text)
+        if m_tx:
+            new_tx = m_tx.group(1)
+            if self.current_tx_ant is None or new_tx != self.current_tx_ant:
+                if state_changed is not None:
+                    state_changed["tx_ant"] = new_tx
+                logging.info("FlexCtl: TX ANT CHANGED: %s -> %s", self.current_tx_ant, new_tx)
+            self.current_tx_ant = new_tx
+            if levels is not None:
+                levels["tx_ant"] = new_tx
+
+    def enforce_antenna_policy(self, mhz: float | None = None, *, reason: str = "frequency") -> bool:
+        """Keep OM0RX antenna routing consistent across WSJT-Z band changes."""
+        freq = mhz if mhz is not None else self.current_freq
+        desired = self.desired_antennas_for_current_config(freq)
+        if not desired:
+            return True
+        desired_rx = desired["rx"]
+        desired_tx = desired["tx"]
+
+        if self._tx_active_recently():
+            self._pending_antenna_policy_freq = float(freq)
+            logging.info(
+                "FlexCtl antenna policy deferred while TX active: %.6f MHz %s -> rx=%s tx=%s",
+                float(freq),
+                desired["band"],
+                desired_rx,
+                desired_tx,
+            )
+            return False
+
+        needs_rx = self.current_rx_ant != desired_rx
+        needs_tx = self.current_tx_ant != desired_tx
+        cache_key = (round(float(freq), 3), desired["band"], desired_rx, desired_tx)
+        if not needs_rx and not needs_tx and self._last_antenna_policy == cache_key:
+            return True
+
+        logging.info(
+            "FlexCtl antenna policy: %.6f MHz %s -> rx=%s tx=%s (%s, current rx=%s tx=%s)",
+            float(freq),
+            desired["band"],
+            desired_rx,
+            desired_tx,
+            reason,
+            self.current_rx_ant,
+            self.current_tx_ant,
+        )
+        ok = True
+        self._send(f"slice set {self.slice_id} active=1")
+        if needs_rx:
+            ok = self._send(f"slice set {self.slice_id} rxant={desired_rx}") and ok
+            if ok:
+                self.current_rx_ant = desired_rx
+        if needs_tx:
+            tx_ok = self._send(f"slice set {self.slice_id} txant={desired_tx}")
+            if not tx_ok:
+                tx_ok = self._send(f"transmit set tx_antenna={desired_tx}")
+            ok = tx_ok and ok
+            if tx_ok:
+                self.current_tx_ant = desired_tx
+        if ok:
+            self._last_antenna_policy = cache_key
+            self._pending_antenna_policy_freq = None
+            self.last_state_changed.update({"rx_ant": self.current_rx_ant, "tx_ant": self.current_tx_ant})
+        return ok
 
     def connect(self) -> bool:
         """Connect to SmartSDR TCP API if not already connected."""
@@ -104,11 +283,14 @@ class FlexCtl:
                 logging.info(f"FlexCtl connecting to {self.host}:{self.port}...")
                 self.sock = self._socket_mod.create_connection((self.host, self.port), timeout=3.0)
                 self.sock.settimeout(1.0)
+                self._receive_buffer = b""
+                self._pending_lines.clear()
                 
                 # Read version and handle
                 try:
-                    greeting = self.sock.recv(512).decode(errors="ignore")
-                    logging.debug(f"FlexCtl GREETING: {greeting.strip()}")
+                    greeting = self.sock.recv(512)
+                    self._queue_received(greeting)
+                    logging.debug(f"FlexCtl GREETING: {greeting.decode(errors='ignore').strip()}")
                 except Exception as e:
                     logging.warning(f"FlexCtl greeting read error: {e}")
                 
@@ -124,9 +306,11 @@ class FlexCtl:
                 # Test: Try to read subscription confirmation
                 self.sock.settimeout(0.5)
                 try:
-                    test_resp = self.sock.recv(4096).decode(errors="ignore")
+                    test_resp = self.sock.recv(4096)
+                    self._queue_received(test_resp)
                     logging.info(f"POST-SUBSCRIPTION MSG: {test_resp[:300] if test_resp else 'NO RESPONSE'}")
-                    for line in [part.strip() for part in re.split(r"[\r\n]+", test_resp) if part.strip()]:
+                    while self._pending_lines:
+                        line = self._pending_lines.pop(0)
                         self._record_basic_status_from_line(line)
                 except socket.timeout:
                     logging.debug("No subscription confirmation received (timeout)")
@@ -140,6 +324,8 @@ class FlexCtl:
             except Exception as e:
                 logging.error(f"FlexCtl connect FAILED: {e}")
                 self.sock = None
+                self._receive_buffer = b""
+                self._pending_lines.clear()
                 return False
 
     def close(self) -> None:
@@ -155,6 +341,8 @@ class FlexCtl:
     def _record_basic_status_from_line(self, line: str) -> None:
         """Update cached state from async status lines that arrive while sending commands."""
         if "|slice" in line and f"slice {self.slice_id} " in line:
+            self._record_antenna_values(line)
+
             m_mode = re.search(r"\bmode=([A-Z]+)", line)
             if m_mode:
                 self.current_mode = m_mode.group(1)
@@ -179,13 +367,18 @@ class FlexCtl:
                 self.current_interlock_state = m_state.group(1)
                 if self.current_interlock_state == "TRANSMITTING":
                     self.current_mox = True
+                    self.last_tx_active_time = time.time()
                 elif self.current_interlock_state in {"READY", "RECEIVE", "NOT_READY", "TIMEOUT", "TX_FAULT"}:
                     self.current_mox = False
 
         if "|transmit " in line or "|interlock " in line:
+            self._record_antenna_values(line)
+
             m_mox = re.search(r"\bmox=([01])", line)
             if m_mox:
                 self.current_mox = bool(int(m_mox.group(1)))
+                if self.current_mox:
+                    self.last_tx_active_time = time.time()
 
     def _send(self, cmd: str) -> bool:
         """Send command to radio and wait for the matching command response."""
@@ -216,13 +409,15 @@ class FlexCtl:
                 try:
                     while time.time() < deadline:
                         try:
-                            resp = self.sock.recv(4096).decode(errors="ignore")
+                            chunk = self.sock.recv(4096)
                         except socket.timeout:
                             continue
-                        if not resp:
+                        if not chunk:
                             break
                         saw_anything = True
-                        for line in [part.strip() for part in re.split(r"[\r\n]+", resp) if part.strip()]:
+                        self._queue_received(chunk)
+                        while self._pending_lines:
+                            line = self._pending_lines.pop(0)
                             logging.debug(f"FlexCtl RECV: {line}")
                             self._record_basic_status_from_line(line)
                             if not line.startswith(response_prefix):
@@ -239,7 +434,9 @@ class FlexCtl:
 
                 if saw_anything:
                     logging.warning("FlexCtl command '%s' did not receive matching response %s", cmd, response_prefix)
-                return True, ""
+                else:
+                    logging.warning("FlexCtl command '%s' timed out without a response", cmd)
+                return False, ""
             except Exception as e:
                 logging.error(f"FlexCtl send FAILED for '{cmd}': {e}")
                 try:
@@ -268,6 +465,11 @@ class FlexCtl:
         """
         self._io_lock.acquire()
         old_timeout = None
+        import time as _t, re as _re
+        end = _t.time() + float(timeout)
+        buf = b""
+        levels = {}
+        state_changed = {}
         try:
             if not self.connect():
                 logging.warning("FlexCtl get_current_levels: not connected")
@@ -277,15 +479,12 @@ class FlexCtl:
             logging.info("FlexCtl querying radio for current state...")
 
             # Collect responses for a while
-            import time as _t, re as _re
-            end = _t.time() + float(timeout)
-            buf = b""
-            levels = {}
-
             def parse_values(text: str) -> None:
                 """Parse SmartSDR key/value state from a slice/transmit payload."""
                 if not text:
                     return
+                self._record_antenna_values(text, levels)
+
                 m_vol = _re.search(r"\baudio_level=(\d+)", text)
                 if m_vol:
                     levels["audio_level"] = int(m_vol.group(1))
@@ -348,6 +547,8 @@ class FlexCtl:
                 if m_state:
                     levels["interlock_state"] = m_state.group(1)
                     levels["mox"] = levels["interlock_state"] == "TRANSMITTING"
+                    if levels["mox"]:
+                        self.last_tx_active_time = time.time()
 
                 m_rf = _re.search(r"\brfpower=(\d+)", text)
                 if m_rf:
@@ -428,6 +629,7 @@ class FlexCtl:
                         match = _re.search(rf"\|slice\s+{self.slice_id}\s+(.+)$", line)
                         if match:
                             kvs = match.group(1)
+                            self._record_antenna_values(kvs, levels, state_changed)
                             
                             # audio_level (NOT audio_gain)
                             m_vol = _re.search(r"\baudio_level=(\d+)", kvs)
@@ -526,10 +728,14 @@ class FlexCtl:
                     
                     # Parse transmit status: S<handle>|transmit ... or S<handle>|interlock ...
                     if "|transmit " in line or "|interlock " in line:
+                        self._record_antenna_values(line, levels)
+
                         m_state = _re.search(r"\bstate=([A-Z_]+)", line)
                         if m_state:
                             levels["interlock_state"] = m_state.group(1)
                             levels["mox"] = levels["interlock_state"] == "TRANSMITTING"
+                            if levels["mox"]:
+                                self.last_tx_active_time = _t.time()
                             logging.debug(f"  Parsed interlock_state={levels['interlock_state']}")
 
                         # rfpower
@@ -537,25 +743,25 @@ class FlexCtl:
                         if m_rf:
                             levels["rfpower"] = int(m_rf.group(1))
                             logging.debug(f"  Parsed rfpower={levels['rfpower']}")
-                        
+
                         # tunepower (NOT tune_power)
                         m_tune = _re.search(r"\btunepower=(\d+)", line)
                         if m_tune:
                             levels["tunepower"] = int(m_tune.group(1))
                             logging.debug(f"  Parsed tunepower={levels['tunepower']}")
-                        
+
                         # miclevel (NOT mic_level)
                         m_mic = _re.search(r"\bmiclevel=(\d+)", line)
                         if m_mic:
                             levels["miclevel"] = int(m_mic.group(1))
                             logging.debug(f"  Parsed miclevel={levels['miclevel']}")
-                        
+
                         # vox_enable (0 or 1)
                         m_vox = _re.search(r"\bvox_enable=([01])", line)
                         if m_vox:
                             levels["vox_enable"] = bool(int(m_vox.group(1)))
                             logging.debug(f"  Parsed vox_enable={levels['vox_enable']}")
-                        
+
                         # break_in
                         m_breakin = _re.search(r"\bbreak_in=([01])", line)
                         if m_breakin:
@@ -566,18 +772,20 @@ class FlexCtl:
                         m_mox = _re.search(r"\bmox=([01])", line)
                         if m_mox:
                             levels["mox"] = bool(int(m_mox.group(1)))
+                            if levels["mox"]:
+                                self.last_tx_active_time = _t.time()
                             logging.debug(f"  Parsed mox={levels['mox']}")
-                        
+
                         # monitor (mon)
                         m_mon = _re.search(r"\bmon=([01])", line)
                         if m_mon:
                             levels["mon"] = int(m_mon.group(1))
-                        
+
                         # monitor gain
                         m_mon_gain = _re.search(r"\bmon_gain_sb=(\d+)", line)
                         if m_mon_gain:
                             levels["mon"] = int(m_mon_gain.group(1))
-                
+
             except Exception as e:
                 # Timeout is normal
                 logging.debug(f"FlexCtl get_current_levels recv: {e}")
@@ -593,6 +801,10 @@ class FlexCtl:
             self.current_mode = levels["mode"]
         if "audio_level" in levels:
             self.current_volume = levels["audio_level"]
+        if "rx_ant" in levels:
+            self.current_rx_ant = levels["rx_ant"]
+        if "tx_ant" in levels:
+            self.current_tx_ant = levels["tx_ant"]
         if "rfpower" in levels:
             self.current_rfpower = levels["rfpower"]
         if "tunepower" in levels:
@@ -605,6 +817,8 @@ class FlexCtl:
             self.current_mox = levels["mox"]
         if "interlock_state" in levels:
             self.current_interlock_state = levels["interlock_state"]
+        if self.current_freq is not None:
+            self.enforce_antenna_policy(self.current_freq, reason="snapshot poll")
         
         logging.info(f"FlexCtl current state: {levels}")
         try:
@@ -642,6 +856,7 @@ class FlexCtl:
         if ok:
             self.current_freq = f
             self.last_command_time = time.time()
+            self.enforce_antenna_policy(f, reason="explicit tune")
         return ok
 
     def set_band(self, band: str) -> bool:
@@ -808,9 +1023,9 @@ class FlexCtl:
         
         # If level > 0, enable monitor first
         if level > 0 and auto_enable:
-            self._send(f"transmit set mon=1")
+            self._send("transmit set mon=1")
         elif level == 0:
-            self._send(f"transmit set mon=0")
+            self._send("transmit set mon=0")
         
         return self._send(f"transmit set mon_gain_sb={level}")
     
@@ -876,18 +1091,24 @@ class FlexCtl:
             
             while True:
                 try:
-                    chunk = self.sock.recv(4096)
-                    if not chunk:
-                        logging.warning("FlexCtl socket closed by SmartSDR")
-                        try:
-                            self.sock.close()
-                        except Exception:
-                            pass
-                        self.sock = None
-                        return False
-                    resp = chunk.decode(errors="ignore").strip()
-                    if not resp:
-                        break
+                    if self._pending_lines:
+                        resp = self._pending_lines.pop(0)
+                    else:
+                        chunk = self.sock.recv(4096)
+                        if not chunk:
+                            logging.warning("FlexCtl socket closed by SmartSDR")
+                            try:
+                                self.sock.close()
+                            except Exception:
+                                pass
+                            self.sock = None
+                            self._receive_buffer = b""
+                            self._pending_lines.clear()
+                            return False
+                        self._queue_received(chunk)
+                        if not self._pending_lines:
+                            continue
+                        resp = self._pending_lines.pop(0)
                     
                     messages_read += 1
                     self.last_radio_message_time = _time.time()
@@ -895,9 +1116,11 @@ class FlexCtl:
                     
                     # Parse ALL subscription updates for mode/freq/filter/band changes
                     if "|slice" in resp and f"slice {self.slice_id} " in resp:
-                        logging.debug(f"FlexCtl: Processing slice message")
+                        logging.debug("FlexCtl: Processing slice message")
                         # LOG ACTUAL MESSAGE for debugging - this will show us what fields are in it!
                         logging.info(f"🔍 SLICE MESSAGE: {resp[:200]}")
+                        self._record_antenna_values(resp, state_changed=state_changed)
+                        antenna_changed = "rx_ant" in state_changed or "tx_ant" in state_changed
                         # Update volume (audio_level) - track this for 2-way sync
                         m_vol = _re.search(r"\baudio_level=(\d+)", resp)
                         if m_vol:
@@ -938,8 +1161,11 @@ class FlexCtl:
                                     logging.info(f"🎯 FREQ INITIALIZED: {new_freq:.6f} MHz")
                                 state_changed['freq'] = new_freq
                             self.current_freq = new_freq
+                            self.enforce_antenna_policy(new_freq, reason="radio frequency update")
                         else:
-                            logging.debug(f"❌ NO FREQUENCY FIELD FOUND in slice message")
+                            logging.debug("❌ NO FREQUENCY FIELD FOUND in slice message")
+                            if antenna_changed and self.current_freq:
+                                self.enforce_antenna_policy(self.current_freq, reason="radio antenna update")
                         
                         # Update filter_lo
                         m_flo = _re.search(r"\bfilter_lo=(-?\d+)", resp)
@@ -1027,6 +1253,8 @@ class FlexCtl:
                     
                     # Parse transmit/interlock updates for mic/drive/tune power and MOX state
                     if "|transmit " in resp or "|interlock " in resp:
+                        self._record_antenna_values(resp, state_changed=state_changed)
+
                         m_state = _re.search(r"\bstate=([A-Z_]+)", resp)
                         if m_state:
                             new_state = m_state.group(1)
@@ -1044,6 +1272,16 @@ class FlexCtl:
                                 state_changed['mox'] = new_mox
                             if new_mox is not None:
                                 self.current_mox = new_mox
+                                if new_mox:
+                                    self.last_tx_active_time = _time.time()
+                            if (
+                                not self.current_mox
+                                and self._pending_antenna_policy_freq is not None
+                            ):
+                                self.enforce_antenna_policy(
+                                    self._pending_antenna_policy_freq,
+                                    reason="deferred after TX",
+                                )
 
                         # MOX state (transmit on/off)
                         m_mox = _re.search(r"\bmox=([01])", resp)
@@ -1054,6 +1292,13 @@ class FlexCtl:
                                     logging.info(f"FlexCtl: MOX STATE CHANGED: {self.current_mox} → {new_mox}")
                                 state_changed['mox'] = new_mox
                             self.current_mox = new_mox
+                            if self.current_mox:
+                                self.last_tx_active_time = _time.time()
+                            if not self.current_mox and self._pending_antenna_policy_freq is not None:
+                                self.enforce_antenna_policy(
+                                    self._pending_antenna_policy_freq,
+                                    reason="deferred after MOX",
+                                )
                     
                     # Parse transmit/interlock updates for mic/drive/tune power changes
                     if "|transmit " in resp or "|interlock " in resp:
@@ -1131,7 +1376,13 @@ class FlexCtl:
             
             # No messages during a poll is normal when the operator is not
             # changing radio state. Keep the TCP client connected.
-            
+
+            if self._pending_antenna_policy_freq is not None and not self._tx_active_recently():
+                self.enforce_antenna_policy(
+                    self._pending_antenna_policy_freq,
+                    reason="deferred poll retry",
+                )
+
             # Return state_changed dict for UI updates
             self.last_state_changed = state_changed
             

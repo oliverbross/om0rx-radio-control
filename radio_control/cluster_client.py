@@ -324,7 +324,7 @@ class ClusterManager:
                 if await self._try_connect_cluster(cluster_info):
                     return True
                 # Primary failed, continue to try failover clusters
-                logger.warning(f"⚠️  Primary cluster failed, trying failover...")
+                logger.warning("⚠️  Primary cluster failed, trying failover...")
                 break
         
         # If primary failed or no primary defined, try failover clusters in order
@@ -403,7 +403,6 @@ class ClusterManager:
                     self.active_client = None
                 
                 # If we haven't exhausted all clusters, try immediate failover
-                available_clusters = sum(1 for c in self.cluster_clients if c['status'] != 'connected')
                 if connection_failures <= len(self.cluster_clients):
                     logger.warning(f"🔄 Attempting failover (attempt {connection_failures}/{len(self.cluster_clients)})")
                     await asyncio.sleep(2)  # Brief delay before failover attempt

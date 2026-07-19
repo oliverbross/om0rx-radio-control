@@ -51,6 +51,22 @@ class _FakeCtyResolver:
         return {}
 
 
+class _FakeQRZClient:
+    async def lookup(self, callsign):
+        if callsign == "EA1AA":
+            return {
+                "success": True,
+                "fname": "Test Operator",
+                "grid": "IN80",
+                "country": "Spain",
+                "state": "MD",
+                "cqzone": 14,
+                "ituzone": 37,
+                "email": "ea1aa@example.test",
+            }
+        return {"success": False}
+
+
 @pytest.fixture(autouse=True)
 def _disable_real_recent_wavelog_lookup(monkeypatch):
     import services.qso_logging as qlog
@@ -94,7 +110,7 @@ def test_wsjtx_target_builder_normalizes_cluster_ft2_spot():
     assert target["enableTx"] is False
 
 
-def test_wsjtx_logged_adif_is_submitted_to_wavelog_as_adif(monkeypatch, tmp_path):
+def test_wsjtx_bridge_logged_adif_is_submitted_once_as_enriched_qso(monkeypatch, tmp_path):
     import services.qso_logging as qlog
 
     service = WSJTXService()
@@ -103,7 +119,7 @@ def test_wsjtx_logged_adif_is_submitted_to_wavelog_as_adif(monkeypatch, tmp_path
     qso_status = _FakeQsoStatusStore()
     service.set_dependencies(
         wavelog,
-        None,
+        _FakeQRZClient(),
         None,
         cty_resolver=_FakeCtyResolver(),
         adif_handler=backup,
@@ -113,6 +129,7 @@ def test_wsjtx_logged_adif_is_submitted_to_wavelog_as_adif(monkeypatch, tmp_path
 
     result = asyncio.run(service.log_qso({
         "source": "wsjtx-bridge",
+        "async_upload": True,
         "adif_text": (
             "<call:5>EA1AA <gridsquare:4>IN80 <freq:6>14.074 "
             "<band:3>20m <mode:3>FT8 <qso_date:8>20260604 "
@@ -121,9 +138,13 @@ def test_wsjtx_logged_adif_is_submitted_to_wavelog_as_adif(monkeypatch, tmp_path
     }))
 
     assert result["success"] is True
-    assert len(wavelog.adif_calls) == 1
-    assert wavelog.qso_calls == []
-    assert "<qso_date:8>20260604" in wavelog.adif_calls[0]
+    assert wavelog.adif_calls == []
+    assert len(wavelog.qso_calls) == 1
+    assert wavelog.qso_calls[0]["callsign"] == "EA1AA"
+    assert wavelog.qso_calls[0]["name"] == "Test Operator"
+    assert wavelog.qso_calls[0]["country"] == "Spain"
+    assert wavelog.qso_calls[0]["state"] == "MD"
+    assert wavelog.qso_calls[0]["email"] == "ea1aa@example.test"
     assert backup.records[0]["callsign"] == "EA1AA"
     assert backup.records[0]["frequency"] == 14.074
     assert backup.records[0]["band"] == "20m"
@@ -177,6 +198,7 @@ def test_wsjtx_logged_adif_marks_automation_target_complete(monkeypatch, tmp_pat
 
     result = asyncio.run(service.log_qso({
         "source": "wsjtx-bridge",
+        "async_upload": True,
         "adif_text": (
             "<call:5>CS2TU <gridsquare:4>IN61 <freq:6>21.074 "
             "<band:3>15m <mode:3>FT8 <qso_date:8>20260605 "
@@ -209,6 +231,7 @@ def test_wsjtx_logged_adif_duplicate_is_ignored(monkeypatch, tmp_path):
 
     payload = {
         "source": "wsjtx-bridge",
+        "async_upload": True,
         "adif_text": (
             "<call:5>EA1AA <gridsquare:4>IN80 <freq:6>14.074 "
             "<band:3>20m <mode:3>FT8 <qso_date:8>20260604 "
@@ -222,7 +245,7 @@ def test_wsjtx_logged_adif_duplicate_is_ignored(monkeypatch, tmp_path):
     assert first["success"] is True
     assert second["success"] is True
     assert second["duplicate"] is True
-    assert len(wavelog.adif_calls) == 1
+    assert len(wavelog.qso_calls) == 1
     assert len(backup.records) == 1
     assert qso_status.records[-1]["callsign"] == "EA1AA"
 
@@ -244,6 +267,7 @@ def test_wsjtx_logged_adif_duplicate_with_shifted_time_and_reports_is_ignored(mo
 
     first = asyncio.run(service.log_qso({
         "source": "wsjtx-bridge",
+        "async_upload": True,
         "adif_text": (
             "<call:5>EA1AA <gridsquare:4>IN80 <freq:6>14.074 "
             "<band:3>20m <mode:3>FT8 <qso_date:8>20260604 "
@@ -252,6 +276,7 @@ def test_wsjtx_logged_adif_duplicate_with_shifted_time_and_reports_is_ignored(mo
     }))
     second = asyncio.run(service.log_qso({
         "source": "wsjtx-bridge",
+        "async_upload": True,
         "adif_text": (
             "<call:5>EA1AA <gridsquare:4>IN80 <freq:6>14.074 "
             "<band:3>20m <mode:3>FT8 <qso_date:8>20260604 "
@@ -262,7 +287,7 @@ def test_wsjtx_logged_adif_duplicate_with_shifted_time_and_reports_is_ignored(mo
     assert first["success"] is True
     assert second["success"] is True
     assert second["duplicate"] is True
-    assert len(wavelog.adif_calls) == 1
+    assert len(wavelog.qso_calls) == 1
     assert len(backup.records) == 1
 
 
@@ -307,6 +332,7 @@ def test_wsjtx_adif_and_backend_completion_race_logs_once(monkeypatch, tmp_path)
         return await asyncio.gather(
             service.log_qso({
                 "source": "wsjtx-bridge",
+                "async_upload": True,
                 "adif_text": (
                     "<call:5>M6OTU <gridsquare:4>IO84 <freq:6>24.915 "
                     "<band:3>12m <mode:3>FT8 <qso_date:8>20260605 "
@@ -358,6 +384,7 @@ def test_wsjtx_mfsk_submode_ft4_and_backend_ft4_log_once(monkeypatch, tmp_path):
 
     first = asyncio.run(service.log_qso({
         "source": "wsjtx-bridge",
+        "async_upload": True,
         "adif_text": (
             "<call:5>9A4AA <gridsquare:4>JN75 <freq:6>7.0475 "
             "<band:3>40m <mode:4>MFSK <submode:3>FT4 <qso_date:8>20260605 "
@@ -412,6 +439,7 @@ def test_wsjtx_logged_adif_skips_when_recent_wavelog_row_exists(monkeypatch, tmp
 
     result = asyncio.run(service.log_qso({
         "source": "wsjtx-bridge",
+        "async_upload": True,
         "adif_text": (
             "<call:5>M6OTU <gridsquare:4>IO84 <freq:6>24.915 "
             "<band:3>12m <mode:3>FT8 <qso_date:8>20260605 "

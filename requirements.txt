@@ -7,6 +7,7 @@ websockets>=13.0
 aiohttp>=3.10.0
 httpx>=0.28.0
 requests>=2.32.0
+defusedxml>=0.7.1
 
 # Database and local log cache
 duckdb>=1.1.0

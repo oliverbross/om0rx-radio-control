@@ -224,9 +224,125 @@ def test_wsjtx_decode_ingest_drains_recent_decode_buffer(monkeypatch):
     target = asyncio.run(background_tasks.ingest_latest_wsjtx_decode_once())
 
     assert target is not None
-    assert service.wsjtx_ingested_decodes == 2
+    assert service.wsjtx_ingested_decodes == 1
     assert len(service.wsjtx_seen_decode_keys) == 2
-    assert {item["call"] for item in controller.status()["targets"]} == {"E51ABC", "EA1AA"}
+    assert {item["call"] for item in controller.status()["targets"]} == {"E51ABC"}
+
+
+def test_wsjtx_planner_runs_automatically_when_idle(monkeypatch):
+    import services.ft8_service as ft8_service_module
+    import services.wsjtx as wsjtx_module
+
+    context = SimpleNamespace(classifier=None, cty_resolver=None)
+    service = background_tasks.configure_background_tasks(context, noop_status, noop_spots)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({"automation": {
+        "enabled": True, "spotHuntEnabled": True, "bandHopping": True,
+    }})
+    monkeypatch.setattr(
+        ft8_service_module,
+        "get_ft8_service",
+        lambda: SimpleNamespace(automation_controller=controller),
+    )
+    monkeypatch.setattr(
+        wsjtx_module,
+        "get_wsjtx_service",
+        lambda: SimpleNamespace(get_bridge_status=lambda: {
+            "stats": {"lastStatus": {"mode": "FT8", "band": "20m", "qsoState": "idle"}},
+        }),
+    )
+    posted = []
+    monkeypatch.setattr(
+        background_tasks,
+        "_post_wsjtx_planner_tick",
+        lambda payload: posted.append(payload) or {"success": True, "action": "idle"},
+    )
+
+    result = asyncio.run(background_tasks.run_wsjtx_automation_planner_once())
+
+    assert result["action"] == "idle"
+    assert posted[0]["automation"]["autoCall"] is True
+    assert posted[0]["automation"]["watchdogFT8"] == 2
+    assert service.wsjtx_planner_last_error is None
+
+
+def test_wsjtx_planner_defers_priority_until_current_qso_finishes(monkeypatch):
+    import services.ft8_service as ft8_service_module
+    import services.wsjtx as wsjtx_module
+
+    context = SimpleNamespace(classifier=None, cty_resolver=None)
+    background_tasks.configure_background_tasks(context, noop_status, noop_spots)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({"automation": {"enabled": True}})
+    monkeypatch.setattr(
+        ft8_service_module,
+        "get_ft8_service",
+        lambda: SimpleNamespace(automation_controller=controller),
+    )
+    monkeypatch.setattr(
+        wsjtx_module,
+        "get_wsjtx_service",
+        lambda: SimpleNamespace(get_bridge_status=lambda: {
+            "stats": {
+                "lastStatus": {"mode": "FT8", "band": "20m", "qsoState": "in_qso"},
+                "lastStatusAgeMs": 1_000,
+            },
+        }),
+    )
+    monkeypatch.setattr(
+        background_tasks,
+        "_post_wsjtx_planner_tick",
+        lambda _payload: (_ for _ in ()).throw(AssertionError("planner must defer")),
+    )
+
+    result = asyncio.run(background_tasks.run_wsjtx_automation_planner_once())
+
+    assert result == {"success": True, "action": "deferred", "reason": "finish-current-qso"}
+
+
+def test_wsjtx_planner_ignores_stale_busy_status_and_resumes(monkeypatch):
+    import services.ft8_service as ft8_service_module
+    import services.wsjtx as wsjtx_module
+
+    context = SimpleNamespace(classifier=None, cty_resolver=None)
+    background_tasks.configure_background_tasks(context, noop_status, noop_spots)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({"automation": {"enabled": True, "bandHopping": True}})
+    controller.transition_active_qso("calling", reason="old-wsjtz-heartbeat")
+    monkeypatch.setattr(
+        ft8_service_module,
+        "get_ft8_service",
+        lambda: SimpleNamespace(automation_controller=controller),
+    )
+    monkeypatch.setattr(
+        wsjtx_module,
+        "get_wsjtx_service",
+        lambda: SimpleNamespace(get_bridge_status=lambda: {
+            "stats": {
+                "lastStatus": {
+                    "mode": "FT8",
+                    "band": "20m",
+                    "qsoState": "calling",
+                    "txEnabled": False,
+                    "transmitting": True,
+                },
+                "lastStatusAgeMs": 180_000,
+            },
+        }),
+    )
+    posted = []
+    monkeypatch.setattr(
+        background_tasks,
+        "_post_wsjtx_planner_tick",
+        lambda payload: posted.append(payload) or {"success": True, "action": "idle"},
+    )
+
+    result = asyncio.run(background_tasks.run_wsjtx_automation_planner_once())
+
+    assert result["action"] == "idle"
+    assert posted
+    assert controller.active_qso_state == "idle"
+    assert controller.last_decision["reason"] == "stale-wsjtx-status"
 
 
 if __name__ == "__main__":

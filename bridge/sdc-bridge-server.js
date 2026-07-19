@@ -37,10 +37,14 @@ const TCP_PORT = parseInt(process.env.TCP_PORT || '12166');
 const WSJTX_UDP_PORT = parseInt(process.env.WSJTX_UDP_PORT || '2237');
 const WSJTX_UDP_MULTICAST = process.env.WSJTX_UDP_MULTICAST || '224.0.0.1';
 const WS_PORT = parseInt(process.env.WS_PORT || '8091');
+const WS_HOST = process.env.WS_HOST || '127.0.0.1';
 const WSJTX_COMMAND_PORT = parseInt(process.env.WSJTX_COMMAND_PORT || '8092');
 const WSJTX_ENABLED = process.env.WSJTX_ENABLED !== 'false';
 const BRIDGE_TEST_MODE = process.env.OM0RX_BRIDGE_TEST_MODE === '1';
 const OM0RX_BACKEND_URL = (process.env.OM0RX_BACKEND_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '');
+const CONTROL_TOKEN = process.env.WSJTX_BRIDGE_TOKEN || process.env.CONTROL_TOKEN || '';
+const ALLOWED_ORIGINS = new Set((process.env.BRIDGE_ALLOWED_ORIGINS || 'http://127.0.0.1:8080,http://localhost:8080')
+  .split(',').map(value => value.trim().replace(/\/+$/, '')).filter(Boolean));
 const LOGGED_QSO_RETRY_INTERVAL_MS = parseInt(process.env.WSJTX_LOGGED_QSO_RETRY_INTERVAL_MS || '15000');
 const LOGGED_QSO_RETRY_BATCH_SIZE = Math.max(1, parseInt(process.env.WSJTX_LOGGED_QSO_RETRY_BATCH_SIZE || '25'));
 const LOGGED_QSO_PENDING_PATH = process.env.WSJTX_LOGGED_QSO_PENDING_PATH
@@ -168,7 +172,10 @@ function broadcast(data) {
   
   if (count > 0 && data.source !== 'sdc') {
     // Log WSJT-X broadcasts
-    if (data.type === 'LoggedAdif') {
+    if (data.type === 'wsjtx_log_result') {
+      const state = data.success ? 'OK' : 'FAILED';
+      console.log(`📤 Broadcast WSJT-X log result to ${count} client(s): ${state} ${data.qso_data?.callsign || data.dxCall || ''}`);
+    } else if (data.type === 'LoggedAdif') {
       console.log(`📤 Broadcast LoggedAdif to ${count} client(s): ${data.dxCall} @ ${(data.dialFrequency/1e6).toFixed(3)} MHz`);
     } else if (data.type === 'Status' && data.dxCall) {
       console.log(`📤 Broadcast Status to ${count} client(s): Working ${data.dxCall}`);
@@ -253,12 +260,24 @@ function normalizeWsjtxQsoState(value) {
     : '';
 }
 
+function txMessageLooksLikeQsoProgress(message = '') {
+  const tokens = String(message || '').trim().toUpperCase().split(/\s+/).filter(Boolean);
+  if (tokens.length < 3) return false;
+  const last = tokens[tokens.length - 1];
+  return last === 'RRR'
+    || last === 'RR73'
+    || last === '73'
+    || /^R?[+-]\d{1,2}$/.test(last);
+}
+
 function deriveWsjtxQsoState(msg = {}) {
   const explicit = normalizeWsjtxQsoState(msg.qsoState || msg.qso_state || msg.om0rxQsoState);
   if (explicit) return explicit;
   if (msg.watchdogTimeout) return 'blocked';
   if (msg.transmitting) return 'calling';
-  if (msg.txEnabled && msg.dxCall) return 'in_qso';
+  if (msg.txEnabled && msg.dxCall) {
+    return txMessageLooksLikeQsoProgress(msg.txMessage || msg.message) ? 'in_qso' : 'calling';
+  }
   return 'idle';
 }
 
@@ -347,13 +366,21 @@ function startWebSocketServer() {
     return wss;
   }
 
-  wss = new WebSocketServer({ port: WS_PORT });
-  console.log(`🔌 WebSocket server started on ws://localhost:${WS_PORT}`);
+  wss = new WebSocketServer({ host: WS_HOST, port: WS_PORT });
+  console.log(`🔌 WebSocket server started on ws://${WS_HOST}:${WS_PORT}`);
   console.log(`📡 SDC Skimmer bridge: tcp://${TCP_HOST}:${TCP_PORT}`);
   if (WSJTX_ENABLED) console.log(`📡 WSJT-X UDP listener: port ${WSJTX_UDP_PORT} (multicast: ${WSJTX_UDP_MULTICAST})`);
 
   // Handle WebSocket connections
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, request) => {
+    const origin = String(request.headers.origin || '').replace(/\/+$/, '');
+    const requestUrl = new URL(request.url || '/', `ws://${request.headers.host || '127.0.0.1'}`);
+    const suppliedToken = request.headers['x-om0rx-control-token'] || requestUrl.searchParams.get('control_token') || '';
+    const trusted = (!origin || ALLOWED_ORIGINS.has(origin)) && (!CONTROL_TOKEN || suppliedToken === CONTROL_TOKEN);
+    if (!trusted) {
+      ws.close(1008, 'Station control access denied');
+      return;
+    }
     console.log(`👤 WebSocket client connected. Total: ${wss.clients.size}`);
     ws.on('message', (raw) => {
       let request = null;
@@ -738,8 +765,7 @@ function sendJson(res, status, payload) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(data),
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, X-OM0RX-Control-Token',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
   });
   res.end(data);
@@ -759,6 +785,7 @@ function postJson(url, payload, timeoutMs = 5000) {
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(data),
+        ...(CONTROL_TOKEN ? { 'X-OM0RX-Control-Token': CONTROL_TOKEN } : {}),
       },
       timeout: timeoutMs,
     }, (res) => {
@@ -803,6 +830,54 @@ function buildLoggedQsoUpload(loggedData) {
     source: 'wsjtx-bridge',
     async_upload: true,
   };
+}
+
+function loggedQsoResultSucceeded(body = {}) {
+  if (!body || typeof body !== 'object') return false;
+  if (body.duplicate && body.success) return true;
+  if (body.wavelog && body.wavelog.success) return true;
+  return Boolean(body.success && body.outbox_queued);
+}
+
+function buildLoggedQsoResultEvent(payload, uploadEntry = {}) {
+  const body = uploadEntry.result && typeof uploadEntry.result === 'object' ? uploadEntry.result : {};
+  const qso = body.qso_data && typeof body.qso_data === 'object' ? body.qso_data : {};
+  const success = Boolean(uploadEntry.success && loggedQsoResultSucceeded(body));
+  const message = body.message
+    || body.wavelog?.message
+    || body.wavelog?.error
+    || uploadEntry.error
+    || (success ? 'QSO logged to Wavelog' : 'QSO log failed');
+
+  return {
+    type: 'wsjtx_log_result',
+    source: 'wsjtx',
+    success,
+    status: success ? 'success' : 'error',
+    backend_uploaded: Boolean(uploadEntry.success),
+    queued: Boolean(body.outbox_queued || uploadEntry.queued),
+    retry: Boolean(uploadEntry.retry),
+    statusCode: uploadEntry.statusCode || null,
+    message,
+    qso_data: {
+      callsign: qso.callsign || payload.call || '',
+      frequency: qso.frequency || (payload.frequency_hz ? Number(payload.frequency_hz) / 1_000_000 : null),
+      mode: qso.mode || payload.mode || 'FT8',
+      gridsquare: qso.gridsquare || payload.grid || '',
+      rst_sent: qso.rst_sent || payload.rst_sent || '',
+      rst_received: qso.rst_received || payload.rst_received || '',
+      country: qso.country || '',
+      continent: qso.continent || '',
+    },
+    wavelog: body.wavelog || null,
+    result: body,
+    ts: Date.now(),
+  };
+}
+
+function broadcastLoggedQsoResult(payload, uploadEntry) {
+  if (!payload) return;
+  broadcast(buildLoggedQsoResultEvent(payload, uploadEntry));
 }
 
 function loggedQsoIdentity(payload) {
@@ -893,6 +968,9 @@ async function retryLoggedQsoUploadItem(item) {
   item.attempts = (item.attempts || 0) + 1;
   try {
     const result = await postJson(`${OM0RX_BACKEND_URL}/api/wsjtx/log-qso`, item.payload, 15000);
+    if (!loggedQsoResultSucceeded(result.body)) {
+      throw new Error(result.body?.message || result.body?.error || 'Backend did not durably accept QSO');
+    }
     loggedQsoUploadQueue = loggedQsoUploadQueue.filter(entry => entry !== item);
     persistLoggedQsoUploadQueue();
     wsjtxStats.loggedUploads += 1;
@@ -906,6 +984,7 @@ async function retryLoggedQsoUploadItem(item) {
       result: result.body,
       retry: true,
     };
+    broadcastLoggedQsoResult(item.payload, wsjtxStats.lastLoggedUpload);
     console.log(`✅ Retried WSJT-X logged QSO upload succeeded: ${item.payload.call}`);
     return true;
   } catch (error) {
@@ -963,6 +1042,9 @@ async function uploadLoggedQsoToBackend(loggedData) {
   };
   try {
     const result = await postJson(`${OM0RX_BACKEND_URL}/api/wsjtx/log-qso`, payload, 15000);
+    if (!loggedQsoResultSucceeded(result.body)) {
+      throw new Error(result.body?.message || result.body?.error || 'Backend did not durably accept QSO');
+    }
     uploadEntry.success = true;
     uploadEntry.statusCode = result.statusCode;
     uploadEntry.result = result.body;
@@ -970,11 +1052,13 @@ async function uploadLoggedQsoToBackend(loggedData) {
     console.log(`✅ WSJT-X logged QSO uploaded to OM0RX backend: ${payload.call}`);
   } catch (error) {
     uploadEntry.error = error.message || String(error);
+    uploadEntry.queued = true;
     wsjtxStats.loggedUploadErrors += 1;
     enqueueLoggedQsoUpload(payload, uploadEntry.error);
     console.warn(`⚠️  WSJT-X logged QSO backend upload failed for ${payload.call}: ${uploadEntry.error}`);
   } finally {
     wsjtxStats.lastLoggedUpload = uploadEntry;
+    broadcastLoggedQsoResult(payload, uploadEntry);
     addWsjtxTimeline({
       direction: 'out',
       type: 'logged_upload',
@@ -1017,6 +1101,12 @@ function scheduleLoggedQsoUpload(messageType, loggedData) {
 
 function startWsjtxCommandServer() {
   const server = http.createServer(async (req, res) => {
+    const origin = String(req.headers.origin || '').replace(/\/+$/, '');
+    const suppliedToken = req.headers['x-om0rx-control-token'] || '';
+    if ((origin && !ALLOWED_ORIGINS.has(origin)) || (CONTROL_TOKEN && suppliedToken !== CONTROL_TOKEN)) {
+      sendJson(res, 403, { success: false, error: 'Station control access denied' });
+      return;
+    }
     if (req.method === 'OPTIONS') {
       sendJson(res, 200, { ok: true });
       return;
@@ -1110,6 +1200,10 @@ export function __getWsjtxStatusForTest() {
 
 export function __buildLoggedQsoUploadForTest(loggedData) {
   return buildLoggedQsoUpload(loggedData);
+}
+
+export function __buildLoggedQsoResultEventForTest(payload, uploadEntry = {}) {
+  return buildLoggedQsoResultEvent(payload, uploadEntry);
 }
 
 export function __deriveWsjtxQsoStateForTest(msg = {}) {

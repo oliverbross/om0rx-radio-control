@@ -1,5 +1,20 @@
+diff --git a/Audio/soundin.cpp b/Audio/soundin.cpp
+index affb81047b532afe1844cc92a668dccd9c4385f1..ea10d4c41395f505b72b9d3ee2e7bcd2d8f952c1 100644
+--- a/Audio/soundin.cpp
++++ b/Audio/soundin.cpp
+@@ -187,8 +187,8 @@ void SoundInput::reset (bool report_dropped_frames)
+ //                        << m_stream->format ().framesForDuration (lost_usec)
+ //                        << " (" << std::setprecision (4) << lost_usec / 1.e6 << " S)");
+ //            }
+-//          else if (std::abs (lost_usec) > 5 * 48000)
+-          if (std::abs (lost_usec) > 5 * 48000)
++          // lost_usec is measured in microseconds, not 48 kHz samples.
++          if (std::abs (lost_usec) > 5 * 1000000ll)
+             {
+               LOG_ERROR ("Detected excessive dropped audio source samples: "
+                         << m_stream->format ().framesForDuration (lost_usec)
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 4994d0d..3bb1927 100644
+index 4994d0d79a851528978bcb0f272f9168a1536212..c4466179808e53779a2ce350aede9ccbf6ce6625 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -132,6 +132,9 @@ option (WSJT_RIG_NONE_CAN_SPLIT "Allow split operation with \"None\" as rig.")
@@ -17,7 +32,7 @@ index 4994d0d..3bb1927 100644
      killbyname.cpp
      )
 +endif (WIN32)
-
+ 
 +if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
    set (wsjt_qt_CXXSRCS
      ${wsjt_qt_CXXSRCS}
@@ -25,13 +40,13 @@ index 4994d0d..3bb1927 100644
      )
 -endif (WIN32)
 +endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
-
+ 
  set (wsjt_FSRCS
    # put module sources first in the hope that they get rebuilt before use
 @@ -904,7 +909,7 @@ set_source_files_properties (lib/filbig.f90 PROPERTIES COMPILE_FLAGS "-Wno-alias
  set_property (SOURCE ${all_C_and_CXXSRCS} APPEND_STRING PROPERTY COMPILE_FLAGS " -include wsjtx_config.h")
  set_property (SOURCE ${all_C_and_CXXSRCS} APPEND PROPERTY OBJECT_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/wsjtx_config.h)
-
+ 
 -if (WIN32)
 +if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
    # generate the OmniRig COM interface source
@@ -43,8 +58,8 @@ index 4994d0d..3bb1927 100644
    file (TO_CMAKE_PATH ${AXSERVER} AXSERVERSRCS)
 -endif ()
 +endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
-
-
+ 
+ 
  #
 @@ -1000,6 +1005,10 @@ find_package (OpenMP)
  # fftw3 single precision library
@@ -54,11 +69,11 @@ index 4994d0d..3bb1927 100644
 +if (OM0RX_FFTW3F_THREADS_LIBRARY AND NOT OM0RX_FFTW3F_THREADS_LIBRARY IN_LIST FFTW3_LIBRARIES)
 +  list (INSERT FFTW3_LIBRARIES 0 ${OM0RX_FFTW3F_THREADS_LIBRARY})
 +endif ()
-
+ 
  #
  # hamlib setup
 @@ -1025,8 +1034,10 @@ find_package (Qt5 COMPONENTS Widgets SerialPort Multimedia PrintSupport Sql Ling
-
+ 
  if (WIN32)
    add_definitions (-DQT_NEEDS_QTMAIN)
 -  find_package (Qt5AxContainer REQUIRED)
@@ -66,7 +81,7 @@ index 4994d0d..3bb1927 100644
 +if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
 +  find_package (Qt5AxContainer REQUIRED)
 +endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
-
+ 
  #
  # Library building setup
 @@ -1511,9 +1522,9 @@ add_library (wsjt_qt STATIC ${wsjt_qt_CXXSRCS} ${wsjt_qt_GENUISRCS} ${GENAXSRCS}
@@ -78,11 +93,146 @@ index 4994d0d..3bb1927 100644
    target_link_libraries (wsjt_qt Qt5::AxContainer Qt5::AxBase)
 -endif (WIN32)
 +endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
-
+ 
  # build a library of package Qt functionality used in Fortran utilities
  add_library (fort_qt STATIC ${fort_qt_CXXSRCS})
+@@ -1769,6 +1780,10 @@ install (PROGRAMS
+   RENAME rigctlcom-wsjtx${CMAKE_EXECUTABLE_SUFFIX}
+   )
+ 
++# The OM0RX launcher runs wsjt-z directly from the build tree. Keep the state
++# database beside the executable as well as installing it normally.
++configure_file (${CMAKE_SOURCE_DIR}/USState.db ${CMAKE_BINARY_DIR}/USState.db COPYONLY)
++
+ install (FILES
+   README
+   COPYING
+diff --git a/Configuration.cpp b/Configuration.cpp
+index ee4d72360f14424395e5fd59b1595b19116659a1..194c2bc3c42d42791a0c692553e5c8e004fb4bb8 100644
+--- a/Configuration.cpp
++++ b/Configuration.cpp
+@@ -491,7 +491,7 @@ public:
+   void transceiver_ptt (bool);
+   void transceiver_audio (bool);
+   void transceiver_tune (bool);
+-  void transceiver_period (double);
++  void transceiver_period (double, bool = false);
+   void transceiver_blocksize (qint32);
+   void transceiver_modulator_start (QString, unsigned, double, double, double, bool, bool, double, double);
+   void transceiver_modulator_stop (bool);
+@@ -561,7 +561,7 @@ private:
+   Q_SLOT void on_font_push_button_clicked ();
+   Q_SLOT void on_cbHighDPI_clicked(bool checked);
+   Q_SLOT void on_tci_audio_check_box_clicked(bool checked);
+-  Q_SLOT void on_TCI_spin_box_valueChanged(double a);
++  Q_SLOT void on_TCI_spin_box_valueChanged(int a);
+   Q_SLOT void handle_transceiver_tciframeswritten (qint64);
+   Q_SLOT void handle_transceiver_tci_mod_active (bool);
+   Q_SLOT void on_decoded_text_font_push_button_clicked ();
+@@ -1080,9 +1080,9 @@ void Configuration::transceiver_tune (bool on)
+   m_->transceiver_tune (on);
+ }
+ 
+-void Configuration::transceiver_period (double period)
+-{
+-  m_->transceiver_period (period);
++void Configuration::transceiver_period (double period, bool force)
++{
++  m_->transceiver_period (period, force);
+ }
+ 
+ void Configuration::transceiver_blocksize (qint32 blocksize)
+@@ -3705,7 +3705,7 @@ void Configuration::impl::on_tci_audio_check_box_clicked(bool checked)
+   }
+ }
+ 
+-void Configuration::impl::on_TCI_spin_box_valueChanged(double a)
++void Configuration::impl::on_TCI_spin_box_valueChanged(int a)
+ {
+   volume_ = a;
+ }
+@@ -4008,11 +4008,11 @@ void Configuration::impl::transceiver_tune (bool on)
+   Q_EMIT set_transceiver (cached_rig_state_, ++transceiver_command_number_);
+ }
+ 
+-void Configuration::impl::transceiver_period (double period)
+-{
+-  cached_rig_state_.online (true);
+-  set_cached_mode ();
+-  if (cached_rig_state_.period() != period)
++void Configuration::impl::transceiver_period (double period, bool force)
++{
++  cached_rig_state_.online (true);
++  set_cached_mode ();
++  if (force || cached_rig_state_.period() != period)
+   {
+     cached_rig_state_.period (period);
+     Q_EMIT set_transceiver (cached_rig_state_, ++transceiver_command_number_);
+diff --git a/Configuration.hpp b/Configuration.hpp
+index 3749a97b40c6518050213c9d49734d9d611a8d40..4da330f10cdb744506a03ba499a10cbd91cb0021 100644
+--- a/Configuration.hpp
++++ b/Configuration.hpp
+@@ -332,7 +332,7 @@ public:
+   Q_SLOT void transceiver_tune (bool = false);
+ 
+   // Set period for TCI audio
+-  Q_SLOT void transceiver_period (double = 15.0);
++  Q_SLOT void transceiver_period (double = 15.0, bool force = false);
+ 
+   // Set blocksize for TCI audio.
+   Q_SLOT void transceiver_blocksize (qint32 = 6912 / 2);
+diff --git a/Modulator/Modulator.cpp b/Modulator/Modulator.cpp
+index cc58f146750cd86dddf164aaa8f100da39c13b51..b099b45750e9b46af774f32d1ef405ac40d07135 100644
+--- a/Modulator/Modulator.cpp
++++ b/Modulator/Modulator.cpp
+@@ -130,7 +130,7 @@ void Modulator::stop (bool quick)
+   close ();
+ }
+ 
+-void Modulator::close ()
++void Modulator::close ()
+ {
+   if (m_stream)
+     {
+@@ -147,10 +147,18 @@ void Modulator::close ()
+     {
+       Q_EMIT stateChanged ((m_state = Idle));
+     }
+-  AudioDevice::close ();
+-}
+-
+-qint64 Modulator::readData (char * data, qint64 maxSize)
++  AudioDevice::close ();
++}
++
++bool Modulator::reset ()
++{
++  // QAudioOutput resets its source during a normal stop. This is a streaming
++  // sequential device, so QIODevice::reset() would only call seek(0), fail,
++  // and emit a misleading warning.
++  return isOpen ();
++}
++
++qint64 Modulator::readData (char * data, qint64 maxSize)
+ {
+   double toneFrequency=1500.0;
+   if(m_nsps==6) {
+diff --git a/Modulator/Modulator.hpp b/Modulator/Modulator.hpp
+index d950ede4557d14ef0759014dca8488a327b1f9c0..119c74d9ca32ecc187319652bc87bed241f3a470 100644
+--- a/Modulator/Modulator.hpp
++++ b/Modulator/Modulator.hpp
+@@ -25,7 +25,8 @@ public:
+ 
+   Modulator (unsigned frameRate, double periodLengthInSeconds, QObject * parent = nullptr);
+ 
+-  void close () override;
++  void close () override;
++  bool reset () override;
+ 
+   bool isTuning () const {return m_tuning;}
+   double frequency () const {return m_frequency;}
 diff --git a/Network/MessageClient.cpp b/Network/MessageClient.cpp
-index a34a5a0..87561a4 100644
+index a34a5a008a5d0c77846104aa3a1f973548fd446e..87561a4bbeaa2846f996918a56752d3dbccdc0d7 100644
 --- a/Network/MessageClient.cpp
 +++ b/Network/MessageClient.cpp
 @@ -404,12 +404,24 @@ void MessageClient::impl::parse_message (QByteArray const& msg)
@@ -148,7 +298,7 @@ index a34a5a0..87561a4 100644
      }
  }
 diff --git a/Network/MessageClient.hpp b/Network/MessageClient.hpp
-index 66a3f56..91f55cb 100644
+index 66a3f56e0c1e8d17fa399fcb64a75c58fabbd9f4..91f55cb9e22ce78f5302f2c3c9e4e4736a7cc816 100644
 --- a/Network/MessageClient.hpp
 +++ b/Network/MessageClient.hpp
 @@ -62,9 +62,9 @@ public:
@@ -167,7 +317,7 @@ index 66a3f56..91f55cb 100644
 @@ -123,11 +123,15 @@ public:
                             , bool fast_mode, quint32 tr_period, quint32 rx_df, QString const& dx_call
                             , QString const& dx_grid, bool generate_messages);
-
+ 
 -  // this signal is emitted if the server has sent information about a callsign
 -  Q_SIGNAL void annotation_info (QString const& dx_call, bool sort_order_provided, quint32 sort_order);
 -
@@ -183,10 +333,10 @@ index 66a3f56..91f55cb 100644
 +    // this signal is emitted when network errors occur or if a host
 +  // lookup fails
    Q_SIGNAL void error (QString const&) const;
-
+ 
    // this signal is emitted if the message obtains a location from a
 diff --git a/Network/NetworkMessage.hpp b/Network/NetworkMessage.hpp
-index c046c3d..d070fee 100644
+index c046c3db16dabf4c2059acfd7516fd6c1bb7422c..d070feec0979ffc9f2f83904f762c3cccd9e55d2 100644
 --- a/Network/NetworkMessage.hpp
 +++ b/Network/NetworkMessage.hpp
 @@ -558,12 +558,13 @@ namespace NetworkMessage
@@ -206,26 +356,26 @@ index c046c3d..d070fee 100644
 +      maximum_message_type_     // ONLY add new message types
 +                                // immediately before here
 +    };
-
+ 
    quint32 constexpr pulse {15}; // seconds
-
+ 
 diff --git a/Transceiver/TransceiverFactory.cpp b/Transceiver/TransceiverFactory.cpp
-index 2146eac..e45a0ef 100644
+index 2146eac29b42c721b4c9f99bc979ba3f23aee33a..e45a0efc0d5b0bd9c04b41ed9879f948c3259361 100644
 --- a/Transceiver/TransceiverFactory.cpp
 +++ b/Transceiver/TransceiverFactory.cpp
 @@ -8,7 +8,7 @@
  #include "HRDTransceiver.hpp"
  #include "EmulateSplitTransceiver.hpp"
-
+ 
 -#if defined (WIN32)
 +#if OM0RX_BUILD_WITH_OMNIRIG
  #include "OmniRigTransceiver.hpp"
  #endif
-
+ 
 @@ -42,7 +42,7 @@ TransceiverFactory::TransceiverFactory ()
    DXLabSuiteCommanderTransceiver::register_transceivers (&logger_, &transceivers_, CommanderId);
    HRDTransceiver::register_transceivers (&logger_, &transceivers_, HRDId);
-
+   
 -#if defined (WIN32)
 +#if OM0RX_BUILD_WITH_OMNIRIG
    // OmniRig is ActiveX/COM server so only on Windows
@@ -234,14 +384,65 @@ index 2146eac..e45a0ef 100644
 @@ -160,7 +160,7 @@ std::unique_ptr<Transceiver> TransceiverFactory::create (ParameterPack const& pa
        }
        break;
-
+ 
 -#if defined (WIN32)
 +#if OM0RX_BUILD_WITH_OMNIRIG
      case OmniRigOneId:
        {
          std::unique_ptr<TransceiverBase> basic_transceiver;
+diff --git a/Versions.cmake b/Versions.cmake
+index a90714a71de50bdb823507a40581d20f2301398a..ca3ae58b0cf9421686c9e393984b8cbd60b946b1 100644
+--- a/Versions.cmake
++++ b/Versions.cmake
+@@ -1,6 +1,6 @@
+ # Version number components
+ set (WSJTX_VERSION_MAJOR 3)
+ set (WSJTX_VERSION_MINOR 0)
+-set (WSJTX_VERSION_PATCH 0)
++set (WSJTX_VERSION_PATCH 2)
+ # set (WSJTX_RC 7)		 # release candidate number, comment out or zero for development versions
+ set (WSJTX_VERSION_IS_RELEASE 1) # set to 1 for final release build
+diff --git a/logbook/WorkedBefore.cpp b/logbook/WorkedBefore.cpp
+index 0186bea5d473789aa38886f8eb1bbf8fd1b90302..30b9471cffb576ce7bb9aee098fe4ec139d5b4c7 100644
+--- a/logbook/WorkedBefore.cpp
++++ b/logbook/WorkedBefore.cpp
+@@ -373,11 +373,16 @@ public:
+   {
+   }
+ 
+-  void reload ()
+-  {
+-    prefixes_.reload (configuration_);
+-    async_loader_ = QtConcurrent::run (loader, path_, &prefixes_);
+-    loader_watcher_.setFuture (async_loader_);
++  void reload ()
++  {
++    prefixes_.reload (configuration_);
++    load_worked_before ();
++  }
++
++  void load_worked_before ()
++  {
++    async_loader_ = QtConcurrent::run (loader, path_, &prefixes_);
++    loader_watcher_.setFuture (async_loader_);
+   }
+ 
+   Configuration const * configuration_;
+@@ -408,8 +413,10 @@ WorkedBefore::WorkedBefore (Configuration const * configuration)
+       LOG_DEBUG(QString{"WorkedBefore::reload: CTY.DAT version %1"}.arg (cty_ver));
+       Q_EMIT finished_loading (n, cty_ver, error);
+     });
+-  reload ();
+-}
++  // AD1CCty loaded cty.dat in its constructor. Start only the asynchronous
++  // ADIF load here; the old reload() call synchronously loaded cty.dat twice.
++  m_->load_worked_before ();
++}
+ 
+ QString WorkedBefore::cty_version () const
+ {
 diff --git a/widgets/displaytext.cpp b/widgets/displaytext.cpp
-index 5cc3475..ac367b2 100644
+index 5cc34754b1a070a231d0dbc1b498bf4a81dc7a6b..c363b0e8a678b268595ac9cea177947b9ca8a6bb 100644
 --- a/widgets/displaytext.cpp
 +++ b/widgets/displaytext.cpp
 @@ -10,9 +10,11 @@
@@ -253,13 +454,13 @@ index 5cc3475..ac367b2 100644
  #include <QRegularExpression>
  #include <QScrollBar>
 +#include <QSet>
-
+ 
  #include "Configuration.hpp"
  #include "Decoder/decodedtext.h"
 @@ -21,12 +23,18 @@
  #include "logbook/logbook.h"
  #include "Logger.hpp"
-
+ 
 -#include "qt_helpers.hpp"
 -#include "moc_displaytext.cpp"
 -
@@ -284,7 +485,7 @@ index 5cc3475..ac367b2 100644
 @@ -51,16 +59,12 @@ DisplayText::DisplayText(QWidget *parent)
    // max lines to limit heap usage
    document ()->setMaximumBlockCount (5000);
-
+ 
 -  // context menu erase action
 -  setContextMenuPolicy (Qt::CustomContextMenu);
 -  connect (this, &DisplayText::customContextMenuRequested, [this] (QPoint const& position) {
@@ -301,13 +502,13 @@ index 5cc3475..ac367b2 100644
 +           this, &DisplayText::show_om0rx_context_menu);
 +  connect (erase_action_, &QAction::triggered, this, &DisplayText::erase);
 +}
-
+ 
  void DisplayText::erase ()
  {
 @@ -92,24 +96,158 @@ void DisplayText::setContentFont(QFont const& font)
      }
  }
-
+ 
 -void DisplayText::mouseDoubleClickEvent(QMouseEvent *e)
 +void DisplayText::mouseDoubleClickEvent(QMouseEvent *e)
 +{
@@ -478,9 +679,72 @@ index 5cc3475..ac367b2 100644
  {
    // Z
    insertText (line, m_config->separatorColor());
-@@ -556,7 +694,51 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
+@@ -217,9 +355,9 @@ void DisplayText::insertText(QString const& text, QColor bg, QColor fg
+             {
+               temp_format = format;
+               cursor.insertText(text.mid (text_index, call_index - text_index), format);
+-              if (pos.value ().second.isValid ())
+-                {
+-                  temp_format.setBackground (pos.value ().first);
++              if (pos.value ().first.isValid ())
++                {
++                  temp_format.setBackground (pos.value ().first);
+                 }
+               if (pos.value ().second.isValid ())
+                 {
+@@ -409,22 +547,26 @@ QString DisplayText::appendWorkedB4 (QString message, QString call, QString cons
+           countryName.replace ("African", "AF");
+ 
+           // assign WAE entities to the correct DXCC when "Include extra WAE entities" is not selected
+-          if (!(m_config->include_WAE_entities())) {
+-            countryName.replace ("Bear Is.", "Svalbard");
+-            countryName.replace ("Shetland Is.", "Scotland");
+-            countryName.replace ("AF Italy", "Italy");
+-            countryName.replace ("Sicily", "Italy");
++          if (!(m_config->include_WAE_entities())) {
++            countryName.replace ("Bear Is.", "Svalbard");
++            countryName.replace ("Shetland Is.", "Scotland");
++            countryName.replace ("AF Italy", "Italy");
++            countryName.replace ("Sicily", "Italy");
+             countryName.replace ("Vienna Intl Ctr", "Austria");
+             countryName.replace ("AF Turkey", "Turkey");
+             countryName.replace ("EU Turkey", "Turkey");
+           }
+-
+-          extra += countryName;
+-        }
+-    }
+-    m_CQPriority=DecodeHighlightingModel::highlight_name(top_highlight);
+-
+-    if(((m_points == 00) or (m_points == -1)) and m_bDisplayPoints) return message;
++
++          extra += countryName;
++        }
++    }
++    if (!grid.trimmed ().isEmpty ())
++      {
++        extra += QString {" %1"}.arg (grid.trimmed ().toUpper ().left (4));
++      }
++    m_CQPriority=DecodeHighlightingModel::highlight_name(top_highlight);
++
++    if(((m_points == 00) or (m_points == -1)) and m_bDisplayPoints) return message;
+     return leftJustifyAppendage (message, extra);
+ }
+ 
+@@ -466,9 +608,7 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
+   QColor fg;
+   bool CQcall = false;
+ 
+-	// Z 
+-  qDebug() << "incl73 value:" << incl73;
+-	
++	// Z
+   auto is_73 = decodedText.messageWords().filter (QRegularExpression {"^(73|RR73)$"}).size();
+   if (decodedText.string ().contains (" CQ ")
+       || decodedText.string ().contains (" CQDX ")
+@@ -556,7 +696,51 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
          message = leftJustifyAppendage (message, "[F]");
-
+ 
    insertText (message.trimmed (), bg, fg, decodedText.call (), dxCall);
 -}
 +
@@ -528,13 +792,22 @@ index 5cc3475..ac367b2 100644
 +                              decodedText.string ().trimmed (), decodedText.snr ());
 +    }
 +}
-
-
+ 
+ 
  void DisplayText::displayTransmittedText(QString text, QString modeTx, qint32 txFreq,
-@@ -777,6 +959,199 @@ void DisplayText::highlight_callsign (QString const& callsign, QColor const& bg,
+@@ -736,7 +920,7 @@ void DisplayText::highlight_callsign (QString const& callsign, QColor const& bg,
+     }
+   else
+     {
+-      auto pos = highlighted_calls_.find (callsign);
++      auto pos = highlighted_calls_.find (callsign.toUpper ());
+       if (bg.isValid () || fg.isValid ())
+         {
+           auto colours = qMakePair (bg, fg);
+@@ -777,6 +961,218 @@ void DisplayText::highlight_callsign (QString const& callsign, QColor const& bg,
    setCurrentCharFormat (old_format);
  }
-
+ 
 +namespace
 +{
 +  QTextCharFormat om0rx_status_format (QString const& status)
@@ -642,7 +915,7 @@ index 5cc3475..ac367b2 100644
 +  QRegularExpression target {QString {"<?%1>?"}.arg (escaped),
 +                             QRegularExpression::DontCaptureOption};
 +  QRegularExpression status_columns {
-+      QString {R"(\s{1,}(?:\.\.\.|\?|NC|NB\+M|NB|NM|C|W|ATNO|C/NB\+M|W/NB\+M|C/NB|W/NB|C/NM|W/NM)\s{1,}(?:\.\.\.|\?|NC|NB\+M|NB|NM|C|W|ATNO|C/NB\+M|W/NB\+M|C/NB|W/NB|C/NM|W/NM)\s*$)"}};
++      QString {R"(\s{1,}(?:\.\.\.|\?|NC|NB\+M|NB|NM|C|W|ATNO|C/NB\+M|W/NB\+M|C/NB|W/NB|C/NM|W/NM)\s{1,}(?:\.\.\.|\?|NC|NB\+M|NB|NM|C|W|ATNO|C/NB\+M|W/NB\+M|C/NB|W/NB|C/NM|W/NM)(?:[\s\x{00a0}]+(.+))?$)"}};
 +  QRegularExpression existing_om0rx {QString {R"(\s+\[OM0RX:[^\]]+\])"}};
 +  QRegularExpression parsed_status {QString {R"(^\s*([^|]+?)\s*\|\s*([^|]+?)\s*$)"}};
 +  auto status_match = parsed_status.match (annotation);
@@ -650,10 +923,12 @@ index 5cc3475..ac367b2 100644
 +  auto dxcc_status = status_match.hasMatch () ? status_match.captured (2).trimmed () : QString {};
 +  QTextCharFormat old_format {currentCharFormat ()};
 +  QTextCursor cursor {document ()};
++  cursor.movePosition (QTextCursor::End);
 +
 +  while (!cursor.isNull ())
 +    {
-+      cursor = document ()->find (target, cursor, QTextDocument::FindWholeWords);
++      cursor = document ()->find (target, cursor,
++                                  QTextDocument::FindWholeWords | QTextDocument::FindBackward);
 +      if (!cursor.isNull () && cursor.hasSelection ())
 +        {
 +          QTextCursor line {cursor};
@@ -691,8 +966,20 @@ index 5cc3475..ac367b2 100644
 +              remember_suffix_start (om0rx_match.capturedStart ());
 +            }
 +
++          QString preserved_appendage;
++          if (appendage_start >= 0)
++            {
++              preserved_appendage = text.mid (appendage_start);
++              preserved_appendage.replace (QChar::Nbsp, QLatin1Char {' '});
++              preserved_appendage = preserved_appendage.simplified ();
++            }
++          else if (column_match.hasMatch () && !column_match.captured (1).trimmed ().isEmpty ())
++            {
++              preserved_appendage = column_match.captured (1).simplified ();
++            }
++
 +          auto base_length = suffix_start >= 0 ? suffix_start : text.size ();
-+          constexpr int status_column = 61;
++          constexpr int status_column = 45;
 +          auto status_padding = std::max (1, status_column - base_length);
 +          auto call_format = om0rx_status_format (call_status);
 +          auto dxcc_format = om0rx_status_format (dxcc_status);
@@ -722,6 +1009,11 @@ index 5cc3475..ac367b2 100644
 +          suffix.insertText (call_label, call_format);
 +          suffix.insertText (QString {" "}, separator_format);
 +          suffix.insertText (dxcc_label, dxcc_format);
++          if (!preserved_appendage.isEmpty ())
++            {
++              suffix.insertText (QString {QChar::Nbsp} + preserved_appendage, separator_format);
++            }
++          break;
 +        }
 +    }
 +
@@ -732,12 +1024,12 @@ index 5cc3475..ac367b2 100644
      for (const auto& update : m_updateBuffer) {
          QString text;
 diff --git a/widgets/displaytext.h b/widgets/displaytext.h
-index 4f70a14..aa4f751 100644
+index 4f70a14407c0ff0beb828678b83815e6dc4bf8bc..aa4f751e2fa9f7271ad12856a13246734108525c 100644
 --- a/widgets/displaytext.h
 +++ b/widgets/displaytext.h
 @@ -3,15 +3,17 @@
  #define DISPLAYTEXT_H
-
+ 
  #include <QTextEdit>
 -#include <QFont>
 -#include <QHash>
@@ -759,7 +1051,7 @@ index 4f70a14..aa4f751 100644
 +class QPoint;
 +class LogBook;
 +class DecodedText;
-
+ 
  class DisplayText
    : public QTextEdit
 @@ -19,12 +21,13 @@ class DisplayText
@@ -784,7 +1076,7 @@ index 4f70a14..aa4f751 100644
    // Z
 @@ -46,6 +49,11 @@ public:
    bool m_bDisplayPoints;
-
+ 
    Q_SIGNAL void selectCallsign (Qt::KeyboardModifiers);
 +  Q_SIGNAL void decodedCallsignClicked (QString const& callsign);
 +  Q_SIGNAL void decodedCallsign (double freq_hz, QString const& callsign,
@@ -799,7 +1091,7 @@ index 4f70a14..aa4f751 100644
    Q_SLOT void erase ();
    Q_SLOT void highlight_callsign (QString const& callsign, QColor const& bg, QColor const& fg, bool last_period_only);
 +  Q_SLOT void annotate_callsign (QString const& callsign, QString const& annotation, QColor const& fg);
-
+ 
 -private:
 -  QString leftJustifyAppendage (QString message, QString const& appendage) const;
 -  void mouseDoubleClickEvent (QMouseEvent *) override;
@@ -811,10 +1103,18 @@ index 4f70a14..aa4f751 100644
    void mousePressEvent(QMouseEvent *) override;
    void enterEvent(QEvent *event) override;
 diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
-index ee26233..cfe0cae 100644
+index ee26233de31496b39b54526091b3c8fce0703801..69c88d2d5900ff23dbd1b2240a29c5048b2b5031 100644
 --- a/widgets/mainwindow.cpp
 +++ b/widgets/mainwindow.cpp
-@@ -42,6 +42,14 @@
+@@ -18,6 +18,7 @@
+ #include <QProcessEnvironment>
+ #include <QSharedMemory>
+ #include <QFileDialog>
++#include <QFileInfo>
+ #include <QTextBlock>
+ #include <QProgressBar>
+ #include <QLineEdit>
+@@ -42,6 +43,14 @@
  #include <QUdpSocket>
  #include <QAbstractItemView>
  #include <QInputDialog>
@@ -829,7 +1129,7 @@ index ee26233..cfe0cae 100644
  #if QT_VERSION >= QT_VERSION_CHECK (5, 15, 0)
  #include <QRandomGenerator>
  #endif
-@@ -50,6 +58,7 @@
+@@ -50,6 +59,7 @@
  #include <QSplitter>
  #include <QNetworkAccessManager>
  #include <QNetworkReply>
@@ -837,21 +1137,21 @@ index ee26233..cfe0cae 100644
  #include <QUrlQuery>
  #include <QHash>
  #include <QXmlStreamReader>
-@@ -111,6 +120,82 @@
-
+@@ -111,6 +121,171 @@
+ 
  #define FCL fortran_charlen_t
-
+ 
 +namespace
 +{
 +QString om0rx_decode_heading (QString const& prefix = QString {})
 +{
-+  return prefix + QString {"UTC   dB   DT Freq    Message"}.leftJustified (61)
++  return prefix + QString {"UTC   dB   DT Freq    Message"}.leftJustified (45)
 +      + QObject::tr ("CS     DS");
 +}
 +
 +QString om0rx_fast_decode_heading (QString const& prefix = QString {})
 +{
-+  return prefix + QString {"UTC   dB    T Freq    Message"}.leftJustified (61)
++  return prefix + QString {"UTC   dB    T Freq    Message"}.leftJustified (45)
 +      + QObject::tr ("CS     DS");
 +}
 +
@@ -913,30 +1213,150 @@ index ee26233..cfe0cae 100644
 +  normalized.replace ("_", " ");
 +  return normalized.contains ("attno")
 +      || normalized.contains ("atno")
-+      || normalized.contains ("new band");
++      || normalized.contains ("new band")
++      || normalized.contains ("new mode");
++}
++
++bool om0rx_dxcc_watch_status (QString status)
++{
++  auto normalized = status.trimmed ().toLower ();
++  normalized.replace ('-', ' ');
++  normalized.replace ("_", " ");
++  return om0rx_dxcc_priority_hunt_status (status)
++      || normalized == "w"
++      || normalized == "worked"
++      || normalized.contains ("worked");
++}
++
++bool om0rx_plain_worked_call_status (QString status)
++{
++  auto normalized = status.trimmed ().toLower ();
++  normalized.replace ('-', ' ');
++  normalized.replace ("_", " ");
++  return normalized == "c"
++      || normalized == "w"
++      || normalized == "confirmed"
++      || normalized == "worked";
++}
++
++bool om0rx_status_cache_bool (QStringList const& parts, int index)
++{
++  auto value = parts.value (index).trimmed ().toLower ();
++  return value == "1" || value == "true" || value == "yes";
++}
++
++bool om0rx_status_cache_has_need_flags (QStringList const& parts)
++{
++  return parts.size () >= 12;
++}
++
++bool om0rx_status_cache_call_done_on_band_mode (QStringList const& parts)
++{
++  if (!om0rx_status_cache_has_need_flags (parts))
++    {
++      return false;
++    }
++  auto const call_status = parts.value (0);
++  auto const call_needed = om0rx_status_cache_bool (parts, 6);
++  auto const call_band_needed = om0rx_status_cache_bool (parts, 7);
++  auto const call_mode_needed = om0rx_status_cache_bool (parts, 8);
++  return om0rx_plain_worked_call_status (call_status)
++      && !call_needed
++      && !call_band_needed
++      && !call_mode_needed;
++}
++
++bool om0rx_status_cache_dxcc_hunt_needed (QStringList const& parts)
++{
++  auto const dxcc_status = parts.value (1);
++  if (!om0rx_dxcc_watch_status (dxcc_status))
++    {
++      return false;
++    }
++  if (!om0rx_status_cache_has_need_flags (parts))
++    {
++      return true;
++    }
++  auto normalized = dxcc_status.trimmed ().toLower ();
++  normalized.replace ('-', ' ');
++  normalized.replace ("_", " ");
++  if (normalized == "worked" || normalized.contains ("worked") || normalized.contains ("atno"))
++    {
++      return true;
++    }
++  return om0rx_status_cache_bool (parts, 10) || om0rx_status_cache_bool (parts, 11);
++}
++
++QString om0rx_decode_line_for_selection (QString line)
++{
++  line.replace (QChar::LineSeparator, QLatin1Char {' '});
++  line.replace (QChar::ParagraphSeparator, QLatin1Char {' '});
++
++  QRegularExpression status_columns {
++      QString {R"(\s{1,}(?:\.\.\.|\?|NC|NB\+M|NB|NM|C|W|ATNO|C/NB\+M|W/NB\+M|C/NB|W/NB|C/NM|W/NM)\s{1,}(?:\.\.\.|\?|NC|NB\+M|NB|NM|C|W|ATNO|C/NB\+M|W/NB\+M|C/NB|W/NB|C/NM|W/NM)(?:[\s\x{00a0}]+.+)?$)"}};
++  line.remove (status_columns);
++
++  auto appendage_start = line.indexOf (QChar::Nbsp);
++  if (appendage_start >= 0)
++    {
++      line = line.left (appendage_start);
++    }
++
++  return line.trimmed ().left (61).remove ("TU; ").trimmed ();
 +}
 +}
 +
  extern "C" {
    //----------------------------------------------------- C and Fortran routines
    void symspec_(struct dec_data *, int* k, double* trperiod, int* nsps, int* ingain,
-@@ -248,6 +333,7 @@ QString m_hisCall0 = "";
+@@ -248,6 +423,7 @@ QString m_hisCall0 = "";
  // of ft8_decodevar.f90). Mirrors wsjtx-orig logic: append every emitted line,
  // skip new lines whose msg substring is already present. Reset at cycle bounds.
  QString earlyDecodes = "";
 +QSet<QString> om0rxDisplayedDecodeKeys;
-
+ 
  QSharedMemory mem_qmap("mem_qmap");         //Memory segment to be shared (optionally) with QMAP
  struct {
-@@ -675,6 +761,7 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+@@ -281,6 +457,12 @@ namespace
+           || (type == 6 && !msg_parts.filter ("73").isEmpty ()));
+   }
+ 
++  QString om0rx_sanitized_grid (QString grid)
++  {
++    grid = grid.trimmed ().toUpper ();
++    return grid.contains (grid_regexp) ? grid : QString {};
++  }
++
+   int ms_minute_error ()
+   {
+     auto const& now = QDateTime::currentDateTimeUtc ();
+@@ -491,6 +673,17 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+   m_manual {&m_network_manager},
+   m_block_udp_status_updates {false}
+ {
++  // Apply the saved application theme before creating the widget tree. Applying
++  // a global style sheet after setupUi() forces Qt to repolish every widget and
++  // made the main window stay white and unresponsive during startup.
++  if (m_settings->value ("Common/darkMode", false).toBool ())
++    {
++      QFile style_file {":/qdarkstyle/style.qss"};
++      if (style_file.open (QFile::ReadOnly))
++        {
++          qApp->setStyleSheet (QLatin1String {style_file.readAll ()});
++        }
++    }
+   ui->setupUi(this);
+   setUnifiedTitleAndToolBarOnMac (true);
+   createStatusBar();
+@@ -675,6 +868,7 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
    connect (m_messageClient, &MessageClient::highlight_callsign, ui->decodedTextBrowser, &DisplayText::highlight_callsign);
    connect (m_messageClient, &MessageClient::switch_configuration, m_multi_settings, &MultiSettings::select_configuration);
    connect (m_messageClient, &MessageClient::configure, this, &MainWindow::remote_configure);
 +  connect (m_messageClient, &MessageClient::start_target_qso, this, &MainWindow::remote_start_target_qso);
-
+ 
    // Hook up WSPR band hopping
    connect (ui->band_hopping_schedule_push_button, &QPushButton::clicked
-@@ -797,6 +884,14 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+@@ -797,6 +991,14 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
    // Z
    connect (ui->decodedTextBrowser2, &DisplayText::leftClick, this, &MainWindow::leftClickHandler);
    connect (ui->decodedTextBrowser, &DisplayText::leftClick, this, &MainWindow::leftClickHandler);
@@ -949,9 +1369,18 @@ index ee26233..cfe0cae 100644
 +  connect (ui->decodedTextBrowser2, &DisplayText::decodedCallsignClicked,
 +           this, &MainWindow::request_om0rx_qso_history_popup);
    ui->groupBox->setVisible(false);
-
+ 
    // initialize decoded text font and hook up font change signals
-@@ -1031,7 +1126,7 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+@@ -813,7 +1015,7 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+       if (m_pskReporterView) m_pskReporterView->setFont(font);
+     });
+ 
+-  setWindowTitle (program_title () + " (WSJT-Z MOD by SQ9FVE " + QStringLiteral (VERSION_Z) + ")");
++  setWindowTitle (program_title () + " (OM0RX custom, WSJT-Z " + QStringLiteral (VERSION_Z) + ")");
+ 
+ 
+   connect(&proc_jt9, &QProcess::readyReadStandardOutput, this, &MainWindow::readFromStdout);
+@@ -1031,7 +1233,7 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
    m_dateTimeSentTx3=QDateTime::currentDateTimeUtc();
    // Z
    labAz.setText("");
@@ -960,19 +1389,139 @@ index ee26233..cfe0cae 100644
    ui->lh_decodes_headings_label->setText(t);
    ui->rh_decodes_headings_label->setText(t);
    readSettings();            //Restore user's setup parameters
-@@ -1285,8 +1380,10 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
-
+@@ -1195,6 +1397,11 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+       ui->outAttenuation->setValue(0);
+       ui->outAttenuation->setValue(attVal);
+       Q_EMIT m_config.transceiver_volume(m_config.volume());
++      // set_mode() ran before the TCI rig was online. Re-apply the period now;
++      // otherwise non-15-second modes can use the stale default and emit
++      // silence for the entire transmission.
++      if (ui->bandComboBox->currentText()!="OOB")
++        Q_EMIT m_config.transceiver_period(m_TRperiod, true);
+     });
+   }
+   m_saveDecoded=ui->actionSave_decoded->isChecked();
+@@ -1285,8 +1492,8 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+ 
      connect (&m_config, &Configuration::qrz_config_changed, this, &MainWindow::qrzInit);
      networkManager = new QNetworkAccessManager(this);
+-
+-    connect (statusBar(), SIGNAL(clicked(bool)), this, SLOT(tx_watchdog(false)));
 +    om0rxNetworkManager = new QNetworkAccessManager(this);
 +    om0rxNetworkManager->setProxy(QNetworkProxy::NoProxy);
-
--    connect (statusBar(), SIGNAL(clicked(bool)), this, SLOT(tx_watchdog(false)));
-+  connect (statusBar(), SIGNAL(clicked(bool)), this, SLOT(tx_watchdog(false)));
-
+ 
      // Initialize QRZ lookup
      if (m_config.qrzComUn().length() > 0 && m_config.qrzComPw().length() > 0) {
-@@ -3938,6 +4035,7 @@ void MainWindow::read_wav_file (QString const& fname)
+@@ -1437,7 +1644,7 @@ void MainWindow::writeSettings()
+   m_settings->setValue("MRUdir", m_path);
+   m_settings->setValue("TxFirst",m_txFirst);
+   m_settings->setValue("DXcall",ui->dxCallEntry->text());
+-  m_settings->setValue("DXgrid",ui->dxGridEntry->text());
++  m_settings->setValue("DXgrid",om0rx_sanitized_grid (ui->dxGridEntry->text()));
+   m_settings->setValue ("AstroDisplayed", m_astroWidget && m_astroWidget->isVisible());
+   m_settings->setValue ("MsgAvgDisplayed", m_msgAvgWidget && m_msgAvgWidget->isVisible ());
+   m_settings->setValue ("FoxLogDisplayed", m_foxLogWindow && m_foxLogWindow->isVisible ());
+@@ -1495,6 +1702,7 @@ void MainWindow::writeSettings()
+   m_settings->setValue("Ftol", ui->sbFtol->value ());
+   m_settings->setValue("MinSync",m_minSync);
+   m_settings->setValue ("AutoSeq", ui->cbAutoSeq->isChecked ());
++  m_settings->setValue ("AutoCall", ui->cbAutoCall->isChecked ());
+   m_settings->setValue ("RxAll", ui->cbRxAll->isChecked ());
+ // m_settings->setValue("ShMsgs",m_bShMsgs);
+   m_settings->setValue("SWL",ui->cbSWL->isChecked());
+@@ -1584,6 +1792,7 @@ void MainWindow::writeSettings()
+   m_settings->setValue ("AutoIgnore", ui->cb_IgnoreAfterWD->isChecked());
+   m_settings->setValue ("filter_LOTW", ui->cb_f_LOTW->isChecked());
+   m_settings->setValue ("CQonlyIncl73", ui->cbCQonlyIncl73->isChecked());
++  m_settings->setValue ("WatchUnconfirmedDXCC", ui->cbWatchUnconfirmedDXCC->isChecked());
+   m_settings->setValue ("dockWaterfall", ui->cbDockWF->isChecked());
+   m_settings->setValue ("showCallInfo", ui->actionCall_info->isChecked());
+   m_settings->setValue ("filter_enabled", ui->cb_filtering->isChecked());
+@@ -1637,7 +1846,7 @@ void MainWindow::readSettings()
+   geometries (current_view_mode, the_geometries);
+   restoreState (m_settings->value ("state", saveState ()).toByteArray ());
+   ui->dxCallEntry->setText (m_settings->value ("DXcall", QString {}).toString ());
+-  ui->dxGridEntry->setText (m_settings->value ("DXgrid", QString {}).toString ());
++  ui->dxGridEntry->setText (om0rx_sanitized_grid (m_settings->value ("DXgrid", QString {}).toString ()));
+   m_path = m_settings->value("MRUdir", m_config.save_directory ().absolutePath ()).toString ();
+   m_txFirst = m_settings->value("TxFirst",false).toBool();
+   auto displayAstro = m_settings->value ("AstroDisplayed", false).toBool ();
+@@ -1809,6 +2018,7 @@ void MainWindow::readSettings()
+   ui->le_CustomAlerts->setText(m_settings->value("customAlerts").toString());
+   ui->cb_IgnoreAfterWD->setChecked(m_settings->value("AutoIgnore",true).toBool());
+   ui->cbCQonlyIncl73->setChecked(m_settings->value("CQonlyIncl73", false).toBool());
++  ui->cbWatchUnconfirmedDXCC->setChecked(m_settings->value("WatchUnconfirmedDXCC", true).toBool());
+   ui->cbDockWF->setChecked(m_settings->value("dockWaterfall", false).toBool());
+   ui->actionCall_info->setChecked(m_settings->value("showCallInfo", false).toBool());
+   ui->actionDark_mode->setChecked(m_settings->value("darkMode", false).toBool());
+@@ -1852,6 +2062,7 @@ void MainWindow::readSettings()
+   m_minSync=m_settings->value("MinSync",0).toInt();
+   ui->syncSpinBox->setValue(m_minSync);
+   ui->cbAutoSeq->setChecked (m_settings->value ("AutoSeq", false).toBool());
++  ui->cbAutoCall->setChecked (m_settings->value ("AutoCall", false).toBool());
+   ui->cbRxAll->setChecked (m_settings->value ("RxAll", false).toBool());
+ // m_bShMsgs=m_settings->value("ShMsgs",false).toBool();
+   m_bSWL=m_settings->value("SWL",false).toBool();
+@@ -1930,7 +2141,7 @@ void MainWindow::readSettings()
+   if (displayMsgAvg) on_actionMessage_averaging_triggered();
+   if (displayFoxLog) on_fox_log_action_triggered ();
+   if (displayContestLog) on_contest_log_action_triggered ();
+-  if (displayActiveStations) on_actionActiveStations_triggered();
++  if (displayActiveStations) show_active_stations();
+   // Z
+   if (showRawView) on_actionUnfiltered_View_triggered();
+   if (showPskView) on_actionPSKReporter_triggered();
+@@ -1953,8 +2164,6 @@ void MainWindow::checkMSK144ContestType()
+ void MainWindow::set_application_font (QFont const& font)
+ {
+   qApp->setFont (font);
+-  // Z
+-  qApp->setStyleSheet (qApp->styleSheet () + "* {" + font_as_stylesheet (font) + '}');
+   if (m_config.largerTabWidget()) ui->tabWidget->setMaximumHeight(1000);
+   for (auto& widget : qApp->topLevelWidgets ())
+     {
+@@ -3617,31 +3826,6 @@ void MainWindow::on_actionFT8_DXpedition_Mode_User_Guide_triggered()
+   QDesktopServices::openUrl (QUrl {"https://wsjt.sourceforge.io/FT8_DXpedition_Mode.pdf"});
+ }
+ 
+-void MainWindow::on_actionSuperFox_User_Guide_triggered()
+-{
+-  QDesktopServices::openUrl (QUrl {"https://wsjt.sourceforge.io/SuperFox_User_Guide.pdf"});
+-}
+-
+-void MainWindow::on_actionQSG_FST4_triggered()
+-{
+-  QDesktopServices::openUrl (QUrl {"https://wsjt.sourceforge.io/FST4_Quick_Start.pdf"});
+-}
+-
+-void MainWindow::on_actionQSG_Q65_triggered()
+-{
+-  QDesktopServices::openUrl (QUrl {"https://wsjt.sourceforge.io/Q65_Quick_Start.pdf"});
+-}
+-
+-void MainWindow::on_actionQSG_X250_M3_triggered()
+-{
+-  QDesktopServices::openUrl (QUrl {"https://wsjt.sourceforge.io/WSJTX_2.5.0_MAP65_3.0_Quick_Start.pdf"});
+-}
+-
+-void MainWindow::on_actionQuick_Start_Guide_to_WSJT_X_2_7_and_QMAP_triggered()
+-{
+-  QDesktopServices::openUrl (QUrl {"https://wsjt.sourceforge.io/Quick_Start_WSJT-X_2.7_QMAP.pdf"});
+-}
+-
+ void MainWindow::on_actionOnline_User_Guide_triggered()      //Display manual
+ {
+ #if defined (CMAKE_BUILD)
+@@ -3888,7 +4072,7 @@ void MainWindow::on_actionMessage_averaging_triggered()
+   m_msgAvgWidget->activateWindow();
+ }
+ 
+-void MainWindow::on_actionActiveStations_triggered()
++void MainWindow::show_active_stations()
+ {
+   if(m_ActiveStationsWidget == NULL) {
+     m_ActiveStationsWidget.reset (new ActiveStations {m_settings, m_config.decoded_text_font ()});
+@@ -3938,6 +4122,7 @@ void MainWindow::read_wav_file (QString const& fname)
        && (ui->actionUse_multithreaded_FT8_decoder->isChecked() || m_freqNominal > 45000000)) {
      earlyDecodes = "";
    }
@@ -980,7 +1529,25 @@ index ee26233..cfe0cae 100644
    // call diskDat() when done
    int i0=fname.lastIndexOf("_");
    int i1=fname.indexOf(".wav");
-@@ -5084,6 +5182,33 @@ void MainWindow::readFromStdout()                             //readFromStdout
+@@ -4911,7 +5096,7 @@ void MainWindow::callSandP2(int n)
+     m_bDoubleClicked=true;               //### needed?
+     m_txFirst=true;
+     ui->dxCallEntry->setText(m_deCall);
+-    ui->dxGridEntry->setText(m_deGrid);
++    ui->dxGridEntry->setText(om0rx_sanitized_grid (m_deGrid));
+     ui->txFirstCheckBox->setChecked(m_txFirst);
+     genStdMsgs("-22");
+     setTxMsg(3);
+@@ -4950,7 +5135,7 @@ void MainWindow::callSandP2(int n)
+ 
+   m_bDoubleClicked=true;               //### needed?
+   ui->dxCallEntry->setText(m_deCall);
+-  ui->dxGridEntry->setText(m_deGrid);
++  ui->dxGridEntry->setText(om0rx_sanitized_grid (m_deGrid));
+   if(m_mode=="Q65") {
+     ui->rptSpinBox->setValue(w[2].toInt());
+     genStdMsgs(w[2]);
+@@ -5084,6 +5269,33 @@ void MainWindow::readFromStdout()                             //readFromStdout
        decodeDone ();
        return;
      } else {
@@ -1014,7 +1581,7 @@ index ee26233..cfe0cae 100644
        m_nDecodes+=1;
        if(m_mode!="Q65") ndecodes_label.setText(QString::number(m_nDecodes));
        if(m_mode=="JT4" or m_mode=="JT65" or m_mode=="Q65") {
-@@ -5114,9 +5239,7 @@ void MainWindow::readFromStdout()                             //readFromStdout
+@@ -5114,9 +5326,7 @@ void MainWindow::readFromStdout()                             //readFromStdout
          if(navg>=2) bAvgMsg=true;
        }
        write_all("Rx", line_read.trimmed());
@@ -1025,7 +1592,16 @@ index ee26233..cfe0cae 100644
            ui->decodedTextBrowser->new_period ();
            if (m_specOp == SpecOp::FOX and m_ActiveStationsWidget != NULL) { // clear the ActiveStations window
              m_ActiveStationsWidget->clearStations();
-@@ -5918,6 +6041,7 @@ void MainWindow::guiUpdate()
+@@ -5537,7 +5747,7 @@ void MainWindow::readFromStdout()                             //readFromStdout
+         // or contains MyCall
+         if(!m_bBestSPArmed or (m_mode!="FT4" and m_mode!="FT2")) {
+           ui->decodedTextBrowser2->displayDecodedText (decodedtext0, my_call, m_mode, dxcc,
+-                m_logBook, m_currentBand, m_config.ppfx (), false, false, 0.0, bDisplayPoints, m_points, false, false, "", "", isFiltered);
++                m_logBook, m_currentBand, m_config.ppfx (), false, false, 0.0, bDisplayPoints, m_points, false, m_config.colourAll(), "", "", isFiltered);
+         }
+         m_QSOText = decodedtext.string ().trimmed ();
+       }
+@@ -5918,6 +6128,7 @@ void MainWindow::guiUpdate()
        static int s_lastReset = -1;
        if (s_in_min != s_lastReset) {
          earlyDecodes = "";
@@ -1033,17 +1609,352 @@ index ee26233..cfe0cae 100644
          m_nDecodes = 0;
          ndecodes_label.setText("0");
          s_lastReset = s_in_min;
-@@ -7143,13 +7267,16 @@ void MainWindow::processMessage (DecodedText const& message, Qt::KeyboardModifie
+@@ -6031,6 +6242,9 @@ void MainWindow::guiUpdate()
+     if(m_ntx == 4) txMsg=ui->tx4->text();
+     if(m_ntx == 5) txMsg=ui->tx5->currentText();
+     if(m_ntx == 6) txMsg=ui->tx6->text();
++    if (om0rx_stop_forbidden_autocall_cq("transmit gate")) {
++      txMsg.clear();
++    }
+     int msgLength=txMsg.trimmed().length();
+     if(msgLength==0 and !m_tune) on_stopTxButton_clicked();
+ 
+@@ -6109,7 +6323,8 @@ void MainWindow::guiUpdate()
+ 
+ 
+   // Calculate Tx tones when needed
+-  if((g_iptt==1 && m_iptt0==0) || m_restart) {
++  bool const om0rx_tx_starting = (g_iptt == 1 && m_iptt0 == 0);
++  if(om0rx_tx_starting || m_restart) {
+ //----------------------------------------------------------------------
+     QByteArray ba;
+     QByteArray ba0;
+@@ -6313,7 +6528,7 @@ void MainWindow::guiUpdate()
+       m_currentMessage = "TUNE";
+       m_currentMessageType = -1;
+     }
+-    if(m_restart) {
++    if(m_restart && m_transmitting && !om0rx_tx_starting) {
+       write_all("Tx",m_currentMessage);
+       if (m_config.TX_messages () and m_mode!="Echo") {
+         ui->decodedTextBrowser2->displayTransmittedText(m_currentMessage.trimmed(),m_mode,
+@@ -6334,48 +6549,12 @@ void MainWindow::guiUpdate()
+       msg_parts[1].remove (QChar {'>'});
+     }
+     auto is_73 = message_is_73 (m_currentMessageType, msg_parts);
+-    m_sentFirst73 = is_73
++    // Do not treat a PTT request as a transmitted message. The final-73
++    // actions are committed by record_tx_start() only after PTT is confirmed
++    // and startTx2 has actually started the modulator.
++    m_pendingTxIs73 = is_73;
++    m_pendingTxFirst73 = is_73
+       && !message_is_73 (m_lastMessageType, m_lastMessageSent.split (' ', SkipEmptyParts));
+-    // Z
+-    if (m_sentFirst73 || is_73) {
+-      m_qsoStop=t2;
+-      if(m_config.id_after_73 ()) {
+-        icw[0] = m_ncw;
+-      }
+-      // Z
+-      if((m_config.prompt_to_log() or m_config.autoLog()
+-          or ui->cbAutoCQ->isChecked() or ui->cbAutoCall->isChecked()) && !m_tune && CALLING != m_QSOProgress)
+-        {
+-          logQSOTimer.start(0);
+-        }
+-      else
+-        {
+-          cease_auto_Tx_after_QSO ();
+-        }
+-    }
+-
+-    bool b=("FT8"==m_mode or "FT4"==m_mode or "FT2"==m_mode or "Q65"==m_mode)
+-        && ui->cbAutoSeq->isEnabled () && ui->cbAutoSeq->isChecked ();
+-    if(is_73 and (m_config.disable_TX_on_73() or b)) {
+-      m_nextCall="";  //### Temporary: disable use of "TU;" messages;
+-      if(m_nextCall!="") {
+-        useNextCall();
+-      } else {
+-          // Z
+-          if (!ui->cbAutoCQ->isChecked())
+-        auto_tx_mode (false);
+-        if(b) {
+-          // In AutoCall-only mode, do not force Tx6/CQ after sending 73.
+-          if (!ui->cbAutoCall->isChecked() || ui->cbAutoCQ->isChecked()) {
+-            m_ntx=6;
+-            ui->txrb6->setChecked(true);
+-            m_QSOProgress = CALLING;
+-            //  Z
+-            if (m_lastCall == m_hisCall) clearDX();
+-          }
+-        }
+-      }
+-    }
+ 
+     if(m_config.id_interval () >0) {
+       int nmin=(m_sec0-m_secID)/60;
+@@ -6418,40 +6597,6 @@ void MainWindow::guiUpdate()
      }
    }
-
+ 
+-  if (g_iptt == 1 && m_iptt0 == 0) {
+-    auto const& current_message = QString::fromLatin1 (msgsent);
+-    if(watchdog () && m_mode!="WSPR" && m_mode!="FST4W"
+-       && current_message != m_msgSent0) {
+-      tx_watchdog (false);  // in case we are auto sequencing
+-      m_msgSent0 = current_message;
+-    }
+-
+-    if (m_mode != "FST4W" && m_mode != "WSPR" && m_mode!="Echo")
+-      {
+-        if(!m_tune) write_all("Tx",m_currentMessage);
+-        if (m_config.TX_messages () && !m_tune && SpecOp::FOX!=m_specOp)
+-          {
+-            ui->decodedTextBrowser2->displayTransmittedText(current_message.trimmed(),
+-                  m_mode,ui->TxFreqSpinBox->value(),m_bFastMode,m_TRperiod,sfox);
+-            if (m_zdebug) log("TX message: " + current_message.trimmed());
+-          }
+-      }
+-
+-    switch (m_ntx)
+-    {
+-      case 1: m_QSOProgress = REPLYING; break;
+-      case 2: m_QSOProgress = REPORT; break;
+-      case 3: m_QSOProgress = ROGER_REPORT; break;
+-      case 4: m_QSOProgress = ROGERS; break;
+-      case 5: m_QSOProgress = SIGNOFF; break;
+-      case 6: m_QSOProgress = CALLING; break;
+-      default: break;             // determined elsewhere
+-    }
+-    m_transmitting = true;
+-    transmitDisplay (true);
+-    statusUpdate ();
+-  }
+-
+   if(!m_btxok && m_btxok0 && g_iptt==1) {
+     stopTx();
+     if ("1" == m_env.value ("WSJT_TX_BOTH", "0")) {
+@@ -6460,6 +6605,15 @@ void MainWindow::guiUpdate()
+     }
+   }
+ 
++  // PTT may be released externally before the normal end-of-slot edge is
++  // observed. Never leave the UI/UDP state claiming TX after PTT is gone.
++  if (m_transmitting && g_iptt != 1 && !om0rx_tx_starting) {
++    if (m_zdebug) log("OM0RX stale TX state cleared after PTT release");
++    stopTx();
++    transmitDisplay(false);
++    statusUpdate();
++  }
++
+   if(m_startAnother) {
+     if(m_mode=="MSK144") {
+       m_wait++;
+@@ -6639,8 +6793,9 @@ void MainWindow::useNextCall()
+ {
+   ui->dxCallEntry->setText(m_nextCall);
+   m_nextCall="";
+-  if(m_nextGrid.contains(grid_regexp)) {
+-    ui->dxGridEntry->setText(m_nextGrid);
++  auto const next_grid = om0rx_sanitized_grid (m_nextGrid);
++  if(next_grid.size ()) {
++    ui->dxGridEntry->setText(next_grid);
+     m_ntx=2;
+     ui->txrb2->setChecked(true);
+   } else {
+@@ -6652,6 +6807,15 @@ void MainWindow::useNextCall()
+ 
+ void MainWindow::startTx2()
+ {
++  // A completed final-73 transmission owns the PTT release until stopTx2()
++  // confirms RX. Never allow a second modulator/PTT start in that window.
++  if (m_final73TxGuard && !m_transmitting)
++    {
++      m_btxok = false;
++      g_iptt = 0;
++      m_config.transceiver_ptt (false);
++      return;
++    }
+   bool modulator_active;
+   bool tci_active = m_tci_audio;
+   if (tci_active) modulator_active = m_tci_mod_active;
+@@ -6672,6 +6836,7 @@ void MainWindow::startTx2()
+       ui->respondComboBox->setCurrentIndex(1);
+     }
+     transmit (snr);
++    record_tx_start ();
+     ui->signal_meter_widget->setValue(0,0);
+     if(m_mode=="Echo" and !m_tune) m_bTransmittedEcho=true;
+ 
+@@ -6687,6 +6852,120 @@ void MainWindow::startTx2()
+   }
+ }
+ 
++void MainWindow::record_tx_start ()
++{
++  if (m_transmitting)
++    {
++      return;
++    }
++
++  auto const qso_in_progress = CALLING != m_QSOProgress;
++  m_transmitting = true;
++  auto const current_message = m_currentMessage.trimmed ();
++  if (watchdog () && m_mode!="WSPR" && m_mode!="FST4W"
++      && current_message != m_msgSent0)
++    {
++      tx_watchdog (false);
++      m_msgSent0 = current_message;
++    }
++
++  if (m_mode != "FST4W" && m_mode != "WSPR" && m_mode != "Echo")
++    {
++      if (!m_tune) write_all ("Tx", m_currentMessage);
++      if (m_config.TX_messages () && !m_tune && SpecOp::FOX != m_specOp)
++        {
++          ui->decodedTextBrowser2->displayTransmittedText (
++              current_message, m_mode, ui->TxFreqSpinBox->value (),
++              m_bFastMode, m_TRperiod, m_config.superFox ());
++          if (m_zdebug) log ("TX message: " + current_message);
++        }
++    }
++
++  switch (m_ntx)
++    {
++    case 1: m_QSOProgress = REPLYING; break;
++    case 2: m_QSOProgress = REPORT; break;
++    case 3: m_QSOProgress = ROGER_REPORT; break;
++    case 4: m_QSOProgress = ROGERS; break;
++    case 5: m_QSOProgress = SIGNOFF; break;
++    case 6: m_QSOProgress = CALLING; break;
++    default: break;
++    }
++
++  m_sentFirst73 = m_pendingTxFirst73;
++  if (m_pendingTxIs73)
++    {
++      m_final73TxGuard = true;
++      m_qsoStop = QDateTime::currentDateTimeUtc ().toString ("hhmm");
++      if (m_config.id_after_73 ()) icw[0] = m_ncw;
++      m_final73LogPending =
++          (m_config.prompt_to_log () || m_config.autoLog ()
++           || ui->cbAutoCQ->isChecked () || ui->cbAutoCall->isChecked ())
++          && !m_tune && qso_in_progress;
++
++      // The normal modulator path should release PTT first. If it does not,
++      // force RX shortly after the final waveform and prevent another cycle.
++      auto const final73GuardMs = qMax (
++          1000,
++          int (1000.0 * tx_duration (m_mode, m_TRperiod, m_nsps, m_bFast9)) + 750);
++      QTimer::singleShot (final73GuardMs, this, [this] {
++          if (!m_final73TxGuard) return;
++          auto_tx_mode (false);
++          m_bAutoReply = false;
++          m_bCallingCQ = false;
++          m_btxok = false;
++          if (m_transmitting) stopTx ();
++          g_iptt = 0;
++          m_config.transceiver_ptt (false);
++          complete_final73_tx ();
++          statusUpdate ();
++          if (m_zdebug) log ("OM0RX final-73 safety guard forced RX/PTT release");
++        });
++    }
++
++  m_pendingTxIs73 = false;
++  m_pendingTxFirst73 = false;
++  transmitDisplay (true);
++  statusUpdate ();
++}
++
++void MainWindow::complete_final73_tx ()
++{
++  if (!m_final73TxGuard) return;
++
++  auto const log_qso = m_final73LogPending;
++  m_final73LogPending = false;
++  m_final73TxGuard = false;
++
++  // Only now is it safe to reset QSO/automation state. Doing this at TX start
++  // cancels the final FT8 waveform even though the UI has already logged "Tx".
++  if (SpecOp::FOX != m_specOp)
++    {
++      auto_tx_mode (false);
++      m_bAutoReply = false;
++      m_bCallingCQ = false;
++    }
++
++  bool const auto_sequence = ("FT8"==m_mode || "FT4"==m_mode
++                              || "FT2"==m_mode || "Q65"==m_mode)
++      && ui->cbAutoSeq->isEnabled () && ui->cbAutoSeq->isChecked ();
++  if (m_config.disable_TX_on_73 () || auto_sequence)
++    {
++      m_nextCall.clear ();
++      if (auto_sequence
++          && (!ui->cbAutoCall->isChecked () || ui->cbAutoCQ->isChecked ()))
++        {
++          m_ntx = 6;
++          ui->txrb6->setChecked (true);
++          m_QSOProgress = CALLING;
++          if (m_lastCall == m_hisCall) clearDX ();
++        }
++    }
++
++  if (log_qso) logQSOTimer.start (0);
++  else cease_auto_Tx_after_QSO ();
++}
++
+ void MainWindow::stopTx()
+ {
+   if (m_tci_audio) Q_EMIT m_config.transceiver_modulator_stop();
+@@ -6716,6 +6995,14 @@ void MainWindow::stopTx2()
+   } else {
+     m_config.transceiver_ptt (false); //Lower PTT
+   }
++  if (m_final73TxGuard)
++    {
++      // Complete logging/automation only after explicit PTT-off was issued.
++      m_btxok = false;
++      g_iptt = 0;
++      complete_final73_tx ();
++      if (m_zdebug) log ("OM0RX final-73 TX completed; RX/PTT released");
++    }
+   if (m_mode == "JT9" && m_bFast9
+        && ui->cbAutoSeq->isEnabled () && ui->cbAutoSeq->isChecked ()
+       && m_ntx == 5 && m_nTx73 >= 5) {
+@@ -6971,7 +7258,7 @@ void MainWindow::doubleClickOnCall(Qt::KeyboardModifiers modifiers)
+   } else {
+     cursor=ui->decodedTextBrowser2->textCursor();
+   }
+-  DecodedText message {cursor.block().text().trimmed().left(61).remove("TU; ")};
++  DecodedText message {om0rx_decode_line_for_selection (cursor.block ().text ())};
+   if(SpecOp::HOUND==m_specOp && (message.string().mid(4,2).contains("15") or message.string().mid(4,2).contains("45"))) return;  // ignore stations calling in the wrong time slot
+   // Z
+   /*
+@@ -7009,6 +7296,13 @@ void MainWindow::doubleClickOnCall(Qt::KeyboardModifiers modifiers)
+   }
+   m_bDoubleClicked = true;
+   m_hisCall0 = m_hisCall;
++  m_priorityCall.clear ();
++  m_priorityCallPreferCQTarget = false;
++  m_om0rxHuntingPriorityScore = -1;
++  m_om0rxReplyPriorityCall.clear ();
++  m_om0rxPendingDirectReplyLine.clear ();
++  m_om0rxPendingDirectReplyValid = false;
++  om0rx_clear_priority_hunt ("operator double-click");
+   processMessage (message, modifiers);
+ }
+ 
+@@ -7143,13 +7437,16 @@ void MainWindow::processMessage (DecodedText const& message, Qt::KeyboardModifie
+     }
+   }
+ 
 -  // prior DX call (possible QSO partner)
 -  auto qso_partner_base_call = Radio::base_callsign (ui->dxCallEntry->text ());
 -  auto base_call = Radio::base_callsign (hiscall);
 +    // prior DX call (possible QSO partner)
 +    auto qso_partner_base_call = Radio::base_callsign (ui->dxCallEntry->text ());
 +    auto base_call = Radio::base_callsign (hiscall);
-
+ 
  // Determine appropriate response to received message
    auto dtext = " " + message.clean_string () + " ";
    dtext=dtext.remove("<").remove(">");
@@ -1053,9 +1964,9 @@ index ee26233..cfe0cae 100644
    if(dtext.contains (" " + m_baseCall + " ")
       || dtext.contains ("<" + m_baseCall + "> ")
  //###???     || dtext.contains ("<" + m_baseCall + " " + hiscall + "> ")
-@@ -7216,6 +7343,28 @@ void MainWindow::processMessage (DecodedText const& message, Qt::KeyboardModifie
+@@ -7216,6 +7513,29 @@ void MainWindow::processMessage (DecodedText const& message, Qt::KeyboardModifie
      }
-
+ 
      bool bContestOK=(m_mode=="FT4" or m_mode=="FT8" or m_mode=="FT2" or m_mode=="Q65" or m_mode=="MSK144");
 +    if (directly_addressed_to_me && base_call != qso_partner_base_call)
 +      {
@@ -1068,9 +1979,10 @@ index ee26233..cfe0cae 100644
 +        om0rx_clear_priority_hunt ("reply to us");
 +        m_om0rxReplyPriorityCall = om0rx_normalized_call (hiscall);
 +        ui->dxCallEntry->setText (hiscall);
-+        if (!hisgrid.isEmpty ())
++        auto const reply_grid = om0rx_sanitized_grid (hisgrid);
++        if (!reply_grid.isEmpty ())
 +          {
-+            ui->dxGridEntry->setText (hisgrid);
++            ui->dxGridEntry->setText (reply_grid);
 +          }
 +        qso_partner_base_call = base_call;
 +        if (m_zdebug)
@@ -1082,9 +1994,80 @@ index ee26233..cfe0cae 100644
      if(message_words.size () > 4   // enough fields for a normal message
         && (message_words.at(2).contains(m_baseCall) || "DE" == message_words.at(2))
         && (message_words.at(3).contains(qso_partner_base_call) or m_bDoubleClicked
-@@ -8412,6 +8561,19 @@ void MainWindow::acceptQSO (QDateTime const& QSO_date_off, QString const& call,
+@@ -7501,11 +7821,12 @@ void MainWindow::processMessage (DecodedText const& message, Qt::KeyboardModifie
+     // i.e. compound version of same base call
+     ui->dxCallEntry->setText (hiscall);
+   }
+-  if (hisgrid.contains (grid_regexp)) {
+-    if(ui->dxGridEntry->text().mid(0,4) != hisgrid) ui->dxGridEntry->setText(hisgrid);
++  auto const sanitized_hisgrid = om0rx_sanitized_grid (hisgrid);
++  if (sanitized_hisgrid.size ()) {
++    if(ui->dxGridEntry->text().mid(0,4) != sanitized_hisgrid) ui->dxGridEntry->setText(sanitized_hisgrid);
+   }
+   lookup();
+-  m_hisGrid = ui->dxGridEntry->text();
++  m_hisGrid = om0rx_sanitized_grid (ui->dxGridEntry->text());
+ 
+   if (m_bDoubleClicked)
+     {
+@@ -7946,8 +8267,9 @@ void MainWindow::lookup()
+           } else {
+             hisgrid=hisgrid.mid(0,6).toUpper();
+           }
+-          if(hisgrid.left(4)==hisgrid0.left(4) or (hisgrid0.size()==0)) {
+-            ui->dxGridEntry->setText(hisgrid);
++          auto const sanitized_hisgrid = om0rx_sanitized_grid (hisgrid);
++          if(sanitized_hisgrid.size () && (sanitized_hisgrid.left(4)==hisgrid0.left(4) or (hisgrid0.size()==0))) {
++            ui->dxGridEntry->setText(sanitized_hisgrid);
+           }
+           break;
+         }
+@@ -8314,11 +8636,12 @@ void MainWindow::on_logQSOButton_clicked()                 //Log QSO button
+   }
+   auto dateTimeQSOOff = QDateTime::currentDateTimeUtc();
+   if (dateTimeQSOOff < m_dateTimeQSOOn) dateTimeQSOOff = m_dateTimeQSOOn;
+-  QString grid=m_hisGrid;
++  QString grid=om0rx_sanitized_grid (m_hisGrid);
+   if(grid=="....") grid="";
+ 
+     // Z
+-  if (grid.length() == 0 || (ui->ci_grid->text().length() > grid.length() && ui->ci_grid->text().startsWith(grid)))  grid = ui->ci_grid->text();
++  auto const ci_grid = om0rx_sanitized_grid (ui->ci_grid->text());
++  if (grid.length() == 0 || (ci_grid.length() > grid.length() && ci_grid.startsWith(grid)))  grid = ci_grid;
+ 
+   switch( m_specOp )
+     {
+@@ -8330,7 +8653,7 @@ void MainWindow::on_logQSOButton_clicked()                 //Log QSO button
+         m_rptSent=m_xSent.split(" ").at(0).left(2);
+         m_rptRcvd=m_xRcvd.split(" ").at(0).left(2);
+         if(m_xRcvd.split(" ").size()>=2) m_hisGrid=m_xRcvd.split(" ").at(1);
+-        grid=m_hisGrid;
++        grid=om0rx_sanitized_grid (m_hisGrid);
+         ui->dxGridEntry->setText(grid);
+         break;
+       case SpecOp::FIELD_DAY:
+@@ -8358,6 +8681,7 @@ void MainWindow::on_logQSOButton_clicked()                 //Log QSO button
+ 
+   // Z
+   if (m_lastCall != m_hisCall) {
++      auto const completed_call = m_hisCall;
+       if (m_rptSent.isEmpty()) {
+           m_rptSent = QString::number(ui->rptSpinBox->value());
+           int n=m_rptSent.toInt();
+@@ -8376,6 +8700,10 @@ void MainWindow::on_logQSOButton_clicked()                 //Log QSO button
+              // pipeline (CabrilloLog::add_QSO + acceptQSO signal) and crashes
+              // intermittently. Hidden dialog == already auto-accepted.
+              if (m_logDlg && !m_logDlg->isHidden()) m_logDlg->accept();
++             if (m_hisCall == completed_call && completed_call.size()) {
++                 if (m_zdebug) log("Auto-log completion left DX active; clearing completed QSO state: " + completed_call);
++                 clearDX();
++             }
+              if (ui->cbAutoCall->isChecked()) auto_tx_mode (false);
+              resetAutoSwitch();
+          }
+@@ -8412,6 +8740,23 @@ void MainWindow::acceptQSO (QDateTime const& QSO_date_off, QString const& call,
    m_messageClient->logged_ADIF (ADIF);
-
+ 
    // Z
 +  auto const logged_call = om0rx_normalized_call (call);
 +  if (m_om0rxPriorityHuntActive
@@ -1094,15 +2077,19 @@ index ee26233..cfe0cae 100644
 +      m_idleMinutes = 0;
 +      update_watchdog_label ();
 +    }
++
 +  else if (m_om0rxPriorityHuntPending
 +           && logged_call == om0rx_normalized_call (m_om0rxPriorityHuntCall))
 +    {
 +      om0rx_clear_priority_hunt ("logged before start");
 +    }
++  // Worked/confirmed status changed; force the next decode to obtain fresh
++  // values instead of retaining a pre-QSO cache entry.
++  m_om0rx_status_cache.clear ();
    updateQsoCounter(true);
    clearDX();
-
-@@ -8700,7 +8862,7 @@ void MainWindow::on_actionFT2_triggered()
+ 
+@@ -8700,7 +9045,7 @@ void MainWindow::on_actionFT2_triggered()
    ui->cbAutoSeq->setChecked(true);
    m_fastGraph->hide();
    m_wideGraph->show();
@@ -1111,7 +2098,7 @@ index ee26233..cfe0cae 100644
    m_wideGraph->setPeriod(m_TRperiod,m_nsps);
    if (m_tci_audio && ui->bandComboBox->currentText()!="OOB")
      Q_EMIT m_config.transceiver_period(m_TRperiod);
-@@ -8710,7 +8872,7 @@ void MainWindow::on_actionFT2_triggered()
+@@ -8710,7 +9055,7 @@ void MainWindow::on_actionFT2_triggered()
    }
    ui->rh_decodes_title_label->setText(tr ("Rx Frequency"));
    ui->lh_decodes_title_label->setText(tr ("Band Activity"));
@@ -1120,7 +2107,7 @@ index ee26233..cfe0cae 100644
    displayWidgets(nWidgets("11101000010011100001000000011000100000"));
    ui->txrb2->setEnabled(true);
    ui->txrb4->setEnabled(true);
-@@ -8757,7 +8919,7 @@ void MainWindow::on_actionFT4_triggered()
+@@ -8757,7 +9102,7 @@ void MainWindow::on_actionFT4_triggered()
    ui->cbAutoSeq->setChecked(true);
    m_fastGraph->hide();
    m_wideGraph->show();
@@ -1129,7 +2116,7 @@ index ee26233..cfe0cae 100644
    m_wideGraph->setPeriod(m_TRperiod,m_nsps);
    if (m_tci_audio && ui->bandComboBox->currentText()!="OOB")
      Q_EMIT m_config.transceiver_period(m_TRperiod);
-@@ -8767,7 +8929,7 @@ void MainWindow::on_actionFT4_triggered()
+@@ -8767,7 +9112,7 @@ void MainWindow::on_actionFT4_triggered()
    }
    ui->rh_decodes_title_label->setText(tr ("Rx Frequency"));
    ui->lh_decodes_title_label->setText(tr ("Band Activity"));
@@ -1138,7 +2125,7 @@ index ee26233..cfe0cae 100644
  //                         01234567890123456789012345678901234567
    displayWidgets(nWidgets("11101000010011100001000000011000100000"));
    ui->txrb2->setEnabled(true);
-@@ -8810,7 +8972,7 @@ void MainWindow::on_actionFT8_triggered()
+@@ -8810,7 +9155,7 @@ void MainWindow::on_actionFT8_triggered()
    ui->sbFtol->setValue (m_settings->value ("Ftol_SF", 50).toInt()); // restore last used Ftol parameter
    m_fastGraph->hide();
    m_wideGraph->show();
@@ -1147,7 +2134,7 @@ index ee26233..cfe0cae 100644
    m_wideGraph->setPeriod(m_TRperiod,m_nsps);
    if (m_tci_audio && ui->bandComboBox->currentText()!="OOB")
      Q_EMIT m_config.transceiver_period(m_TRperiod);
-@@ -8824,7 +8986,7 @@ void MainWindow::on_actionFT8_triggered()
+@@ -8824,7 +9169,7 @@ void MainWindow::on_actionFT8_triggered()
      ui->lh_decodes_headings_label->setText( "Call         Grid   dB  Freq   Dist Age Cont Score");
    } else {
      ui->lh_decodes_title_label->setText(tr ("Band Activity"));
@@ -1156,7 +2143,7 @@ index ee26233..cfe0cae 100644
    }
  //                         01234567890123456789012345678901234567
    displayWidgets(nWidgets("11101000010011100001000010011000100000"));
-@@ -8975,8 +9137,8 @@ void MainWindow::on_actionJT4_triggered()
+@@ -8975,8 +9320,8 @@ void MainWindow::on_actionJT4_triggered()
    m_bFast9=false;
    setup_status_bar (bVHF);
    ui->sbSubmode->setMaximum(6);
@@ -1167,7 +2154,7 @@ index ee26233..cfe0cae 100644
    if(bVHF) {
      // restore last used parameters
      ui->sbFtol->setValue (m_settings->value ("Ftol_JT4", 50).toInt());
-@@ -9049,15 +9211,15 @@ void MainWindow::on_actionJT9_triggered()
+@@ -9049,15 +9394,15 @@ void MainWindow::on_actionJT9_triggered()
      m_fastGraph->showNormal();
      ui->TxFreqSpinBox->setValue(700);
      ui->RxFreqSpinBox->setValue(700);
@@ -1187,7 +2174,7 @@ index ee26233..cfe0cae 100644
        }
    }
    m_wideGraph->setPeriod(m_TRperiod,m_nsps);
-@@ -9193,8 +9355,8 @@ void MainWindow::on_actionQ65_triggered()
+@@ -9193,8 +9538,8 @@ void MainWindow::on_actionQ65_triggered()
    switch_mode (Modes::Q65);
  //                         01234567890123456789012345678901234567
    displayWidgets(nWidgets("11111101011011010011100000010000000011"));
@@ -1195,10 +2182,10 @@ index ee26233..cfe0cae 100644
 -  ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
 +  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
 +  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
-
+ 
    m_specOp=m_config.special_op_id();
    if(m_specOp!=SpecOp::NONE and m_specOp!=SpecOp::FOX and m_specOp!=SpecOp::HOUND) {
-@@ -9273,8 +9435,8 @@ void MainWindow::on_actionMSK144_triggered()
+@@ -9273,8 +9618,8 @@ void MainWindow::on_actionMSK144_triggered()
    ui->RxFreqSpinBox->setMinimum(1400);
    ui->RxFreqSpinBox->setMaximum(1600);
    ui->RxFreqSpinBox->setSingleStep(10);
@@ -1209,7 +2196,44 @@ index ee26233..cfe0cae 100644
    if (m_tci_audio && ui->bandComboBox->currentText()!="OOB")
      Q_EMIT m_config.transceiver_period(m_TRperiod);
    if (!m_tci_audio) {
-@@ -10594,18 +10756,18 @@ void MainWindow::on_sbTR_valueChanged(int value)
+@@ -9642,17 +9987,6 @@ void MainWindow::on_actionErase_ALL_TXT_triggered()          //Erase ALL.TXT
+   }
+ }
+ 
+-void MainWindow::on_actionErase_list_of_Q65_callers_triggered()
+-{
+-  int ret = MessageBox::query_message (this, tr ("Confirm Erase"),
+-          tr ("Are you sure you want to erase the list of Q65 callers?"));
+-  if(ret==MessageBox::Yes) {
+-    QFile f {m_config.writeable_data_dir ().absoluteFilePath ("tsil.3q")};
+-    f.remove();
+-  }
+-}
+-
+-
+ void MainWindow::on_reset_cabrillo_log_action_triggered ()
+ {
+   if (MessageBox::Yes == MessageBox::query_message (this, tr ("Confirm Reset"),
+@@ -9930,6 +10264,9 @@ void MainWindow::on_stopTxButton_clicked()                    //Stop Tx
+   m_maxPoints=-1;
+   stopWRTimer.stop();           // stop a running Tx3 timer
+   filtered = false;
++  if (m_transmitting) stopTx();
++  transmitDisplay(false);
++  statusUpdate();
+ }
+ 
+ void MainWindow::rigOpen ()
+@@ -10197,7 +10534,7 @@ void MainWindow::transmit (double snr)
+ 
+   if((m_mode=="FT4" or m_mode=="FT8" or m_mode=="FT2") and m_maxPoints>0 and SpecOp::ARRL_DIGI==m_specOp) {
+     ui->dxCallEntry->setText(m_deCall);
+-    ui->dxGridEntry->setText(m_deGrid);
++    ui->dxGridEntry->setText(om0rx_sanitized_grid (m_deGrid));
+     genStdMsgs("-10");
+   }
+ 
+@@ -10594,18 +10931,18 @@ void MainWindow::on_sbTR_valueChanged(int value)
        {
          if (m_TRperiod < 60)
            {
@@ -1231,8 +2255,8 @@ index ee26233..cfe0cae 100644
 +                ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
                }
            }
-
-@@ -11457,7 +11619,34 @@ void MainWindow::statusUpdate () const
+ 
+@@ -11457,7 +11794,44 @@ void MainWindow::statusUpdate () const
                                    submode != QChar::Null ? QString {submode} : QString {}, m_bFastMode,
                                    static_cast<quint8> (m_specOp),
                                    ftol, tr_period, m_multi_settings->configuration_name (),
@@ -1262,16 +2286,26 @@ index ee26233..cfe0cae 100644
 +    }
 +  if (m_QSOProgress == ROGERS || m_QSOProgress == SIGNOFF)
 +    {
++      if (!m_transmitting && ui && !ui->autoButton->isChecked ())
++        {
++          auto const active_call = om0rx_normalized_call (m_hisCall);
++          auto const dx_entry = om0rx_normalized_call (ui->dxCallEntry->text ());
++          auto const last_logged = om0rx_normalized_call (m_lastCall);
++          if (!last_logged.isEmpty () && (active_call == last_logged || dx_entry == last_logged))
++            {
++              return QString {"idle"};
++            }
++        }
 +      return QString {"waiting_73"};
 +    }
 +  return QString {"idle"};
  }
-
+ 
  void MainWindow::childEvent (QChildEvent * e)
-@@ -11528,6 +11717,10 @@ void MainWindow::tx_watchdog (bool triggered)
+@@ -11528,6 +11902,10 @@ void MainWindow::tx_watchdog (bool triggered)
                    QApplication::alert (this);
                  }
-
+ 
 +      if (m_om0rxPriorityHuntActive)
 +        {
 +          om0rx_clear_priority_hunt ("watchdog");
@@ -1279,26 +2313,54 @@ index ee26233..cfe0cae 100644
        clearDX();
      }
    else
-@@ -12751,6 +12944,134 @@ void MainWindow::write_all(QString txRx, QString message)
+@@ -12751,38 +13129,168 @@ void MainWindow::write_all(QString txRx, QString message)
   }
  }
-
+ 
+-void MainWindow::chkFT4()
 +void MainWindow::om0rx_remember_priority_hunt(QString const& call, QString const& grid,
 +                                              int report, int freq, bool tx_first,
 +                                              int rank, int score, QString const& band,
 +                                              QString const& mode, QString const& status)
-+{
+ {
+-  if((m_mode!="FT4" and m_mode!="FT2")) return;
+-  ui->cbAutoSeq->setEnabled(true);
+-  ui->respondComboBox->setVisible(true);
+-  ui->respondComboBox->setEnabled(true);
+-  ui->labDXped->setVisible(m_specOp!=SpecOp::NONE);
+-  ui->respondComboBox->setVisible(ui->cbAutoSeq->isChecked());
 +  auto normalized_call = om0rx_normalized_call (call);
 +  if (normalized_call.isEmpty () || rank < 6200)
 +    {
 +      return;
 +    }
-+
+ 
+-  m_specOp=m_config.special_op_id();
+-  if(m_specOp!=SpecOp::NONE and m_specOp!=SpecOp::FOX and m_specOp!=SpecOp::HOUND) {
+-    QString t0="";
+-    if(SpecOp::NA_VHF==m_specOp) t0="NA VHF";
+-    if(SpecOp::EU_VHF==m_specOp) t0="EU VHF";
+-    if(SpecOp::FIELD_DAY==m_specOp) t0="Field Day";
+-    if(SpecOp::RTTY==m_specOp) t0="FT RU";
+-    if(SpecOp::WW_DIGI==m_specOp) t0="WW Digi";
+-    if(SpecOp::ARRL_DIGI==m_specOp) t0="ARRL Digi";
+-    if(SpecOp::Q65_PILEUP==m_specOp) t0="Q65 Pileup";
+-    if(t0=="") {
+-      ui->labDXped->setVisible(false);
+-    } else {
+-      ui->labDXped->setVisible(true);
+-      ui->labDXped->setText(t0);
 +  if (m_om0rxPriorityHuntPending && score < m_om0rxPriorityHuntScore)
 +    {
 +      return;
-+    }
-+
+     }
+-    if(m_specOp!=SpecOp::Q65_PILEUP) on_contest_log_action_triggered();
+-  }
+-  if (SpecOp::HOUND == m_specOp or SpecOp::FOX == m_specOp) {
+-    ui->labDXped->setVisible(false);
+-  }
+ 
+-}
 +  m_om0rxPriorityHuntPending = true;
 +  m_om0rxPriorityHuntCall = normalized_call;
 +  m_om0rxPriorityHuntGrid = grid;
@@ -1380,7 +2442,8 @@ index ee26233..cfe0cae 100644
 +  if (m_zdebug)
 +    {
 +      log ("OM0RX priority hunt started: " + m_om0rxPriorityHuntCall
-+           + " watchdog=20m status=" + m_om0rxPriorityHuntStatus);
++           + " watchdog=" + QString::number (m_om0rxPriorityHuntWatchdogMinutes)
++           + "m status=" + m_om0rxPriorityHuntStatus);
 +    }
 +  return true;
 +}
@@ -1408,16 +2471,58 @@ index ee26233..cfe0cae 100644
 +  m_om0rxPriorityHuntFreq = 0;
 +  m_om0rxPriorityHuntReport = 0;
 +  m_om0rxPriorityHuntTxFirst = false;
++  m_om0rxPriorityHuntWatchdogMinutes = 20;
 +  update_watchdog_label ();
 +}
 +
- void MainWindow::chkFT4()
++void MainWindow::chkFT4()
++{
++  if((m_mode!="FT4" and m_mode!="FT2")) return;
++  ui->cbAutoSeq->setEnabled(true);
++  ui->respondComboBox->setVisible(true);
++  ui->respondComboBox->setEnabled(true);
++  ui->labDXped->setVisible(m_specOp!=SpecOp::NONE);
++  ui->respondComboBox->setVisible(ui->cbAutoSeq->isChecked());
++
++  m_specOp=m_config.special_op_id();
++  if(m_specOp!=SpecOp::NONE and m_specOp!=SpecOp::FOX and m_specOp!=SpecOp::HOUND) {
++    QString t0="";
++    if(SpecOp::NA_VHF==m_specOp) t0="NA VHF";
++    if(SpecOp::EU_VHF==m_specOp) t0="EU VHF";
++    if(SpecOp::FIELD_DAY==m_specOp) t0="Field Day";
++    if(SpecOp::RTTY==m_specOp) t0="FT RU";
++    if(SpecOp::WW_DIGI==m_specOp) t0="WW Digi";
++    if(SpecOp::ARRL_DIGI==m_specOp) t0="ARRL Digi";
++    if(SpecOp::Q65_PILEUP==m_specOp) t0="Q65 Pileup";
++    if(t0=="") {
++      ui->labDXped->setVisible(false);
++    } else {
++      ui->labDXped->setVisible(true);
++      ui->labDXped->setText(t0);
++    }
++    if(m_specOp!=SpecOp::Q65_PILEUP) on_contest_log_action_triggered();
++  }
++  if (SpecOp::HOUND == m_specOp or SpecOp::FOX == m_specOp) {
++    ui->labDXped->setVisible(false);
++  }
++
++}
+ 
+ void MainWindow::on_pbBestSP_clicked()
  {
-   if((m_mode!="FT4" and m_mode!="FT2")) return;
-@@ -12911,6 +13232,155 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
+@@ -12890,7 +13398,7 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
+     }
+   if (dx_grid.size () && ui->dxGridEntry->isVisible ())
+     {
+-      ui->dxGridEntry->setText (dx_grid);
++      ui->dxGridEntry->setText (om0rx_sanitized_grid (dx_grid));
+     }
+   if (generate_messages && ui->genStdMsgsPushButton->isVisible ())
+     {
+@@ -12911,6 +13419,195 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
    QApplication::alert (this);
  }
-
+ 
 +void MainWindow::remote_start_target_qso (QString const& payload_json)
 +{
 +  QJsonParseError parse_error;
@@ -1493,6 +2598,21 @@ index ee26233..cfe0cae 100644
 +      return;
 +    }
 +
++  auto const normalized_target = om0rx_normalized_call (dx_call);
++  auto active_call = om0rx_normalized_call (m_hisCall);
++  if (active_call.isEmpty ()) active_call = om0rx_normalized_call (ui->dxCallEntry->text ());
++  if (enable_tx && (m_transmitting || m_tx_when_ready || g_iptt))
++    {
++      qDebug () << "OM0RX start target QSO ignored while Tx is active or pending";
++      return;
++    }
++  if (enable_tx && ui->autoButton->isChecked () && !active_call.isEmpty ()
++      && active_call != normalized_target)
++    {
++      qDebug () << "OM0RX start target QSO ignored; another target is active:" << active_call;
++      return;
++    }
++
 +  if (target.contains ("txFirst") && ui->txFirstCheckBox->isVisible ())
 +    {
 +      ui->txFirstCheckBox->setChecked (bool_value ("txFirst", ui->txFirstCheckBox->isChecked ()));
@@ -1539,6 +2659,8 @@ index ee26233..cfe0cae 100644
 +      m_om0rxPriorityHuntBand = text_value ("band");
 +      m_om0rxPriorityHuntMode = mode;
 +      m_om0rxPriorityHuntStatus = text_value ("huntReason", text_value ("dxcc_status", "backend"));
++      m_om0rxPriorityHuntWatchdogMinutes = int (qBound (quint32 {1},
++          watchdog_minutes ? watchdog_minutes : quint32 {20}, quint32 {120}));
 +      m_om0rxPriorityHuntScore = 1000;
 +      m_om0rxPriorityHuntRank = 1000;
 +      m_om0rxPriorityHuntFreq = rx_df == quint32_max ? ui->RxFreqSpinBox->value () : int (rx_df);
@@ -1549,31 +2671,190 @@ index ee26233..cfe0cae 100644
 +      if (m_zdebug)
 +        {
 +          log ("OM0RX backend priority hunt armed: " + m_om0rxPriorityHuntCall
-+               + " watchdog=" + QString::number (watchdog_minutes ? watchdog_minutes : 20) + "m");
++               + " watchdog=" + QString::number (m_om0rxPriorityHuntWatchdogMinutes) + "m");
 +        }
 +    }
 +
-+  if (enable_tx && !listen_only && !ui->autoButton->isChecked ())
++  auto const frequency_confirmed = !dial_frequency
++      || (m_rigState.online ()
++          && qAbs (qint64 (m_rigState.frequency ()) - qint64 (dial_frequency)) <= 2);
++  if (enable_tx && !listen_only && !ui->autoButton->isChecked () && frequency_confirmed)
 +    {
 +      m_bDoubleClicked = true;
 +      ui->autoButton->click ();
++    }
++  else if (enable_tx && !listen_only && !frequency_confirmed)
++    {
++      // Never race a requested QSY with PTT. Enable only after the rig reports
++      // the requested dial frequency; otherwise remain safely in RX.
++      QTimer::singleShot (750, this, [this, dial_frequency, normalized_target] {
++          auto const target_still_selected =
++              om0rx_normalized_call (ui->dxCallEntry->text ()) == normalized_target;
++          auto const rig_confirmed = m_rigState.online ()
++              && qAbs (qint64 (m_rigState.frequency ()) - qint64 (dial_frequency)) <= 2;
++          if (target_still_selected && rig_confirmed && !m_transmitting
++              && !m_tx_when_ready && !g_iptt && !ui->autoButton->isChecked ())
++            {
++              m_bDoubleClicked = true;
++              ui->autoButton->click ();
++            }
++          else if (!rig_confirmed)
++            {
++              qDebug () << "OM0RX target QSO left in RX; requested dial frequency was not confirmed";
++            }
++        });
 +    }
 +
 +  qDebug () << "OM0RX start target QSO applied:"
 +            << dx_call << "mode" << mode << "dial" << dial_frequency
 +            << "rxDf" << rx_df << "txDf" << tx_df
 +            << "enableTx" << enable_tx << "listenOnly" << listen_only;
-+  tx_watchdog (false);
 +  QApplication::alert (this);
 +}
 +
  QString MainWindow::WSPR_message()
  {
    QString sdBm,msg0,msg1,msg2;
-@@ -13090,6 +13560,48 @@ void MainWindow::rebuildFilterCache() const
+@@ -13090,6 +13787,203 @@ void MainWindow::rebuildFilterCache() const
  static const QRegularExpression kReDigit{"[0-9]"};
  static const QRegularExpression kReCqStart{"^(CQ|CQ\\s\\w+)$"};
-
+ 
++bool MainWindow::om0rx_stop_forbidden_autocall_cq(QString const& reason)
++{
++    if (!ui || !ui->cbAutoCall->isChecked() || ui->cbAutoCQ->isChecked()) return false;
++
++    auto const tx6 = ui->tx6->text().trimmed();
++    bool const tx6_is_cq = tx6.contains(QRegularExpression {"^(CQ|QRZ)(\\s|$)"});
++    bool const tx6_is_selected = ui->txrb6->isChecked() || m_ntx == 6;
++    if (!tx6_is_cq || (!tx6_is_selected && !m_bCallingCQ)) return false;
++
++    auto const active_call = om0rx_normalized_call(m_hisCall);
++    auto const dx_entry = om0rx_normalized_call(ui->dxCallEntry->text());
++    auto const last_logged = om0rx_normalized_call(m_lastCall);
++    bool const completed_target =
++        !last_logged.isEmpty()
++        && (active_call == last_logged || dx_entry == last_logged
++            || m_QSOProgress == ROGERS || m_QSOProgress == SIGNOFF);
++
++    bool const no_active_target =
++        active_call.isEmpty() || dx_entry.isEmpty() || completed_target || m_QSOProgress == CALLING;
++    if (!no_active_target) return false;
++
++    if (m_zdebug) {
++        log("OM0RX blocked Auto Call CQ: reason=" + reason + " tx6=" + tx6);
++    }
++
++    m_bCallingCQ = false;
++    m_bAutoReply = false;
++    m_bTxTime = false;
++    m_btxok = false;
++    if (ui->autoButton->isChecked()) {
++        auto_tx_mode(false);
++    }
++    if (completed_target || dx_entry.isEmpty()) {
++        clearDX();
++    }
++    return true;
++}
++
++bool MainWindow::om0rx_clear_stale_logged_qso(QString const& reason)
++{
++    bool const forbidden_autocall_cq =
++        ui
++        && ui->autoButton->isChecked()
++        && ui->cbAutoCall->isChecked()
++        && !ui->cbAutoCQ->isChecked()
++        && (ui->txrb6->isChecked() || m_ntx == 6)
++        && ui->tx6->text().trimmed().contains(QRegularExpression {"^(CQ|QRZ)(\\s|$)"});
++    if (m_transmitting || (ui && ui->autoButton->isChecked() && !forbidden_autocall_cq)) return false;
++    if (m_QSOProgress != ROGERS && m_QSOProgress != SIGNOFF) return false;
++
++    auto const active_call = om0rx_normalized_call(m_hisCall);
++    auto const dx_entry = ui ? om0rx_normalized_call(ui->dxCallEntry->text()) : QString {};
++    auto const last_logged = om0rx_normalized_call(m_lastCall);
++    if (last_logged.isEmpty()) return false;
++    if (active_call != last_logged && dx_entry != last_logged) return false;
++
++    if (m_zdebug) {
++        log("OM0RX stale logged QSO cleared: " + last_logged + " reason=" + reason);
++    }
++    m_om0rxReplyPriorityCall.clear();
++    m_om0rxPendingDirectReplyLine.clear();
++    m_om0rxPendingDirectReplyValid = false;
++    om0rx_stop_forbidden_autocall_cq("stale logged QSO cleanup");
++    clearDX();
++    return true;
++}
++
++bool MainWindow::om0rx_clear_stale_final_qso_state(QString const& reason)
++{
++    static QString s_seen_key;
++    static QDateTime s_seen_at;
++
++    if (!ui || m_transmitting || ui->autoButton->isChecked()) {
++        s_seen_key.clear();
++        s_seen_at = QDateTime {};
++        return false;
++    }
++    if (!ui->cbAutoCall->isChecked() && !ui->cb_autoCallNext->isChecked() && !ui->cbAutoCQ->isChecked()) {
++        s_seen_key.clear();
++        s_seen_at = QDateTime {};
++        return false;
++    }
++    if (m_QSOProgress != ROGERS && m_QSOProgress != SIGNOFF) {
++        s_seen_key.clear();
++        s_seen_at = QDateTime {};
++        return false;
++    }
++
++    auto const active_call = om0rx_normalized_call(m_hisCall);
++    auto const dx_entry = ui ? om0rx_normalized_call(ui->dxCallEntry->text()) : QString {};
++    if (active_call.isEmpty() && dx_entry.isEmpty()) {
++        s_seen_key.clear();
++        s_seen_at = QDateTime {};
++        return false;
++    }
++
++    auto const last_logged = om0rx_normalized_call(m_lastCall);
++    if (!last_logged.isEmpty() && (active_call == last_logged || dx_entry == last_logged)) {
++        if (m_zdebug) {
++            log("OM0RX stale final state matched logged QSO; clearing: " + last_logged + " reason=" + reason);
++        }
++        s_seen_key.clear();
++        s_seen_at = QDateTime {};
++        clearDX();
++        return true;
++    }
++
++    auto const key = QString {"%1|%2|%3"}.arg(active_call, dx_entry, QString::number(m_QSOProgress));
++    auto const now = QDateTime::currentDateTimeUtc();
++    if (s_seen_key != key || !s_seen_at.isValid()) {
++        s_seen_key = key;
++        s_seen_at = now;
++        return false;
++    }
++
++    int const stale_after = std::max(45, int(m_TRperiod * 3));
++    if (s_seen_at.secsTo(now) < stale_after) {
++        return false;
++    }
++
++    if (m_zdebug) {
++        log("OM0RX stale final QSO state cleared: active=" + active_call
++            + " dx=" + dx_entry
++            + " reason=" + reason);
++    }
++    m_om0rxReplyPriorityCall.clear();
++    m_om0rxPendingDirectReplyLine.clear();
++    m_om0rxPendingDirectReplyValid = false;
++    m_bAutoReply = false;
++    m_bCallingCQ = false;
++    s_seen_key.clear();
++    s_seen_at = QDateTime {};
++    clearDX();
++    return true;
++}
++
 +void MainWindow::om0rx_auto_reply_direct_call(DecodedText const& message, QString const& call)
 +{
 +    auto const normalized_call = om0rx_normalized_call(call);
@@ -1587,25 +2868,44 @@ index ee26233..cfe0cae 100644
 +        return;
 +    }
 +
++    om0rx_clear_stale_logged_qso("direct reply precheck");
++    m_om0rxReplyPriorityCall = normalized_call;
++    m_om0rxPendingDirectReplyLine = message.string();
++    m_om0rxPendingDirectReplyValid = true;
++
 +    bool const idle_or_finished =
 +        CALLING == m_QSOProgress || ROGERS == m_QSOProgress || SIGNOFF == m_QSOProgress;
-+    if (m_transmitting || ui->autoButton->isChecked() || !idle_or_finished) {
++    bool const can_interrupt_unanswered_call =
++        CALLING == m_QSOProgress && ui->autoButton->isChecked() && !m_transmitting;
++    if (m_transmitting || (!can_interrupt_unanswered_call && ui->autoButton->isChecked()) || !idle_or_finished) {
 +        if (m_zdebug) log("OM0RX direct reply held; QSO is active: " + normalized_call);
 +        return;
 +    }
 +
 +    QTimer::singleShot(0, this, [this, message, normalized_call] {
++        om0rx_clear_stale_logged_qso("direct reply start");
 +        bool const idle_or_finished =
 +            CALLING == m_QSOProgress || ROGERS == m_QSOProgress || SIGNOFF == m_QSOProgress;
-+        if (m_transmitting || ui->autoButton->isChecked() || !idle_or_finished) {
++        bool const can_interrupt_unanswered_call =
++            CALLING == m_QSOProgress && ui->autoButton->isChecked() && !m_transmitting;
++        if (m_transmitting || (!can_interrupt_unanswered_call && ui->autoButton->isChecked()) || !idle_or_finished) {
 +            if (m_zdebug) log("OM0RX direct reply skipped after state changed: " + normalized_call);
 +            return;
++        }
++
++        if (can_interrupt_unanswered_call) {
++            if (m_zdebug) log("OM0RX direct reply interrupts unanswered Auto Call: " + normalized_call);
++            ui->autoButton->setChecked(false);
++            on_autoButton_clicked(false);
++            clearDX();
 +        }
 +
 +        m_priorityCall.clear();
 +        m_priorityCallPreferCQTarget = false;
 +        m_om0rxHuntingPriorityScore = -1;
 +        m_om0rxReplyPriorityCall = normalized_call;
++        m_om0rxPendingDirectReplyLine.clear();
++        m_om0rxPendingDirectReplyValid = false;
 +        om0rx_clear_priority_hunt("direct reply to us");
 +
 +        if (m_zdebug) log("OM0RX direct reply auto-start: " + normalized_call);
@@ -1618,9 +2918,9 @@ index ee26233..cfe0cae 100644
 +
  bool MainWindow::callsignFiltered(DecodedText dt)
  {
-
-@@ -13142,6 +13654,33 @@ bool MainWindow::callsignFiltered(DecodedText dt)
-
+ 
+@@ -13142,6 +14036,33 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+ 
      bool is_73 = (message_words.size() >= 5 && (message_words.contains("73") || message_words.contains("RR73")));
      bool is_CQ = message_words.filter (kReCqStart).size();
 +    bool const reply_to_me = message_words.size () > 4
@@ -1650,18 +2950,20 @@ index ee26233..cfe0cae 100644
 +          }
 +        return false;
 +      }
-
+ 
      // Auto call next
      if (ui->cb_autoCallNext->isChecked() && dxCall == ui->dxCallEntry->text() ) {
-@@ -13457,10 +13996,17 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+@@ -13457,12 +14378,70 @@ bool MainWindow::callsignFiltered(DecodedText dt)
                    ui->pte_alerts->appendPlainText(dxCall.leftJustified(12, ' ') + looked_up.entity_name);
                    m_beeped = true;
                }
 -          }
 +    }
-
+ 
      if (m_zdebug) log("Call not filtered: " + dxCall);
-
+ 
+-    if ( !is_CQ && !(ui->cbCQonlyIncl73->isChecked() && is_73) ) {
+-        if (m_zdebug) log("Not CQ/73. Exiting.");
 +    if (!matched) {
 +        m_logBook.match (dxCall, m_mode, dxGrid, looked_up, callB4, countryB4, gridB4, continentB4, CQZoneB4, ITUZoneB4);
 +        m_logBook.match (dxCall, m_mode, dxGrid, looked_up, callB4onBand, countryB4onBand, gridB4onBand,
@@ -1669,34 +2971,39 @@ index ee26233..cfe0cae 100644
 +        matched = true;
 +    }
 +
-     if ( !is_CQ && !(ui->cbCQonlyIncl73->isChecked() && is_73) ) {
-         if (m_zdebug) log("Not CQ/73. Exiting.");
-         return false;
-@@ -13481,12 +14027,37 @@ bool MainWindow::callsignFiltered(DecodedText dt)
-     bool forcePreferPromotion = cqTargetPreferMode && cqTargetPreferMatch && !m_priorityCallPreferCQTarget;
-     bool skipAutoPriority = cqTargetPreferMode && m_priorityCallPreferCQTarget && !cqTargetPreferMatch;
-     if (forcePreferPromotion) {
--      prio = true;
-       // Restart priority baseline when switching from non-preferred to preferred pool.
-       m_maxDistance = 0;
-       m_maxSignal = -31;
-+      m_om0rxHuntingPriorityScore = -1;
-     }
-
 +    auto huntingRank = om0rx_logbook_rank (callB4, callB4onBand, countryB4, countryB4onBand);
 +    auto dxccHuntRank = !countryB4 ? 10000 : !countryB4onBand ? 6200 : 0;
 +    QString dxccHuntStatus = !countryB4 ? QString {"ATNO"}
 +        : !countryB4onBand ? QString {"DXCC New Band"} : QString {};
++    bool cacheCallDoneOnBandMode = false;
++    bool cacheDxccHuntNeeded = false;
++    bool cacheHasNeedFlags = false;
 +    auto const cache_key = QString {"%1|%2|%3"}.arg (dxCall, m_currentBand.trimmed (), m_mode.trimmed ().toUpper ());
 +    if (m_om0rx_status_cache.contains (cache_key))
 +      {
 +        auto parts = m_om0rx_status_cache.value (cache_key).split ('|');
 +        if (parts.size () >= 2)
 +          {
++            cacheHasNeedFlags = om0rx_status_cache_has_need_flags (parts);
++            cacheCallDoneOnBandMode = om0rx_status_cache_call_done_on_band_mode (parts);
++            cacheDxccHuntNeeded = om0rx_status_cache_dxcc_hunt_needed (parts);
 +            huntingRank = om0rx_status_rank (parts.value (0), parts.value (1));
-+            if (om0rx_dxcc_priority_hunt_status (parts.value (1)))
++            if (cacheCallDoneOnBandMode)
++              {
++                huntingRank = 0;
++                dxccHuntRank = 0;
++                dxccHuntStatus.clear ();
++              }
++            else if (om0rx_dxcc_priority_hunt_status (parts.value (1))
++                     && (!cacheHasNeedFlags || cacheDxccHuntNeeded))
 +              {
 +                dxccHuntRank = om0rx_status_rank_one (parts.value (1));
++                dxccHuntStatus = parts.value (1);
++              }
++            else if (om0rx_dxcc_watch_status (parts.value (1))
++                     && (!cacheHasNeedFlags || cacheDxccHuntNeeded))
++              {
++                dxccHuntRank = 9000;
 +                dxccHuntStatus = parts.value (1);
 +              }
 +            else
@@ -1707,11 +3014,35 @@ index ee26233..cfe0cae 100644
 +          }
 +      }
 +
++    auto const cq_or_73_candidate = is_CQ;
++    auto const dxcc_watch_candidate = ui->cbWatchUnconfirmedDXCC->isChecked()
++        && dxccHuntRank >= 6200
++        && !cacheCallDoneOnBandMode;
++    if (cacheCallDoneOnBandMode) {
++        if (m_zdebug) log("callsignFiltered: exact call/band/mode already worked, not selecting: " + dxCall);
++        return false;
++    }
++    if (!cq_or_73_candidate) {
++        if (m_zdebug) log("Not CQ/QRZ. Third-party 73 and DXCC priority never make traffic callable. Exiting.");
+         return false;
+     }
+ 
+@@ -13481,12 +14460,13 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+     bool forcePreferPromotion = cqTargetPreferMode && cqTargetPreferMatch && !m_priorityCallPreferCQTarget;
+     bool skipAutoPriority = cqTargetPreferMode && m_priorityCallPreferCQTarget && !cqTargetPreferMatch;
+     if (forcePreferPromotion) {
+-      prio = true;
+       // Restart priority baseline when switching from non-preferred to preferred pool.
+       m_maxDistance = 0;
+       m_maxSignal = -31;
++      m_om0rxHuntingPriorityScore = -1;
+     }
+ 
 +    int tieBreak = 0;
      if (!skipAutoPriority && ui->cb_autoCallPriority->currentIndex() == 2) {
          if (dxGrid.length() == 4 && dxGrid != "RR73" && !dxGrid.startsWith("R-") && !dxGrid.startsWith("R+")) {
              double utch=0.0;
-@@ -13494,34 +14065,48 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+@@ -13494,34 +14474,48 @@ bool MainWindow::callsignFiltered(DecodedText dt)
              azdist_(const_cast <char *> ((m_config.my_grid () + "      ").left (6).toLatin1 ().constData ()),
                      const_cast <char *> (dxGrid.left (6).toLatin1 ().constData ()),&utch,
                      &nAz,&nEl,&nDmiles,&nDkm,&nHotAz,&nHotABetter,6,6);
@@ -1720,13 +3051,13 @@ index ee26233..cfe0cae 100644
 -                m_maxDistance = nDkm;
 -            }
 +            tieBreak = nDkm;
-
+ 
          } else {
 -            prio = true;
 -            m_maxDistance = 1;
 +            tieBreak = 1;
          }
-
+ 
      } else if (!skipAutoPriority && ui->cb_autoCallPriority->currentIndex() == 1) {
          bool convOK;
          int intdbM = dbM.toInt(&convOK);
@@ -1738,14 +3069,14 @@ index ee26233..cfe0cae 100644
 +        if (convOK) {
 +               tieBreak = intdbM + 1000;
 +        }
-
+ 
      } else if (!skipAutoPriority && ui->cb_autoCallPriority->currentIndex() == 0) {
 -        prio = true;
 +        tieBreak = 0;
      }
-
+ 
 +    auto const candidateScore = huntingRank * 100000 + tieBreak;
-+    if (dxccHuntRank >= 6200)
++    if (dxcc_watch_candidate)
 +      {
 +        auto const dxccHuntScore = dxccHuntRank * 100000 + tieBreak;
 +        om0rx_remember_priority_hunt (dxCall, dxGrid, dt.report ().toInt (),
@@ -1761,7 +3092,7 @@ index ee26233..cfe0cae 100644
 +            || (lastDecodedPriority && candidateScore == m_om0rxHuntingPriorityScore))) {
 +        prio = true;
 +    }
-
+ 
      if (prio) {
 -        if (m_zdebug) log("++ New Priority Call: " + dxCall);
 +        if (m_zdebug) log("++ New Priority Call: " + dxCall
@@ -1773,10 +3104,10 @@ index ee26233..cfe0cae 100644
          m_prioFreq = dt.frequencyOffset();
          m_nextRpt = dt.report();
          int nmod;
-@@ -13827,6 +14412,361 @@ void MainWindow::leftClickHandler(Qt::KeyboardModifiers modifiers) {
+@@ -13827,6 +14821,386 @@ void MainWindow::leftClickHandler(Qt::KeyboardModifiers modifiers) {
    }
  }
-
+ 
 +void MainWindow::request_om0rx_decode_status (double freq_hz, QString const& callsign,
 +                                              bool, int,
 +                                              QString const& decode_band,
@@ -1831,6 +3162,19 @@ index ee26233..cfe0cae 100644
 +              cached.insert ("dxcc_tag", parts.value (3));
 +              cached.insert ("cq_zone", parts.value (4));
 +              cached.insert ("itu_zone", parts.value (5));
++            }
++          if (om0rx_status_cache_has_need_flags (parts))
++            {
++              QJsonObject needed;
++              needed.insert ("call", om0rx_status_cache_bool (parts, 6));
++              needed.insert ("dxcc", om0rx_status_cache_bool (parts, 9));
++              QJsonObject needed_on_band;
++              needed_on_band.insert ("call", om0rx_status_cache_bool (parts, 7));
++              needed_on_band.insert ("mode", om0rx_status_cache_bool (parts, 8));
++              needed_on_band.insert ("dxcc", om0rx_status_cache_bool (parts, 10));
++              needed_on_band.insert ("dxcc_mode", om0rx_status_cache_bool (parts, 11));
++              cached.insert ("needed", needed);
++              cached.insert ("needed_on_band", needed_on_band);
 +            }
 +          QTimer::singleShot (0, this, [this, call, cached] {
 +            apply_om0rx_decode_status (call, cached);
@@ -1897,12 +3241,24 @@ index ee26233..cfe0cae 100644
 +                    log ("OM0RX decode-status unknown for " + call + ": " + QString::fromUtf8 (body));
 +                  }
 +              }
-+            else
++              else
 +              {
++                auto needed = status.value ("needed").toObject ();
++                auto needed_on_band = status.value ("needed_on_band").toObject ();
++                if (m_om0rx_status_cache.size () >= 4096)
++                  {
++                    m_om0rx_status_cache.clear ();
++                  }
 +                m_om0rx_status_cache.insert (
 +                    cache_key,
-+                    QString {"%1|%2|%3|%4|%5|%6"}.arg (
-+                        call_status, dxcc_status, country, dxcc_tag, cq_zone, itu_zone));
++                    QString {"%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12"}.arg (
++                        call_status, dxcc_status, country, dxcc_tag, cq_zone, itu_zone,
++                        needed.value ("call").toBool () ? QString {"1"} : QString {"0"},
++                        needed_on_band.value ("call").toBool () ? QString {"1"} : QString {"0"},
++                        needed_on_band.value ("mode").toBool () ? QString {"1"} : QString {"0"},
++                        needed.value ("dxcc").toBool () ? QString {"1"} : QString {"0"},
++                        needed_on_band.value ("dxcc").toBool () ? QString {"1"} : QString {"0"},
++                        needed_on_band.value ("dxcc_mode").toBool () ? QString {"1"} : QString {"0"}));
 +                QTimer::singleShot (0, this, [this, call, status] {
 +                  apply_om0rx_decode_status (call, status);
 +                });
@@ -2133,9 +3489,19 @@ index ee26233..cfe0cae 100644
 +}
 +
  void MainWindow::dxLookup(QString dxCall, QString dxGrid) {
-
+ 
      if (!ui->w_callInfo->isVisible()) return;
-@@ -14273,6 +15213,8 @@ void MainWindow::switchBand(int row) {
+@@ -14054,7 +15428,8 @@ void MainWindow::qrzResponseHandler(QNetworkReply * r) {
+             if (m_zdebug) log("QRZ Error: " + error);
+             qrzInit();
+         } else {
+-            if (ui->ci_grid->text().length() > ui->dxGridEntry->text().length() && qrzPendingLookupCall == ui->dxCallEntry->text()) ui->dxGridEntry->setText(ui->ci_grid->text());
++            auto const ci_grid = om0rx_sanitized_grid (ui->ci_grid->text());
++            if (ci_grid.length() > ui->dxGridEntry->text().length() && qrzPendingLookupCall == ui->dxCallEntry->text()) ui->dxGridEntry->setText(ci_grid);
+             qrzPendingLookupCall = "";
+             ci_gridLookup();
+         }
+@@ -14273,6 +15648,8 @@ void MainWindow::switchBand(int row) {
          on_bandComboBox_activated (row);
          m_priorityCall = QString();
          m_priorityCallPreferCQTarget = false;
@@ -2144,7 +3510,7 @@ index ee26233..cfe0cae 100644
          m_lastCall = QString();
          clearDX();
          busySlots.clear();
-@@ -14319,6 +15261,7 @@ void MainWindow::ZProcess ()
+@@ -14319,10 +15696,15 @@ void MainWindow::ZProcess ()
      {
          m_priorityCall = QString();
        m_priorityCallPreferCQTarget = false;
@@ -2152,24 +3518,67 @@ index ee26233..cfe0cae 100644
          if (m_zdebug) log("ZProcess: EXIT (Transmitting)");
          return;
      }
-@@ -14340,7 +15283,36 @@ void MainWindow::ZProcess ()
+ 
++    om0rx_clear_stale_logged_qso("ZProcess entry");
++    om0rx_clear_stale_final_qso_state("ZProcess entry");
++    om0rx_stop_forbidden_autocall_cq("ZProcess entry");
++
+     if (m_config.ignoreListReset() != 0 && m_ignoreListReset.secsTo(QDateTime::currentDateTime()) / 60 >= m_config.ignoreListReset()) {
+         if (m_zdebug) log("ZProcess: Clearing ignore list");
+         on_btn_clearIgnore_clicked();
+@@ -14340,7 +15722,71 @@ void MainWindow::ZProcess ()
      if (m_zdebug) log("ZProcess: m_hiscall: " + m_hisCall);
      if (m_zdebug) log("ZProcess: m_lastcall: " + m_lastCall);
-
+ 
 -    if (!ui->autoButton->isChecked() && (ui->cbAutoCall->isChecked() || ui->cb_autoCallNext->isChecked())
 +    if (!m_om0rxReplyPriorityCall.isEmpty ())
 +      {
 +        auto const reply_call = m_om0rxReplyPriorityCall;
 +        auto const last_logged = om0rx_normalized_call (m_lastCall);
 +        auto const active_dx = om0rx_normalized_call (ui->dxCallEntry->text ());
-+        if (last_logged == reply_call
-+            || (CALLING == m_QSOProgress && active_dx.isEmpty ()))
++        if (last_logged == reply_call)
 +          {
 +            if (m_zdebug)
 +              {
 +                log ("ZProcess: reply priority cleared for " + reply_call);
 +              }
 +            m_om0rxReplyPriorityCall.clear ();
++            m_om0rxPendingDirectReplyLine.clear ();
++            m_om0rxPendingDirectReplyValid = false;
++          }
++        else if (m_om0rxPendingDirectReplyValid
++                 && CALLING == m_QSOProgress
++                 && !ui->autoButton->isChecked ()
++                 && (active_dx.isEmpty () || active_dx == reply_call))
++          {
++            auto const held_reply = m_om0rxPendingDirectReplyLine;
++            m_om0rxPendingDirectReplyLine.clear ();
++            m_om0rxPendingDirectReplyValid = false;
++            m_priorityCall.clear ();
++            m_priorityCallPreferCQTarget = false;
++            m_om0rxHuntingPriorityScore = -1;
++            om0rx_clear_priority_hunt ("held direct reply to us");
++            if (m_zdebug)
++              {
++                log ("ZProcess: starting held direct reply for " + reply_call);
++              }
++            processMessage (DecodedText {held_reply});
++            if (!ui->dxCallEntry->text ().isEmpty ())
++              {
++                auto_tx_mode (true);
++              }
++            if (m_zdebug) log("ZProcess: EXIT (held direct reply)");
++            return;
++          }
++        else if (CALLING == m_QSOProgress && active_dx.isEmpty ())
++          {
++            if (m_zdebug)
++              {
++                log ("ZProcess: stale reply priority cleared for " + reply_call);
++              }
++            m_om0rxReplyPriorityCall.clear ();
++            m_om0rxPendingDirectReplyLine.clear ();
++            m_om0rxPendingDirectReplyValid = false;
 +          }
 +        else
 +          {
@@ -2190,29 +3599,104 @@ index ee26233..cfe0cae 100644
              && !m_priorityCall.isNull() && !m_priorityCall.isEmpty()
              && m_lastCall != m_priorityCall && (ui->dxCallEntry->text().isEmpty() || ui->dxCallEntry->text() == m_priorityCall)) {
          tx_watchdog(false);
-@@ -14433,6 +15405,7 @@ void MainWindow::ZProcess ()
-
+@@ -14433,6 +15879,7 @@ void MainWindow::ZProcess ()
+ 
      m_maxDistance = 0 ;
      m_maxSignal = -30;
 +    m_om0rxHuntingPriorityScore = -1;
      m_priorityCall = QString();
      m_priorityCallPreferCQTarget = false;
      m_beeped = false;
-@@ -14448,10 +15421,12 @@ void MainWindow::resetAutoSwitch() {
+@@ -14448,10 +15895,38 @@ void MainWindow::resetAutoSwitch() {
          ui->le_autoCQLeft->setText(QString::number(ui->sb_autoCQCount->value()));
          m_priorityCall = QString();
    m_priorityCallPreferCQTarget = false;
 +        m_om0rxHuntingPriorityScore = -1;
    update_mode_switch_status_label ();
  }
-
+ 
  int MainWindow::watchdog() {
-+    if (m_om0rxPriorityHuntActive) return 20;
++    if (m_om0rxPriorityHuntActive) {
++        auto const cache_key = QString {"%1|%2|%3"}.arg (
++            m_om0rxPriorityHuntCall,
++            m_om0rxPriorityHuntBand.trimmed ().isEmpty () ? m_currentBand.trimmed () : m_om0rxPriorityHuntBand.trimmed (),
++            m_om0rxPriorityHuntMode.trimmed ().isEmpty () ? m_mode.trimmed ().toUpper () : m_om0rxPriorityHuntMode.trimmed ().toUpper ());
++        if (m_om0rx_status_cache.contains (cache_key))
++          {
++            auto parts = m_om0rx_status_cache.value (cache_key).split ('|');
++            if (om0rx_status_cache_call_done_on_band_mode (parts)
++                || !om0rx_status_cache_dxcc_hunt_needed (parts))
++              {
++                om0rx_clear_priority_hunt ("watchdog target no longer needed");
++              }
++          }
++        auto const active_call = om0rx_normalized_call (m_hisCall);
++        auto const dx_entry = om0rx_normalized_call (ui->dxCallEntry->text ());
++        auto const last_logged = om0rx_normalized_call (m_lastCall);
++        if (m_om0rxPriorityHuntActive
++            && !ui->autoButton->isChecked ()
++            && !m_transmitting
++            && (last_logged == m_om0rxPriorityHuntCall
++                || (active_call.isEmpty () && dx_entry.isEmpty ())))
++          {
++            om0rx_clear_priority_hunt ("watchdog inactive target");
++          }
++        if (m_om0rxPriorityHuntActive) return m_om0rxPriorityHuntWatchdogMinutes;
++    }
      if (m_config.wd_Timer()) {
          if (m_mode == "FT8") return m_config.wd_FT8();
          if (m_mode == "FT2") return m_config.wd_FT2();
+@@ -14464,18 +15939,17 @@ void MainWindow::on_actionDark_mode_triggered() {
+     if (ui->actionDark_mode->isChecked()) {
+         if (m_zdebug) log("Stylesheet: DARK");
+         QFile file(":/qdarkstyle/style.qss");
+-        file.open(QFile::ReadOnly);
+-        QString styleSheet = QLatin1String(file.readAll());
+-        qApp->setStyleSheet(styleSheet);
++        if (file.open(QFile::ReadOnly)) {
++            QString styleSheet = QLatin1String(file.readAll());
++            if (qApp->styleSheet() != styleSheet) qApp->setStyleSheet(styleSheet);
++        }
+         labAz.setStyleSheet ("QLabel{background-color: #005555; padding-left: 10px; padding-right: 10px}");
+         qso_count.setStyleSheet ("QLabel{background-color: #005555; padding-left: 10px; padding-right: 10px}");
+-        initialize_fonts();
+     } else {
+         if (m_zdebug) log("Stylesheet: LIGHT");
+-        qApp->setStyleSheet("");
++        if (!qApp->styleSheet().isEmpty()) qApp->setStyleSheet("");
+         labAz.setStyleSheet ("QLabel{background-color: #00bbbb; padding-left: 10px; padding-right: 10px}");
+         qso_count.setStyleSheet ("QLabel{background-color: #00bbbb; padding-left: 10px; padding-right: 10px}");
+-        initialize_fonts();
+     }
+ }
+ 
+@@ -14491,12 +15965,23 @@ QString MainWindow::stateLookup(QString callsign) {
+     // would fail with "No query / Unable to fetch row" and add_QSO would
+     // propagate a std::runtime_error out of the Qt slot, crashing the app.
+     static const QString kConnName = QStringLiteral("usstate");
++    static bool initializationAttempted = false;
+     QSqlDatabase db;
+     if (QSqlDatabase::contains(kConnName)) {
+-        db = QSqlDatabase::database(kConnName);
++        // Do not ask Qt to reopen a known-bad connection on every US decode.
++        db = QSqlDatabase::database(kConnName, false);
+     } else {
++        if (initializationAttempted) return "";
++        initializationAttempted = true;
+         auto const file_name = "USState.db";
+         QString path = m_config.data_dir ().absoluteFilePath (file_name);
++        if (!QFileInfo::exists(path)) {
++            path = QDir {QCoreApplication::applicationDirPath ()}.absoluteFilePath (file_name);
++        }
++        if (!QFileInfo::exists(path)) {
++            qWarning() << "USState disabled; database not found in data or application directory";
++            return "";
++        }
+         db = QSqlDatabase::addDatabase("QSQLITE", kConnName);
+         db.setDatabaseName(path);
+         if (!db.open()) {
 diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
-index fa1f473..fa08491 100644
+index fa1f473add1e3a353cc08e3b895e295ba5c85d47..d602e7addb51571f67803ef21e147e980ec476c3 100644
 --- a/widgets/mainwindow.h
 +++ b/widgets/mainwindow.h
 @@ -21,6 +21,8 @@
@@ -2224,7 +3708,36 @@ index fa1f473..fa08491 100644
  #include <QVector>
  #include <QQueue>
  #include <QFuture>
-@@ -356,10 +358,11 @@ private slots:
+@@ -179,11 +181,6 @@ private slots:
+   void on_stopButton_clicked();
+   void on_actionRelease_Notes_triggered ();
+   void on_actionFT8_DXpedition_Mode_User_Guide_triggered();
+-  void on_actionSuperFox_User_Guide_triggered();
+-  void on_actionQSG_FST4_triggered();
+-  void on_actionQSG_Q65_triggered();
+-  void on_actionQSG_X250_M3_triggered();
+-  void on_actionQuick_Start_Guide_to_WSJT_X_2_7_and_QMAP_triggered();
+   void on_actionOnline_User_Guide_triggered();
+   void on_actionLocal_User_Guide_triggered();
+   void on_actionWide_Waterfall_triggered();
+@@ -254,7 +251,6 @@ private slots:
+   void on_reset_cabrillo_log_action_triggered ();
+   void on_actionErase_wsjtx_log_adi_triggered();
+   void on_actionErase_WSPR_hashtable_triggered();
+-  void on_actionErase_list_of_Q65_callers_triggered();
+   void on_actionExport_Cabrillo_log_triggered();
+   void startTx2();
+   void startP1();
+@@ -291,7 +287,7 @@ private slots:
+   void stopTuneATU();
+   void auto_tx_mode(bool);
+   void on_actionMessage_averaging_triggered();
+-  void on_actionActiveStations_triggered();
++  void show_active_stations();
+   void on_contest_log_action_triggered ();
+   void on_fox_log_action_triggered ();
+   void on_actionColors_triggered();
+@@ -356,10 +352,11 @@ private slots:
    void on_RoundRobin_currentTextChanged(QString text);
    void setTxMsg(int n);
    bool stdCall(QString const& w);
@@ -2240,7 +3753,7 @@ index fa1f473..fa08491 100644
    void refreshHoundQueueDisplay();
    void queueActiveWindowHound2(QString text);
  	// Z
-@@ -370,9 +373,10 @@ private slots:
+@@ -370,9 +367,13 @@ private slots:
      bool isSlotFree(int f);
      void addSlot(int freq);
      void on_pb_FreeFreq_clicked();
@@ -2250,11 +3763,14 @@ index fa1f473..fa08491 100644
 +     void on_cbAutoCall_toggled(bool b);
 +     void on_cbAutoCQ_toggled(bool b);
 +     void om0rx_auto_reply_direct_call(DecodedText const& message, QString const& call);
++     bool om0rx_clear_stale_logged_qso(QString const& reason);
++     bool om0rx_clear_stale_final_qso_state(QString const& reason);
++     bool om0rx_stop_forbidden_autocall_cq(QString const& reason);
 +     bool callsignFiltered(DecodedText dt);
       // FT8 thread count selectors (Decode > Parameters > Number of threads)
       void on_actionMTAuto_triggered();
       void on_actionMT1_triggered();
-@@ -427,6 +431,13 @@ private slots:
+@@ -427,6 +428,13 @@ private slots:
       void on_txrb6_doubleClicked ();
       void dxLookup(QString dxCall, QString dxGrid);
       void leftClickHandler(Qt::KeyboardModifiers modifiers);
@@ -2268,7 +3784,20 @@ index fa1f473..fa08491 100644
       void on_actionCall_info_triggered();
       void on_actionDark_mode_triggered();
       void qrzInit();
-@@ -728,13 +739,27 @@ private:
+@@ -681,7 +689,11 @@ private:
+   bool    m_bDecoded;
+   bool    m_noSuffix;
+   bool    m_decodedText2;
+-  bool    m_sentFirst73;
++  bool    m_sentFirst73;
++  bool    m_pendingTxIs73 = false;
++  bool    m_pendingTxFirst73 = false;
++  bool    m_final73TxGuard = false;
++  bool    m_final73LogPending = false;
+   int     m_currentMessageType;
+   QString m_currentMessage;
+   int     m_lastMessageType;
+@@ -728,13 +740,30 @@ private:
    QString m_lastCall;
    int	  m_lastX = -1;
    int	  m_lastY = -1;
@@ -2285,6 +3814,8 @@ index fa1f473..fa08491 100644
 +  QString m_priorityCall;
 +  bool    m_priorityCallPreferCQTarget = false;
 +  QString m_om0rxReplyPriorityCall;
++  QString m_om0rxPendingDirectReplyLine;
++  bool    m_om0rxPendingDirectReplyValid = false;
 +  bool    m_om0rxPriorityHuntPending = false;
 +  bool    m_om0rxPriorityHuntActive = false;
 +  QString m_om0rxPriorityHuntCall;
@@ -2297,13 +3828,14 @@ index fa1f473..fa08491 100644
 +  int     m_om0rxPriorityHuntFreq = 0;
 +  int     m_om0rxPriorityHuntReport = 0;
 +  bool    m_om0rxPriorityHuntTxFirst = false;
++  int     m_om0rxPriorityHuntWatchdogMinutes = 20;
 +  int     m_decodeCount = 0;
 +  bool    m_prioTxFirst;
 +  int     m_prioFreq;
    QString m_prioGrid;
    bool    m_infoMessageShown = false;
    bool    m_autoModeSwitch = false;
-@@ -790,7 +815,11 @@ private:
+@@ -790,7 +819,11 @@ private:
    QLabel labDate;
    QString qrzSessionKey;
    QString qrzPendingLookupCall;
@@ -2313,10 +3845,21 @@ index fa1f473..fa08491 100644
 +  QSet<QString> m_om0rx_status_inflight;
 +  QSet<QString> m_om0rx_history_inflight;
 +  QHash<QString, QString> m_om0rx_status_cache;
-
+ 
    QLabel auto_tx_label;
    QLabel band_hopping_label;
-@@ -1026,11 +1055,17 @@ private:
+@@ -1004,7 +1037,9 @@ private:
+   void statusChanged();
+   void fixStop();
+   bool shortList(QString callsign) const;
+-  void transmit (double snr = 99.);
++  void transmit (double snr = 99.);
++  void record_tx_start ();
++  void complete_final73_tx ();
+   void rigFailure (QString const& reason);
+   void pskSetLocal ();
+   void pskPost(DecodedText const& decodedtext);
+@@ -1026,11 +1061,17 @@ private:
    QString WSPR_message();
    void fast_config(bool b);
    void CQTxFreq();
@@ -2336,10 +3879,10 @@ index fa1f473..fa08491 100644
 +  bool om0rx_try_start_priority_hunt();
 +  void om0rx_clear_priority_hunt(QString const& reason);
 +  bool isWorked(int itype, QString key, float fMHz=0, QString="");
-
+ 
    QString save_wave_file (QString const& name
                            , short const * data
-@@ -1048,9 +1083,10 @@ private:
+@@ -1048,9 +1089,10 @@ private:
    void read_wav_file (QString const& fname);
    void decodeDone ();
    bool subProcessFailed (QProcess *, int exit_code, QProcess::ExitStatus);
@@ -2353,8 +3896,29 @@ index fa1f473..fa08491 100644
    void invalidate_frequencies_filter ();
    void on_the_minute ();
    void add_child_to_event_filter (QObject *);
+diff --git a/widgets/mainwindow.ui b/widgets/mainwindow.ui
+index 848e90bd3a83185272a250f733db3f0cb98bf44b..abbd7b2293445282dd30786dd7258e15834c95da 100644
+--- a/widgets/mainwindow.ui
++++ b/widgets/mainwindow.ui
+@@ -3709,6 +3709,16 @@ list. The list can be maintained in Settings (F2).</string>
+                            </property>
+                           </widget>
+                          </item>
++                         <item>
++                          <widget class="QCheckBox" name="cbWatchUnconfirmedDXCC">
++                           <property name="toolTip">
++                            <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;When Auto Call is active, prioritize callable CQ/73 messages for ATNO, worked-not-confirmed DXCC, and needed DXCC band slots. Third-party QSO traffic is never made callable by DXCC priority.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
++                           </property>
++                           <property name="text">
++                            <string>Watch for new/unconfirmed DXCC's</string>
++                           </property>
++                          </widget>
++                         </item>
+                          <item>
+                           <spacer name="horizontalSpacer_8">
+                            <property name="orientation">
 diff --git a/wsjtx_config.h.in b/wsjtx_config.h.in
-index 5d66589..2ec368a 100644
+index 5d665897fe51291a28fec0a012cd75adc20a9cf3..2ec368ad2773137fd38c9911e50322c7d633677f 100644
 --- a/wsjtx_config.h.in
 +++ b/wsjtx_config.h.in
 @@ -48,6 +48,7 @@ extern "C"  {
@@ -2362,6 +3926,6 @@ index 5d66589..2ec368a 100644
  #cmakedefine01 WSJT_RIG_NONE_CAN_SPLIT
  #cmakedefine01 WSJT_TRACE_UDP
 +#cmakedefine01 OM0RX_BUILD_WITH_OMNIRIG
-
+ 
  /* consistent UNICODE behaviour */
  #ifndef UNICODE

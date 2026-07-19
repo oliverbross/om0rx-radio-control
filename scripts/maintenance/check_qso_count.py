@@ -24,7 +24,7 @@ try:
         try:
             metadata = conn.execute("SELECT * FROM sync_metadata WHERE id = 1").fetchone()
             if metadata:
-                print(f"\n🔄 Sync Metadata:")
+                print("\n🔄 Sync Metadata:")
                 print(f"   Last sync: {metadata[1]}")
                 print(f"   Last Wavelog modified: {metadata[2]}")
                 print(f"   Last Wavelog ID: {metadata[3]}")
@@ -37,7 +37,7 @@ try:
         # Sample a few records
         if count > 0:
             sample = conn.execute("SELECT call, qso_date, time_on, mode FROM qso_records LIMIT 5").fetchall()
-            print(f"\n📻 Sample QSOs:")
+            print("\n📻 Sample QSOs:")
             for row in sample:
                 print(f"   {row[0]} | {row[1]} {row[2]} | {row[3]}")
     else:

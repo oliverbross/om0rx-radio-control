@@ -384,12 +384,10 @@ class FT8AudioProcessor:
                 symbol_duration = self.FT8_SYMBOL_DURATION
                 tone_spacing = self.FT8_TONE_SPACING
                 num_tones = self.FT8_NUM_TONES
-                expected_symbols = self.FT8_EXPECTED_SYMBOLS
             else:  # FT4
                 symbol_duration = self.FT4_SYMBOL_DURATION
                 tone_spacing = self.FT4_TONE_SPACING
                 num_tones = self.FT4_NUM_TONES
-                expected_symbols = self.FT4_EXPECTED_SYMBOLS
             
             samples_per_symbol = int(self.sample_rate * symbol_duration)
             num_symbols = len(audio) // samples_per_symbol

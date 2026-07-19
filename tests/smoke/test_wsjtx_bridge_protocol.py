@@ -160,7 +160,17 @@ def test_wsjtx_parser_extracts_optional_om0rx_qso_state_from_status():
         console.log(JSON.stringify({
           parsed,
           derived: bridge.__deriveWsjtxQsoStateForTest(parsed),
-          fallback: bridge.__deriveWsjtxQsoStateForTest({ txEnabled: true, dxCall: 'PA3DRI' })
+          fallback: bridge.__deriveWsjtxQsoStateForTest({ txEnabled: true, dxCall: 'PA3DRI' }),
+          firstCall: bridge.__deriveWsjtxQsoStateForTest({
+            txEnabled: true,
+            dxCall: 'WD4OOZ',
+            txMessage: 'WD4OOZ OM0RX JN88'
+          }),
+          report: bridge.__deriveWsjtxQsoStateForTest({
+            txEnabled: true,
+            dxCall: 'PA3DRI',
+            txMessage: 'PA3DRI OM0RX R-10'
+          })
         }));
         """
     )
@@ -171,7 +181,9 @@ def test_wsjtx_parser_extracts_optional_om0rx_qso_state_from_status():
     assert payload["parsed"]["txMessage"] == "PA3DRI OM0RX R-10"
     assert payload["parsed"]["qsoState"] == "waiting_rrr"
     assert payload["derived"] == "waiting_rrr"
-    assert payload["fallback"] == "in_qso"
+    assert payload["fallback"] == "calling"
+    assert payload["firstCall"] == "calling"
+    assert payload["report"] == "in_qso"
 
 
 def test_wsjtx_bridge_server_exposes_command_timeline_contract():
@@ -198,6 +210,16 @@ def test_wsjtx_bridge_server_exposes_command_timeline_contract():
     assert "messageType === 'LOGGED_ADIF'" in bridge
     assert "clearTimeout(pendingQsoLoggedUploadTimer)" in bridge
     assert "}, 1500);" in bridge
+
+
+def test_wsjtx_frontend_logged_adif_handler_is_display_only():
+    handler = (PROJECT_ROOT / "frontend" / "js" / "wsjtx-handler.js").read_text(encoding="utf-8")
+    start = handler.index("function handleWsjtxLoggedAdif")
+    end = handler.index("/**", start + 1)
+    body = handler[start:end]
+
+    assert "logQsoToWavelog(data)" not in body
+    assert "display-only" in body
 
 
 def test_wsjtx_halt_tx_endpoint_accepts_empty_body(monkeypatch):
@@ -318,6 +340,49 @@ def test_wsjtx_bridge_logged_qso_upload_payload_prefers_adif_fields():
     assert payload["rst_received"] == "-07"
     assert payload["adif_text"].startswith("<call:5>EA1AA")
     assert payload["source"] == "wsjtx-bridge"
+
+
+def test_wsjtx_bridge_logged_qso_result_event_contract():
+    payload = run_node_protocol_script(
+        """
+        process.env.OM0RX_BRIDGE_TEST_MODE = '1';
+        const bridge = await import('./bridge/sdc-bridge-server.js?logged-qso-result-contract');
+        const event = bridge.__buildLoggedQsoResultEventForTest({
+          call: 'EA1AA',
+          grid: 'IN80',
+          frequency_hz: 14074000,
+          mode: 'FT8',
+          rst_sent: '-10',
+          rst_received: '-07'
+        }, {
+          success: true,
+          statusCode: 200,
+          result: {
+            success: true,
+            wavelog: { success: true, message: 'Logged' },
+            qso_data: {
+              callsign: 'EA1AA',
+              frequency: 14.074,
+              mode: 'FT8',
+              gridsquare: 'IN80',
+              rst_sent: '-10',
+              rst_received: '-07',
+              country: 'Spain'
+            }
+          }
+        });
+        console.log(JSON.stringify(event));
+        """
+    )
+
+    assert payload["type"] == "wsjtx_log_result"
+    assert payload["source"] == "wsjtx"
+    assert payload["success"] is True
+    assert payload["status"] == "success"
+    assert payload["backend_uploaded"] is True
+    assert payload["qso_data"]["callsign"] == "EA1AA"
+    assert payload["qso_data"]["frequency"] == 14.074
+    assert payload["qso_data"]["rst_received"] == "-07"
 
 
 def test_wsjtx_bridge_failed_command_status_contract():

@@ -106,7 +106,7 @@ async def send_cluster_command(req: ClusterCommandRequest, request: Request):
             
     except Exception as e:
         logger.error(f"Cluster command error: {e}")
-        return {"success": False, "message": str(e)}
+        raise HTTPException(status_code=503, detail="Cluster command failed") from e
 
 
 @router.post("/api/cluster/rbl")
@@ -232,4 +232,4 @@ async def reconnect_cluster(request: Request):
             
     except Exception as e:
         logger.error(f"Cluster reconnect error: {e}")
-        return {"success": False, "message": str(e)}
+        raise HTTPException(status_code=503, detail="Cluster reconnect failed") from e

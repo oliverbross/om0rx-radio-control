@@ -3,7 +3,7 @@
 import os
 import re
 import logging
-from radio_control.config import RESOLVE_DEBUG_MISSES, CTY_IGNORE_SUFFIXES, CTY_OVERRIDES
+from radio_control.config import RESOLVE_DEBUG_MISSES
 from radio_control.config import DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME
 
 
@@ -112,7 +112,7 @@ class CtyResolver:
                     logging.warning("CTY: falling back to heuristic parser (no headers matched).")
                     f.seek(0)
                     rdr = _csv.reader(f)
-                    hdr = next(rdr, None)
+                    next(rdr, None)
                     for row in rdr:
                         total += 1
                         cells = [ (c or "").strip() for c in row ]
@@ -511,7 +511,6 @@ class CtyHybridResolver(CtyDatResolver):
                     
                     # Check if first line has headers (contains non-numeric first column or "prefix"/"entity" keywords)
                     first_line = lines[0].strip() if lines else ""
-                    first_cells = first_line.split(delim) if first_line else []
                     has_headers = any(keyword in first_line.lower() for keyword in ["prefix", "entity", "country", "adif", "dxcc"])
                     
                     f.seek(0)

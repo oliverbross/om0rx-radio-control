@@ -1,6 +1,6 @@
-<div :class="['compact-radio-row', compactLayoutClass()]">
+<div v-if="!configData.RADIO_SHOW_DETAILED_CONTROLS" :class="['compact-radio-row', compactLayoutClass()]">
     <div class="compact-radio-left">
-        <div class="compact-brand-container">
+        <div v-if="!configData.RADIO_SHOW_DETAILED_CONTROLS" class="compact-brand-container">
             <button class="app-brand-button compact-brand-button" @click="togglePowerMenu" title="Server control: Shutdown or Restart">
                 OM0RX Radio Control
             </button>
@@ -9,9 +9,9 @@
                 <button class="power-menu-item" @click="restartServer">Restart</button>
             </div>
         </div>
-        <button class="compact-config-btn" @click="showConfigDialog">⚙️ Config</button>
+        <button v-if="!configData.RADIO_SHOW_DETAILED_CONTROLS" class="compact-config-btn" @click="showConfigDialog">⚙️ Config</button>
         <button @click="toggleDetailedRadioControls" :class="['compact-config-btn', { active: configData.RADIO_SHOW_DETAILED_CONTROLS }]">
-            {{ configData.RADIO_SHOW_DETAILED_CONTROLS ? 'Compact' : 'Controls' }}
+            {{ configData.RADIO_SHOW_DETAILED_CONTROLS ? 'Compact' : 'Full controls' }}
         </button>
         <select class="compact-radio-select" :value="getRadioLayoutPreset()" @change="setRadioLayoutPreset">
             <option value="compact">Compact</option>
@@ -49,7 +49,7 @@
             <option value="fast">AGC Fast</option>
         </select>
     </div>
-    <div class="compact-radio-right">
+    <div v-if="!configData.RADIO_SHOW_DETAILED_CONTROLS" class="compact-radio-right">
         <button v-if="shouldShowCompactDigitalButton()"
                 @click="launchPatchedWsjtxEngine"
                 :disabled="wsjtxLaunchLoading || wsjtxPreflightLoading"
@@ -61,7 +61,7 @@
     </div>
 </div>
 
-<div :class="['compact-operator-strip', compactLayoutClass()]">
+<div v-if="!configData.RADIO_SHOW_DETAILED_CONTROLS" :class="['compact-operator-strip', compactLayoutClass()]">
     <div v-if="shouldShowCompactRotorControls()" class="compact-tool-card compact-rotor-card">
         <strong>{{ getRotorBandStatusText() }}</strong>
         <div class="compact-tool-row">
@@ -71,6 +71,7 @@
             <button @click="rotorAutoPending ? cancelRotorAuto() : toggleRotorAuto()" :class="['compact-tool-btn', { active: rotorAutoEnabled, pending: rotorAutoPending }]">
                 {{ rotorAutoPending ? 'Cancel' : 'AUTO' }}
             </button>
+            <button @click.stop="openRotorCompassWindow" class="compact-tool-btn rotor-compass-btn" title="Open rotor compass">C</button>
         </div>
         <div class="compact-tool-row">
             <select v-model="rotorPreset" @change="handleDirectorToggle" class="compact-radio-select wide">

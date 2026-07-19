@@ -54,9 +54,9 @@ Push-Location $ProjectRoot
 try {
     $maintenanceSettingsDir = Join-Path ([System.IO.Path]::GetTempPath()) "om0rx-radio-control-maintenance"
     New-Item -ItemType Directory -Force -Path $maintenanceSettingsDir | Out-Null
-    $maintenanceAppSettings = Join-Path $maintenanceSettingsDir "app_settings.json"
+    $maintenanceAppSettings = Join-Path $maintenanceSettingsDir "local_settings.json"
     $maintenanceLocalSecrets = Join-Path $maintenanceSettingsDir "local_secrets.json"
-    Copy-Item -LiteralPath (Join-Path $ProjectRoot "settings\app_settings.json") -Destination $maintenanceAppSettings -Force
+    Set-Content -LiteralPath $maintenanceAppSettings -Value "{}" -Encoding UTF8
     if (Test-Path -LiteralPath (Join-Path $ProjectRoot "settings\local_secrets.json")) {
         Copy-Item -LiteralPath (Join-Path $ProjectRoot "settings\local_secrets.json") -Destination $maintenanceLocalSecrets -Force
     }
@@ -93,6 +93,10 @@ sys.exit(0 if ok else 1)
         Invoke-NativeCommand python @("-c", "import backend.main; print('backend import OK')")
     }
 
+    Invoke-CheckStep "Ruff correctness" {
+        Invoke-NativeCommand python @("-m", "ruff", "check", "backend", "services", "radio_control", "activity_intelligence", "--select", "F,E9")
+    }
+
     Invoke-CheckStep "FastAPI duplicate route scan" {
         @'
 from collections import Counter
@@ -122,13 +126,8 @@ print("no duplicate routes")
 
     Invoke-CheckStep "PowerShell parser check" {
         $parseFailed = $false
-        Get-ChildItem -Path $ProjectRoot -Recurse -Filter *.ps1 |
-            Where-Object {
-                $_.FullName -notmatch "\\.git" -and
-                $_.FullName -notmatch "\\node_modules" -and
-                $_.FullName -notmatch "\\vendor" -and
-                $_.FullName -notmatch "\\docs\\archive"
-            } |
+        git ls-files "*.ps1" |
+            ForEach-Object { Get-Item -LiteralPath (Join-Path $ProjectRoot $_) } |
             ForEach-Object {
                 $tokens = $null
                 $errors = $null
@@ -188,24 +187,7 @@ print("no duplicate routes")
     }
 
     Invoke-CheckStep "Safe smoke checks" {
-        $safeSmokeTests = @(
-            "tests\smoke\test_app_context.py",
-            "tests\smoke\test_config_save.py",
-            "tests\smoke\test_cors_config.py",
-            "tests\smoke\test_settings_consolidation.py",
-            "tests\smoke\test_lifecycle_contract.py",
-            "tests\smoke\test_ft8_files.py",
-            "tests\smoke\test_frontend_module_contracts.py",
-            "tests\smoke\test_frontend_contracts.py",
-            "tests\smoke\test_service_dependency_state.py",
-            "tests\smoke\test_qso_outbox.py",
-            "tests\smoke\test_spot_classification.py",
-            "tests\smoke\test_wavelog_sync_pagination.py"
-        )
-
-        foreach ($testPath in $safeSmokeTests) {
-            Invoke-NativeCommand python @($testPath)
-        }
+        Invoke-NativeCommand python @("-m", "pytest", "tests\smoke", "-q")
     }
 
     if ($UsePytest) {

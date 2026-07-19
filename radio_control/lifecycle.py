@@ -7,12 +7,12 @@ owns actually stopping and restarting sibling processes.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import json
 import os
 from pathlib import Path
 from typing import Any, Dict
 
 from radio_control import config
+from radio_control.persistence import atomic_write_json
 
 
 LIFECYCLE_REQUEST_PATH = config.LOGS_DIR / "app_lifecycle_request.json"
@@ -57,8 +57,5 @@ def write_lifecycle_request(
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    tmp_path.replace(path)
+    atomic_write_json(path, payload, backup=False)
     return payload

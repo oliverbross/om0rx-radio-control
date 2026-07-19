@@ -162,6 +162,29 @@ class WavelogDuckDBSync:
         except Exception as e:
             logger.error(f"❌ Failed to connect to Wavelog database: {e}")
             raise
+
+    def _fetch_source_ids(self) -> set[int]:
+        """Return the authoritative station QSO IDs; failures abort reconciliation."""
+        source = self._get_wavelog_connection()
+        try:
+            with source.cursor() as cursor:
+                cursor.execute(
+                    "SELECT COL_PRIMARY_KEY FROM TABLE_HRD_CONTACTS_V01 WHERE station_id = %s",
+                    (self.station_id,),
+                )
+                return {int(row["COL_PRIMARY_KEY"]) for row in cursor.fetchall()}
+        finally:
+            source.close()
+
+    def _reconcile_deleted_records(self, conn) -> int:
+        source_ids = self._fetch_source_ids()
+        cached_ids = {int(row[0]) for row in conn.execute("SELECT wavelog_id FROM qso_records").fetchall()}
+        stale_ids = sorted(cached_ids - source_ids)
+        for start in range(0, len(stale_ids), 500):
+            batch = stale_ids[start:start + 500]
+            placeholders = ",".join("?" for _ in batch)
+            conn.execute(f"DELETE FROM qso_records WHERE wavelog_id IN ({placeholders})", batch)
+        return len(stale_ids)
     
     def _get_sync_metadata(self, conn) -> Optional[Dict[str, Any]]:
         """Retrieve current sync metadata"""
@@ -574,40 +597,30 @@ class WavelogDuckDBSync:
                     batch_added = 0
                     batch_updated = 0
 
-                    # Process this batch
+                    # A batch is lossless: any poison record aborts before the
+                    # watermark can advance beyond it. A retry will re-upsert
+                    # the already processed rows safely.
                     for wavelog_record in wavelog_records:
-                        try:
-                            # Convert to DuckDB format
-                            duckdb_record = self._convert_wavelog_to_duckdb(wavelog_record)
+                        duckdb_record = self._convert_wavelog_to_duckdb(wavelog_record)
+                        action = self._upsert_record(conn, duckdb_record)
+                        if action == 'added':
+                            added_count += 1
+                            batch_added += 1
+                        else:
+                            updated_count += 1
+                            batch_updated += 1
 
-                            # Upsert record
-                            action = self._upsert_record(conn, duckdb_record)
-
-                            if action == 'added':
-                                added_count += 1
-                                batch_added += 1
-                            else:
-                                updated_count += 1
-                                batch_updated += 1
-
-                            # Track latest modified timestamp and ID
-                            record_modified = wavelog_record.get('last_modified')
-                            record_id = wavelog_record.get('COL_PRIMARY_KEY')
-
-                            if is_initial_sync and record_id and record_id > initial_cursor_id:
-                                initial_cursor_id = record_id
-
-                            if record_modified and (latest_modified is None or record_modified > latest_modified):
-                                latest_modified = record_modified
-                                latest_id = record_id
-                            elif record_modified == latest_modified and record_id > latest_id:
-                                latest_id = record_id
-                            elif is_initial_sync and latest_modified is None and record_id > latest_id:
-                                latest_id = record_id
-
-                        except Exception as e:
-                            logger.error(f"❌ Error processing Wavelog record {wavelog_record.get('COL_PRIMARY_KEY')}: {e}")
-                            continue
+                        record_modified = wavelog_record.get('last_modified')
+                        record_id = wavelog_record.get('COL_PRIMARY_KEY')
+                        if is_initial_sync and record_id and record_id > initial_cursor_id:
+                            initial_cursor_id = record_id
+                        if record_modified and (latest_modified is None or record_modified > latest_modified):
+                            latest_modified = record_modified
+                            latest_id = record_id
+                        elif record_modified == latest_modified and record_id > latest_id:
+                            latest_id = record_id
+                        elif is_initial_sync and latest_modified is None and record_id > latest_id:
+                            latest_id = record_id
 
                     # Commit this batch
                     conn.commit()
@@ -628,6 +641,7 @@ class WavelogDuckDBSync:
                     if len(wavelog_records) < batch_size:
                         break
 
+                deleted_count = self._reconcile_deleted_records(conn)
                 # Final commit
                 conn.commit()
 
@@ -651,6 +665,7 @@ class WavelogDuckDBSync:
                     'total_records': total_records,
                     'last_sync_added': added_count,
                     'last_sync_updated': updated_count,
+                    'last_sync_deleted': deleted_count,
                     'last_sync_error': None,
                     'status': 'ok',
                 }
@@ -659,6 +674,7 @@ class WavelogDuckDBSync:
                     'synced': True,
                     'records_added': added_count,
                     'records_updated': updated_count,
+                    'records_deleted': deleted_count,
                     'total_records': total_records,
                     'message': f'Synced {added_count + updated_count} records from Wavelog'
                 }

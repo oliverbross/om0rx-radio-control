@@ -16,6 +16,11 @@ import logging
 import re
 from typing import Any, Iterable, Mapping, Optional
 
+from radio_control.activity_references import (
+    HUNTER_PROGRAMS,
+    canonical_reference_program,
+    extract_activity_references,
+)
 from radio_control.spot_classification import classify_call_status, classify_dxcc_status
 
 
@@ -43,6 +48,10 @@ GRID_SCORE = 5000
 MODE_SCORE = 3500
 NEW_CALL_SCORE = 2000
 DXCC_SPOT_SILENCE_SECONDS = 300
+DXCC_SPOT_FRESHNESS_SECONDS = 120
+DXCC_HUNT_WATCHDOG_MINUTES = 20
+DXCC_HUNT_COOLDOWN_MINUTES = 5
+FAVORABLE_PROPAGATION_SCORE = 52
 SPOT_HUNT_SOURCES = {"spot", "cluster", "rbl", "selected-spot", "dx-cluster", "reverse-beacon"}
 
 TARGET_LIFECYCLE_STATES = {
@@ -296,8 +305,128 @@ def payload_has_dxcc_hunt_interest(payload: Mapping[str, Any]) -> bool:
     return False
 
 
+def _favorable_propagation(target: "DigitalTarget") -> bool:
+    """Require a positive propagation assessment before leaving the current band.
+
+    A local decode is direct evidence and does not need an external forecast.
+    External spots need at least FAIR conditions; missing or marginal forecasts
+    stay queued for a later refresh instead of causing speculative band hops.
+    """
+    if target.heard:
+        return True
+    if target.propagation_score is not None:
+        return target.propagation_score >= FAVORABLE_PROPAGATION_SCORE
+    return target.propagation_label in {"FAIR", "GOOD", "EXCELLENT"}
+
+
 def target_has_dxcc_hunt_interest(target: "DigitalTarget") -> bool:
     return payload_has_dxcc_hunt_interest(target.to_dict())
+
+
+def needed_reference_hunt_items(
+    payload: Mapping[str, Any],
+    settings: Optional["DigitalAutomationSettings"] = None,
+) -> list[dict[str, str]]:
+    enabled_programs = set(settings.hunter_programs) if settings else set(HUNTER_PROGRAMS)
+    return [
+        item
+        for item in normalise_reference_items(payload)
+        if canonical_reference_program(item.get("type")) in enabled_programs and reference_is_needed(item)
+    ]
+
+
+def payload_has_reference_hunt_interest(
+    payload: Mapping[str, Any],
+    settings: Optional["DigitalAutomationSettings"] = None,
+) -> bool:
+    if settings and not settings.reference_hunter_enabled:
+        return False
+    return bool(needed_reference_hunt_items(payload, settings))
+
+
+def target_has_reference_hunt_interest(
+    target: "DigitalTarget",
+    settings: Optional["DigitalAutomationSettings"] = None,
+) -> bool:
+    return payload_has_reference_hunt_interest(target.to_dict(), settings)
+
+
+def payload_matches_hunter_spot_filters(
+    payload: Mapping[str, Any],
+    settings: "DigitalAutomationSettings",
+) -> bool:
+    """Apply the Filters-window snapshot captured when hunter mode is armed."""
+    filters = settings.hunter_spot_filters or {}
+
+    def selected(name: str) -> set[str]:
+        raw = filters.get(name) or []
+        if isinstance(raw, str):
+            raw = [token.strip() for token in raw.split(",") if token.strip()]
+        return {str(value).strip().upper() for value in raw if str(value).strip()}
+
+    comparisons = (
+        ("bands", str(payload.get("band") or "").upper()),
+        ("modes", str(payload.get("mode") or "").upper()),
+        ("continents", str(payload.get("continent") or payload.get("spotter_continent") or "").upper()),
+        ("cqs", str(payload.get("cq_zone") or payload.get("cq") or "").upper()),
+        ("callStatuses", str(payload.get("call_status") or "").upper()),
+        ("dxccStatuses", str(payload.get("dxcc_status") or "").upper()),
+        ("spotSources", str(payload.get("spot_source") or payload.get("source") or "").upper()),
+        ("rblModes", str(payload.get("rbl_mode_group") or "").upper()),
+    )
+    for name, actual in comparisons:
+        choices = selected(name)
+        if choices and actual not in choices:
+            return False
+
+    call_filter = str(filters.get("callsign") or "").strip().upper()
+    if call_filter and call_filter not in str(payload.get("callsign") or payload.get("call") or "").upper():
+        return False
+
+    specials = selected("specials")
+    if specials:
+        spot_specials = {
+            token.strip().upper()
+            for token in re.split(r"[,;]", str(payload.get("special") or payload.get("special_tags") or ""))
+            if token.strip()
+        }
+        reference_programs = {
+            canonical_reference_program(item.get("type")) for item in normalise_reference_items(payload)
+        }
+        aliases = {"WWBOTA": "BUNKER", "ARLHS": "LIGHTHOUSE"}
+        reference_specials = {aliases.get(program, program) for program in reference_programs}
+        if not (specials & (spot_specials | reference_specials)):
+            return False
+
+    try:
+        spot_score = float(payload.get("priority_score", payload.get("spot_score", 0)) or 0)
+    except (TypeError, ValueError):
+        spot_score = 0
+    if spot_score < settings.hunter_min_spot_score:
+        return False
+
+    try:
+        rbl_snr = float(payload.get("rbl_snr", payload.get("snr", 0)) or 0)
+        min_rbl_snr = float(filters.get("rblMinSnr") or 0)
+    except (TypeError, ValueError):
+        rbl_snr = min_rbl_snr = 0
+    if min_rbl_snr and rbl_snr < min_rbl_snr:
+        return False
+    include_worked = _bool(filters.get("workedB4Include"), False)
+    exclude_worked = _bool(filters.get("workedB4Exclude"), False)
+    status_text = " ".join(
+        str(payload.get(key) or "").lower()
+        for key in ("call_status", "dxcc_status", "worked_before_date")
+    )
+    is_worked = bool(payload.get("worked_before_date")) or any(
+        token in status_text for token in ("worked", "confirmed")
+    )
+    if include_worked != exclude_worked:
+        if include_worked and not is_worked:
+            return False
+        if exclude_worked and is_worked:
+            return False
+    return True
 
 
 def _prior_work_should_block(
@@ -480,6 +609,14 @@ def _normalise_filter_continents(value: Any) -> set[str]:
 class DigitalAutomationSettings:
     enabled: bool = False
     spot_hunt_enabled: bool = False
+    reference_hunter_enabled: bool = False
+    hunter_programs: set[str] = field(
+        default_factory=lambda: {"POTA", "SOTA", "IOTA", "WWFF", "WWBOTA", "ARLHS"}
+    )
+    hunter_min_spot_score: int = 50
+    hunter_watchdog_minutes: int = 5
+    hunter_restore_watchdog_minutes: int = 2
+    hunter_spot_filters: dict[str, Any] = field(default_factory=dict)
     band_hopping: bool = False
     mode_switching: bool = False
     current_band: str = ""
@@ -551,6 +688,42 @@ class DigitalAutomationSettings:
             automation.get("spotHuntEnabled", automation.get("spot_hunt_enabled")),
             self.spot_hunt_enabled,
         )
+        self.reference_hunter_enabled = _bool(
+            automation.get("referenceHunterEnabled", automation.get("reference_hunter_enabled")),
+            self.reference_hunter_enabled,
+        )
+        programs_raw = automation.get("hunterPrograms", automation.get("hunter_programs"))
+        if isinstance(programs_raw, Mapping):
+            programs = {
+                canonical_reference_program(program)
+                for program, enabled in programs_raw.items()
+                if _bool(enabled)
+            }
+            self.hunter_programs = {program for program in programs if program in HUNTER_PROGRAMS}
+        elif isinstance(programs_raw, Iterable) and not isinstance(programs_raw, (str, bytes)):
+            programs = {canonical_reference_program(program) for program in programs_raw}
+            self.hunter_programs = {program for program in programs if program in HUNTER_PROGRAMS}
+        self.hunter_min_spot_score = _int(
+            automation.get("hunterMinSpotScore", automation.get("hunter_min_spot_score")),
+            self.hunter_min_spot_score,
+            low=0,
+            high=100,
+        )
+        self.hunter_watchdog_minutes = _int(
+            automation.get("hunterWatchdogMinutes", automation.get("hunter_watchdog_minutes")),
+            self.hunter_watchdog_minutes,
+            low=1,
+            high=60,
+        )
+        self.hunter_restore_watchdog_minutes = _int(
+            automation.get("hunterRestoreWatchdogMinutes", automation.get("hunter_restore_watchdog_minutes")),
+            self.hunter_restore_watchdog_minutes,
+            low=1,
+            high=60,
+        )
+        hunter_filters = automation.get("hunterSpotFilters", automation.get("hunter_spot_filters"))
+        if isinstance(hunter_filters, Mapping):
+            self.hunter_spot_filters = dict(hunter_filters)
         self.band_hopping = _bool(automation.get("bandHopping", automation.get("band_hopping")), self.band_hopping)
         self.mode_switching = _bool(automation.get("modeSwitching", automation.get("mode_switching")), self.mode_switching)
         current_band = str(automation.get("currentBand", automation.get("current_band", self.current_band)) or "").strip().lower()
@@ -664,11 +837,25 @@ class DigitalAutomationSettings:
             self.ignored_calls = ignored
         elif isinstance(ignored_raw, Iterable) and not isinstance(ignored_raw, (str, bytes)):
             self.ignored_calls = {str(token).strip().upper() for token in ignored_raw if str(token).strip()}
+        if self.reference_hunter_enabled:
+            # Hunter mode owns its own safety defaults.  It listens first and
+            # enables the existing backend planner so it also works headless.
+            self.enabled = True
+            self.spot_hunt_enabled = True
+            self.band_hopping = True
+            self.require_heard_before_call = True
+            self.need_reference = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
             "spot_hunt_enabled": self.spot_hunt_enabled,
+            "reference_hunter_enabled": self.reference_hunter_enabled,
+            "hunter_programs": sorted(self.hunter_programs),
+            "hunter_min_spot_score": self.hunter_min_spot_score,
+            "hunter_watchdog_minutes": self.hunter_watchdog_minutes,
+            "hunter_restore_watchdog_minutes": self.hunter_restore_watchdog_minutes,
+            "hunter_spot_filters": dict(self.hunter_spot_filters),
             "band_hopping": self.band_hopping,
             "mode_switching": self.mode_switching,
             "current_band": self.current_band,
@@ -738,11 +925,15 @@ class DigitalTarget:
     need_reasons: set[str] = field(default_factory=set)
     reference_items: list[dict[str, str]] = field(default_factory=list)
     score: int = 0
+    spot_score: int = 0
     score_reason: str = ""
     score_trace: dict[str, Any] = field(default_factory=dict)
     snr: Optional[float] = None
     audio_offset: Optional[int] = None
     dial_frequency: Optional[float] = None
+    propagation_score: Optional[float] = None
+    propagation_label: str = ""
+    propagation_confidence: str = ""
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     first_heard_at: Optional[datetime] = None
@@ -760,10 +951,14 @@ class DigitalTarget:
     heard: bool = False
     direct_caller: bool = False
     last_command_at: Optional[datetime] = None
+    command_ack_at: Optional[datetime] = None
     origin_band: str = ""
     origin_mode: str = ""
     origin_dial_frequency: Optional[float] = None
     return_command_at: Optional[datetime] = None
+    campaign_started_at: Optional[datetime] = None
+    campaign_expires_at: Optional[datetime] = None
+    campaign_count: int = 0
 
     def is_backed_off(self, now: Optional[datetime] = None) -> bool:
         return bool(self.backoff_until and self.backoff_until > (now or utc_now()))
@@ -812,11 +1007,15 @@ class DigitalTarget:
             "reference_items": [dict(item) for item in self.reference_items],
             "references": [dict(item) for item in self.reference_items],
             "score": self.score,
+            "spot_score": self.spot_score,
             "score_reason": self.score_reason,
             "score_trace": dict(self.score_trace),
             "snr": self.snr,
             "audio_offset": self.audio_offset,
             "dial_frequency": self.dial_frequency,
+            "propagation_score": self.propagation_score,
+            "propagation_label": self.propagation_label,
+            "propagation_confidence": self.propagation_confidence,
             "created_at": _iso(self.created_at),
             "updated_at": _iso(self.updated_at),
             "first_heard_at": _iso(self.first_heard_at),
@@ -834,10 +1033,14 @@ class DigitalTarget:
             "heard": self.heard,
             "direct_caller": self.direct_caller,
             "last_command_at": _iso(self.last_command_at),
+            "command_ack_at": _iso(self.command_ack_at),
             "origin_band": self.origin_band,
             "origin_mode": self.origin_mode,
             "origin_dial_frequency": self.origin_dial_frequency,
             "return_command_at": _iso(self.return_command_at),
+            "campaign_started_at": _iso(self.campaign_started_at),
+            "campaign_expires_at": _iso(self.campaign_expires_at),
+            "campaign_count": self.campaign_count,
             "worked_flags": worked_flags,
             "classification_breakdown": worked_flags,
         }
@@ -907,6 +1110,12 @@ class DigitalAutomationController:
             reject(target.state)
         if target.is_backed_off(now):
             reject("backoff")
+        if (
+            target.heard
+            and target.last_heard_at
+            and (now - target.last_heard_at).total_seconds() > _target_freshness_seconds(target.mode)
+        ):
+            reject("heard-target-too-old")
         if (
             not target.direct_caller
             and self.settings.avoid_logged
@@ -1007,6 +1216,14 @@ class DigitalAutomationController:
             "rejected": rejected,
             "examples": examples,
         }
+
+    def _active_target_can_yield_to_direct_reply(self, active: Optional[DigitalTarget]) -> bool:
+        if not active or active.direct_caller:
+            return False
+        if self.active_qso_state in {"idle", "completed", "logged", "failed", "aborted"}:
+            return True
+        one_sided_states = {"candidate_selected", "command_sent", "waiting_for_tx", "calling"}
+        return self.active_qso_state in one_sided_states and active.active_state in one_sided_states
 
     def _reason_panel(self, active: Optional[DigitalTarget], listening: Optional[DigitalTarget], now: datetime) -> dict[str, Any]:
         target = active or listening
@@ -1366,6 +1583,10 @@ class DigitalAutomationController:
         payload = self._enrich_payload_from_local_status(payload, call=call, band=band, mode=mode)
         key = target_key(call, band, mode)
         existing_target = self.targets.get(key)
+        if existing_target and not normalise_reference_items(payload) and existing_target.reference_items:
+            # A WSJT-Z decode normally contains no award metadata.  Carry the
+            # reference from the spot probe into the decoded target/QSO.
+            payload["reference_items"] = [dict(item) for item in existing_target.reference_items]
         score_info = score_payload_trace(payload)
         score = _int(score_info.get("score"), 0)
         raw_call_status = normalise_status(payload.get("call_status") or payload.get("callStatus"))
@@ -1380,6 +1601,13 @@ class DigitalAutomationController:
         )
         message = str(payload.get("message") or "")
         direct_caller = message_is_directed_to_mycall(message, self.mycall)
+        reference_hunt_interest = (
+            payload_has_reference_hunt_interest(payload, self.settings)
+            and (
+                (existing_target is not None and source in {"decoded", "wsjtx-decode-status"})
+                or payload_matches_hunter_spot_filters(payload, self.settings)
+            )
+        )
         if direct_caller and self.settings.answer_direct_callers:
             source = "incoming"
             if score < DIRECT_CALLER_SCORE:
@@ -1409,10 +1637,15 @@ class DigitalAutomationController:
             not direct_caller
             and source_is_spot_hunt(source)
             and not payload_has_dxcc_hunt_interest({**payload, "need_reasons": list(need_reasons)})
+            and not reference_hunt_interest
         ):
             self._set_decision({
                 "decision": "skip",
-                "reason": "spot-not-dxcc-hunt-interest",
+                "reason": (
+                    "spot-not-hunt-interest"
+                    if self.settings.reference_hunter_enabled
+                    else "spot-not-dxcc-hunt-interest"
+                ),
                 "call": call,
                 "band": band,
                 "mode": mode,
@@ -1476,10 +1709,10 @@ class DigitalAutomationController:
         grid = normalise_grid_value(payload.get("grid") or payload.get("gridsquare") or "")
         if not target.target_id:
             target.target_id = target_identity(call, band, mode, source, grid)
-        if source in {"decoded", "wsjtx-decode-status"} and source_is_spot_hunt(target.source):
-            target.source = target.source
-        else:
-            target.source = source or target.source or "decoded"
+        # Once WSJT-Z actually decodes a spotted station, local RF evidence owns
+        # the target. This also prevents the hopping schedule from suppressing a
+        # priority DXCC that is demonstrably present on the current band.
+        target.source = source or target.source or "decoded"
         if message:
             target.message = message
         target.grid = grid or normalise_grid_value(target.grid)
@@ -1495,13 +1728,35 @@ class DigitalAutomationController:
         target.need_reasons = need_reasons
         if direct_caller:
             target.need_reasons.add("direct")
-        if score >= target.score or not target.score_reason:
+        else:
+            target.need_reasons.discard("direct")
+        if target.direct_caller and not direct_caller:
+            target.score = score
             target.score_reason = str(score_info.get("reason") or "")
             target.score_trace = dict(score_info)
-        target.score = max(target.score, score)
+        elif score >= target.score or not target.score_reason:
+            target.score_reason = str(score_info.get("reason") or "")
+            target.score_trace = dict(score_info)
+        target.score = score if target.direct_caller and not direct_caller else max(target.score, score)
+        target.spot_score = _int(
+            payload.get("priority_score", payload.get("spot_score", target.spot_score)),
+            target.spot_score,
+            low=0,
+            high=100,
+        )
         target.snr = snr if snr is not None else target.snr
         target.audio_offset = _int(payload.get("freq", payload.get("audio_offset")), target.audio_offset or 0) or None
         target.dial_frequency = _float(payload.get("base_frequency", payload.get("frequency_mhz", payload.get("frequency"))))
+        propagation = payload.get("propagation") if isinstance(payload.get("propagation"), Mapping) else {}
+        target.propagation_score = _float(
+            propagation.get("score", payload.get("propagation_score", target.propagation_score))
+        )
+        target.propagation_label = str(
+            propagation.get("label", payload.get("propagation_label", target.propagation_label)) or ""
+        ).strip().upper()
+        target.propagation_confidence = str(
+            propagation.get("confidence", payload.get("propagation_confidence", target.propagation_confidence)) or ""
+        ).strip().lower()
         target.updated_at = now
         if heard:
             heard_slot = _datetime(payload.get("slot_start_utc") or payload.get("timestamp"))
@@ -1510,13 +1765,20 @@ class DigitalAutomationController:
             target.last_heard_at = now
             if heard_slot:
                 target.heard_slot_start_at = heard_slot
-            if target.state in {"listening", "queued", "expired"}:
+            if target.state in {"listening", "queued", "expired"} or (
+                target.state == "backoff" and not target.is_backed_off(now)
+            ):
                 target.sync_state("heard")
+                target.backoff_until = None
             if self.listen_target_key == target.key:
                 self.listen_target_key = None
+        elif target.state == "expired" or (target.state == "backoff" and not target.is_backed_off(now)):
+            target.backoff_until = None
+            target.completion_reason = ""
+            target.sync_state("listening" if self.settings.require_heard_before_call else "queued", active_state="idle")
         elif target.state == "queued":
             target.sync_state("listening" if self.settings.require_heard_before_call else "queued")
-        target.direct_caller = bool(target.direct_caller or direct_caller)
+        target.direct_caller = bool(direct_caller)
         target.reason = self._target_reason(target)
 
         self._trim_targets()
@@ -1580,9 +1842,6 @@ class DigitalAutomationController:
             if status_sources and not enriched.get("status_source"):
                 enriched["status_source"] = ",".join(status_sources)
             return enriched
-
-        call_status = normalise_status(enriched.get("call_status") or enriched.get("callStatus"))
-        dxcc_status = normalise_status(enriched.get("dxcc_status") or enriched.get("dxccStatus"))
 
         try:
             if hasattr(store, "call_flags"):
@@ -1663,6 +1922,26 @@ class DigitalAutomationController:
             enriched["status_source"] = ",".join(dict.fromkeys(status_sources))
         return enriched
 
+    def _revalidate_target_need(self, target: DigitalTarget) -> None:
+        """Refresh authoritative worked/confirmed state before selection or retry."""
+        if not self.qso_status_store:
+            return
+        payload = self._enrich_payload_from_local_status(
+            target.to_dict(),
+            call=target.call,
+            band=target.band,
+            mode=target.mode,
+        )
+        target.call_status = canonical_call_status(payload.get("call_status"), payload.get("dxcc_status"))
+        target.dxcc_status = normalise_status(payload.get("dxcc_status"))
+        target.need_reasons = payload_need_reasons(payload)
+        score_info = score_payload_trace(payload)
+        target.score = _int(score_info.get("score"), 0)
+        target.score_reason = str(score_info.get("reason") or "")
+        target.score_trace = dict(score_info)
+        target.status_source = str(payload.get("status_source") or target.status_source or "")
+        target.reason = self._target_reason(target)
+
     def next_target(
         self,
         now: Optional[datetime] = None,
@@ -1675,11 +1954,7 @@ class DigitalAutomationController:
         active = self.targets.get(self.active_target_key) if self.active_target_key else None
         if active and active.state not in {"done", "skipped", "expired", "backoff"}:
             direct_override = self._best_direct_caller(now, exclude_key=active.key)
-            if (
-                direct_override
-                and self.active_qso_state in {"idle", "completed", "logged", "failed", "aborted"}
-                and active.state not in {"calling", "command_sent", "in_progress"}
-            ):
+            if direct_override and self._active_target_can_yield_to_direct_reply(active):
                 active.sync_state("backoff")
                 active.reason = "overridden-by-direct-reply"
                 active.backoff_until = now + timedelta(seconds=max(15, self.settings.dwell_seconds))
@@ -1758,13 +2033,30 @@ class DigitalAutomationController:
             })
 
         for target in self.targets.values():
+            self._revalidate_target_need(target)
+            if target.state == "backoff" and not target.is_backed_off(now):
+                if target.campaign_count >= self.settings.max_attempts_per_target:
+                    reset_at = target.last_attempt_at + timedelta(minutes=self.settings.retry_reset_minutes) if target.last_attempt_at else now
+                    if now < reset_at:
+                        reject("campaign-limit", target)
+                        continue
+                    target.campaign_count = 0
+                    target.attempts = 0
+                target.sync_state("heard" if target.heard else "queued", active_state="idle")
+                target.backoff_until = None
             if target.state in {"done", "skipped", "expired", "backoff"}:
                 reject(target.state, target)
                 continue
             if target.mode not in self.settings.allowed_modes:
                 reject("mode-disabled", target)
                 continue
-            if active_bands and target.band and target.band.lower() not in active_bands and not target.direct_caller:
+            if (
+                active_bands
+                and target.band
+                and target.band.lower() not in active_bands
+                and not target.direct_caller
+                and source_is_spot_hunt(target.source)
+            ):
                 reject("outside-active-band-plan", target)
                 continue
             if (
@@ -1978,6 +2270,9 @@ class DigitalAutomationController:
             for target in self.targets.values()
             if target.key != exclude_key
             and target.direct_caller
+            and target.heard
+            and target.last_heard_at
+            and (now - target.last_heard_at).total_seconds() <= _target_freshness_seconds(target.mode)
             and target.state not in {"done", "skipped", "expired", "backoff"}
             and not target.is_backed_off(now)
             and target.mode in self.settings.allowed_modes
@@ -1995,6 +2290,34 @@ class DigitalAutomationController:
         return direct_targets[0]
 
     def _expire_stale_active_target(self, target: DigitalTarget, now: datetime) -> bool:
+        if target.campaign_expires_at:
+            if target.active_state in {
+                "in_qso", "waiting_rrr", "waiting_73", "reply_received",
+                "report_sent", "rr73_seen", "logged", "completed",
+            }:
+                return False
+            if now < target.campaign_expires_at:
+                return False
+            target.sync_state("backoff", active_state="failed")
+            target.reason = "dxcc-hunt-watchdog-expired"
+            target.completion_reason = "dxcc-hunt-watchdog-expired"
+            target.backoff_until = now + timedelta(minutes=DXCC_HUNT_COOLDOWN_MINUTES)
+            target.campaign_started_at = None
+            target.campaign_expires_at = None
+            target.updated_at = now
+            self.active_target_key = None
+            self.active_qso_state = "idle"
+            self._queue_return_to_origin(target, reason=target.reason)
+            self._persist_target(target)
+            self._set_decision({
+                "decision": "cooldown",
+                "reason": target.reason,
+                "call": target.call,
+                "campaign_count": target.campaign_count,
+                "backoff_until": _iso(target.backoff_until),
+            })
+            return True
+
         protected_states = {
             "reply_received",
             "report_sent",
@@ -2097,12 +2420,30 @@ class DigitalAutomationController:
             rejected[reason] = rejected.get(reason, 0) + 1
 
         for target in self._ordered_targets():
+            self._revalidate_target_need(target)
             if not source_is_spot_hunt(target.source):
                 reject("not-spot-source")
                 continue
             if target.heard:
                 reject("already-heard")
                 continue
+            if target.updated_at and (now - target.updated_at).total_seconds() > DXCC_SPOT_FRESHNESS_SECONDS:
+                target.sync_state("expired")
+                target.reason = "spot-too-old"
+                target.completion_reason = "spot-too-old"
+                self._persist_target(target)
+                reject("spot-too-old")
+                continue
+            if target.state == "backoff" and not target.is_backed_off(now):
+                if target.campaign_count >= self.settings.max_attempts_per_target:
+                    reset_at = target.last_attempt_at + timedelta(minutes=self.settings.retry_reset_minutes) if target.last_attempt_at else now
+                    if now < reset_at:
+                        reject("campaign-limit")
+                        continue
+                    target.campaign_count = 0
+                    target.attempts = 0
+                target.sync_state("heard" if target.heard else "queued", active_state="idle")
+                target.backoff_until = None
             if target.state in {"done", "skipped", "expired", "backoff"}:
                 reject(target.state)
                 continue
@@ -2112,8 +2453,13 @@ class DigitalAutomationController:
             if target.is_backed_off(now):
                 reject("backoff")
                 continue
-            if not target_has_dxcc_hunt_interest(target):
-                reject("spot-not-dxcc-hunt-interest")
+            dxcc_hunt = target_has_dxcc_hunt_interest(target)
+            reference_hunt = target_has_reference_hunt_interest(target, self.settings)
+            if not (dxcc_hunt or reference_hunt):
+                reject("spot-not-hunt-interest")
+                continue
+            if reference_hunt and not payload_matches_hunter_spot_filters(target.to_dict(), self.settings):
+                reject("hunter-filter")
                 continue
             if target.score <= 0:
                 reject("worked-or-unneeded")
@@ -2130,7 +2476,7 @@ class DigitalAutomationController:
             if not payload_matches_need_filters(target.to_dict(), self.settings):
                 reject("not-needed-by-filter")
                 continue
-            if active_bands and target.band and target.band not in active_bands:
+            if active_bands and target.band and target.band not in active_bands and not reference_hunt:
                 reject("outside-active-band-plan")
                 continue
             if (
@@ -2143,6 +2489,9 @@ class DigitalAutomationController:
                 continue
             if not target.dial_frequency:
                 reject("missing-frequency")
+                continue
+            if not _favorable_propagation(target):
+                reject("unfavorable-propagation")
                 continue
             if (
                 target.last_command_at
@@ -2169,7 +2518,7 @@ class DigitalAutomationController:
         self._persist_target(chosen)
         self._set_decision({
             "decision": "listen-selected",
-            "reason": "spot-dxcc-listen-probe",
+            "reason": "spot-reference-listen-probe" if target_has_reference_hunt_interest(chosen, self.settings) else "spot-dxcc-listen-probe",
             "call": chosen.call,
             "band": chosen.band,
             "mode": chosen.mode,
@@ -2211,11 +2560,11 @@ class DigitalAutomationController:
             })
             return None
         listen_started = target.last_command_at or target.updated_at
-        listen_timeout = (
-            DXCC_SPOT_SILENCE_SECONDS
-            if target_has_dxcc_hunt_interest(target)
-            else max(15, self.settings.dwell_seconds)
-        )
+        listen_timeout = max(15, self.settings.dwell_seconds)
+        if target_has_dxcc_hunt_interest(target) or target_has_reference_hunt_interest(target, self.settings):
+            listen_timeout = max(90, min(120, self.settings.dwell_seconds))
+            if target.last_command_at and target.updated_at > target.last_command_at + timedelta(seconds=15):
+                listen_timeout = DXCC_SPOT_SILENCE_SECONDS
         if listen_started and (now - listen_started).total_seconds() >= listen_timeout:
             target.sync_state("expired")
             target.reason = "spot-listen-not-heard"
@@ -2289,7 +2638,21 @@ class DigitalAutomationController:
             "mode": (command or {}).get("mode"),
         })
 
-    def record_attempt(self, key: str) -> Optional[DigitalTarget]:
+    def prepare_command(self, key: str) -> Optional[str]:
+        """Reserve a stable command id before transport so WSJT-Z sees the same id we persist."""
+        target = self.targets.get(key)
+        if not target:
+            return None
+        ordinal = max(target.attempts, target.campaign_count)
+        target.command_id = command_identity(
+            target.target_id or target_identity(target.call, target.band, target.mode),
+            ordinal,
+        )
+        target.updated_at = utc_now()
+        self._persist_target(target)
+        return target.command_id
+
+    def record_attempt(self, key: str, *, command_id: Optional[str] = None) -> Optional[DigitalTarget]:
         target = self.targets.get(key)
         if not target:
             self._set_decision({"decision": "skip", "reason": "attempt-target-missing", "key": key})
@@ -2302,19 +2665,20 @@ class DigitalAutomationController:
             target.attempts = 0
         target.attempts += 1
         target.last_attempt_at = now
-        target.command_id = command_identity(target.target_id or target_identity(target.call, target.band, target.mode), target.attempts - 1)
+        target.command_id = command_id or target.command_id or command_identity(
+            target.target_id or target_identity(target.call, target.band, target.mode),
+            target.attempts - 1,
+        )
         target.last_command_at = now
         target.state = "calling"
         target.lifecycle = "command_sent"
         target.sync_state(active_state="command_sent")
         self.active_qso_state = "command_sent"
-        if target.attempts >= self.settings.max_attempts_per_target:
-            target.sync_state("backoff", active_state="failed")
-            self.active_qso_state = "failed"
-            target.backoff_until = datetime.fromtimestamp(
-                now.timestamp() + self.settings.retry_backoff_minutes * 60,
-                timezone.utc,
-            )
+        if target_has_dxcc_hunt_interest(target):
+            target.campaign_count += 1
+            target.campaign_started_at = now
+            target.campaign_expires_at = now + timedelta(minutes=DXCC_HUNT_WATCHDOG_MINUTES)
+            target.backoff_until = None
         self._set_decision({
             "decision": "attempt-recorded",
             "key": key,
@@ -2323,6 +2687,8 @@ class DigitalAutomationController:
             "attempts": target.attempts,
             "state": target.state,
             "backoff_until": _iso(target.backoff_until),
+            "campaign_count": target.campaign_count,
+            "campaign_expires_at": _iso(target.campaign_expires_at),
         })
         self._persist_target(target)
         return target
@@ -2496,9 +2862,14 @@ class DigitalAutomationController:
         target.reason = reason
         target.updated_at = now
         target.backoff_until = datetime.fromtimestamp(
-            now.timestamp() + self.settings.retry_backoff_minutes * 60,
+            now.timestamp() + (
+                DXCC_HUNT_COOLDOWN_MINUTES if target_has_dxcc_hunt_interest(target)
+                else self.settings.retry_backoff_minutes
+            ) * 60,
             timezone.utc,
         )
+        target.campaign_started_at = None
+        target.campaign_expires_at = None
         self.active_qso_state = "failed"
         self._set_decision({
             "decision": "abandoned",
@@ -2514,7 +2885,76 @@ class DigitalAutomationController:
         """Apply WSJT-X status changes and pause automation on manual override signals."""
         payload = dict(status or {})
         active = self.targets.get(self.active_target_key) if self.active_target_key else None
+        manual_override = _bool(payload.get("manual") or payload.get("operatorAction") or payload.get("operator_action"), False)
+        dx_call = str(payload.get("dxCall") or payload.get("dx_call") or payload.get("call") or "").strip().upper()
+        if active and manual_override and dx_call and dx_call not in {active.call, self.mycall}:
+            target = self.abandon_active_target(reason="manual-dx-call-change")
+            return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
+
+        if active and manual_override:
+            target = self.abandon_active_target(reason="manual-operator-action")
+            return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
+
+        if active and _bool(payload.get("tune") or payload.get("tuning"), False):
+            target = self.abandon_active_target(reason="manual-tune-active")
+            return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
+
+        if active and dx_call and dx_call not in {active.call, self.mycall}:
+            self._set_decision({
+                "decision": "status-observed",
+                "reason": "stale-or-unrelated-dx-call",
+                "call": active.call,
+                "reported_dx_call": dx_call,
+                "state": active.state,
+            })
+            return {"status": "observed", "target": active.to_dict(), "decision": self.last_decision}
+
+        mode = str(payload.get("mode") or "").strip().upper()
+        if active and mode and normalise_mode(mode) != active.mode:
+            target = self.abandon_active_target(reason="manual-mode-change")
+            return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
+
+        band = str(payload.get("band") or "").strip()
+        if active and band and active.band and band != active.band:
+            target = self.abandon_active_target(reason="manual-band-change")
+            return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
+
+        frequency_mhz = _frequency_mhz_from_status(payload)
+        if active and frequency_mhz and active.dial_frequency and abs(frequency_mhz - float(active.dial_frequency)) > 0.003:
+            if active.last_command_at and (utc_now() - active.last_command_at).total_seconds() < 10:
+                self._set_decision({
+                    "decision": "awaiting-command-ack",
+                    "reason": "wsjtz-frequency-settle",
+                    "call": active.call,
+                    "command_id": active.command_id,
+                })
+                return {"status": "pending", "target": active.to_dict(), "decision": self.last_decision}
+            target = self.abandon_active_target(reason="manual-frequency-change")
+            return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
+
+        if active and (dx_call == active.call or (
+            frequency_mhz and active.dial_frequency and abs(frequency_mhz - float(active.dial_frequency)) <= 0.003
+        )):
+            if not active.command_ack_at:
+                active.command_ack_at = utc_now()
+                active.updated_at = active.command_ack_at
+                self._persist_target(active)
+
+        # The custom heartbeat is useful only after the ordinary status fields
+        # confirm that it still describes our active target. Otherwise a stale
+        # non-empty qsoState could bypass every manual-override safety check.
         heartbeat_state = normalise_wsjtz_qso_state(payload)
+        busy_heartbeat_states = {"calling", "in_qso", "waiting_rrr", "waiting_73", "transmitting", "tx"}
+        has_tx_enabled = "txEnabled" in payload or "tx_enabled" in payload
+        tx_enabled = _bool(payload.get("txEnabled") or payload.get("tx_enabled"), False)
+        if not active and heartbeat_state in busy_heartbeat_states and not dx_call and has_tx_enabled and not tx_enabled:
+            self.transition_active_qso("idle", reason="invalid-wsjtz-busy-status")
+            return {
+                "status": "idle",
+                "target": None,
+                "decision": self.last_decision,
+                "qso_state": "idle",
+            }
         if heartbeat_state:
             if active and heartbeat_state == "logged":
                 completed = self.mark_done(active.key, reason="wsjtz-heartbeat-logged")
@@ -2535,48 +2975,10 @@ class DigitalAutomationController:
                 "decision": self.last_decision,
                 "qso_state": heartbeat_state,
             }
+
         if not active:
             self._set_decision({"decision": "status-observed", "reason": "no-active-target"})
             return {"status": "idle", "decision": self.last_decision}
-
-        manual_override = _bool(payload.get("manual") or payload.get("operatorAction") or payload.get("operator_action"), False)
-        dx_call = str(payload.get("dxCall") or payload.get("dx_call") or payload.get("call") or "").strip().upper()
-        if manual_override and dx_call and dx_call not in {active.call, self.mycall}:
-            target = self.abandon_active_target(reason="manual-dx-call-change")
-            return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
-
-        if manual_override:
-            target = self.abandon_active_target(reason="manual-operator-action")
-            return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
-
-        if _bool(payload.get("tune") or payload.get("tuning"), False):
-            target = self.abandon_active_target(reason="manual-tune-active")
-            return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
-
-        if dx_call and dx_call not in {active.call, self.mycall}:
-            self._set_decision({
-                "decision": "status-observed",
-                "reason": "stale-or-unrelated-dx-call",
-                "call": active.call,
-                "reported_dx_call": dx_call,
-                "state": active.state,
-            })
-            return {"status": "observed", "target": active.to_dict(), "decision": self.last_decision}
-
-        mode = str(payload.get("mode") or "").strip().upper()
-        if mode and normalise_mode(mode) != active.mode:
-            target = self.abandon_active_target(reason="manual-mode-change")
-            return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
-
-        band = str(payload.get("band") or "").strip()
-        if band and active.band and band != active.band:
-            target = self.abandon_active_target(reason="manual-band-change")
-            return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
-
-        frequency_mhz = _frequency_mhz_from_status(payload)
-        if frequency_mhz and active.dial_frequency and abs(frequency_mhz - float(active.dial_frequency)) > 0.003:
-            target = self.abandon_active_target(reason="manual-frequency-change")
-            return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
 
         if _bool(payload.get("tx") or payload.get("txEnabled") or payload.get("transmitting"), False):
             self.transition_active_qso("calling", reason="wsjtx-status-tx-active", target=active)
@@ -2590,6 +2992,8 @@ class DigitalAutomationController:
             target.sync_state("done", active_state="completed")
             target.reason = reason
             target.completion_reason = reason
+            target.campaign_started_at = None
+            target.campaign_expires_at = None
             target.updated_at = utc_now()
             if self.active_target_key == key:
                 self.active_target_key = None
@@ -2625,6 +3029,8 @@ class DigitalAutomationController:
             target.sync_state("done", active_state="completed")
             target.reason = reason
             target.completion_reason = reason
+            target.campaign_started_at = None
+            target.campaign_expires_at = None
             target.updated_at = utc_now()
             completed.append(target)
             if self.active_target_key == target.key:
@@ -2959,12 +3365,18 @@ def _is_73_message(message: Any) -> bool:
 
 
 def _is_auto_call_start_message(message: Any, *, treat_73_as_cq: bool = False) -> bool:
-    """Return true only for messages that may start a new Auto Call QSO."""
-    return _is_cq_message(message) or (bool(treat_73_as_cq) and _is_73_message(message))
+    """Return true only for messages that may start a new Auto Call QSO.
+
+    A third-party 73/RR73 proves activity, but it is not an invitation to call.
+    Keep the legacy option argument for settings compatibility while refusing
+    to let it weaken transmit eligibility.
+    """
+    _ = treat_73_as_cq
+    return _is_cq_message(message)
 
 
 def _reference_from_values(ref_type: Any, ref_id: Any, status: Any = None, need_reason: Any = None) -> Optional[dict[str, str]]:
-    ref_type_text = str(ref_type or "").strip().upper()
+    ref_type_text = canonical_reference_program(ref_type)
     ref_id_text = str(ref_id or "").strip().upper()
     if not ref_type_text or not ref_id_text:
         return None
@@ -3011,7 +3423,7 @@ def normalise_reference_items(payload: Mapping[str, Any]) -> list[dict[str, str]
         if item:
             items.append(item)
 
-    for ref_type in ("pota", "sota", "iota", "wwff", "county", "state", "province"):
+    for ref_type in ("pota", "sota", "iota", "wwff", "wwbota", "bunker", "arlhs", "lighthouse", "county", "state", "province"):
         value = payload.get(ref_type) or payload.get(f"{ref_type}_reference") or payload.get(f"{ref_type}Reference")
         status = payload.get(f"{ref_type}_status") or payload.get(f"{ref_type}Status")
         reason = payload.get(f"{ref_type}_need_reason") or payload.get(f"{ref_type}NeedReason")
@@ -3025,9 +3437,27 @@ def normalise_reference_items(payload: Mapping[str, Any]) -> list[dict[str, str]
             if item:
                 items.append(item)
 
+    for extracted in extract_activity_references(payload):
+        item = _reference_from_values(
+            extracted.get("type"),
+            extracted.get("reference_id") or extracted.get("id"),
+            extracted.get("status"),
+            extracted.get("need_reason"),
+        )
+        if item:
+            items.append(item)
+
     deduped: dict[tuple[str, str], dict[str, str]] = {}
     for item in items:
-        deduped[(item["type"], item["id"])] = item
+        key = (item["type"], item["id"])
+        existing = deduped.get(key)
+        if not existing:
+            deduped[key] = item
+            continue
+        if str(existing.get("status") or "").lower() in {"", "unknown"} and str(item.get("status") or "").lower() not in {"", "unknown"}:
+            existing["status"] = item["status"]
+        if not existing.get("need_reason") and item.get("need_reason"):
+            existing["need_reason"] = item["need_reason"]
     return list(deduped.values())
 
 
@@ -3169,7 +3599,6 @@ def payload_need_filter_blockers(payload: Mapping[str, Any], settings: DigitalAu
 
         call_status = normalise_status(payload.get("call_status") or payload.get("callStatus"))
         dxcc_status = normalise_status(payload.get("dxcc_status") or payload.get("dxccStatus"))
-        status_text = f"{call_status} {dxcc_status}".lower()
         needed = payload.get("needed") if isinstance(payload.get("needed"), Mapping) else {}
         needed_on_band = (
             payload.get("needed_on_band")
@@ -3180,6 +3609,7 @@ def payload_need_filter_blockers(payload: Mapping[str, Any], settings: DigitalAu
         )
         reasons = payload_need_reasons(payload)
         selected_matches = [
+            settings.need_reference and bool(needed_reference_hunt_items(payload, settings)),
             settings.filter_new_call and ("call" in reasons or call_status == "New Call" or _bool(needed.get("call"))),
             settings.filter_new_dxcc and ("dxcc" in reasons or dxcc_status in {"ATNO", "Worked"} or _bool(needed.get("dxcc"))),
             settings.filter_new_continent and ("continent" in reasons or _bool(needed.get("continent"))),
@@ -3214,6 +3644,10 @@ def payload_need_filter_blockers(payload: Mapping[str, Any], settings: DigitalAu
         "sota": settings.need_reference,
         "iota": settings.need_reference,
         "wwff": settings.need_reference,
+        "wwbota": settings.need_reference,
+        "bunker": settings.need_reference,
+        "arlhs": settings.need_reference,
+        "lighthouse": settings.need_reference,
         "county": settings.need_reference,
         "state": settings.need_reference,
         "province": settings.need_reference,
@@ -3259,6 +3693,10 @@ def _need_reasons_match_filters(reasons: Iterable[str], settings: DigitalAutomat
             "sota": settings.need_reference,
             "iota": settings.need_reference,
             "wwff": settings.need_reference,
+            "wwbota": settings.need_reference,
+            "bunker": settings.need_reference,
+            "arlhs": settings.need_reference,
+            "lighthouse": settings.need_reference,
             "county": settings.need_reference,
             "state": settings.need_reference,
             "province": settings.need_reference,
@@ -3277,6 +3715,10 @@ def _need_reasons_match_filters(reasons: Iterable[str], settings: DigitalAutomat
         "sota": settings.need_reference,
         "iota": settings.need_reference,
         "wwff": settings.need_reference,
+        "wwbota": settings.need_reference,
+        "bunker": settings.need_reference,
+        "arlhs": settings.need_reference,
+        "lighthouse": settings.need_reference,
         "county": settings.need_reference,
         "state": settings.need_reference,
         "province": settings.need_reference,
@@ -3303,6 +3745,10 @@ def _prior_work_has_enabled_slot_need(reasons: Iterable[str], settings: DigitalA
         "sota",
         "iota",
         "wwff",
+        "wwbota",
+        "bunker",
+        "arlhs",
+        "lighthouse",
         "county",
         "state",
         "province",
@@ -3374,7 +3820,9 @@ def _target_from_mapping(row: Mapping[str, Any]) -> Optional[DigitalTarget]:
             if str(reason).strip()
         },
         "score": _int(data.get("score"), 0),
+        "spot_score": _int(data.get("spot_score"), 0, low=0, high=100),
         "attempts": _int(data.get("attempts"), 0, low=0),
+        "campaign_count": _int(data.get("campaign_count"), 0, low=0),
         "state": str(data.get("state") or "queued"),
         "lifecycle": str(data.get("lifecycle") or data.get("state") or "queued"),
         "active_state": str(data.get("active_state") or "idle"),
@@ -3395,6 +3843,9 @@ def _target_from_mapping(row: Mapping[str, Any]) -> Optional[DigitalTarget]:
         "backoff_until",
         "last_command_at",
         "return_command_at",
+        "command_ack_at",
+        "campaign_started_at",
+        "campaign_expires_at",
     ):
         cleaned[name] = _datetime(cleaned.get(name))
 
@@ -3404,6 +3855,7 @@ def _target_from_mapping(row: Mapping[str, Any]) -> Optional[DigitalTarget]:
     cleaned["snr"] = _float(cleaned.get("snr"))
     cleaned["audio_offset"] = _optional_int(cleaned.get("audio_offset"), None)
     cleaned["dial_frequency"] = _float(cleaned.get("dial_frequency"))
+    cleaned["propagation_score"] = _float(cleaned.get("propagation_score"))
     cleaned["origin_dial_frequency"] = _float(cleaned.get("origin_dial_frequency"))
     cleaned["grid"] = normalise_grid_value(cleaned.get("grid") or "")
 

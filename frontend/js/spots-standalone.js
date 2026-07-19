@@ -37,7 +37,7 @@
     }
 
     async function loadTemplate() {
-        const response = await fetch('templates/dx-spots.html?v=20260604-filters-popout-44', {
+        const response = await fetch('templates/dx-spots.html?v=20260718-spots-workspace-4', {
             cache: 'no-store',
         });
         if (!response.ok) {
@@ -47,9 +47,11 @@
     }
 
     await loadTemplate();
+    const standaloneTemplate = document.getElementById('app').innerHTML;
 
     const { createApp } = Vue;
     const app = createApp({
+        template: standaloneTemplate,
         data() {
             return {
                 ...clone(window.FlexRadioSpots ? window.FlexRadioSpots.data : {}),
@@ -114,6 +116,9 @@
                 if (Array.isArray(this.standaloneVisibleSpots) && this.standaloneVisibleSpots.length > 0) {
                     return this.standaloneVisibleSpots.slice(0, this.maxSpots);
                 }
+                if (Array.isArray(this.dxSpots) && this.dxSpots.length > 0) {
+                    return this.getStandaloneFilteredSpots(this.dxSpots);
+                }
                 return [];
             },
         },
@@ -147,6 +152,7 @@
             },
         },
         methods: {
+            ...(window.FlexRadioUtils ? window.FlexRadioUtils : {}),
             ...(window.FlexRadioSpots ? window.FlexRadioSpots.methods : {}),
 
             switchViewMode(mode) {
@@ -229,19 +235,15 @@
                     console.warn('Could not send filters command through BroadcastChannel:', error);
                 }
 
-                try {
-                    window.localStorage.setItem(popoutCommandStorageKey, JSON.stringify(command));
-                } catch (error) {
-                    console.warn('Could not send filters command through localStorage:', error);
+                if (!this.standaloneCommandChannel) {
+                    fetch('/api/spots/popout-command', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(command),
+                    }).catch(error => {
+                        console.warn('Could not send filters command through backend relay:', error);
+                    });
                 }
-
-                fetch('/api/spots/popout-command', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(command),
-                }).catch(error => {
-                    console.warn('Could not send filters command through backend relay:', error);
-                });
 
                 this.showStatus(`Sent ${spot.callsign || 'spot'} to main window`, 'success');
             },
@@ -370,7 +372,7 @@
 
             async loadStandaloneServiceHealth() {
                 try {
-                    const response = await fetch('/api/health/services');
+                    const response = await fetch('/api/service-health');
                     const data = await response.json();
                     if (response.ok) {
                         this.serviceHealth = data;
@@ -460,8 +462,8 @@
                         this.viewMode = state.viewMode === 'visual' ? 'visual' : 'spots';
                     }
 
-                    if (includeControls && Array.isArray(state.dxSpots)) {
-                        this.mergeStandaloneSpots(state.dxSpots);
+                    if (Array.isArray(state.dxSpots) && state.dxSpots.length > 0) {
+                        this.mergeStandaloneSpots(state.dxSpots, { preserveScroll: !includeControls });
                     }
 
                     if (Array.isArray(state.filteredSearchResults) && (includeControls || currentFilterKey === snapshotFilterKey)) {
@@ -491,9 +493,6 @@
 
             startMainSnapshotSync() {
                 this.stopMainSnapshotSync();
-                this.mainSnapshotTimer = setInterval(() => {
-                    this.loadSpotsPopoutState({ includeControls: false });
-                }, 2500);
             },
 
             stopMainSnapshotSync() {
@@ -620,7 +619,7 @@
 
                 if (filter.workedB4Include || filter.workedB4Exclude) {
                     filtered = filtered.filter(spot => {
-                        const isWorked = !!this.getWorkedDate(spot.callsign, spot.band, spot.mode);
+                        const isWorked = !!this.getWorkedDate(spot);
                         if (filter.workedB4Include && filter.workedB4Exclude) return true;
                         if (filter.workedB4Include) return isWorked;
                         if (filter.workedB4Exclude) return !isWorked;
@@ -736,6 +735,7 @@
                         return `
                             <div class="dropdown-grid two-cols">${this.buildStandaloneOptionList(this.availableBands, this.spotsFilter.bands, { filter: 'bands' })}</div>
                             <div class="dropdown-footer">${this.getStandaloneDropdownButtonHtml('All', 'all', 'data-filter="bands"')}${this.getStandaloneDropdownButtonHtml('Clear', 'clear', 'data-filter="bands"')}</div>
+                            <div class="dropdown-footer band-range-footer">${this.getStandaloneDropdownButtonHtml('HF Low', 'hf-low')}${this.getStandaloneDropdownButtonHtml('HF High', 'hf-high')}</div>
                         `;
                     case 'modes':
                         return `
@@ -937,6 +937,9 @@
                     } else if (action === 'clear' && filter) {
                         const target = this.getStandaloneFilterArray(filter);
                         if (target) target.splice(0, target.length);
+                        this.markStandaloneFiltersChanged();
+                    } else if (action === 'hf-low' || action === 'hf-high') {
+                        this.selectHFBandGroup(action === 'hf-low' ? 'low' : 'high');
                         this.markStandaloneFiltersChanged();
                     } else if (action === 'rbl-only') {
                         this.showOnlyRblSpots();
@@ -1199,7 +1202,7 @@
                             <td>${this.escapeStandaloneHtml(spot.call_status || '-')}</td>
                             <td>${this.escapeStandaloneHtml(spot.dxcc_status || '-')}</td>
                             <td style="font-size: 12px; padding: 4px;">${specials}</td>
-                            <td style="font-size: 12px; color: #10b981; font-weight: 500;">${this.escapeStandaloneHtml(this.getWorkedDate(spot.callsign, spot.band, spot.mode))}</td>
+                            <td style="font-size: 12px; color: #10b981; font-weight: 500;">${this.escapeStandaloneHtml(this.getWorkedDate(spot))}</td>
                             <td style="font-size: 13px; color: #aaa;">${this.escapeStandaloneHtml(spot.comment || '')}</td>
                         </tr>
                     `;
@@ -1211,73 +1214,6 @@
                         if (spot) this.tuneToSpot(spot);
                     });
                 });
-            },
-
-            renderStandaloneTableRows() {
-                const visible = Array.isArray(this.standaloneVisibleSpots) ? this.standaloneVisibleSpots : [];
-                const all = Array.isArray(this.dxSpots) ? this.dxSpots : [];
-                const visibleStats = this.buildSpotSourceStats(visible);
-                const cacheStats = this.buildSpotSourceStats(all);
-
-                const counter = document.querySelector('.spots-source-counter');
-                if (counter) {
-                    const shownParts = [];
-                    if (visibleStats.cluster) shownParts.push(`${visibleStats.cluster} cluster`);
-                    if (visibleStats.rbl) shownParts.push(`${visibleStats.rbl} RBL`);
-                    counter.textContent = visibleStats.total > 0
-                        ? `${visibleStats.total} shown (${shownParts.join(' / ') || 'none'}) · cache ${cacheStats.cluster} cluster / ${cacheStats.rbl} RBL`
-                        : `0 shown · cache ${cacheStats.cluster} cluster / ${cacheStats.rbl} RBL`;
-                }
-                this.updateStandaloneFilterButtonStates();
-
-                document.querySelectorAll('.source-diagnostics-strip button').forEach(button => {
-                    const label = button.textContent.trim();
-                    const sources = this.spotsFilter.spotSources || [];
-                    button.classList.toggle('active', label === 'Cluster only' && sources.length === 1 && sources[0] === 'cluster');
-                    button.classList.toggle('active', label === 'RBL only' && sources.length === 1 && sources[0] === 'rbl');
-                    button.classList.toggle('active', label === 'All sources' && sources.includes('cluster') && sources.includes('rbl'));
-                });
-
-                const tbody = document.querySelector('.spots-table tbody');
-                if (!tbody) return;
-                if (visible.length === 0) {
-                    tbody.innerHTML = `
-                        <tr>
-                            <td colspan="15" style="text-align: center; padding: 20px; color: #666;">
-                                <div>${this.clusterConnected ? 'No spots match current filters' : 'DX Cluster is DISCONNECTED - No spots will be received'}</div>
-                            </td>
-                        </tr>
-                    `;
-                    return;
-                }
-
-                tbody.innerHTML = visible.map((spot, index) => {
-                    const freqMhz = spot.frequency_mhz || parseFloat(spot.frequency) / 1000;
-                    const specials = String(spot.special || '')
-                        .split(', ')
-                        .filter(Boolean)
-                        .map(special => `<span class="special-badge">${this.escapeStandaloneHtml(special)}</span>`)
-                        .join(' ');
-                    return `
-                        <tr class="spot-row ${this.escapeStandaloneHtml(this.getSpotRowClass(spot) || '')}" data-standalone-spot-index="${index}">
-                            <td><button type="button" title="Spot details">ⓘ</button></td>
-                            <td>${this.escapeStandaloneHtml(this.formatSpotTime(spot.timestamp))}</td>
-                            <td><span style="font-weight: 700; padding: 2px 6px; border-radius: 4px;">${this.escapeStandaloneHtml(this.getSpotScore(spot))}</span></td>
-                            <td>${this.escapeStandaloneHtml(spot.band || '')}</td>
-                            <td style="font-family: monospace; color: #4a9eff;">${this.escapeStandaloneHtml(this.formatSpotFreq(freqMhz))}</td>
-                            <td style="font-weight: bold; color: #10b981;">${this.escapeStandaloneHtml(spot.callsign || '')}</td>
-                            <td>${this.escapeStandaloneHtml(spot.mode || '')}</td>
-                            <td>${(spot.spot_source === 'rbl') ? '<span style="color: #fbbf24; font-weight: 700;">RBL</span> ' : ''}${this.escapeStandaloneHtml(spot.country || '-')}</td>
-                            <td>${this.escapeStandaloneHtml(spot.cq || '-')}</td>
-                            <td>${this.escapeStandaloneHtml(this.getSpotterSummary(spot))}</td>
-                            <td>${this.escapeStandaloneHtml(spot.call_status || '-')}</td>
-                            <td>${this.escapeStandaloneHtml(spot.dxcc_status || '-')}</td>
-                            <td>${specials}</td>
-                            <td>${this.escapeStandaloneHtml(this.getWorkedDate(spot.callsign, spot.band, spot.mode))}</td>
-                            <td>${this.escapeStandaloneHtml(spot.comment || '')}</td>
-                        </tr>
-                    `;
-                }).join('');
             },
 
             updateStandaloneVisibleSpots(options = {}) {
@@ -1305,7 +1241,6 @@
                 if (this.$forceUpdate) {
                     this.$forceUpdate();
                 }
-                this.renderStandaloneTableRows();
                 if (this.$nextTick) {
                     this.$nextTick(() => {
                         if (options.preserveScroll && scroll) {
@@ -1467,7 +1402,6 @@
                 this.loadSpotSectionVisibility();
                 this.loadSpotsPopoutState();
                 this.setupStandaloneClickBridge();
-                this.setupStandaloneDropdownFallback();
 
                 this.loadStandaloneLiveCache();
                 this.loadStandaloneFilteredSearch();
@@ -1490,6 +1424,7 @@
                     this.loadRblProfiles(),
                     this.loadRblCommandStatus(),
                     this.refreshWsjtxEngineHealth({ force: true }),
+                    this.refreshWsjtxPlannerStatus({ force: true }),
                     this.loadActivityIntelligence(),
                 ]).catch(error => {
                     console.warn('Filters window background startup failed:', error);

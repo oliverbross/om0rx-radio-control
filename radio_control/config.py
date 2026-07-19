@@ -91,6 +91,9 @@ def _cfg_dict(name, default):
 
 BACKEND_HOST = _cfg_value("BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = _cfg_int("BACKEND_PORT", 8080)
+REMOTE_CONTROL_ENABLED = _cfg_bool("REMOTE_CONTROL_ENABLED", False)
+CONTROL_TOKEN = _cfg_value("CONTROL_TOKEN", "")
+WSJTX_BRIDGE_TOKEN = _cfg_value("WSJTX_BRIDGE_TOKEN", CONTROL_TOKEN)
 CORS_ALLOWED_ORIGINS = _cfg_list(
     "CORS_ALLOWED_ORIGINS",
     [
@@ -146,6 +149,21 @@ SDR_UDP_PORT = _cfg_int("SDR_UDP_PORT", 12061)
 UDP_ENABLED_DEFAULT = _cfg_bool("UDP_ENABLED_DEFAULT", False)
 FLEX_TCP_HOST = _cfg_value("FLEX_TCP_HOST", "192.168.0.199")
 FLEX_TCP_PORT = _cfg_int("FLEX_TCP_PORT", 4992)
+FLEX_ANTENNA_POLICY = _cfg_dict("FLEX_ANTENNA_POLICY", {
+    "enabled": True,
+    "bands": {
+        "160m": "ANT2",
+        "80m": "ANT2",
+        "60m": "ANT2",
+        "40m": "ANT2",
+        "30m": "ANT2",
+        "20m": "ANT1",
+        "17m": "ANT1",
+        "15m": "ANT1",
+        "12m": "ANT1",
+        "10m": "ANT1",
+    },
+})
 FLEX_ENABLED_DEFAULT = _cfg_bool("FLEX_ENABLED_DEFAULT", True)
 CTY_CSV_PATH = str(DATA_DIR / "cty.csv")
 CTY_IGNORE_SUFFIXES = ["P","M","MM","AM","QRP","QRPP","A","B","QTH"]
@@ -193,8 +211,9 @@ SPECIAL_PATTERNS = {
     "SOTA":      r"\bSOTA\b|\bSOTA\s*[A-Z]{2}/[A-Z]-\d+",
     "IOTA":      r"\bIOTA\b|\b[Ii]OTA\s*[A-Z]{1,2}-\d{3}",
     "WWFF":      r"\bWWFF\b|\b[A-Z0-9]{1,4}FF-\d{3,5}\b",
+    "BUNKER":    r"\b(?:WWBOTA|UKBOTA|BUNKERS?\s+ON\s+THE\s+AIR)\b|\bB/[A-Z0-9]{1,4}-\d{4}\b",
     "CASTLE":    r"\bWCA\b|\bCASTLE\b|\b[A-Z]{1,3}-\d{5}\b",
-    "LIGHTHOUSE":r"\bLIGHTHOUSE\b|\bARLHS\b",
+    "LIGHTHOUSE":r"\bLIGHTHOUSE\b|\bARLHS\b|\bILLW\b",
     "CONTEST":   r"\bCONTEST\b",
     "IARU":      r"\bIARU\b"
 }
@@ -202,7 +221,7 @@ SPECIAL_PATTERNS = {
 
 # Preset values that pre-seed the Special dropdown in the UI.
 # Do not include '(none)' — it is auto-added so you can filter untagged rows.
-SPECIAL_PRESET = ["POTA", "SOTA", "IOTA", "WWFF", "CONTEST", "LIGHTHOUSE", "CASTLE", "IARU"]
+SPECIAL_PRESET = ["POTA", "SOTA", "IOTA", "WWFF", "BUNKER", "CONTEST", "LIGHTHOUSE", "CASTLE", "IARU"]
 
 # === Rotator (ARCO) Configuration ===
 ROTOR_ENABLED = _cfg_bool("ROTOR_ENABLED", True)
@@ -266,3 +285,4 @@ FT8_LEGACY_TX_ROUTES_ENABLED = _cfg_bool("FT8_LEGACY_TX_ROUTES_ENABLED", False) 
 FT8_WATERFALL_HEIGHT = _cfg_int("FT8_WATERFALL_HEIGHT", 100)  # Waterfall display height in pixels
 FT8_USE_FLEXRADIO_AUDIO = _cfg_bool("FT8_USE_FLEXRADIO_AUDIO", True)  # Use FlexRadio DAX audio channels
 FT8_PTT_METHOD = _cfg_value("FT8_PTT_METHOD", "CAT")  # PTT method: "CAT", "VOX", "DTR", "RTS"
+FT8_OPERATOR_SETTINGS = _cfg_dict("FT8_OPERATOR_SETTINGS", {})

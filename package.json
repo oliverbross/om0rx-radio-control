@@ -12,6 +12,12 @@
     "start:sdc:debug": "node --inspect bridge/sdc-bridge-server.js"
   },
   "dependencies": {
+    "chart.js": "4.5.1",
+    "datatables.net": "1.13.11",
+    "datatables.net-dt": "1.13.11",
+    "jquery": "3.7.1",
+    "topojson-client": "3.1.0",
+    "vue": "3.5.40",
     "ws": "^8.21.0"
   },
   "keywords": [

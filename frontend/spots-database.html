@@ -6,12 +6,12 @@
     <title>Spots Database Viewer</title>
     
     <!-- Chart.js for visualizations -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="/static/vendor/chartjs/chart.umd.min.js"></script>
     
     <!-- DataTables for table -->
-    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    <link rel="stylesheet" href="/static/vendor/datatables/jquery.dataTables.min.css">
+    <script src="/static/vendor/jquery/jquery.min.js"></script>
+    <script src="/static/vendor/datatables/jquery.dataTables.min.js"></script>
     
     <style>
         * {
@@ -712,9 +712,9 @@
             <div class="header-controls">
                 <div class="refresh-toggle">
                     <span>Auto-Refresh</span>
-                    <div class="toggle-switch" id="autoRefreshToggle" onclick="toggleAutoRefresh()"></div>
+                    <div class="toggle-switch" id="autoRefreshToggle"></div>
                 </div>
-                <button class="primary" onclick="refreshData()">🔄 Refresh Now</button>
+                <button class="primary" id="refreshNowButton">🔄 Refresh Now</button>
             </div>
         </header>
         
@@ -726,7 +726,7 @@
         
         <!-- Charts Grid -->
         <div id="chartsSection" style="background: #2a2a2a; padding: 16px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid #667eea;">
-            <div class="collapsible-header" onclick="toggleSection('chartsContent')">
+            <div class="collapsible-header" data-toggle-section="chartsContent">
                 <h2 style="font-size: 16px; color: #e0e0e0; margin: 0;">📈 Visualizations</h2>
                 <div class="collapse-arrow" id="chartsArrow">▼</div>
             </div>
@@ -779,7 +779,7 @@
         
         <!-- API Documentation -->
         <div class="api-docs">
-            <div class="collapsible-header" onclick="toggleSection('apiContent')">
+            <div class="collapsible-header" data-toggle-section="apiContent">
                 <div class="api-title" style="margin-bottom: 0;">📡 Available API Endpoints</div>
                 <div class="collapse-arrow collapsed" id="apiArrow">▼</div>
             </div>
@@ -851,7 +851,7 @@
                 <div class="filter-group">
                     <label class="filter-label">Band</label>
                     <div style="position: relative;">
-                        <button id="bandFilterBtn" class="filter-button" onclick="toggleFilterDropdown('band')">
+                        <button id="bandFilterBtn" class="filter-button" data-filter-dropdown="band">
                             <span id="bandFilterLabel" class="filter-button-text">All Bands</span>
                         </button>
                         <div id="bandFilterCheckboxes" class="filter-checkboxes"></div>
@@ -862,7 +862,7 @@
                 <div class="filter-group">
                     <label class="filter-label">Mode</label>
                     <div style="position: relative;">
-                        <button id="modeFilterBtn" class="filter-button" onclick="toggleFilterDropdown('mode')">
+                        <button id="modeFilterBtn" class="filter-button" data-filter-dropdown="mode">
                             <span id="modeFilterLabel" class="filter-button-text">All Modes</span>
                         </button>
                         <div id="modeFilterCheckboxes" class="filter-checkboxes"></div>
@@ -873,7 +873,7 @@
                 <div class="filter-group">
                     <label class="filter-label">CQ Zones</label>
                     <div style="position: relative;">
-                        <button id="zonesFilterBtn" class="filter-button" onclick="toggleFilterDropdown('zones')">
+                        <button id="zonesFilterBtn" class="filter-button" data-filter-dropdown="zones">
                             <span id="zonesFilterLabel" class="filter-button-text">All Zones</span>
                         </button>
                         <div id="zonesFilterCheckboxes" class="filter-checkboxes"></div>
@@ -884,7 +884,7 @@
                 <div class="filter-group">
                     <label class="filter-label">Country</label>
                     <div style="position: relative;">
-                        <button id="countryFilterBtn" class="filter-button" onclick="toggleFilterDropdown('country')">
+                        <button id="countryFilterBtn" class="filter-button" data-filter-dropdown="country">
                             <span id="countryFilterLabel" class="filter-button-text">All Countries</span>
                         </button>
                         <div id="countryFilterCheckboxes" class="filter-checkboxes"></div>
@@ -925,15 +925,15 @@
                 
                 <!-- Action Buttons -->
                 <div class="filters-button-group">
-                    <button class="primary" onclick="applyFilters()">✓ Apply Filters</button>
-                    <button onclick="clearFilters()">Clear All</button>
+                    <button class="primary" id="applyFiltersButton">✓ Apply Filters</button>
+                    <button id="clearFiltersButton">Clear All</button>
                 </div>
             </div>
         </div>
         
         <!-- Table Section -->
         <div class="table-section">
-            <div class="collapsible-header" onclick="toggleSection('tableContent')">
+            <div class="collapsible-header" data-toggle-section="tableContent">
                 <div class="table-title" style="margin-bottom: 0;">📋 All Spots</div>
                 <div class="collapse-arrow" id="tableArrow">▼</div>
             </div>
@@ -968,8 +968,6 @@
         let charts = {};
         let autoRefreshInterval = null;
         let autoRefreshEnabled = false;
-        let workedCallsigns = new Set();
-        let workedCallsignsWithDates = new Map();  // callsign -> {date: 'DD/MM/YYYY', dateYYYYMMDD: 'YYYYMMDD'}
         let isRefreshing = false;
         
         // Multi-select filter state
@@ -991,17 +989,11 @@
             freqMax: ''
         };
         
-        // Initialize - make async to ensure proper load order
         document.addEventListener('DOMContentLoaded', async function() {
             console.log('⏳ Starting initialization...');
-            // First: Load worked callsigns from ADIF (must complete before rendering table)
-            await loadWorkedCallsigns();
-            console.log('✅ Worked callsigns loaded, now loading spots...');
-            // Second: Load spots and render table (now workedCallsigns is populated)
-            await loadData();
-            console.log('✅ All data loaded');
-            // Third: Setup event listeners
             setupEventListeners();
+            await loadData();
+            console.log('✅ Spots loaded');
         });
         
         // Toggle collapsible sections
@@ -1012,93 +1004,6 @@
             if (content && arrow) {
                 content.classList.toggle('collapsed');
                 arrow.classList.toggle('collapsed');
-            }
-        }
-        
-        // Load worked callsigns from ADIF log (matches by CALL + BAND + MODE)
-        async function loadWorkedCallsigns() {
-            try {
-                const response = await fetch('/logs/qso_log.adif');
-                if (!response.ok) return;
-                
-                const text = await response.text();
-                const lines = text.split('\n');
-                
-                let currentCallsign = null;
-                let currentDate = null;
-                let currentBand = null;
-                let currentMode = null;
-                
-                // Parse ADIF format - look for CALL:, QSO_DATE:, BAND:, and MODE: fields
-                for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i].trim();
-                    
-                    // Extract callsign from format like <CALL:9>SM/LA8ZIA
-                    if (line.startsWith('<CALL:')) {
-                        const match = line.match(/<CALL:\d+>(.+)/);
-                        if (match) {
-                            currentCallsign = match[1].trim().toUpperCase();
-                        }
-                    }
-                    
-                    // Extract date from format like <QSO_DATE:8>20251017
-                    if (line.startsWith('<QSO_DATE:')) {
-                        const match = line.match(/<QSO_DATE:\d+>(\d{8})/);
-                        if (match) {
-                            currentDate = match[1];  // Format: YYYYMMDD
-                        }
-                    }
-                    
-                    // Extract band from format like <BAND:3>20m
-                    if (line.startsWith('<BAND:')) {
-                        const match = line.match(/<BAND:\d+>(.+)/);
-                        if (match) {
-                            currentBand = match[1].trim().toUpperCase();
-                        }
-                    }
-                    
-                    // Extract mode from format like <MODE:3>SSB
-                    if (line.startsWith('<MODE:')) {
-                        const match = line.match(/<MODE:\d+>(.+)/);
-                        if (match) {
-                            currentMode = match[1].trim().toUpperCase();
-                        }
-                    }
-                    
-                    // When we hit EOR (End of Record), store the worked combination with date
-                    if (line === '<EOR>') {
-                        if (currentCallsign && currentDate && currentBand && currentMode) {
-                            // Create composite key: CALL-BAND-MODE
-                            const compositeKey = `${currentCallsign}-${currentBand}-${currentMode}`;
-                            
-                            // Convert YYYYMMDD to DD/MM/YYYY for display
-                            const year = currentDate.substring(0, 4);
-                            const month = currentDate.substring(4, 6);
-                            const day = currentDate.substring(6, 8);
-                            const formattedDate = `${day}/${month}/${year}`;
-                            
-                            // Store for backwards compatibility (some code might still use callsign-only lookup)
-                            workedCallsigns.add(currentCallsign);
-                            
-                            // Store with composite key for proper band+mode matching
-                            workedCallsignsWithDates.set(compositeKey, {
-                                date: formattedDate,
-                                dateYYYYMMDD: currentDate
-                            });
-                        }
-                        currentCallsign = null;
-                        currentDate = null;
-                        currentBand = null;
-                        currentMode = null;
-                    }
-                }
-                
-                console.log(`✅ Loaded ${workedCallsignsWithDates.size} worked band/mode combinations from ADIF`);
-                // Debug: Show first 10 combinations
-                const first10 = Array.from(workedCallsignsWithDates.keys()).slice(0, 10);
-                console.log('📋 First 10 worked combinations:', first10);
-            } catch (error) {
-                console.warn('Could not load worked callsigns:', error);
             }
         }
         
@@ -1207,31 +1112,6 @@
                 allSpots = data.spots || [];
                 filteredSpots = [...allSpots];
                 
-                // Debug: Check first few callsigns from API
-                if (filteredSpots.length > 0) {
-                    console.log('📊 First few callsigns from API:', filteredSpots.slice(0, 5).map(s => s.callsign));
-                    console.log('📊 Total spots from API:', filteredSpots.length);
-                    
-                    // Find matches between worked and spots
-                    let matchCount = 0;
-                    const worked = Array.from(workedCallsigns);
-                    for (const spot of filteredSpots.slice(0, 100)) {
-                        if (workedCallsigns.has(spot.callsign.toUpperCase())) {
-                            matchCount++;
-                            if (matchCount <= 3) {
-                                console.log(`✅ MATCH FOUND: ${spot.callsign} in worked list`);
-                            }
-                        }
-                    }
-                    console.log(`🎯 Matches found in first 100 spots: ${matchCount}`);
-                    
-                    // Sample: show some spot callsigns vs some worked callsigns
-                    const spotCalls = filteredSpots.slice(0, 5).map(s => s.callsign.toUpperCase());
-                    console.log('🔍 Comparing samples:');
-                    console.log('  Spot callsigns:', spotCalls);
-                    console.log('  Is first spot worked?', workedCallsigns.has(spotCalls[0]));
-                }
-                
                 // Populate filters
                 populateFilterOptions();
                 
@@ -1252,61 +1132,50 @@
             const modes = new Set(allSpots.map(s => s.mode));
             const countries = new Set(allSpots.map(s => s.country).filter(Boolean));
             
-            // Populate band checkboxes
-            const bandCheckboxes = document.getElementById('bandFilterCheckboxes');
-            bandCheckboxes.innerHTML = '';
-            Array.from(bands).sort().forEach(band => {
+            const addCheckbox = (container, group, rawValue, labelText, id) => {
                 const item = document.createElement('div');
                 item.className = 'checkbox-item';
-                item.innerHTML = `
-                    <input type="checkbox" id="band_${band}" value="${band}" 
-                           onchange="updateFilterCheckbox('band', '${band}', this.checked)">
-                    <label for="band_${band}">${band}</label>
-                `;
-                bandCheckboxes.appendChild(item);
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.id = id;
+                input.value = String(rawValue ?? '');
+                input.addEventListener('change', () => updateFilterCheckbox(group, String(rawValue ?? ''), input.checked));
+                const label = document.createElement('label');
+                label.htmlFor = id;
+                label.textContent = String(labelText ?? '');
+                item.append(input, label);
+                container.appendChild(item);
+            };
+
+            // Populate band checkboxes
+            const bandCheckboxes = document.getElementById('bandFilterCheckboxes');
+            bandCheckboxes.replaceChildren();
+            Array.from(bands).sort().forEach(band => {
+                const safeId = 'band_' + String(band).replace(/[^a-zA-Z0-9]/g, '_');
+                addCheckbox(bandCheckboxes, 'band', band, band, safeId);
             });
             
             // Populate mode checkboxes
             const modeCheckboxes = document.getElementById('modeFilterCheckboxes');
-            modeCheckboxes.innerHTML = '';
+            modeCheckboxes.replaceChildren();
             Array.from(modes).sort().forEach(mode => {
-                const item = document.createElement('div');
-                item.className = 'checkbox-item';
-                item.innerHTML = `
-                    <input type="checkbox" id="mode_${mode}" value="${mode}" 
-                           onchange="updateFilterCheckbox('mode', '${mode}', this.checked)">
-                    <label for="mode_${mode}">${mode}</label>
-                `;
-                modeCheckboxes.appendChild(item);
+                const safeId = 'mode_' + String(mode).replace(/[^a-zA-Z0-9]/g, '_');
+                addCheckbox(modeCheckboxes, 'mode', mode, mode, safeId);
             });
             
             // Populate country checkboxes
             const countryCheckboxes = document.getElementById('countryFilterCheckboxes');
-            countryCheckboxes.innerHTML = '';
+            countryCheckboxes.replaceChildren();
             Array.from(countries).sort().forEach(country => {
-                const item = document.createElement('div');
-                item.className = 'checkbox-item';
                 const safeId = 'country_' + country.replace(/[^a-zA-Z0-9]/g, '_');
-                item.innerHTML = `
-                    <input type="checkbox" id="${safeId}" value="${country}" 
-                           onchange="updateFilterCheckbox('country', '${country.replace(/"/g, '&quot;')}', this.checked)">
-                    <label for="${safeId}">${country}</label>
-                `;
-                countryCheckboxes.appendChild(item);
+                addCheckbox(countryCheckboxes, 'country', country, country, safeId);
             });
             
             // Populate CQ zones checkboxes (all zones 1-75)
             const zonesCheckboxes = document.getElementById('zonesFilterCheckboxes');
-            zonesCheckboxes.innerHTML = '';
+            zonesCheckboxes.replaceChildren();
             for (let zone = 1; zone <= 75; zone++) {
-                const item = document.createElement('div');
-                item.className = 'checkbox-item';
-                item.innerHTML = `
-                    <input type="checkbox" id="zone_${zone}" value="${zone}" 
-                           onchange="updateFilterCheckbox('zones', '${zone}', this.checked)">
-                    <label for="zone_${zone}">Zone ${zone}</label>
-                `;
-                zonesCheckboxes.appendChild(item);
+                addCheckbox(zonesCheckboxes, 'zones', zone, `Zone ${zone}`, `zone_${zone}`);
             }
         }
         
@@ -1468,17 +1337,14 @@
         
         // Check if a spot was worked (matches by CALL + BAND + MODE)
         function isSpotWorked(spot) {
-            if (!spot || !spot.callsign || !spot.band || !spot.mode) return false;
-            const compositeKey = `${spot.callsign.toUpperCase()}-${spot.band.toUpperCase()}-${spot.mode.toUpperCase()}`;
-            return workedCallsignsWithDates.has(compositeKey);
+            return Boolean(spot && spot.worked_before_date);
         }
         
         // Get worked date for a spot (returns date string or empty)
         function getSpotWorkedDate(spot) {
-            if (!spot || !spot.callsign || !spot.band || !spot.mode) return '';
-            const compositeKey = `${spot.callsign.toUpperCase()}-${spot.band.toUpperCase()}-${spot.mode.toUpperCase()}`;
-            const workedInfo = workedCallsignsWithDates.get(compositeKey);
-            return workedInfo ? workedInfo.date : '';
+            const qsoDate = String(spot?.worked_before_date || '').replaceAll('-', '').slice(0, 8);
+            if (!/^\d{8}$/.test(qsoDate)) return '';
+            return `${qsoDate.substring(6, 8)}/${qsoDate.substring(4, 6)}/${qsoDate.substring(0, 4)}`;
         }
         
         // Get row class based on spot status
@@ -1581,7 +1447,8 @@
                         columnDefs: [
                             { targets: 0, visible: false },  // Hide timestamp column, but use for sorting
                             { type: 'string', targets: 1 },  // Date column (visible, DD/MM/YYYY format)
-                            { type: 'string', targets: 2 }   // Time column (visible)
+                            { type: 'string', targets: 2 },  // Time column (visible)
+                            { targets: [1,2,3,4,5,6,7,8,9,10,11], render: $.fn.dataTable.render.text() }
                         ],
                         searching: true,
                         info: true,
@@ -1612,7 +1479,9 @@
                             const callsignCell = $('td', row).eq(4);
                             const workedDate = getSpotWorkedDate(spot);
                             if (workedDate) {
-                                const badge = `<span class="worked-badge">✓ ${workedDate}</span>`;
+                                const badge = document.createElement('span');
+                                badge.className = 'worked-badge';
+                                badge.textContent = `✓ ${workedDate}`;
                                 callsignCell.append(badge);
                             }
                         }
@@ -2065,9 +1934,23 @@
         
         function showError(message) {
             const errorDiv = document.getElementById('errorMsg');
-            errorDiv.innerHTML = `<div class="error">${message}</div>`;
-            setTimeout(() => { errorDiv.innerHTML = ''; }, 5000);
+            const content = document.createElement('div');
+            content.className = 'error';
+            content.textContent = String(message || 'Unknown error');
+            errorDiv.replaceChildren(content);
+            setTimeout(() => { errorDiv.replaceChildren(); }, 5000);
         }
+
+        document.getElementById('autoRefreshToggle').addEventListener('click', toggleAutoRefresh);
+        document.getElementById('refreshNowButton').addEventListener('click', refreshData);
+        document.getElementById('applyFiltersButton').addEventListener('click', applyFilters);
+        document.getElementById('clearFiltersButton').addEventListener('click', clearFilters);
+        document.querySelectorAll('[data-toggle-section]').forEach(element => {
+            element.addEventListener('click', () => toggleSection(element.dataset.toggleSection));
+        });
+        document.querySelectorAll('[data-filter-dropdown]').forEach(element => {
+            element.addEventListener('click', () => toggleFilterDropdown(element.dataset.filterDropdown));
+        });
     </script>
 </body>
 </html>

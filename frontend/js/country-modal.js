@@ -569,48 +569,28 @@ const CountryModal = {
         const utcTime = now.toLocaleTimeString('en-US', { timeZone: 'UTC', hour12: false });
         const localTime = now.toLocaleTimeString('en-US', { hour12: false });
         
-        info.innerHTML = `
-            <div class="info-row">
-                <span>Continent:</span>
-                <strong>${continent || '—'}</strong>
-            </div>
-            <div class="info-row">
-                <span>CQ Zone:</span>
-                <strong>${cqZone || '—'}</strong>
-            </div>
-            <div class="info-row">
-                <span>DXCC ID:</span>
-                <strong>${dxccId || '—'}</strong>
-            </div>
-            ${bearing !== null ? `<div class="info-row">
-                <span>Bearing:</span>
-                <strong>${Math.round(bearing)}°</strong>
-            </div>` : ''}
-            <div class="info-row">
-                <span>UTC Time:</span>
-                <strong style="font-family: monospace; letter-spacing: 0.5px;">${utcTime}</strong>
-            </div>
-            <div class="info-row">
-                <span>Local Time:</span>
-                <strong style="font-family: monospace; letter-spacing: 0.5px;">${localTime}</strong>
-            </div>
-            <div class="info-row">
-                <span>Latitude:</span>
-                <strong>${lat ? lat.toFixed(2) + '°' : '—'}</strong>
-            </div>
-            <div class="info-row">
-                <span>Longitude:</span>
-                <strong>${lon ? lon.toFixed(2) + '°' : '—'}</strong>
-            </div>
-            ${maidenheadGrid ? `<div class="info-row">
-                <span>Maidenhead:</span>
-                <strong style="font-family: monospace; letter-spacing: 1px;">${maidenheadGrid}</strong>
-            </div>` : ''}
-            ${grid ? `<div class="info-row">
-                <span>Grid (User):</span>
-                <strong>${grid}</strong>
-            </div>` : ''}
-        `;
+        info.replaceChildren();
+        const addRow = (label, value, monospace = false) => {
+            const row = document.createElement('div');
+            row.className = 'info-row';
+            const name = document.createElement('span');
+            name.textContent = `${label}:`;
+            const content = document.createElement('strong');
+            content.textContent = String(value ?? '—');
+            if (monospace) content.style.cssText = 'font-family:monospace;letter-spacing:0.5px';
+            row.append(name, content);
+            info.appendChild(row);
+        };
+        addRow('Continent', continent || '—');
+        addRow('CQ Zone', cqZone ?? '—');
+        addRow('DXCC ID', dxccId ?? '—');
+        if (Number.isFinite(Number(bearing))) addRow('Bearing', `${Math.round(Number(bearing))}°`);
+        addRow('UTC Time', utcTime, true);
+        addRow('Local Time', localTime, true);
+        addRow('Latitude', Number.isFinite(Number(lat)) ? `${Number(lat).toFixed(2)}°` : '—');
+        addRow('Longitude', Number.isFinite(Number(lon)) ? `${Number(lon).toFixed(2)}°` : '—');
+        if (maidenheadGrid) addRow('Maidenhead', maidenheadGrid, true);
+        if (grid) addRow('Grid (User)', grid);
     },
     
     /**

@@ -7,7 +7,7 @@ import html
 import json
 import logging
 import re
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from radio_control.spot_processor import band_from_khz, infer_mode
+from radio_control.spot_processor import band_from_khz
 
 from .models import (
     ContestEvent,
@@ -29,6 +29,16 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+MAX_FEED_BYTES = 5 * 1024 * 1024
+
+
+def _bounded_text(response: httpx.Response, max_bytes: int = MAX_FEED_BYTES) -> str:
+    content_type = (response.headers.get("content-type") or "").lower()
+    if content_type and not any(kind in content_type for kind in ("xml", "json", "text", "calendar", "octet-stream")):
+        raise ValueError(f"Unsupported feed content type: {content_type.split(';', 1)[0]}")
+    if len(response.content) > max_bytes:
+        raise ValueError("External feed exceeded the allowed size")
+    return response.text
 
 CALL_RE = re.compile(r"\b[A-Z0-9]{1,3}\d[A-Z0-9/]{1,10}\b", re.IGNORECASE)
 MONTH_RE = re.compile(
@@ -231,7 +241,7 @@ class SourceAdapter(ABC):
             etag=response.headers.get("etag"),
             last_modified=response.headers.get("last-modified"),
             content_type=response.headers.get("content-type"),
-            body=response.text if response.status_code != 304 else "",
+            body=_bounded_text(response) if response.status_code != 304 else "",
         )
 
     @abstractmethod
@@ -349,6 +359,8 @@ class Wa7bnmRssAdapter(SourceAdapter):
     def parse(self, raw: RawFetchResult) -> dict[str, list[Any]]:
         contests: list[ContestEvent] = []
         try:
+            if len(raw.body.encode("utf-8")) > MAX_FEED_BYTES:
+                raise ValueError("XML feed exceeded the allowed size")
             root = ET.fromstring(raw.body)
         except ET.ParseError:
             logger.debug("Could not parse WA7BNM RSS")
@@ -743,7 +755,7 @@ class SwpcSolarWindAdapter(SourceAdapter):
             fetched_at_utc=iso_utc(),
             http_status=max(mag_response.status_code, plasma_response.status_code),
             content_type="application/json",
-            body=json.dumps({"mag": mag_response.text, "plasma": plasma_response.text}),
+            body=json.dumps({"mag": _bounded_text(mag_response), "plasma": _bounded_text(plasma_response)}),
         )
 
     def parse(self, raw: RawFetchResult) -> dict[str, list[Any]]:

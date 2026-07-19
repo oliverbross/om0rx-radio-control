@@ -3,11 +3,11 @@ Solar and HF Conditions API
 Provides solar indices and HF band conditions data
 """
 
-import asyncio
 import logging
 import time
 from typing import Dict, Any, Optional
 import httpx
+from defusedxml import ElementTree as ET
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
@@ -18,6 +18,7 @@ router = APIRouter(prefix="/api/solar", tags=["Solar & HF Conditions"])
 
 # Cache configuration
 CACHE_TTL = 600  # 10 minutes in seconds
+MAX_SOLAR_XML_BYTES = 1024 * 1024
 _solar_cache: Dict[str, Any] = {"timestamp": 0, "data": None}
 
 def _safe_int(value: Any) -> Optional[int]:
@@ -54,9 +55,9 @@ async def fetch_hamqsl_solar_data() -> Dict[str, Any]:
                     response = await client.get(url)
                     response.raise_for_status()
                     
-                    # Parse XML response
-                    import xml.etree.ElementTree as ET
-                    root = ET.fromstring(response.text)
+                    if len(response.content) > MAX_SOLAR_XML_BYTES:
+                        raise ValueError("Solar XML response exceeded the allowed size")
+                    root = ET.fromstring(response.content)
                     
                     # Find the solardata element
                     solardata = root.find("solardata")
@@ -98,18 +99,7 @@ async def fetch_hamqsl_solar_data() -> Dict[str, Any]:
                 continue
         
         if not solar_data:
-            # Fallback to mock data if all endpoints fail
-            logger.warning("All solar data endpoints failed, using fallback data")
-            solar_data = {
-                "solarflux": "142",
-                "aindex": "8", 
-                "kindex": "2",
-                "updated": "Just now",
-                "band_80m_40m": "Fair",
-                "band_30m_20m": "Good", 
-                "band_17m_15m": "Good",
-                "band_12m_10m": "Poor"
-            }
+            raise HTTPException(status_code=502, detail="Solar data service is unavailable")
         
         # Build our standardized payload
         payload = {

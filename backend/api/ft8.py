@@ -402,6 +402,15 @@ class AutomationSettingsRequest(BaseModel):
     operatorSettings: dict[str, Any]
 
 
+class ReferenceHunterSettingsRequest(BaseModel):
+    enabled: bool
+    programs: list[str] = Field(default_factory=lambda: ["POTA", "SOTA", "IOTA", "WWFF", "WWBOTA", "ARLHS"])
+    min_spot_score: int = Field(default=50, ge=0, le=100)
+    hunt_watchdog_minutes: int = Field(default=5, ge=1, le=60)
+    restore_watchdog_minutes: int = Field(default=2, ge=1, le=60)
+    spot_filters: dict[str, Any] = Field(default_factory=dict)
+
+
 class AutomationTargetRequest(BaseModel):
     target: dict[str, Any]
 
@@ -614,6 +623,41 @@ async def update_automation_settings(request: AutomationSettingsRequest):
     service = get_ft8_service()
     service.automation_controller.apply_operator_settings(request.operatorSettings)
     return {"status": "updated", "automation": service.automation_controller.status()}
+
+
+@router.post("/automation/reference-hunter")
+async def update_reference_hunter_settings(request: ReferenceHunterSettingsRequest):
+    """Arm/disarm reference hunting and persist the Filters snapshot."""
+    service = get_ft8_service()
+    automation_update = {
+        "referenceHunterEnabled": request.enabled,
+        "hunterPrograms": request.programs,
+        "hunterMinSpotScore": request.min_spot_score,
+        "hunterWatchdogMinutes": request.hunt_watchdog_minutes,
+        "hunterRestoreWatchdogMinutes": request.restore_watchdog_minutes,
+        "hunterSpotFilters": request.spot_filters,
+    }
+    if request.enabled:
+        automation_update.update({
+            "enabled": True,
+            "spotHuntEnabled": True,
+            "bandHopping": True,
+            "requireHeardBeforeCall": True,
+            "needReference": True,
+        })
+    service.automation_controller.apply_operator_settings({"automation": automation_update})
+
+    operator_settings = dict(getattr(app_config, "FT8_OPERATOR_SETTINGS", {}) or {})
+    automation = dict(operator_settings.get("automation") or {})
+    automation.update(automation_update)
+    operator_settings["automation"] = automation
+    save_config_updates({"FT8_OPERATOR_SETTINGS": operator_settings})
+    setattr(app_config, "FT8_OPERATOR_SETTINGS", operator_settings)
+    return {
+        "status": "updated",
+        "enabled": service.automation_controller.settings.reference_hunter_enabled,
+        "automation": service.automation_controller.status(),
+    }
 
 
 @router.post("/automation/target")

@@ -38,6 +38,8 @@ def test_current_wsjtz_source_accepts_om0rx_target_qso_command():
     message_client_cpp = (WSJTZ_SOURCE_ROOT / "Network" / "MessageClient.cpp").read_text(encoding="utf-8")
     mainwindow_h = (WSJTZ_SOURCE_ROOT / "widgets" / "mainwindow.h").read_text(encoding="utf-8")
     mainwindow_cpp = (WSJTZ_SOURCE_ROOT / "widgets" / "mainwindow.cpp").read_text(encoding="utf-8")
+    mainwindow_ui = (WSJTZ_SOURCE_ROOT / "widgets" / "mainwindow.ui").read_text(encoding="utf-8")
+    displaytext_cpp = (WSJTZ_SOURCE_ROOT / "widgets" / "displaytext.cpp").read_text(encoding="utf-8")
 
     assert "OM0RXStartTargetQSO" in network_message
     assert "start_target_qso" in message_client_h
@@ -50,11 +52,140 @@ def test_current_wsjtz_source_accepts_om0rx_target_qso_command():
     assert "OM0RX backend priority hunt armed" in mainwindow_cpp
     assert "om0rx_auto_reply_direct_call" in mainwindow_h
     assert "OM0RX direct reply auto-start" in mainwindow_cpp
+    assert "can_interrupt_unanswered_call" in mainwindow_cpp
+    assert "OM0RX direct reply interrupts unanswered Auto Call" in mainwindow_cpp
+    assert "m_om0rxPendingDirectReplyLine" in mainwindow_h
+    assert "m_om0rxPendingDirectReplyValid" in mainwindow_h
+    assert "ZProcess: starting held direct reply" in mainwindow_cpp
+    assert "processMessage (DecodedText {held_reply})" in mainwindow_cpp
+    assert "om0rx_clear_stale_logged_qso" in mainwindow_h
+    assert "OM0RX stale logged QSO cleared" in mainwindow_cpp
+    assert "direct reply precheck" in mainwindow_cpp
+    assert "ZProcess entry" in mainwindow_cpp
+    assert "preserved_appendage" in displaytext_cpp
+    assert "QChar::Nbsp} + preserved_appendage" in displaytext_cpp
+    assert "grid.trimmed ().toUpper ().left (4)" in displaytext_cpp
+    assert "constexpr int status_column = 45" in displaytext_cpp
+    assert 'leftJustified (45)' in mainwindow_cpp
     assert "qso_state" in message_client_h
     assert "QSO state:" in message_client_cpp
     assert "om0rx_qso_state" in mainwindow_h
     assert "waiting_rrr" in mainwindow_cpp
     assert "waiting_73" in mainwindow_cpp
+    assert 'setValue ("AutoCall", ui->cbAutoCall->isChecked ())' in mainwindow_cpp
+    assert 'value ("AutoCall", false)' in mainwindow_cpp
+    assert "cbWatchUnconfirmedDXCC" in mainwindow_ui
+    assert "Watch for new/unconfirmed DXCC's" in mainwindow_ui
+    assert 'setValue ("WatchUnconfirmedDXCC"' in mainwindow_cpp
+    assert 'value("WatchUnconfirmedDXCC", true)' in mainwindow_cpp
+    assert "om0rx_dxcc_watch_status" in mainwindow_cpp
+    assert 'normalized == "worked"' in mainwindow_cpp
+    assert "normalized.contains (\"new mode\")" in mainwindow_cpp
+    assert "om0rx_plain_worked_call_status" in mainwindow_cpp
+    assert "dxcc_watch_candidate" in mainwindow_cpp
+    assert "Third-party 73 and DXCC priority never make traffic callable" in mainwindow_cpp
+    assert "accepted without CQ/73" not in mainwindow_cpp
+    assert "om0rx_decode_line_for_selection" in mainwindow_cpp
+    assert "line.remove (status_columns)" in mainwindow_cpp
+    assert 'om0rx_clear_priority_hunt ("operator double-click")' in mainwindow_cpp
+
+
+def test_current_wsjtz_source_sanitizes_grid_and_clears_stuck_auto_log():
+    if not WSJTZ_SOURCE_ROOT.exists():
+        return
+
+    mainwindow_cpp = (WSJTZ_SOURCE_ROOT / "widgets" / "mainwindow.cpp").read_text(encoding="utf-8")
+    mainwindow_h = (WSJTZ_SOURCE_ROOT / "widgets" / "mainwindow.h").read_text(encoding="utf-8")
+
+    assert "QString om0rx_sanitized_grid" in mainwindow_cpp
+    assert "grid = grid.trimmed ().toUpper ()" in mainwindow_cpp
+    assert "return grid.contains (grid_regexp) ? grid : QString {}" in mainwindow_cpp
+    assert 'setValue("DXgrid",om0rx_sanitized_grid' in mainwindow_cpp
+    assert 'setText (om0rx_sanitized_grid (m_settings->value ("DXgrid"' in mainwindow_cpp
+    assert "m_hisGrid = om0rx_sanitized_grid (ui->dxGridEntry->text())" in mainwindow_cpp
+    assert "QString grid=om0rx_sanitized_grid (m_hisGrid)" in mainwindow_cpp
+    assert "auto const reply_grid = om0rx_sanitized_grid (hisgrid)" in mainwindow_cpp
+    assert "Auto-log completion left DX active; clearing completed QSO state" in mainwindow_cpp
+    assert "om0rx_stop_forbidden_autocall_cq" in mainwindow_h
+    assert "OM0RX blocked Auto Call CQ" in mainwindow_cpp
+    assert "ui->cbAutoCall->isChecked() || ui->cbAutoCQ->isChecked()" in mainwindow_cpp
+    assert "ui->cbAutoCall->isChecked()" in mainwindow_cpp
+    assert "!ui->cbAutoCQ->isChecked()" in mainwindow_cpp
+    assert 'om0rx_stop_forbidden_autocall_cq("transmit gate")' in mainwindow_cpp
+    assert 'om0rx_stop_forbidden_autocall_cq("ZProcess entry")' in mainwindow_cpp
+    assert "om0rx_tx_starting" in mainwindow_cpp
+    assert "m_restart && m_transmitting && !om0rx_tx_starting" in mainwindow_cpp
+    assert "OM0RX stale TX state cleared after PTT release" in mainwindow_cpp
+    assert "if (m_transmitting) stopTx();" in mainwindow_cpp
+    assert "m_pendingTxIs73 = is_73" in mainwindow_cpp
+    assert "record_tx_start ();" in mainwindow_cpp
+    assert "void MainWindow::record_tx_start ()" in mainwindow_cpp
+    assert "Do not treat a PTT request as a transmitted message" in mainwindow_cpp
+    assert mainwindow_cpp.index("transmit (snr);") < mainwindow_cpp.index("record_tx_start ();")
+    assert "m_final73TxGuard = true" in mainwindow_cpp
+    assert "OM0RX final-73 TX completed; RX/PTT released" in mainwindow_cpp
+    assert "OM0RX final-73 safety guard forced RX/PTT release" in mainwindow_cpp
+    assert "if (m_final73TxGuard && !m_transmitting)" in mainwindow_cpp
+    assert "m_config.transceiver_ptt (false);" in mainwindow_cpp
+    assert "bool    m_final73TxGuard = false;" in mainwindow_h
+    assert "bool    m_final73LogPending = false;" in mainwindow_h
+    assert "void complete_final73_tx ();" in mainwindow_h
+
+    record_tx_body = mainwindow_cpp.split(
+        "void MainWindow::record_tx_start ()", 1
+    )[1].split("void MainWindow::complete_final73_tx ()", 1)[0]
+    assert "m_final73LogPending =" in record_tx_body
+    assert "logQSOTimer.start (0)" not in record_tx_body
+    assert "cease_auto_Tx_after_QSO" not in record_tx_body
+
+    complete_tx_body = mainwindow_cpp.split(
+        "void MainWindow::complete_final73_tx ()", 1
+    )[1].split("void MainWindow::stopTx()", 1)[0]
+    assert "auto_tx_mode (false)" in complete_tx_body
+    assert "logQSOTimer.start (0)" in complete_tx_body
+    assert "cease_auto_Tx_after_QSO" in complete_tx_body
+    assert mainwindow_cpp.index("m_config.transceiver_ptt (false); //Lower PTT") < mainwindow_cpp.index(
+        "complete_final73_tx ();", mainwindow_cpp.index("void MainWindow::stopTx2()")
+    )
+
+
+def test_current_wsjtz_source_has_lean_startup_and_tci_fixes():
+    if not WSJTZ_SOURCE_ROOT.exists():
+        return
+
+    cmake = (WSJTZ_SOURCE_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    configuration_cpp = (WSJTZ_SOURCE_ROOT / "Configuration.cpp").read_text(encoding="utf-8")
+    configuration_hpp = (WSJTZ_SOURCE_ROOT / "Configuration.hpp").read_text(encoding="utf-8")
+    modulator_cpp = (WSJTZ_SOURCE_ROOT / "Modulator" / "Modulator.cpp").read_text(encoding="utf-8")
+    soundin_cpp = (WSJTZ_SOURCE_ROOT / "Audio" / "soundin.cpp").read_text(encoding="utf-8")
+    worked_before = (WSJTZ_SOURCE_ROOT / "logbook" / "WorkedBefore.cpp").read_text(encoding="utf-8")
+    mainwindow_cpp = (WSJTZ_SOURCE_ROOT / "widgets" / "mainwindow.cpp").read_text(encoding="utf-8")
+
+    assert "configure_file (${CMAKE_SOURCE_DIR}/USState.db ${CMAKE_BINARY_DIR}/USState.db COPYONLY)" in cmake
+    assert 'QSqlDatabase::database(kConnName, false)' in mainwindow_cpp
+    assert 'QCoreApplication::applicationDirPath ()' in mainwindow_cpp
+    assert "m_->load_worked_before ();" in worked_before
+    assert "Q_SLOT void transceiver_period (double = 15.0, bool force = false);" in configuration_hpp
+    assert "if (force || cached_rig_state_.period() != period)" in configuration_cpp
+    assert "m_config.transceiver_period(m_TRperiod, true)" in mainwindow_cpp
+    assert "bool Modulator::reset ()" in modulator_cpp
+    assert "5 * 1000000ll" in soundin_cpp
+
+
+def test_current_wsjtz_source_blocks_exact_worked_band_mode_hunts():
+    if not WSJTZ_SOURCE_ROOT.exists():
+        return
+
+    mainwindow_cpp = (WSJTZ_SOURCE_ROOT / "widgets" / "mainwindow.cpp").read_text(encoding="utf-8")
+
+    assert "om0rx_status_cache_call_done_on_band_mode" in mainwindow_cpp
+    assert "om0rx_status_cache_dxcc_hunt_needed" in mainwindow_cpp
+    assert "cacheCallDoneOnBandMode" in mainwindow_cpp
+    assert "exact call/band/mode already worked, not selecting" in mainwindow_cpp
+    assert "watchdog target no longer needed" in mainwindow_cpp
+    assert "watchdog inactive target" in mainwindow_cpp
+    assert "needed_on_band.insert" in mainwindow_cpp
+    assert 'QString {"%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12"}' in mainwindow_cpp
 
 
 def test_wsjtz_enrichment_patch_accepts_om0rx_target_qso_command():
@@ -71,11 +202,47 @@ def test_wsjtz_enrichment_patch_accepts_om0rx_target_qso_command():
     assert "OM0RX backend priority hunt armed" in text
     assert "om0rx_auto_reply_direct_call" in text
     assert "OM0RX direct reply auto-start" in text
+    assert "can_interrupt_unanswered_call" in text
+    assert "OM0RX direct reply interrupts unanswered Auto Call" in text
+    assert "m_om0rxPendingDirectReplyLine" in text
+    assert "m_om0rxPendingDirectReplyValid" in text
+    assert "ZProcess: starting held direct reply" in text
+    assert "processMessage (DecodedText {held_reply})" in text
     assert "qso_state" in text
     assert "QSO state:" in text
     assert "om0rx_qso_state" in text
     assert "waiting_rrr" in text
     assert "waiting_73" in text
+    assert 'setValue ("AutoCall", ui->cbAutoCall->isChecked ())' in text
+    assert 'value ("AutoCall", false)' in text
+    assert "cbWatchUnconfirmedDXCC" in text
+    assert "Watch for new/unconfirmed DXCC's" in text
+    assert 'setValue ("WatchUnconfirmedDXCC"' in text
+    assert 'value("WatchUnconfirmedDXCC", true)' in text
+    assert "om0rx_dxcc_watch_status" in text
+    assert 'normalized == "worked"' in text
+    assert "normalized.contains (\"new mode\")" in text
+    assert "om0rx_plain_worked_call_status" in text
+    assert "dxcc_watch_candidate" in text
+    assert "Third-party 73 and DXCC priority never make traffic callable" in text
+    assert "accepted without CQ/73" not in text
+    assert "om0rx_decode_line_for_selection" in text
+    assert "line.remove (status_columns)" in text
+    assert 'om0rx_clear_priority_hunt ("operator double-click")' in text
+    assert "preserved_appendage" in text
+    assert "QChar::Nbsp} + preserved_appendage" in text
+    assert "grid.trimmed ().toUpper ().left (4)" in text
+    assert "constexpr int status_column = 45" in text
+    assert 'leftJustified (45)' in text
+    assert "om0rx_tx_starting" in text
+    assert "record_tx_start" in text
+    assert "m_final73TxGuard" in text
+    assert "OM0RX final-73 TX completed; RX/PTT released" in text
+    assert "OM0RX final-73 safety guard forced RX/PTT release" in text
+    assert "m_config.transceiver_ptt (false)" in text
+    assert "m_restart && m_transmitting && !om0rx_tx_starting" in text
+    assert "m_pendingTxIs73 = is_73" in text
+    assert "m_pendingTxFirst73 = is_73" in text
 
 
 def test_wsjtx_engine_patch_contains_om0rx_hunting_controls():
@@ -288,6 +455,23 @@ def test_wsjtx_engine_build_scripts_are_present():
     assert "function Set-IniSectionValue" in wsjtz_run
     assert '-Section "Configuration" -Key "AcceptUDPRequests" -Value "true"' in wsjtz_run
     assert '-Section "Configuration" -Key "AutoLog" -Value "true"' in wsjtz_run
+    assert '-Section "MainWindow" -Key "AutoCall" -Value "true"' in wsjtz_run
+    assert '-Section "MainWindow" -Key "AutoSeq" -Value "true"' in wsjtz_run
+    assert '-Section "MainWindow" -Key "AutoCQ" -Value "false"' in wsjtz_run
+    assert '-Section "MainWindow" -Key "autoModeSwitchEnabled" -Value "false"' in wsjtz_run
+    assert '-Section "MainWindow" -Key "WatchUnconfirmedDXCC" -Value "true"' in wsjtz_run
+    assert '-Section "Common" -Key "AutoCall" -Value "true"' in wsjtz_run
+    assert '-Section "Common" -Key "AutoSeq" -Value "true"' in wsjtz_run
+    assert '-Section "Common" -Key "autoModeSwitchEnabled" -Value "false"' in wsjtz_run
+    assert '-Section "Common" -Key "WatchUnconfirmedDXCC" -Value "true"' in wsjtz_run
+
+
+def test_websocket_initial_status_uses_typed_shared_snapshot_without_fake_defaults():
+    websocket_py = (PROJECT_ROOT / "services" / "websocket.py").read_text(encoding="utf-8")
+
+    assert 'getattr(runtime_context, "radio_snapshot"' in websocket_py
+    assert "initial_status = dict(" in websocket_py
+    assert "14.074" not in websocket_py
 
 
 def test_wsjtx_launch_logs_tail_stdout_and_missing_stderr():

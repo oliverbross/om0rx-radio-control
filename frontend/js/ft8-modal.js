@@ -278,6 +278,12 @@ const ft8ModalMixin = {
                 automation: {
                     enabled: false,
                     spotHuntEnabled: false,
+                    referenceHunterEnabled: false,
+                    hunterPrograms: ['POTA', 'SOTA', 'IOTA', 'WWFF', 'WWBOTA', 'ARLHS'],
+                    hunterMinSpotScore: 50,
+                    hunterWatchdogMinutes: 5,
+                    hunterRestoreWatchdogMinutes: 2,
+                    hunterSpotFilters: {},
                     bandHopping: false,
                     bandPlan: FT8_DEFAULT_BAND_PLAN,
                     allowedModes: { FT8: true, FT4: true, FT2: false },

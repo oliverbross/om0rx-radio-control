@@ -4,8 +4,10 @@ Extracted from main.py - handles all background async operations
 """
 
 import asyncio
+import json
 import logging
 import time as wall_time
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, time, timezone
 from types import SimpleNamespace
@@ -27,6 +29,8 @@ from radio_control.spot_classification import classify_call_status, classify_dxc
 
 logger = logging.getLogger(__name__)
 
+WSJTX_ACTIVE_STATUS_MAX_AGE_MS = 45_000
+
 
 BroadcastStatus = Callable[[dict], Awaitable[None]]
 BroadcastSpots = Callable[[List[Dict]], Awaitable[None]]
@@ -45,6 +49,8 @@ class BackgroundTaskService:
     wsjtx_seen_decode_keys: List[str] = field(default_factory=list)
     wsjtx_ingested_decodes: int = 0
     wsjtx_ingest_last_error: Optional[str] = None
+    wsjtx_planner_last_action: Optional[str] = None
+    wsjtx_planner_last_error: Optional[str] = None
 
 
 _service: Optional[BackgroundTaskService] = None
@@ -82,27 +88,37 @@ def _normalize_cty_longitude(value):
     return -longitude
 
 
-def _should_queue_digital_spot_for_automation(spot: Dict[str, Any]) -> bool:
+def _should_queue_digital_spot_for_automation(spot: Dict[str, Any], settings: Any = None) -> bool:
     mode = str(spot.get("mode") or "").strip().upper()
     if mode not in {"FT8", "FT4", "FT2"}:
         return False
     try:
-        from services.digital_automation import payload_has_dxcc_hunt_interest
+        from services.digital_automation import (
+            payload_has_dxcc_hunt_interest,
+            payload_has_reference_hunt_interest,
+            payload_matches_hunter_spot_filters,
+        )
 
-        return payload_has_dxcc_hunt_interest(spot)
+        if payload_has_dxcc_hunt_interest(spot):
+            return True
+        return bool(
+            settings
+            and payload_has_reference_hunt_interest(spot, settings)
+            and payload_matches_hunter_spot_filters(spot, settings)
+        )
     except Exception:
         dxcc_status = str(spot.get("dxcc_status") or "").strip().lower()
         return dxcc_status in {"atno", "worked"} or "new band" in dxcc_status or "new mode" in dxcc_status
 
 
 def _queue_digital_spot_for_automation(context: Any, spot: Dict[str, Any]) -> None:
-    if not _should_queue_digital_spot_for_automation(spot):
-        return
     try:
         from services.ft8_service import get_ft8_service
 
         controller = getattr(get_ft8_service(), "automation_controller", None)
         if not controller:
+            return
+        if not _should_queue_digital_spot_for_automation(spot, controller.settings):
             return
         classifier = getattr(context, "classifier", None)
         qso_status_store = getattr(classifier, "qso_status_store", None) if classifier else None
@@ -111,9 +127,6 @@ def _queue_digital_spot_for_automation(context: Any, spot: Dict[str, Any]) -> No
                 qso_status_store=qso_status_store,
                 cty_resolver=getattr(context, "cty_resolver", None),
             )
-        if not getattr(controller.settings, "spot_hunt_enabled", False):
-            return
-
         payload = dict(spot)
         source = str(payload.get("spot_source") or payload.get("source") or "spot").strip().lower()
         payload["source"] = "rbl" if source == "rbl" else "cluster"
@@ -171,6 +184,7 @@ async def poll_radio_status():
     consecutive_failures = 0
     max_failures = 5
     last_active_status_query = 0.0
+    last_authoritative_status_broadcast = 0.0
     
     while True:
         try:
@@ -238,6 +252,17 @@ async def poll_radio_status():
                         status_update['frequency'] = status_update.pop('freq')
                         logger.info(f"📡 SYNC: frequency={status_update['frequency']:.6f} MHz")
 
+                    # A frequency change notification is easy for a browser to
+                    # miss during a reconnect. Repeat the cached authoritative
+                    # tuning state at a low rate so one lost WebSocket frame can
+                    # never leave the UI parked on an old band indefinitely.
+                    if now - last_authoritative_status_broadcast >= 5.0:
+                        if getattr(flex, "current_freq", None) is not None:
+                            status_update.setdefault("frequency", flex.current_freq)
+                        if getattr(flex, "current_mode", None):
+                            status_update.setdefault("mode", flex.current_mode)
+                        last_authoritative_status_broadcast = now
+
                     if status_update:
                         logger.debug(f"🔄 Broadcasting changes: {list(status_update.keys())}")
                         # Log significant changes
@@ -252,6 +277,24 @@ async def poll_radio_status():
                         
                         await service.broadcast_status(status_update)
                         flex.last_state_changed = {}
+
+                    context.radio_snapshot = {
+                        "connected": bool(flex.sock),
+                        "known": bool(flex.sock and flex.current_freq is not None),
+                        "stale": not bool(flex.sock),
+                        "observed_at": datetime.now(timezone.utc).isoformat(),
+                        "frequency": flex.current_freq,
+                        "mode": flex.current_mode,
+                        "filter_lo": flex.current_filter_lo,
+                        "filter_hi": flex.current_filter_hi,
+                        "volume": flex.current_volume,
+                        "drive": flex.current_rfpower,
+                        "tune_power": flex.current_tunepower,
+                        "mic_level": flex.current_miclevel,
+                        "mox": flex.current_mox,
+                        "interlock_state": flex.current_interlock_state,
+                        "vox_enabled": flex.current_vox_enable,
+                    }
                     
                     # Force reconnect if too many consecutive failures
                     if consecutive_failures > max_failures:
@@ -263,6 +306,14 @@ async def poll_radio_status():
                             pass
                         flex.sock = None
                         consecutive_failures = 0
+
+            else:
+                context.radio_snapshot = {
+                    **getattr(context, "radio_snapshot", {}),
+                    "connected": False,
+                    "known": False,
+                    "stale": True,
+                }
 
             # SmartSDR sends subscribed state changes asynchronously. Polling
             # the socket once per second is enough to drain pending messages
@@ -371,6 +422,7 @@ async def process_cluster_spot(spot_data: dict):
         call_worked = False
         call_new_band = False
         call_new_mode = False
+        worked_before_date = None
 
         if classifier:
             # Call classification using Wavelog API (more reliable than direct DB)
@@ -428,6 +480,24 @@ async def process_cluster_spot(spot_data: dict):
             else:
                 # DXCC couldn't be resolved - show "Unknown" instead of blank
                 dxcc_status = "Unknown"
+
+            qso_status_store = getattr(classifier, "qso_status_store", None)
+            if qso_status_store and hasattr(qso_status_store, "worked_before_date"):
+                try:
+                    worked_before_date = await asyncio.to_thread(
+                        qso_status_store.worked_before_date,
+                        dxcall,
+                        band,
+                        emode,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not read worked-before date for %s %s %s",
+                        dxcall,
+                        band,
+                        emode,
+                        exc_info=True,
+                    )
         
         # Log spot to persistent database WITH classifications
         try:
@@ -475,6 +545,7 @@ async def process_cluster_spot(spot_data: dict):
             'cq': cq_display,
             'call_status': call_status,
             'dxcc_status': dxcc_status,
+            'worked_before_date': worked_before_date,
             'needed': {
                 'call': bool(not call_worked) if classifier else False,
             },
@@ -556,28 +627,6 @@ async def process_cluster_spot(spot_data: dict):
 
     except Exception as e:
         logger.error(f"Spot processing error: {e}")
-
-
-async def poll_dx_spots():
-    """Monitor spot cache (disabled - using real-time cluster only)"""
-    service = require_background_task_service()
-    context = service.context
-
-    while True:
-        try:
-            # Just monitor - all spots come from cluster
-            await asyncio.sleep(30.0)
-
-            # Log stats
-            dx_spots_cache = context.dx_spots_cache
-            if dx_spots_cache:
-                logger.debug(f"Spot cache: {len(dx_spots_cache)} spots")
-                if context.cluster_client:
-                    logger.debug(f"Cluster connected: {context.cluster_client.connected}")
-
-        except Exception as e:
-            logger.error(f"Spot monitor error: {e}")
-            await asyncio.sleep(30.0)
 
 
 async def poll_activity_intelligence():
@@ -727,6 +776,9 @@ async def ingest_latest_wsjtx_decode_once() -> Optional[Dict[str, Any]]:
             return None
 
         ft8_service = get_ft8_service()
+        last_status = stats.get("lastStatus") if isinstance(stats.get("lastStatus"), dict) else {}
+        if last_status:
+            ft8_service.automation_controller.handle_wsjtx_status(last_status)
         classifier = getattr(service.context, "classifier", None)
         ft8_service.automation_controller.set_status_sources(
             qso_status_store=getattr(classifier, "qso_status_store", None) if classifier else None,
@@ -752,6 +804,130 @@ async def ingest_latest_wsjtx_decode_once() -> Optional[Dict[str, Any]]:
         service.wsjtx_ingest_last_error = str(exc)
         logger.debug("WSJT-X decode ingest failed: %s", exc, exc_info=True)
         return None
+
+
+def _planner_payload(controller: Any, bridge_status: Dict[str, Any]) -> Dict[str, Any]:
+    stats = bridge_status.get("stats") if isinstance(bridge_status.get("stats"), dict) else {}
+    last_status = stats.get("lastStatus") if isinstance(stats.get("lastStatus"), dict) else {}
+    settings = controller.settings.to_dict()
+    automation: Dict[str, Any] = {
+        **settings,
+        "enabled": bool(settings.get("enabled")),
+        "autoCall": True,
+        "autoCQ": False,
+        "cqOnly": False,
+        "spotHuntEnabled": bool(settings.get("spot_hunt_enabled")),
+        "bandHopping": bool(settings.get("band_hopping")),
+        "modeSwitching": bool(settings.get("mode_switching")),
+        "requireHeardBeforeCall": True,
+        "watchdogEnabled": True,
+        "watchdogFT8": 2,
+        "watchdogFT4": 2,
+        "source": "backend-dxcc-hunt-planner",
+    }
+    mode = str(last_status.get("mode") or "").strip().upper()
+    if mode:
+        automation["currentMode"] = mode
+    band = str(last_status.get("band") or "").strip().lower()
+    if band:
+        automation["currentBand"] = band
+    dial_frequency = _coerce_number(last_status.get("dialFrequency") or last_status.get("frequency"))
+    if dial_frequency:
+        automation["dialFrequency"] = dial_frequency
+    return {"source": "backend-dxcc-hunt-planner", "automation": automation}
+
+
+def _fresh_wsjtx_status(stats: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the last WSJT status only while it can describe live QSO state."""
+    last_status = stats.get("lastStatus") if isinstance(stats.get("lastStatus"), dict) else {}
+    if not last_status:
+        return {}
+    age_ms = _coerce_number(stats.get("lastStatusAgeMs"))
+    if age_ms is None:
+        status_ts = _coerce_number(last_status.get("ts"))
+        if status_ts:
+            age_ms = datetime.now(timezone.utc).timestamp() * 1000 - status_ts
+    if age_ms is not None and age_ms > WSJTX_ACTIVE_STATUS_MAX_AGE_MS:
+        return {}
+    return last_status
+
+
+def _post_wsjtx_planner_tick(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from radio_control import config
+
+    url = f"http://127.0.0.1:{int(getattr(config, 'BACKEND_PORT', 8080))}/api/wsjtx/automation/tick"
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    token = str(getattr(config, "CONTROL_TOKEN", "") or "")
+    if token:
+        headers["X-OM0RX-Control-Token"] = token
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=2.5) as response:
+        body = response.read().decode("utf-8")
+    return json.loads(body) if body else {"success": True}
+
+
+async def run_wsjtx_automation_planner_once() -> Optional[Dict[str, Any]]:
+    """Drive the backend planner continuously; WSJT-Z remains the radio/QSO executor."""
+    service = require_background_task_service()
+    try:
+        from services.ft8_service import get_ft8_service
+        from services.wsjtx import get_wsjtx_service
+
+        ft8_service = get_ft8_service()
+        controller = ft8_service.automation_controller
+        if not controller.settings.enabled:
+            return None
+        bridge_status = await asyncio.to_thread(get_wsjtx_service().get_bridge_status)
+        stats = bridge_status.get("stats") if isinstance(bridge_status, dict) else {}
+        last_status = _fresh_wsjtx_status(stats) if isinstance(stats, dict) else {}
+        status_outcome: Dict[str, Any] = {}
+        if last_status:
+            status_outcome = controller.handle_wsjtx_status(last_status)
+        elif not controller.active_target_key and controller.active_qso_state not in {
+            "idle", "completed", "logged", "failed", "aborted"
+        }:
+            controller.transition_active_qso("idle", reason="stale-wsjtx-status")
+
+        qso_state = str(
+            status_outcome.get("qso_state")
+            or last_status.get("qsoState")
+            or last_status.get("qso_state")
+            or ""
+        ).strip().lower().replace("-", "_")
+        busy_states = {"calling", "in_qso", "waiting_rrr", "waiting_73", "transmitting", "tx"}
+        if qso_state in busy_states and not controller.active_target_key:
+            service.wsjtx_planner_last_action = "deferred-current-qso"
+            service.wsjtx_planner_last_error = None
+            return {"success": True, "action": "deferred", "reason": "finish-current-qso"}
+
+        result = await asyncio.to_thread(
+            _post_wsjtx_planner_tick,
+            _planner_payload(controller, bridge_status),
+        )
+        service.wsjtx_planner_last_action = str(result.get("action") or "idle")
+        service.wsjtx_planner_last_error = None
+        return result
+    except Exception as exc:
+        service.wsjtx_planner_last_error = str(exc)
+        logger.debug("WSJT-Z automation planner tick failed: %s", exc, exc_info=True)
+        return None
+
+
+async def poll_wsjtx_automation_planner():
+    while True:
+        try:
+            await run_wsjtx_automation_planner_once()
+            await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("WSJT-Z automation planner loop error: %s", exc, exc_info=True)
+            await asyncio.sleep(2.0)
 
 
 async def poll_wsjtx_decode_ingest():
@@ -784,11 +960,6 @@ async def start_background_tasks():
     tasks.append(cluster_task)
     logger.info("✅ Cluster status monitoring started")
 
-    # Start spot polling (monitoring only)
-    spots_task = asyncio.create_task(poll_dx_spots())
-    tasks.append(spots_task)
-    logger.info("✅ Spot cache monitoring started")
-
     if getattr(service.context, "activity_intelligence", None):
         activity_task = asyncio.create_task(poll_activity_intelligence())
         tasks.append(activity_task)
@@ -797,6 +968,10 @@ async def start_background_tasks():
     wsjtx_ingest_task = asyncio.create_task(poll_wsjtx_decode_ingest())
     tasks.append(wsjtx_ingest_task)
     logger.info("✅ WSJT-X decode automation ingest task started")
+
+    wsjtx_planner_task = asyncio.create_task(poll_wsjtx_automation_planner())
+    tasks.append(wsjtx_planner_task)
+    logger.info("✅ WSJT-Z DXCC hunt planner started")
 
     # Start Wavelog local read-cache sync if manager is available
     if service.context.wavelog_sync_manager:
@@ -861,6 +1036,10 @@ def get_background_task_status():
             "last_decode_key": service.wsjtx_last_decode_key if service else None,
             "ingested_decodes": service.wsjtx_ingested_decodes if service else 0,
             "last_error": service.wsjtx_ingest_last_error if service else None,
+        },
+        "wsjtx_automation_planner": {
+            "last_action": service.wsjtx_planner_last_action if service else None,
+            "last_error": service.wsjtx_planner_last_error if service else None,
         },
         "tasks": [
             {

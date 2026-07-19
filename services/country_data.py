@@ -3,8 +3,7 @@ Country Data Service - GeoJSON country data handling and mapping functions
 """
 
 import logging
-from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 from fastapi import APIRouter, HTTPException
 import json
 from radio_control import config

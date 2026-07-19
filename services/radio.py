@@ -1,31 +1,32 @@
-"""
-Radio Control Service - FastAPI Endpoints for FlexRadio Control
+"""Validated, serialized FlexRadio command API."""
 
-This module contains all radio control endpoints extracted from main.py,
-including basic controls, TX controls, AGC/DSP controls, RIT/XIT controls,
-and RX2/SPLIT controls.
+from __future__ import annotations
 
-The module can be imported and endpoints can be registered with a FastAPI app.
-"""
-
+import asyncio
 import logging
 from dataclasses import dataclass
-from fastapi import HTTPException
-from pydantic import BaseModel
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 
-# Configure logging
+from fastapi import HTTPException
+from pydantic import BaseModel, Field, model_validator
+
+
 logger = logging.getLogger(__name__)
+RadioMode = Literal["AM", "SAM", "FM", "NFM", "USB", "LSB", "CW", "DIGU", "DIGL", "RTTY"]
+RadioBand = Literal["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "6m"]
+AgcMode = Literal["off", "slow", "med", "fast"]
+DspControl = Literal["nb", "nr", "anf", "apf"]
+DspLevelControl = Literal["nb_level", "nr_level", "anf_level", "apf_level"]
+
 
 @dataclass
 class RadioControlState:
-    """Runtime dependencies for radio control endpoints."""
-
     flex: Any = None
     broadcast_func: Optional[Callable[[dict], Awaitable[None]]] = None
 
 
 radio_control_state = RadioControlState()
+_command_lock = asyncio.Lock()
 
 
 def configure_radio_control(flex_instance=None, broadcast_func=None) -> RadioControlState:
@@ -39,527 +40,259 @@ def get_radio_instance():
     return radio_control_state.flex
 
 
-async def broadcast_status(data: dict):
+async def broadcast_status(data: dict) -> None:
     if radio_control_state.broadcast_func:
         await radio_control_state.broadcast_func(data)
 
-# === Pydantic Models ===
 
 class FrequencyRequest(BaseModel):
-    frequency: float
+    frequency: float = Field(ge=0.01, le=6000)
+
 
 class ModeRequest(BaseModel):
-    mode: str
+    mode: RadioMode
+
 
 class BandRequest(BaseModel):
-    band: str
+    band: RadioBand
+
 
 class FilterRequest(BaseModel):
-    filter_lo: int
-    filter_hi: int
+    filter_lo: int = Field(ge=-12000, le=12000)
+    filter_hi: int = Field(ge=-12000, le=12000)
+
+    @model_validator(mode="after")
+    def validate_order(self):
+        if self.filter_lo >= self.filter_hi:
+            raise ValueError("filter_lo must be lower than filter_hi")
+        return self
+
 
 class SliderRequest(BaseModel):
-    value: int
+    value: int = Field(ge=0, le=100)
+
 
 class ToggleRequest(BaseModel):
     enabled: bool
 
+
 class AGCRequest(BaseModel):
-    mode: str  # off, slow, med, fast
+    mode: AgcMode
+
 
 class DSPRequest(BaseModel):
-    control: str  # nb, nr, anf, apf
+    control: DspControl
     enabled: bool
 
+
 class DSPLevelRequest(BaseModel):
-    control: str  # nb_level, nr_level, anf_level, apf_level
-    value: int  # 0-100
+    control: DspLevelControl
+    value: int = Field(ge=0, le=100)
+
 
 class RITXITRequest(BaseModel):
     enabled: bool
-    freq_hz: Optional[int] = 0
+    freq_hz: int = Field(default=0, ge=-99999, le=99999)
+
 
 class RX2Request(BaseModel):
-    frequency: Optional[float] = None
+    frequency: Optional[float] = Field(default=None, ge=0.01, le=6000)
     enabled: bool
+
 
 class SplitRequest(BaseModel):
     enabled: bool
-    tx_frequency: Optional[float] = None
+    tx_frequency: Optional[float] = Field(default=None, ge=0.01, le=6000)
+
 
 class StepRequest(BaseModel):
-    step_hz: int
+    step_hz: int = Field(ge=1, le=100000)
 
-# === Basic Controls ===
+
+def _require_radio():
+    flex = get_radio_instance()
+    if flex is None or getattr(flex, "sock", None) is None:
+        # Test doubles and deferred-connect clients can still own a connect method.
+        if flex is None:
+            raise HTTPException(status_code=503, detail="Radio is unavailable")
+    return flex
+
+
+async def _run(operation: Callable[[], Any], *, timeout: float = 3.0) -> Any:
+    """Run one blocking Flex operation without blocking or racing the event loop."""
+    async with _command_lock:
+        try:
+            result = await asyncio.wait_for(asyncio.to_thread(operation), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(status_code=504, detail="Radio command timed out") from exc
+        except HTTPException:
+            raise
+        except (ConnectionError, OSError) as exc:
+            logger.warning("Radio connection error: %s", exc)
+            raise HTTPException(status_code=503, detail="Radio connection failed") from exc
+        except Exception as exc:
+            logger.exception("Unexpected radio command failure")
+            raise HTTPException(status_code=500, detail="Radio command failed") from exc
+    if result is not True:
+        raise HTTPException(status_code=409, detail="Radio rejected or did not acknowledge the command")
+    return result
+
+
+async def _simple(method_name: str, args: tuple[Any, ...], state: dict[str, Any]) -> dict[str, Any]:
+    flex = _require_radio()
+    method = getattr(flex, method_name)
+    await _run(lambda: method(*args))
+    await broadcast_status(state)
+    return {"success": True, **state}
+
 
 async def set_frequency(req: FrequencyRequest):
-    """Set frequency"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.tune_mhz(req.frequency)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"frequency": req.frequency})
-            return {"success": True, "frequency": req.frequency}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        logger.error(f"Set frequency error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _simple("tune_mhz", (req.frequency,), {"frequency": req.frequency})
 
 
 async def set_mode(req: ModeRequest):
-    """Set mode"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.set_mode(req.mode)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"mode": req.mode})
-            return {"success": True, "mode": req.mode}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        logger.error(f"Set mode error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _simple("set_mode", (req.mode,), {"mode": req.mode})
 
 
 async def set_band(req: BandRequest):
-    """Set band"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.set_band(req.band)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"band": req.band, "frequency": flex.current_freq})
-            return {"success": True, "band": req.band}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        logger.error(f"Set band error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    flex = _require_radio()
+    await _run(lambda: flex.set_band(req.band))
+    state = {"band": req.band, "frequency": getattr(flex, "current_freq", None)}
+    await broadcast_status(state)
+    return {"success": True, **state}
 
 
 async def set_filter(req: FilterRequest):
-    """Set filter"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.set_filter_edges(req.filter_lo, req.filter_hi)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"filter_lo": req.filter_lo, "filter_hi": req.filter_hi})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        logger.error(f"Set filter error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _simple("set_filter_edges", (req.filter_lo, req.filter_hi), {"filter_lo": req.filter_lo, "filter_hi": req.filter_hi})
 
 
 async def set_volume(req: SliderRequest):
-    """Set volume"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.set_volume(req.value)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"volume": req.value})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _simple("set_volume", (req.value,), {"volume": req.value})
 
 
 async def set_drive(req: SliderRequest):
-    """Set drive (RF power)"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.set_rf_power(req.value)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"drive": req.value})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _simple("set_rf_power", (req.value,), {"drive": req.value})
 
 
 async def set_tune_power(req: SliderRequest):
-    """Set tune power"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.set_tune_power(req.value)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"tune_power": req.value})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _simple("set_tune_power", (req.value,), {"tune_power": req.value})
 
 
 async def set_mic(req: SliderRequest):
-    """Set mic level"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.set_mic_level(req.value)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"mic_level": req.value})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _simple("set_mic_level", (req.value,), {"mic_level": req.value})
 
 
 async def set_monitor(req: SliderRequest):
-    """Set monitor level (auto-enables monitor when > 0)"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.set_monitor(req.value, auto_enable=True)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"monitor": req.value})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _simple("set_monitor", (req.value, True), {"monitor": req.value})
 
 
 async def set_agc_threshold(req: SliderRequest):
-    """Set AGC threshold"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
+    return await _simple("set_agc_threshold", (req.value,), {"agc_threshold": req.value})
 
-    try:
-        success = flex.set_agc_threshold(req.value)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"agc_threshold": req.value})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# === TX Controls ===
 
 async def toggle_mox(req: ToggleRequest):
-    """Toggle MOX"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.set_mox(req.enabled)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"mox": req.enabled})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _simple("set_mox", (req.enabled,), {"mox": req.enabled})
 
 
 async def toggle_tune(req: ToggleRequest):
-    """Toggle TUNE"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.set_tune(req.enabled)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"tune": req.enabled})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _simple("set_tune", (req.enabled,), {"tune": req.enabled})
 
 
 async def toggle_vox(req: ToggleRequest):
-    """Toggle VOX"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.set_vox(req.enabled)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"vox": req.enabled})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _simple("set_vox", (req.enabled,), {"vox": req.enabled})
 
 
 async def toggle_breakin(req: ToggleRequest):
-    """Toggle CW Break-In (QSK)"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.set_breakin(req.enabled)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"break_in": req.enabled})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _simple("set_breakin", (req.enabled,), {"break_in": req.enabled})
 
 
 async def set_tuning_step(req: StepRequest):
-    """Set tuning step in Hz"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
+    return await _simple("set_tuning_step", (req.step_hz,), {"step": req.step_hz})
 
-    try:
-        success = flex.set_tuning_step(req.step_hz)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"step": req.step_hz})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# === AGC Control ===
 
 async def set_agc(req: AGCRequest):
-    """Set AGC mode (off, slow, med, fast)"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
+    flex = _require_radio()
+    await _run(lambda: flex._send(f"slice set {flex.slice_id} agc_mode={req.mode}"))
+    await broadcast_status({"agc_mode": req.mode})
+    return {"success": True, "agc_mode": req.mode}
 
-    try:
-        success = flex._send(f"slice set {flex.slice_id} agc_mode={req.mode}")
-        if success:
-            if broadcast_status:
-                await broadcast_status({"agc_mode": req.mode})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# === DSP Controls ===
 
 async def set_dsp(req: DSPRequest):
-    """Set DSP controls (NB, NR, ANF, APF)"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
+    flex = _require_radio()
+    value = 1 if req.enabled else 0
 
-    try:
-        value = "1" if req.enabled else "0"
-        # Activate slice first (required for all slice parameter changes)
-        flex._send(f"slice set {flex.slice_id} active=1")
+    def operation() -> bool:
+        if not flex._send(f"slice set {flex.slice_id} active=1"):
+            return False
+        if not flex._send(f"slice set {flex.slice_id} {req.control}_on={value}"):
+            return False
+        return req.enabled or flex._send(f"slice set {flex.slice_id} {req.control}_level=0")
 
-        # Toggle the DSP on/off flag
-        success = flex._send(f"slice set {flex.slice_id} {req.control}_on={value}")
-
-        # When disabling, also reset the level to 0 (required by SmartSDR)
-        # This mirrors the pattern used in set_monitor()
-        if success and not req.enabled:
-            flex._send(f"slice set {flex.slice_id} {req.control}_level=0")
-
-        if success:
-            if broadcast_status:
-                await broadcast_status({f"{req.control}_enabled": req.enabled})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    await _run(operation)
+    await broadcast_status({f"{req.control}_enabled": req.enabled})
+    return {"success": True}
 
 
 async def set_dsp_level(req: DSPLevelRequest):
-    """Set DSP level (nb_level, nr_level, anf_level, apf_level)"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
+    return await _simple("set_dsp_level", (req.control, req.value), {req.control: req.value})
 
-    try:
-        success = flex.set_dsp_level(req.control, req.value)
-        if success:
-            if broadcast_status:
-                await broadcast_status({req.control: req.value})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# === RIT/XIT Controls ===
 
 async def set_rit(req: RITXITRequest):
-    """Set RIT enabled and frequency offset"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
-
-    try:
-        success = flex.set_rit(req.enabled, req.freq_hz or 0)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"rit_enabled": req.enabled, "rit_freq": req.freq_hz or 0})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await _simple("set_rit", (req.enabled, req.freq_hz), {"rit_enabled": req.enabled, "rit_freq": req.freq_hz})
 
 
 async def set_xit(req: RITXITRequest):
-    """Set XIT enabled and frequency offset"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
+    return await _simple("set_xit", (req.enabled, req.freq_hz), {"xit_enabled": req.enabled, "xit_freq": req.freq_hz})
 
-    try:
-        success = flex.set_xit(req.enabled, req.freq_hz or 0)
-        if success:
-            if broadcast_status:
-                await broadcast_status({"xit_enabled": req.enabled, "xit_freq": req.freq_hz or 0})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# === RX2 Control ===
 
 async def set_rx2(req: RX2Request):
-    """Enable/disable RX2"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
+    flex = _require_radio()
 
-    try:
-        # RX2 is typically slice 1
-        if req.enabled:
-            success = flex._send(f"slice create freq={req.frequency or 14.074}")
-            if req.frequency:
-                flex._send(f"slice set 1 RF_frequency={req.frequency:.6f}")
-        else:
-            success = flex._send("slice remove 1")
+    def operation() -> bool:
+        if not req.enabled:
+            return flex._send("slice remove 1")
+        frequency = req.frequency if req.frequency is not None else getattr(flex, "current_freq", None)
+        if frequency is None or not flex._send(f"slice create freq={frequency:.6f}"):
+            return False
+        return req.frequency is None or flex._send(f"slice set 1 RF_frequency={req.frequency:.6f}")
 
-        if success:
-            if broadcast_status:
-                await broadcast_status({"rx2_enabled": req.enabled})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    await _run(operation)
+    await broadcast_status({"rx2_enabled": req.enabled})
+    return {"success": True}
 
-
-# === SPLIT Control ===
 
 async def set_split(req: SplitRequest):
-    """Enable/disable SPLIT operation"""
-    flex = get_radio_instance()
-    if not flex:
-        raise HTTPException(status_code=503, detail="Radio not initialized")
+    flex = _require_radio()
 
-    try:
-        if req.enabled:
-            # Enable split - set TX frequency different from RX
-            tx_freq = req.tx_frequency or (flex.current_freq + 0.005)  # Default: +5 kHz
-            success = flex._send(f"slice set {flex.slice_id} tx_freq={tx_freq:.6f}")
-            flex._send(f"slice set {flex.slice_id} split=1")
-        else:
-            success = flex._send(f"slice set {flex.slice_id} split=0")
+    def operation() -> bool:
+        if not req.enabled:
+            return flex._send(f"slice set {flex.slice_id} split=0")
+        current = getattr(flex, "current_freq", None)
+        tx_frequency = req.tx_frequency if req.tx_frequency is not None else (current + 0.005 if current is not None else None)
+        if tx_frequency is None or not flex._send(f"slice set {flex.slice_id} tx_freq={tx_frequency:.6f}"):
+            return False
+        return flex._send(f"slice set {flex.slice_id} split=1")
 
-        if success:
-            if broadcast_status:
-                await broadcast_status({"split_enabled": req.enabled})
-            return {"success": True}
-        raise HTTPException(status_code=400, detail="Command failed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    await _run(operation)
+    await broadcast_status({"split_enabled": req.enabled})
+    return {"success": True}
 
-
-# === Endpoint Registration ===
 
 def register_radio_endpoints(app, flex_instance=None, broadcast_func=None):
-    """
-    Register all radio control endpoints with a FastAPI app.
-
-    Args:
-        app: FastAPI application instance
-        flex_instance: FlexCtl radio instance (optional, can be set later)
-        broadcast_func: WebSocket broadcast function (optional, can be set later)
-    """
     configure_radio_control(flex_instance, broadcast_func)
-
-    # Register endpoints
-    app.post("/api/frequency")(set_frequency)
-    app.post("/api/mode")(set_mode)
-    app.post("/api/band")(set_band)
-    app.post("/api/filter")(set_filter)
-    app.post("/api/volume")(set_volume)
-    app.post("/api/drive")(set_drive)
-    app.post("/api/tune_power")(set_tune_power)
-    app.post("/api/mic")(set_mic)
-    app.post("/api/monitor")(set_monitor)
-    app.post("/api/agc_threshold")(set_agc_threshold)
-
-    # TX Controls
-    app.post("/api/mox")(toggle_mox)
-    app.post("/api/tune")(toggle_tune)
-    app.post("/api/vox")(toggle_vox)
-    app.post("/api/breakin")(toggle_breakin)
-    app.post("/api/step")(set_tuning_step)
-
-    # AGC/DSP Controls
-    app.post("/api/agc")(set_agc)
-    app.post("/api/dsp")(set_dsp)
-    app.post("/api/dsp_level")(set_dsp_level)
-
-    # RIT/XIT Controls
-    app.post("/api/rit")(set_rit)
-    app.post("/api/xit")(set_xit)
-
-    # RX2/SPLIT Controls
-    app.post("/api/rx2")(set_rx2)
-    app.post("/api/split")(set_split)
-
-    logger.info("✅ Radio control endpoints registered")
+    endpoints = {
+        "/api/frequency": set_frequency, "/api/mode": set_mode, "/api/band": set_band,
+        "/api/filter": set_filter, "/api/volume": set_volume, "/api/drive": set_drive,
+        "/api/tune_power": set_tune_power, "/api/mic": set_mic, "/api/monitor": set_monitor,
+        "/api/agc_threshold": set_agc_threshold, "/api/mox": toggle_mox, "/api/tune": toggle_tune,
+        "/api/vox": toggle_vox, "/api/breakin": toggle_breakin, "/api/step": set_tuning_step,
+        "/api/agc": set_agc, "/api/dsp": set_dsp, "/api/dsp_level": set_dsp_level,
+        "/api/rit": set_rit, "/api/xit": set_xit, "/api/rx2": set_rx2, "/api/split": set_split,
+    }
+    for path, endpoint in endpoints.items():
+        app.post(path)(endpoint)
+    logger.info("Radio control endpoints registered")
 
 
 def set_radio_instance(flex_instance):
-    """Set the radio instance used by registered endpoints."""
     radio_control_state.flex = flex_instance
-
-
-def set_broadcast_function(broadcast_func):
-    """Set the broadcaster used by registered endpoints."""
-    radio_control_state.broadcast_func = broadcast_func

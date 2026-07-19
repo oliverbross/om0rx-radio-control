@@ -84,6 +84,7 @@ function mountVueApp() {
             serviceHealth: null,
             serviceHealthLoading: false,
             serviceHealthTimer: null,
+            lifecycleDisposables: [],
             
             // Additional Information modal
             showAdditionalInfoModal: false,
@@ -94,6 +95,7 @@ function mountVueApp() {
             rotorStatus: null,
             rotorConnected: false,
             rotorInputFocused: false,
+            rotorCompassWindow: null,
             
             // Rotator AUTO Control
             rotorAutoEnabled: false,
@@ -741,16 +743,8 @@ function mountVueApp() {
             return sentArrow + rcvdArrow;
         },
         
-        viewQSODetails(qso) {
-            // Placeholder for future detailed QSO view
-            console.log('📋 QSO Details:', qso);
-            alert(`QSO Details:\n\nCallsign: ${qso.callsign}\nDate: ${qso.time_on}\nBand: ${qso.band}\nMode: ${qso.mode}\nRST Sent: ${qso.rst_sent}\nRST Rcvd: ${qso.rst_rcvd}`);
-        },
-        
-        refreshSummaryField(field) {
-            console.log(`🔄 Refreshing ${field} field...`);
-            // Placeholder for future field refresh functionality
-            alert(`Refresh ${field} - Feature coming soon!`);
+        async refreshSummaryField() {
+            await this.searchCallsignHistory();
         },
         
         // === Prev QSOs Modal Methods (duplicate of callsign search for independent use) ===
@@ -852,9 +846,8 @@ function mountVueApp() {
             this.prevQsosSortDirection = 'asc';
         },
         
-        refreshPrevQsosSummaryField(fieldName) {
-            console.log(`🔄 Refresh Prev QSOs summary field: ${fieldName}`);
-            alert(`Refresh ${fieldName} - Feature coming soon!`);
+        async refreshPrevQsosSummaryField() {
+            await this.openPrevQsosModal();
         },
         
         sortPrevQsos(column) {
@@ -1155,16 +1148,31 @@ function mountVueApp() {
         },
         
         // Additional methods that need to be in main app
+        trackInterval(callback, delay) {
+            const handle = setInterval(callback, delay);
+            this.lifecycleDisposables.push(() => clearInterval(handle));
+            return handle;
+        },
+
+        trackDocumentListener(eventName, callback) {
+            document.addEventListener(eventName, callback);
+            this.lifecycleDisposables.push(() => document.removeEventListener(eventName, callback));
+        },
+
         async initializeApp() {
             console.log('🚀 FlexRadio Web Control v2.0 starting...');
             
             // Load configuration first
             await this.loadConfig();
-            await this.loadRblProfiles();
-            await this.loadRblCommandStatus();
-            await this.loadSpotSourceStats();
-            await this.refreshWsjtxEngineHealth({ force: true });
-            await this.loadActivityIntelligence();
+            await Promise.allSettled([
+                this.loadRblProfiles(),
+                this.loadRblCommandStatus(),
+                this.loadSpotSourceStats(),
+                this.refreshWsjtxEngineHealth({ force: true }),
+                this.refreshWsjtxPlannerStatus({ force: true }),
+                this.loadActivityIntelligence(),
+                this.loadServiceHealth(),
+            ]);
             this.setupSpotSourceStatsRefresh();
             this.setupWsjtxEngineHealthRefresh();
             this.setupActivityIntelligenceRefresh();
@@ -1174,7 +1182,6 @@ function mountVueApp() {
             this.startSpotsCommandListener();
             this.loadCompactPanelPrefs();
             this.loadRblAlertRules();
-            await this.loadServiceHealth();
             
             // Initialize Country Modal
             if (window.CountryModal) {
@@ -1207,6 +1214,7 @@ function mountVueApp() {
             
             // Fetch initial status
             await this.fetchInitialStatus();
+            this.startRadioStatusReconciliation();
             
             // Load worked callsigns from Wavelog
             await this.loadWorkedCallsigns();
@@ -1238,10 +1246,10 @@ function mountVueApp() {
             
             // Start clock
             this.updateClock();
-            setInterval(this.updateClock, 1000);
+            this.trackInterval(this.updateClock, 1000);
             
             // Poll rotor status periodically if enabled. Radio state itself is pushed by WebSocket.
-            setInterval(() => {
+            this.trackInterval(() => {
                 if (this.rotorEnabled) {
                     this.checkRotorStatus();
                 }
@@ -1251,7 +1259,7 @@ function mountVueApp() {
             this.pollSyncStatus();  // Initial poll
             
             // Countdown timer that updates every 1 second
-            setInterval(() => {
+            this.trackInterval(() => {
                 if (this.syncCountdownTimer > 0) {
                     this.syncCountdownTimer--;
                     this.syncStatus.next_sync_in = this.syncCountdownTimer;
@@ -1259,21 +1267,21 @@ function mountVueApp() {
             }, 1000);
             
             // Re-poll sync status periodically; the backend sync manager returns cached status while busy.
-            setInterval(() => {
+            this.trackInterval(() => {
                 this.pollSyncStatus();
             }, 30000);
 
             // Re-poll Wavelog offline outbox status every 30 seconds
-            setInterval(() => {
+            this.trackInterval(() => {
                 this.loadQsoOutboxStatus();
             }, 30000);
 
-            this.serviceHealthTimer = setInterval(() => {
+            this.serviceHealthTimer = this.trackInterval(() => {
                 this.loadServiceHealth();
             }, 15000);
             
             // Close dropdowns when clicking outside
-            document.addEventListener('click', (e) => {
+            this.trackDocumentListener('click', (e) => {
                 if (!e.target.closest('.filter-dropdown')) {
                     this.openDropdown = null;
                 }
@@ -2397,8 +2405,15 @@ function mountVueApp() {
         this.cleanupActivityIntelligenceRefresh();
         this.cleanupVisualGlobeRefresh();
         this.closeDigitalModeBridge();
+        this.stopRadioStatusReconciliation();
         // Clean up SDC ticker WebSocket connection
         this.cleanupSDCTicker();
+        for (const dispose of this.lifecycleDisposables.splice(0)) {
+            try { dispose(); } catch (error) { console.debug('Lifecycle cleanup failed', error); }
+        }
+        if (window.SolarOverlay && typeof window.SolarOverlay.destroy === 'function') {
+            window.SolarOverlay.destroy();
+        }
     }
     }).mount('#app');
 

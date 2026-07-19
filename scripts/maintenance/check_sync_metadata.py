@@ -22,7 +22,7 @@ try:
     print(f"📊 Sync Metadata Records: {len(metadata)}")
     
     for row in metadata:
-        print(f"\n🔄 Sync Record:")
+        print("\n🔄 Sync Record:")
         print(f"   ID: {row[0]}")
         print(f"   Last Sync Timestamp: {row[1]}")
         print(f"   Last Wavelog Modified: {row[2]}")
@@ -39,7 +39,7 @@ try:
     if metadata and metadata[0][4] != actual_count:
         print(f"\n⚠️  MISMATCH: Metadata says {metadata[0][4]} but database has {actual_count} QSOs")
     else:
-        print(f"\n✅ Counts match!")
+        print("\n✅ Counts match!")
     
     conn.close()
     

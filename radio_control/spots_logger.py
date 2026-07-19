@@ -501,14 +501,16 @@ class SpotsLogger:
             logger.error(f"Error getting country stats: {e}")
             return []
     
-    def get_recent_spots(self, limit: int = 100) -> List[Dict]:
-        """Get most recent spots"""
+    def get_recent_spots(self, limit: int = 100, before: Optional[str] = None) -> List[Dict]:
+        """Get one bounded newest-first page of spots."""
         try:
             # Lazy-create indexes on first query
             if not self._indexes_created:
                 self._create_indexes()
             
-            query = """
+            safe_limit = max(1, min(int(limit), 500))
+            where = "WHERE received_at < CAST(? AS TIMESTAMPTZ)" if before else ""
+            query = f"""
                 SELECT 
                     CAST(received_at AS VARCHAR) as received_at, CAST(date_utc AS VARCHAR) as date_utc, CAST(time_utc AS VARCHAR) as time_utc,
                     frequency_khz, band, mode,
@@ -517,11 +519,13 @@ class SpotsLogger:
                     callsign, spotter, country, zone_cq as cq,
                     comment, special_tags
                 FROM spots
+                {where}
                 ORDER BY received_at DESC
                 LIMIT ?
             """
-            
-            result = self.conn.execute(query, [limit]).fetchall()
+
+            params = [before, safe_limit] if before else [safe_limit]
+            result = self.conn.execute(query, params).fetchall()
             columns = ['received_at', 'date_utc', 'time_utc', 'frequency_khz', 'band', 'mode',
                       'spot_source', 'rbl_mode_group',
                       'callsign', 'spotter', 'country', 'cq', 'comment', 'special_tags']

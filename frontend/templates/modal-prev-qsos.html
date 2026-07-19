@@ -48,7 +48,6 @@
                                             <span v-if="prevQsosSortColumn === 'band'">{{ prevQsosSortDirection === 'asc' ? '▲' : '▼' }}</span>
                                         </th>
                                         <th>LoTW</th>
-                                        <th>Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -60,11 +59,6 @@
                                         <td>{{ qso.rst_rcvd || '-' }}</td>
                                         <td>{{ qso.band }}</td>
                                         <td v-html="formatLoTWStatus(qso.lotw_sent, qso.lotw_rcvd)"></td>
-                                        <td>
-                                            <button @click="viewQSODetails(qso)" class="qso-action-btn" title="View details">
-                                                👁️
-                                            </button>
-                                        </td>
                                     </tr>
                                 </tbody>
                             </table>

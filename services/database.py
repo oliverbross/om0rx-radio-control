@@ -5,7 +5,6 @@ Provides centralized database connection handling for the application.
 
 import mysql.connector as mysql
 import logging
-from typing import Optional
 
 from radio_control import config
 logger = logging.getLogger(__name__)

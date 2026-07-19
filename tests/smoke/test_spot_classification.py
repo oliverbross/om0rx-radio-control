@@ -11,6 +11,7 @@ from radio_control.classifier_api import ClassifierAPI
 from radio_control.cty_resolvers import CtyDatResolver
 from radio_control.qso_status_store import DuckDBQSOStatusStore
 from radio_control.spot_classification import (
+    call_bandmode_from_lookup,
     classify_call_status,
     classify_dxcc_status,
     dxcc_confirmation_from_lookup,
@@ -98,7 +99,28 @@ def test_call_status_preserves_new_band_and_mode_slots():
     assert classify_call_status(True, True, True, True) == "Confirmed"
 
 
-def test_dxcc_confirmed_status_accepts_eqsl_and_paper_qsl():
+def test_call_status_uses_wavelog_band_mode_flags():
+    worked_same_slot = {
+        "call_worked_band": True,
+        "call_worked_band_mode": True,
+        "call_confirmed_band_mode": False,
+    }
+    confirmed_same_slot = {
+        **worked_same_slot,
+        "call_confirmed_band_mode": True,
+    }
+    new_mode_on_worked_band = {
+        "call_worked_band": True,
+        "call_worked_band_mode": False,
+        "call_confirmed_band_mode": False,
+    }
+
+    assert call_bandmode_from_lookup(worked_same_slot) == (False, False, False)
+    assert call_bandmode_from_lookup(confirmed_same_slot) == (False, False, True)
+    assert call_bandmode_from_lookup(new_mode_on_worked_band) == (False, True, False)
+
+
+def test_spot_confirmation_accepts_lotw_or_paper_but_not_eqsl():
     with TemporaryDirectory() as temp_dir:
         db_path = Path(temp_dir) / "qso_log.duckdb"
         conn = duckdb.connect(str(db_path))
@@ -123,13 +145,95 @@ def test_dxcc_confirmed_status_accepts_eqsl_and_paper_qsl():
         conn.execute(
             "INSERT INTO qso_records VALUES ('DL1AA', 230, '20m', 'FT8', NULL, 'N', 'N', 'Y', 'JO62')"
         )
+        conn.execute(
+            "INSERT INTO qso_records VALUES ('K1VER', 291, '40m', 'CW', NULL, 'N', 'N', 'V', 'FN31')"
+        )
         conn.close()
 
         store = DuckDBQSOStatusStore(db_path)
-        assert store.dxcc_overall(287) == (True, True)
+        assert store.dxcc_overall(287) == (True, False)
         assert store.dxcc_overall(230) == (True, True)
-        assert store.dxcc_bandmode_flags(287, "17m", "FT4") == (False, False, True)
-        assert store.call_flags("HB9AA", "17m", "FT4") == (True, True, False, False, True)
+        assert store.dxcc_bandmode_flags(287, "17m", "FT4") == (False, False, False)
+        assert store.call_flags("HB9AA", "17m", "FT4") == (True, False, False, False, False)
+        assert store.call_flags("DL1AA", "20m", "FT8") == (True, True, False, False, True)
+        assert store.call_flags("K1VER", "40m", "CW") == (True, True, False, False, True)
+
+
+def test_worked_before_date_is_latest_exact_call_band_mode_slot():
+    with TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "qso_log.duckdb"
+        conn = duckdb.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE qso_records (
+                call VARCHAR,
+                dxcc INTEGER,
+                band VARCHAR,
+                mode VARCHAR,
+                submode VARCHAR,
+                lotw_qsl_rcvd VARCHAR,
+                eqsl_qsl_rcvd VARCHAR,
+                qsl_rcvd VARCHAR,
+                gridsquare VARCHAR,
+                time_on TIMESTAMP
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO qso_records VALUES (?, 150, ?, ?, ?, 'N', 'N', 'N', 'PH57', ?)",
+            [
+                ("VK8NSB", "20m", "DATA", "FT8", "2025-02-03 12:00:00"),
+                ("vk8nsb", "20M", "DATA", "FT8", "2026-07-17 19:30:00"),
+                ("VK8NSB", "20m", "SSB", None, "2026-07-18 08:00:00"),
+                ("VK8NSB", "15m", "DATA", "FT8", "2026-07-18 09:00:00"),
+            ],
+        )
+        conn.close()
+
+        store = DuckDBQSOStatusStore(db_path)
+        assert store.worked_before_date("vk8nsb", "20M", "ft8") == "20260717"
+        assert store.worked_before_date("VK8NSB", "20m", "SSB") == "20260718"
+        assert store.worked_before_date("VK8NSB", "15m", "FT8") == "20260718"
+        assert store.worked_before_date("VK8NSB", "30m", "FT8") is None
+
+        store.record_qso(
+            {
+                "callsign": "VK8NSB",
+                "band": "20m",
+                "mode": "FT8",
+                "qso_date": "20260718",
+            }
+        )
+        assert store.worked_before_date("VK8NSB", "20m", "FT8") == "20260718"
+
+
+def test_call_confirmation_uses_local_lotw_paper_policy_not_wavelog_defaults():
+    class FakeWavelogAPI:
+        async def private_lookup(self, callsign, band=None, mode=None):
+            return {
+                "success": True,
+                "data": {
+                    "callsign": callsign,
+                    "call_worked": True,
+                    "call_confirmed": True,
+                    "call_worked_band": True,
+                    "call_worked_band_mode": True,
+                    "call_confirmed_band_mode": True,
+                },
+            }
+
+    class LotwPaperStatusStore:
+        def call_flags(self, callsign, band, mode):
+            return True, False, False, False, False
+
+    classifier = ClassifierAPI(
+        api_client=FakeWavelogAPI(),
+        qso_status_store=LotwPaperStatusStore(),
+    )
+
+    flags = asyncio.run(classifier.call_status_flags("ZS5JY", "20m", "SSB"))
+    assert flags == (True, True, False, False, False)
+    assert classify_call_status(flags[0], flags[2], flags[3], flags[4]) == "Worked"
 
 
 def test_special_extraction_requires_reliable_reference_patterns():
@@ -271,6 +375,27 @@ def test_digital_status_recent_qso_is_band_and_mode_slot_aware(monkeypatch):
     assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "20m", "SSB")) == "New Mode"
     assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "15m", "FT8")) == "New Band"
     assert asyncio.run(call_status_from_recent_qsos("IT9FJE", "15m", "SSB")) == "New Band+Mode"
+
+
+def test_digital_status_accepts_paper_qsl_confirmation(monkeypatch):
+    import services.qso_logging as qlog
+
+    monkeypatch.setattr(
+        qlog,
+        "_get_recent_qsos_from_wavelog_db",
+        lambda callsign, limit: [
+            {
+                "call": callsign,
+                "band": "20m",
+                "mode": "SSB",
+                "lotw_qsl": "N",
+                "qsl_rcvd": "Y",
+                "eqsl_qsl_rcvd": "N",
+            }
+        ],
+    )
+
+    assert asyncio.run(call_status_from_recent_qsos("ZS5JY", "20m", "SSB")) == "Confirmed"
 
 
 if __name__ == "__main__":

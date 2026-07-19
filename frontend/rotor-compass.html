@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OM0RX Radio Control - Compass</title>
+    <link rel="stylesheet" href="rotor-compass.css?v=20260612-rotor-compass-4">
+</head>
+<body data-rotor-compass-standalone="true">
+    <div id="app" class="rotor-compass-app">
+        <main class="rotor-compass-shell">
+            <canvas id="rotorCompassCanvas" aria-label="Rotor compass earth projection"></canvas>
+            <div class="rotor-compass-toolbar" aria-label="Compass controls">
+                <button id="rotorCompassZoomOut" type="button" title="Zoom out">-</button>
+                <button id="rotorCompassZoomReset" type="button" title="Show whole world">1x</button>
+                <button id="rotorCompassZoomIn" type="button" title="Zoom in">+</button>
+                <button id="rotorCompassGrayline" type="button" title="Toggle grayline">GL</button>
+            </div>
+            <div class="rotor-compass-readout" aria-live="polite">
+                <div>
+                    <span class="rotor-compass-label">AZ</span>
+                    <strong id="rotorCompassAzimuth">000&deg;</strong>
+                </div>
+                <div>
+                    <span class="rotor-compass-label">QTH</span>
+                    <strong id="rotorCompassGrid">JN88TQ</strong>
+                </div>
+                <div>
+                    <span class="rotor-compass-label">BEAM</span>
+                    <strong>260&deg;</strong>
+                </div>
+                <div>
+                    <span class="rotor-compass-label">ZOOM</span>
+                    <strong id="rotorCompassZoom">1.0x</strong>
+                </div>
+                <span id="rotorCompassState" class="rotor-compass-state">starting</span>
+            </div>
+        </main>
+    </div>
+
+    <script src="js/rotor-compass.js?v=20260612-rotor-compass-4"></script>
+</body>
+</html>

@@ -4,6 +4,58 @@ Self-contained local control app for a FlexRadio station. The app combines a Fas
 
 ## Start
 
+### Windows tray agent
+
+The preferred Windows entry point is the OM0RX tray agent. It runs in the hidden-icons area, starts the local runtime, monitors the backend, bridge, Docker/Postgres, WSJT/SDC processes, WebSocket bridge ports, and exposes manual Start/Stop/Restart/Repair controls.
+
+Build it:
+
+```powershell
+.\scripts\agent\build_agent.ps1
+```
+
+Run it:
+
+```powershell
+.\scripts\agent\run_agent.ps1 -Port 8080
+```
+
+Start it detached so PowerShell can be closed:
+
+```powershell
+.\scripts\agent\start_agent.ps1 -Port 8080
+```
+
+Create Desktop and Start Menu shortcuts:
+
+```powershell
+.\scripts\agent\install_agent_shortcuts.ps1 -Port 8080
+```
+
+Install it for Windows user login:
+
+```powershell
+.\scripts\agent\install_agent_startup.ps1 -Port 8080
+```
+
+Remove the Windows startup entry:
+
+```powershell
+.\scripts\agent\uninstall_agent_startup.ps1
+```
+
+The tray icon changes color by status. Double-click it to open the status window, or right-click it for Start All, Stop All, Restart All, Repair, Open Web UI, Logs, Settings, Auto Restart, and Start with Windows.
+
+Agent settings can also start OM0RX WSJT-Z after the backend/bridge are healthy and optionally enable Auto Call through the backend FT8 TX controls.
+
+When `Remember app window positions` is enabled, native launcher windows persist their last size and position in `settings/window_layout.json`.
+
+The Windows executable and shortcuts use a generated OM0RX radio icon from `tools/Om0rxAgent/assets/om0rx-agent.ico`.
+
+The agent stores its settings under `%APPDATA%\OM0RX Radio Control\Agent\agent-settings.json` and writes its own log to `logs/om0rx-agent.log`.
+
+### PowerShell supervisor
+
 Run the full local application from the project root:
 
 ```powershell

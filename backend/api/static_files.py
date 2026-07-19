@@ -8,7 +8,6 @@ from pathlib import Path
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from radio_control import config
 
 logger = logging.getLogger(__name__)
 
@@ -28,51 +27,21 @@ def setup_static_files(app):
     """
     # Define paths
     frontend_path = Path(__file__).parent.parent.parent / "frontend"
-    logs_path = config.LOGS_DIR
-
     # Mount static files from frontend directory
     app.mount("/static", StaticFiles(directory=str(frontend_path)), name="static")
 
-    # Mount logs directory for ADIF and other log files
-    app.mount("/logs", StaticFiles(directory=str(logs_path)), name="logs")
-
     # Register individual file endpoints
-    register_static_endpoints(app, frontend_path, logs_path)
+    register_static_endpoints(app, frontend_path)
 
 
-def register_static_endpoints(app, frontend_path: Path, logs_path: Path):
+def register_static_endpoints(app, frontend_path: Path):
     """
     Register individual static file endpoints.
 
     Args:
         app: FastAPI application instance
         frontend_path: Path to frontend directory
-        logs_path: Path to logs directory
     """
-
-    @app.get("/logs/qso_log.adif")
-    async def serve_adif_log():
-        """Serve ADIF log file"""
-        adif_file = logs_path / "qso_log.adif"
-        if adif_file.exists():
-            return FileResponse(adif_file, media_type="text/plain")
-        raise HTTPException(status_code=404, detail="qso_log.adif not found")
-
-    @app.get("/app.js")
-    async def serve_app_js():
-        """Serve app.js directly"""
-        js_file = frontend_path / "app.js"
-        if js_file.exists():
-            return FileResponse(js_file, media_type="application/javascript")
-        raise HTTPException(status_code=404, detail="app.js not found")
-
-    @app.get("/logging-panel.css")
-    async def serve_logging_panel_css():
-        """Serve logging-panel.css directly"""
-        css_file = frontend_path / "logging-panel.css"
-        if css_file.exists():
-            return FileResponse(css_file, media_type="text/css")
-        raise HTTPException(status_code=404, detail="logging-panel.css not found")
 
     @app.get("/{file_path:path}")
     async def serve_frontend_files(file_path: str):
@@ -93,9 +62,9 @@ def register_static_endpoints(app, frontend_path: Path, logs_path: Path):
         # Security check: prevent directory traversal
         try:
             file = file.resolve()
-            if not str(file).startswith(str(frontend_path.resolve())):
+            if not file.is_relative_to(frontend_path.resolve()):
                 raise HTTPException(status_code=403, detail="Access denied")
-        except:
+        except (OSError, RuntimeError, ValueError):
             raise HTTPException(status_code=403, detail="Access denied")
 
         if file.exists() and file.is_file():

@@ -206,9 +206,7 @@ def initial_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float
     lat2, lon2 = validate_coordinates(lat2, lon2)
 
     # WGS-84 ellipsoid parameters
-    a = 6378137.0  # Semi-major axis (meters)
     f = 1.0 / 298.257223563  # Flattening
-    b = (1.0 - f) * a  # Semi-minor axis
     
     # Convert to radians
     φ1 = math.radians(lat1)

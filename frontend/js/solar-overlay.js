@@ -4,6 +4,7 @@
 console.log('✅ Loading solar-overlay.js module...');
 
 const SolarOverlay = {
+    refreshTimer: null,
     // Cache for solar data
     solarCache: {
         data: null,
@@ -31,7 +32,7 @@ const SolarOverlay = {
         
         // Set up auto-refresh if enabled
         if (this.config.autoRefresh) {
-            setInterval(() => {
+            this.refreshTimer = setInterval(() => {
                 this.loadSolarData();
             }, this.solarCache.refreshIntervalMs);
         }
@@ -40,6 +41,11 @@ const SolarOverlay = {
         this.injectCSS();
         
         console.log('✅ Solar Overlay System initialized');
+    },
+
+    destroy() {
+        if (this.refreshTimer) clearInterval(this.refreshTimer);
+        this.refreshTimer = null;
     },
 
     /**

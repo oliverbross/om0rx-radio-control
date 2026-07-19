@@ -10,7 +10,7 @@ import sys
 import urllib.request
 import zipfile
 from pathlib import Path
-from xml.etree import ElementTree
+from defusedxml import ElementTree
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,17 +28,28 @@ SOURCES = {
     },
 }
 KML_NS = {"kml": "http://www.opengis.net/kml/2.2"}
+MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+MAX_ARCHIVE_ENTRY_BYTES = 20 * 1024 * 1024
 
 
 def download_bytes(url: str) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": "om0rx-radio-control/zone-data"})
     with urllib.request.urlopen(request, timeout=45) as response:
-        return response.read()
+        content_length = response.headers.get("Content-Length")
+        if content_length and int(content_length) > MAX_DOWNLOAD_BYTES:
+            raise ValueError("Zone overlay download exceeded the allowed size")
+        payload = response.read(MAX_DOWNLOAD_BYTES + 1)
+        if len(payload) > MAX_DOWNLOAD_BYTES:
+            raise ValueError("Zone overlay download exceeded the allowed size")
+        return payload
 
 
 def extract_kml(payload: bytes) -> bytes:
     """Extract doc.kml from a zip/kmz payload, including one nested archive level."""
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        for info in archive.infolist():
+            if info.file_size > MAX_ARCHIVE_ENTRY_BYTES:
+                raise ValueError(f"Archive entry too large: {info.filename}")
         for name in archive.namelist():
             lowered = name.lower()
             if lowered.endswith(".kml"):

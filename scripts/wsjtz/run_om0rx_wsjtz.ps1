@@ -19,6 +19,7 @@ $allcallSource = Join-Path $sourceRoot "ALLCALL7.TXT"
 $allcallRuntime = Join-Path $buildRoot "ALLCALL7.TXT"
 $mingwBin = Join-Path $MsysRoot "mingw64\bin"
 $usrBin = Join-Path $MsysRoot "usr\bin"
+$pythonExe = (Get-Command python -ErrorAction Stop).Source
 
 if ((Test-Path -LiteralPath $fallbackExe) -and (
         -not (Test-Path -LiteralPath $exe) -or
@@ -126,6 +127,16 @@ if (-not $NoAutoLog) {
         $profileLines = Set-IniSectionValue -Lines $profileLines -Section "Configuration" -Key "AcceptUDPRequests" -Value "true"
         $profileLines = Set-IniSectionValue -Lines $profileLines -Section "Configuration" -Key "UDPServer" -Value "224.0.0.1"
         $profileLines = Set-IniSectionValue -Lines $profileLines -Section "Configuration" -Key "UDPServerPort" -Value "2237"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "MainWindow" -Key "AutoCall" -Value "true"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "MainWindow" -Key "AutoSeq" -Value "true"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "MainWindow" -Key "CQonly" -Value "true"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "MainWindow" -Key "AutoCQ" -Value "false"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "MainWindow" -Key "autoModeSwitchEnabled" -Value "false"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "MainWindow" -Key "WatchUnconfirmedDXCC" -Value "true"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "Common" -Key "AutoCall" -Value "true"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "Common" -Key "AutoSeq" -Value "true"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "Common" -Key "autoModeSwitchEnabled" -Value "false"
+        $profileLines = Set-IniSectionValue -Lines $profileLines -Section "Common" -Key "WatchUnconfirmedDXCC" -Value "true"
         Set-Content -LiteralPath $profileIni -Value $profileLines -Encoding UTF8
         Write-Host "Automation logging enabled for $RigName profile."
     }
@@ -139,6 +150,44 @@ if ($TestMode) {
 $appName = "WSJT-Z - $RigName"
 if ($TestMode) {
     $appName = "$appName - test"
+}
+
+$logRoot = Join-Path $ProjectRoot "logs"
+New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+$enrichmentOutLog = Join-Path $logRoot "wsjt-z-enrichment.out.log"
+$enrichmentErrLog = Join-Path $logRoot "wsjt-z-enrichment.err.log"
+
+$enrichmentOk = $false
+try {
+    $health = Invoke-WebRequest -Uri "http://127.0.0.1:8765/health" -UseBasicParsing -TimeoutSec 2
+    $enrichmentOk = $health.StatusCode -eq 200
+} catch {
+    $enrichmentOk = $false
+}
+if (-not $enrichmentOk) {
+    Remove-Item -LiteralPath $enrichmentOutLog, $enrichmentErrLog -Force -ErrorAction SilentlyContinue
+    Start-Process `
+        -FilePath $pythonExe `
+        -ArgumentList @($enrichmentServer) `
+        -WorkingDirectory $ProjectRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $enrichmentOutLog `
+        -RedirectStandardError $enrichmentErrLog
+    for ($i = 0; $i -lt 45; $i++) {
+        Start-Sleep -Seconds 1
+        try {
+            $health = Invoke-WebRequest -Uri "http://127.0.0.1:8765/health" -UseBasicParsing -TimeoutSec 2
+            if ($health.StatusCode -eq 200) {
+                $enrichmentOk = $true
+                break
+            }
+        } catch {
+            $enrichmentOk = $false
+        }
+    }
+    if (-not $enrichmentOk) {
+        Write-Warning "WSJT-Z enrichment server did not become healthy. Check $enrichmentErrLog"
+    }
 }
 
 $matchingProcess = Get-CimInstance Win32_Process -Filter "Name='wsjt-z.exe'" -ErrorAction SilentlyContinue |
@@ -155,29 +204,6 @@ if ($matchingProcess) {
 
 $lockFile = Join-Path $env:TEMP "$appName.lock"
 Remove-Item -LiteralPath $lockFile -Force -ErrorAction SilentlyContinue
-
-$logRoot = Join-Path $ProjectRoot "logs"
-New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
-$enrichmentOutLog = Join-Path $logRoot "wsjt-z-enrichment.out.log"
-$enrichmentErrLog = Join-Path $logRoot "wsjt-z-enrichment.err.log"
-
-$enrichmentOk = $false
-try {
-    $health = Invoke-WebRequest -Uri "http://127.0.0.1:8765/health" -UseBasicParsing -TimeoutSec 2
-    $enrichmentOk = $health.StatusCode -eq 200
-} catch {
-    $enrichmentOk = $false
-}
-if (-not $enrichmentOk) {
-    Start-Process `
-        -FilePath "python" `
-        -ArgumentList @($enrichmentServer) `
-        -WorkingDirectory $ProjectRoot `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $enrichmentOutLog `
-        -RedirectStandardError $enrichmentErrLog
-    Start-Sleep -Seconds 2
-}
 
 $logSafeName = (($appName -replace '[^\w.]+', '-') -replace '-+', '-').Trim('-').ToLowerInvariant()
 $outLog = Join-Path $logRoot "$logSafeName.out.log"

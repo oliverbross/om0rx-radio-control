@@ -34,9 +34,13 @@ DIGITAL_TARGET_COLUMNS = [
     "need_reasons",
     "reference_items",
     "score",
+    "spot_score",
     "snr",
     "audio_offset",
     "dial_frequency",
+    "propagation_score",
+    "propagation_label",
+    "propagation_confidence",
     "created_at",
     "updated_at",
     "first_heard_at",
@@ -54,10 +58,14 @@ DIGITAL_TARGET_COLUMNS = [
     "heard",
     "direct_caller",
     "last_command_at",
+    "command_ack_at",
     "origin_band",
     "origin_mode",
     "origin_dial_frequency",
     "return_command_at",
+    "campaign_started_at",
+    "campaign_expires_at",
+    "campaign_count",
 ]
 
 

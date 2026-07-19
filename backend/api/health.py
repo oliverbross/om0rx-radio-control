@@ -232,34 +232,12 @@ async def get_status(request: Request):
             logger.debug(f"Could not get cluster info: {e}")
     
     connected = bool(flex and flex.sock)
-    levels = {}
-    if connected:
-        try:
-            levels = await asyncio.to_thread(flex.get_current_levels, 0.45)
-        except Exception as e:
-            logger.debug(f"Could not refresh live radio status: {e}")
-
-    current_mox = getattr(flex, "current_mox", None)
+    snapshot = dict(getattr(context, "radio_snapshot", {}) or {})
+    snapshot.setdefault("connected", connected)
+    snapshot.setdefault("known", bool(connected and snapshot.get("frequency") is not None))
+    snapshot.setdefault("stale", not connected)
     return {
-        "frequency": levels.get("freq") or getattr(flex, "current_freq", None) or 14.074,
-        "mode": levels.get("mode") or getattr(flex, "current_mode", None) or "USB",
-        "filter_lo": levels.get("filter_lo") or getattr(flex, "current_filter_lo", None) or 100,
-        "filter_hi": levels.get("filter_hi") or getattr(flex, "current_filter_hi", None) or 2900,
-        "volume": levels.get("audio_level") or getattr(flex, "current_volume", None) or 50,
-        "drive": levels.get("rfpower") or getattr(flex, "current_rfpower", None) or 31,
-        "tune_power": levels.get("tunepower") or getattr(flex, "current_tunepower", None) or 18,
-        "mic_level": levels.get("miclevel") or getattr(flex, "current_miclevel", None) or 32,
-        "mox": bool(levels.get("mox") if "mox" in levels else current_mox) if (current_mox is not None or "mox" in levels) else False,
-        "interlock_state": levels.get("interlock_state") or getattr(flex, "current_interlock_state", None) or "",
-        "vox_enabled": levels.get("vox_enable") if "vox_enable" in levels else (getattr(flex, "current_vox_enable", None) or False),
-        "agc_mode": levels.get("agc_mode") or "med",
-        "agc_threshold": levels.get("agc_threshold") or 65,
-        "monitor": levels.get("mon") or 0,
-        "nb_enabled": levels.get("nb") or False,
-        "nr_enabled": levels.get("nr") or False,
-        "anf_enabled": levels.get("anf") or False,
-        "apf_enabled": levels.get("apf") or False,
-        "connected": connected,
+        **snapshot,
         "cluster_connected": cluster_status["connected"],
         "cluster_info": cluster_status,
         **({} if flex else {"message": "Radio not initialized - check connection settings"}),
@@ -378,7 +356,7 @@ async def get_service_health(request: Request):
     services.append(_service(
         "websocket",
         "Browser",
-        "ok" if browser_clients else "warn",
+        "ok" if browser_clients else "off",
         f"{browser_clients} client{'s' if browser_clients != 1 else ''}",
         "Live browser websocket clients connected" if browser_clients else "No live browser websocket clients registered",
     ))

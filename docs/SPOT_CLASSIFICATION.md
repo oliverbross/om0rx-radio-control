@@ -30,12 +30,16 @@ CTY:
   country-files data is released.
 
 Wavelog:
-- `/api/private_lookup` is used for callsign worked/confirmed fields.
+- `/api/private_lookup` is used for callsign worked and band/mode history.
+- Spot confirmation accepts LoTW and paper QSL only. QRZ and eQSL flags are
+  intentionally not treated as confirmation, even if enabled among Wavelog's
+  account-default confirmation methods.
 - Wavelog documents DXCC fields from this endpoint as confirmation fields:
   `dxcc_confirmed`, `dxcc_confirmed_on_band`, and
   `dxcc_confirmed_on_band_mode`.
-- Because `private_lookup` does not provide DXCC worked fields, DXCC worked
-  status is read from the local Wavelog DuckDB mirror at `data/qso_log.duckdb`.
+- Because `private_lookup` neither provides DXCC worked fields nor identifies
+  the confirmation method that matched, DXCC worked/confirmed status is read
+  from the local Wavelog QSO mirror.
 - The DuckDB mirror is loaded into compact in-memory DXCC worked/confirmed sets
   and refreshed when the mirror file changes, so live spot classification does
   not scan the QSO table per spot.

@@ -41,6 +41,12 @@ class AppContext:
     rotor: Any = None
     activity_intelligence: Any = None
     sync_status: Dict[str, Any] = field(default_factory=default_sync_status)
+    radio_snapshot: Dict[str, Any] = field(default_factory=lambda: {
+        "connected": False,
+        "known": False,
+        "stale": True,
+        "observed_at": None,
+    })
 
 
 def install_app_context(app: Any, context: AppContext) -> None:

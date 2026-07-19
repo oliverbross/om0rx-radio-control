@@ -51,7 +51,7 @@ try:
         """, (config.WAVELOG_STATION_ID,))
         
         stats = cursor.fetchone()
-        print(f"📈 Statistics:")
+        print("📈 Statistics:")
         print(f"   Total QSOs: {stats['total']}")
         print(f"   NULL last_modified: {stats['null_count']}")
         print(f"   Valid last_modified: {stats['total'] - stats['null_count']}")

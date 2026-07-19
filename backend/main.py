@@ -48,9 +48,9 @@ from activity_intelligence.api import router as activity_intelligence_router
 from activity_intelligence.services import get_activity_intelligence_service
 
 # === Additional Imports for Initialization ===
-from radio_control.dxbridge import FlexCtl
+from radio_control.flex_radio import FlexCtl
 from radio_control import config
-from radio_control.cluster_client import ClusterClient
+from radio_control.cluster_client import ClusterClient, ClusterManager
 from radio_control.classifier_api import get_classifier_api
 from radio_control.cty_resolvers import CtyDatResolver
 from radio_control.wavelog_duckdb_sync import init_wavelog_sync
@@ -79,8 +79,13 @@ def sync_runtime_state():
 
 # === Service Registration ===
 
+_services_registered = False
+
 def register_all_services():
     """Register all service endpoints and functionality"""
+    global _services_registered
+    if _services_registered:
+        return
 
     # Register radio control endpoints
     register_radio_endpoints(app, context.flex, broadcast_status)
@@ -118,6 +123,7 @@ def register_all_services():
 
     # Setup static file serving
     setup_static_files(app)
+    _services_registered = True
 
 
 # === Initialization Functions ===
@@ -164,12 +170,15 @@ def init_database():
 def init_cluster_client():
     """Initialize cluster client"""
     try:
-        cluster_host = getattr(config, 'CLUSTER_HOST', 'localhost')
-        cluster_port = getattr(config, 'CLUSTER_PORT', 7373)
-        cluster_user = getattr(config, 'CLUSTER_USER', 'N0CALL')
-        cluster_pass = getattr(config, 'CLUSTER_PASS', '')
-
-        context.cluster_client = ClusterClient(cluster_host, cluster_port, cluster_user, cluster_pass)
+        clusters = [item for item in getattr(config, 'CLUSTERS', []) if item.get('enabled', False)]
+        if clusters:
+            context.cluster_client = ClusterManager(clusters)
+        else:
+            cluster_host = getattr(config, 'CLUSTER_HOST', 'localhost')
+            cluster_port = getattr(config, 'CLUSTER_PORT', 7373)
+            cluster_user = getattr(config, 'CLUSTER_USER', 'N0CALL')
+            cluster_pass = getattr(config, 'CLUSTER_PASS', '')
+            context.cluster_client = ClusterClient(cluster_host, cluster_port, cluster_user, cluster_pass)
         context.cluster_client.set_spot_callback(process_cluster_spot)
 
         # Start cluster in background
@@ -210,18 +219,6 @@ async def init_classifier():
         return True
     except Exception as e:
         logging.error(f"❌ Classifier initialization failed: {e}")
-        return False
-
-
-def init_wavelog_sync_manager():
-    """Initialize the Wavelog local read-cache sync manager."""
-    try:
-        context.wavelog_sync_manager = init_wavelog_sync()
-        logging.info("✅ Wavelog local read-cache sync initialized")
-        sync_runtime_state()
-        return True
-    except Exception as e:
-        logging.error(f"❌ Wavelog local sync initialization failed: {e}")
         return False
 
 
@@ -341,9 +338,6 @@ async def initialize_services():
 
     sync_runtime_state()
 
-    # Register all service endpoints and routers
-    register_all_services()
-
     # Start background tasks
     await start_background_tasks()
 
@@ -383,6 +377,7 @@ async def lifespan(_app):
         await cleanup_services()
 
 
+register_all_services()
 app.router.lifespan_context = lifespan
 
 
@@ -394,8 +389,8 @@ if __name__ == "__main__":
     # Start the server
     uvicorn.run(
         "backend.main:app",
-        host="0.0.0.0",
-        port=int(os.environ.get("BACKEND_PORT", "8080")),
-        reload=True,
+        host=str(os.environ.get("BACKEND_HOST", getattr(config, "BACKEND_HOST", "127.0.0.1"))),
+        port=int(os.environ.get("BACKEND_PORT", str(getattr(config, "BACKEND_PORT", 8080)))),
+        reload=str(os.environ.get("APP_UVICORN_RELOAD", "0")).strip().lower() in {"1", "true", "yes", "on"},
         log_level="info"
     )

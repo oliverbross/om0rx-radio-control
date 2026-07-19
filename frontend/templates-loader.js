@@ -1,129 +1,100 @@
-/**
- * Template Loader - Loads all template fragments before Vue initialization
- * This allows the monolithic index.html to be split across multiple files
- * while maintaining full Vue compatibility
- * 
- * ⚡ OPTIMIZED: Load templates in PARALLEL for speed, insert in order for correctness
- */
-(function() {
-    console.log('🔄 Template Loader: Starting to load template fragments in parallel...');
-    // Compatibility marker kept for frontend contract checks: 20260604-wsjtx-launch-outbox-2
-    const templateCacheKey = '20260610-wsjtz-launch-restored-1';
-    
-    // Template loading schedule: which file goes into which section
+/** Required template manifest loader. Vue mounts only after a complete UI exists. */
+(function () {
+    'use strict';
+    const templateCacheKey = '20260718-spots-workspace-4';
     const templateSchedule = [
-        // Controls - all rows go into #controls-section
-        { file: 'templates/controls-row1.html', target: 'controls-section', label: 'Controls Row 1', order: 0 },
-        { file: 'templates/controls-row2.html', target: 'controls-section', label: 'Controls Row 2', order: 1 },
-        { file: 'templates/controls-row3.html', target: 'controls-section', label: 'Controls Row 3', order: 2 },
-        { file: 'templates/controls-row4-5.html', target: 'controls-section', label: 'Controls Row 4-5', order: 3 },
-        // Logging Panel
-        { file: 'templates/logging-panel.html', target: 'logging-panel-section', label: 'Logging Panel', order: 4 },
-        // DX Spots
-        { file: 'templates/dx-spots.html', target: 'dx-spots-section', label: 'DX Spots', order: 5 },
-        // Modals - all go into #modals-section
-        { file: 'templates/modal-config.html', target: 'modals-section', label: 'Config Modal', order: 6 },
-        { file: 'templates/modal-country.html', target: 'modals-section', label: 'Country Modal', order: 7 },
-        { file: 'templates/modal-local-log.html', target: 'modals-section', label: 'Local Log Modal', order: 8 },
-        { file: 'templates/modal-wavelog-log.html', target: 'modals-section', label: 'Wavelog Log Modal', order: 9 },
-        { file: 'templates/modal-callsign-search.html', target: 'modals-section', label: 'Callsign Search Modal', order: 10 },
-        { file: 'templates/modal-prev-qsos.html', target: 'modals-section', label: 'Prev QSOs Modal', order: 11 },
-        { file: 'templates/modal-sync.html', target: 'modals-section', label: 'Sync Modal', order: 12 },
-        { file: 'templates/modal-ft8.html', target: 'modals-section', label: 'FT8/FT4 Digital Modal', order: 13 }
-    ];
-    
-    const totalToLoad = templateSchedule.length;
-    const loadedTemplates = new Map(); // Store loaded content by order
-    let loadedCount = 0;
-    
-    // ⚡ CRITICAL FIX: Load all templates in parallel
-    console.log(`⚡ Loading ${totalToLoad} templates in PARALLEL...`);
-    
+        ['templates/controls-row1.html', 'controls-section', 'Controls Row 1'],
+        ['templates/controls-row2.html', 'controls-section', 'Controls Row 2'],
+        ['templates/controls-row3.html', 'controls-section', 'Controls Row 3'],
+        ['templates/controls-row4-5.html', 'controls-section', 'Controls Row 4-5'],
+        ['templates/logging-panel.html', 'logging-panel-section', 'Logging Panel'],
+        ['templates/dx-spots.html', 'dx-spots-section', 'DX Spots'],
+        ['templates/modal-config.html', 'modals-section', 'Config Modal'],
+        ['templates/modal-country.html', 'modals-section', 'Country Modal'],
+        ['templates/modal-local-log.html', 'modals-section', 'Local Log Modal'],
+        ['templates/modal-wavelog-log.html', 'modals-section', 'Wavelog Log Modal'],
+        ['templates/modal-callsign-search.html', 'modals-section', 'Callsign Search Modal'],
+        ['templates/modal-prev-qsos.html', 'modals-section', 'Previous QSOs Modal'],
+        ['templates/modal-sync.html', 'modals-section', 'Sync Modal'],
+        ['templates/modal-ft8.html', 'modals-section', 'Digital Modal'],
+    ].map(([file, target, label], order) => ({ file, target, label, order, required: true }));
     const partialCache = new Map();
 
-    function resolveTemplateIncludes(html) {
-        const includePattern = /<!--\s*@include\s+([^>]+?)\s*-->/g;
-        const includes = [...html.matchAll(includePattern)];
-        if (includes.length === 0) {
-            return Promise.resolve(html);
-        }
-
-        return Promise.all(includes.map(match => {
-            const partialPath = match[1].trim();
-            if (partialCache.has(partialPath)) {
-                return partialCache.get(partialPath);
+    async function fetchText(path, attempts = 2) {
+        let lastError;
+        for (let attempt = 1; attempt <= attempts; attempt += 1) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 8000);
+            try {
+                const response = await fetch(`${path}?v=${templateCacheKey}`, { signal: controller.signal, cache: 'no-store' });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const body = (await response.text()).trim();
+                if (!body) throw new Error('empty response');
+                return body;
+            } catch (error) {
+                lastError = error;
+                if (attempt < attempts) await new Promise(resolve => setTimeout(resolve, 250));
+            } finally {
+                clearTimeout(timer);
             }
-            const promise = fetch(`${partialPath}?v=${templateCacheKey}`)
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status} loading ${partialPath}`);
-                    }
-                    return response.text();
-                })
-                .then(partialHtml => partialHtml.trim());
-            partialCache.set(partialPath, promise);
-            return promise;
-        })).then(partials => {
-            let resolved = html;
-            includes.forEach((match, index) => {
-                resolved = resolved.replace(match[0], partials[index]);
-            });
-            return resolveTemplateIncludes(resolved);
-        });
+        }
+        throw new Error(`${path}: ${lastError?.message || 'load failed'}`);
     }
 
-    templateSchedule.forEach(({ file: templatePath, target: targetId, label: templateName, order }) => {
-        fetch(`${templatePath}?v=${templateCacheKey}`)
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status} loading ${templatePath}`);
-                }
-                return response.text();
-            })
-            .then(html => resolveTemplateIncludes(html))
-            .then(html => {
-                loadedTemplates.set(order, { html: html.trim(), targetId, templateName, templatePath });
-                loadedCount++;
-                console.log(`✅ Fetched: ${templateName}`);
-                
-                // Check if all templates loaded
-                if (loadedCount === totalToLoad) {
-                    insertAllTemplates();
-                }
-            })
-            .catch(error => {
-                console.error(`❌ Template Loader: Error loading ${templatePath}:`, error);
-                loadedTemplates.set(order, { html: '', targetId, templateName, templatePath, error: true });
-                loadedCount++;
-                
-                if (loadedCount === totalToLoad) {
-                    insertAllTemplates();
-                }
-            });
-    });
-    
-    // ⚡ Insert templates in correct order after all are loaded
-    function insertAllTemplates() {
-        console.log('⚡ Inserting all loaded templates in correct order...');
-        
-        for (let i = 0; i < totalToLoad; i++) {
-            const templateData = loadedTemplates.get(i);
-            if (!templateData) continue;
-            
-            const { html, targetId, templateName, error } = templateData;
-            if (error) continue;
-            
-            const targetContainer = document.getElementById(targetId);
-            if (!targetContainer) {
-                console.error(`❌ Target container #${targetId} not found`);
-                continue;
-            }
-            
-            targetContainer.insertAdjacentHTML('beforeend', html);
-            console.log(`✅ Inserted: ${templateName} → #${targetId}`);
+    async function resolveTemplateIncludes(html, depth = 0) {
+        if (depth > 5) throw new Error('template include depth exceeded');
+        const pattern = /<!--\s*@include\s+([^>]+?)\s*-->/g;
+        const includes = [...html.matchAll(pattern)];
+        if (!includes.length) return html;
+        const partials = await Promise.all(includes.map(async match => {
+            const path = match[1].trim();
+            if (!partialCache.has(path)) partialCache.set(path, fetchText(path));
+            return partialCache.get(path);
+        }));
+        let resolved = html;
+        includes.forEach((match, index) => { resolved = resolved.replace(match[0], partials[index]); });
+        return resolveTemplateIncludes(resolved, depth + 1);
+    }
+
+    function renderFatal(failures) {
+        const shell = document.getElementById('app') || document.body;
+        const panel = document.createElement('section');
+        panel.id = 'template-load-error';
+        panel.setAttribute('role', 'alert');
+        const title = document.createElement('h1');
+        title.textContent = 'OM0RX interface could not be loaded';
+        const details = document.createElement('p');
+        details.textContent = `Missing required interface asset(s): ${failures.join(', ')}`;
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.textContent = 'Retry';
+        retry.addEventListener('click', () => window.location.reload());
+        panel.append(title, details, retry);
+        shell.replaceChildren(panel);
+        document.dispatchEvent(new CustomEvent('templates-failed', { detail: { failures } }));
+    }
+
+    async function loadManifest() {
+        const results = await Promise.allSettled(templateSchedule.map(async entry => ({
+            ...entry,
+            html: await resolveTemplateIncludes(await fetchText(entry.file)),
+        })));
+        const failures = results
+            .map((result, index) => result.status === 'rejected' ? templateSchedule[index].file : null)
+            .filter(Boolean);
+        const missingTargets = templateSchedule
+            .filter(entry => !document.getElementById(entry.target))
+            .map(entry => `#${entry.target}`);
+        if (failures.length || missingTargets.length) {
+            renderFatal([...failures, ...missingTargets]);
+            return;
         }
-        
-        console.log('✅ Template Loader: All templates loaded and inserted successfully!');
+        results
+            .map(result => result.value)
+            .sort((a, b) => a.order - b.order)
+            .forEach(entry => document.getElementById(entry.target).insertAdjacentHTML('beforeend', entry.html));
         document.dispatchEvent(new CustomEvent('templates-loaded'));
     }
+
+    loadManifest().catch(error => renderFatal([error.message || 'unknown template error']));
 })();

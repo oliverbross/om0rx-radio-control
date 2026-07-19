@@ -197,6 +197,24 @@
                             <input type="checkbox" v-model="configData.RADIO_SHOW_DETAILED_CONTROLS" id="radio-detailed-controls">
                             <label for="radio-detailed-controls">Show detailed radio controls</label>
                         </div>
+                        <hr style="margin: 16px 0; border: none; border-top: 1px solid #444;">
+                        <h4 style="margin: 0 0 8px 0; font-size: 12px; color: #4a9eff; font-weight: 600;">WSJT-Z Auto Band Antenna Policy</h4>
+                        <p style="font-size: 10px; color: #888; margin-bottom: 12px;">
+                            Applied after SmartSDR frequency changes, including WSJT-Z band hopping. RX and TX use the selected antenna for each band.
+                        </p>
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.FLEX_ANTENNA_POLICY.enabled" id="flex-antenna-policy-enabled">
+                            <label for="flex-antenna-policy-enabled">Enforce antenna per band</label>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(5, minmax(78px, 1fr)); gap: 8px; margin-top: 8px;">
+                            <div v-for="band in ['160m','80m','60m','40m','30m','20m','17m','15m','12m','10m']" :key="band" class="config-field" style="margin: 0;">
+                                <label style="font-size: 10px;">{{ band }}</label>
+                                <select v-model="configData.FLEX_ANTENNA_POLICY.bands[band]">
+                                    <option value="ANT1">ANT1 RX/TX</option>
+                                    <option value="ANT2">ANT2 RX/TX</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
                     
                     <!-- Rotor Tab -->

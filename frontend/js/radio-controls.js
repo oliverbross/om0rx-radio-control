@@ -579,6 +579,39 @@ const radioControlMethods = {
         this.saveRotorAutoConfig();
     },
 
+    async openRotorCompassWindow() {
+        if (window.pywebview?.api?.open_rotor_compass_window) {
+            try {
+                const result = await window.pywebview.api.open_rotor_compass_window();
+                if (!result || result.success !== false) return;
+                console.warn('Native rotor compass window failed:', result.error || result);
+            } catch (error) {
+                console.warn('Could not open native rotor compass window:', error);
+            }
+        }
+
+        const features = [
+            'width=720',
+            'height=760',
+            'left=120',
+            'top=90',
+            'resizable=yes',
+            'scrollbars=no',
+            'menubar=no',
+            'toolbar=no',
+            'location=no',
+            'status=no',
+        ].join(',');
+        if (this.rotorCompassWindow && !this.rotorCompassWindow.closed) {
+            this.rotorCompassWindow.focus();
+            return;
+        }
+        this.rotorCompassWindow = window.open('/rotor-compass.html', 'rotorCompassWindow', features);
+        if (!this.rotorCompassWindow) {
+            alert('Popup blocked. Allow popups for this app to open the rotor compass.');
+        }
+    },
+
     cancelRotorAuto() {
         if (this.rotorAutoTimer) {
             clearTimeout(this.rotorAutoTimer);

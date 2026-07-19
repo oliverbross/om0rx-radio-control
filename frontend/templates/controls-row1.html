@@ -1,7 +1,7 @@
-        <!-- Row 1: Buttons centered, sliders below, UTC on right -->
-        <div class="control-row" style="flex-wrap: wrap; justify-content: center; position: relative;">
-            <!-- Power Button & Title in top left corner -->
-            <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" class="power-button-container">
+        <!-- Full-mode application header. Compact mode supplies its own single toolbar below. -->
+        <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" class="control-row app-control-header">
+            <div class="app-header-main">
+                <div class="power-button-container app-header-brand">
                 <button class="app-brand-button" @click="togglePowerMenu" title="Server control: Shutdown or Restart">
                     OM0RX Radio Control
                 </button>
@@ -9,16 +9,10 @@
                     <button class="power-menu-item" @click="shutdownServer">🔴 Shutdown</button>
                     <button class="power-menu-item" @click="restartServer">🔄 Restart</button>
                 </div>
-            </div>
-            
-            <!-- Server Offline Banner -->
-            <div v-if="serverOffline" class="server-offline-banner">
-                ⚠️ Server is offline - Attempting to reconnect...
-            </div>
-            
-            <!-- Centered Button Group -->
-            <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="display: flex; gap: 4px; align-items: center; justify-content: center; width: 100%;">
-                <button>⚡</button>
+                </div>
+
+                <div class="app-header-actions">
+                <button title="Power status">⚡</button>
                 <button :class="radioStatus.rx2_enabled ? 'active' : ''" @click="toggleRX2">RX2</button>
                 
                 <div class="divider"></div>
@@ -31,10 +25,10 @@
                 <div class="divider"></div>
                 
                 <button @click="showConfigDialog">⚙️ Config</button>
-            </div>
-            
-            <!-- UTC Clock & Sync Status - Absolute positioned to right -->
-            <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="position: absolute; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px;">
+                <button @click="toggleDetailedRadioControls" title="Switch to the compact radio layout">Compact</button>
+                </div>
+
+                <div class="app-header-utilities">
                 <span class="status-indicator" :class="connected ? 'status-connected' : 'status-disconnected'"></span>
                 <button
                     @click="launchPatchedWsjtxEngine"
@@ -58,10 +52,14 @@
                     {{ qsoOutboxLoading ? '↥ ...' : `↥ ${qsoOutboxStatus.queued || 0}` }}
                 </button>
                 <span class="utc-clock">{{ currentTime }} UTC</span>
+                </div>
             </div>
-            
-            <!-- Sliders Row - Below buttons, centered and compact -->
-            <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" style="display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 8px;">
+
+            <div v-if="serverOffline" class="server-offline-banner app-header-offline">
+                ⚠️ Server is offline - Attempting to reconnect...
+            </div>
+
+            <div class="app-header-sliders">
                 <div class="slider-group">
                     <span class="slider-label">Volume</span>
                     <input type="range" v-model.number="controls.volume" @input="setVolume" min="0" max="100">

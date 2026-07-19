@@ -37,7 +37,7 @@ async def test_ft8_status():
     print("\n2️⃣  FT8 AUDIO PROCESSOR:")
     try:
         processor = FT8AudioProcessor(sample_rate=12000)
-        print(f"   ✅ Created audio processor")
+        print("   ✅ Created audio processor")
         print(f"   📊 Sample rate: {processor.sample_rate} Hz")
         print(f"   🔊 Buffer size: {len(processor.audio_buffer)} samples")
         
@@ -58,7 +58,7 @@ async def test_ft8_status():
     print("\n3️⃣  FT8 SERVICE:")
     try:
         service = FT8Service(mode='FT8', mycall='OM0RX', mygrid='JN88')
-        print(f"   ✅ Created FT8 service")
+        print("   ✅ Created FT8 service")
         print(f"   📻 Mode: {service.mode}")
         print(f"   📞 Callsign: {service.mycall}")
         print(f"   📍 Grid: {service.mygrid}")
@@ -66,12 +66,12 @@ async def test_ft8_status():
         # Check if service can start
         print("\n   🚀 Attempting to start service...")
         await service.start()
-        print(f"   ✅ Service started successfully!")
+        print("   ✅ Service started successfully!")
         
         # Wait a bit and check status
         await asyncio.sleep(3)
         stats = service.get_stats()
-        print(f"\n   📊 Service Stats:")
+        print("\n   📊 Service Stats:")
         print(f"      Enabled: {stats.get('enabled', False)}")
         print(f"      TX Enabled: {stats.get('tx_enabled', False)}")
         print(f"      Auto Sequence: {stats.get('auto_sequence', False)}")
@@ -88,7 +88,7 @@ async def test_ft8_status():
         # Stop service
         print("\n   🛑 Stopping service...")
         await service.stop()
-        print(f"   ✅ Service stopped")
+        print("   ✅ Service stopped")
         
     except Exception as e:
         print(f"   ❌ Error: {e}")

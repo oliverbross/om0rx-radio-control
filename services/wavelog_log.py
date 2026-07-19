@@ -4,7 +4,7 @@ Provides fast, direct access to Wavelog database for displaying QSO log
 """
 
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict
 from datetime import datetime
 import pymysql
 from pymysql.cursors import DictCursor

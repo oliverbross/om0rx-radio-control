@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -59,18 +61,43 @@ class _PostgresActivityConnection:
     """Tiny DuckDB-style adapter for the activity repository's simple SQL."""
 
     def __init__(self):
+        self._lock = threading.RLock()
+        self._context = None
+        self._conn = None
+        self._open()
+
+    def _open(self) -> None:
         self._context = connect_postgres()
         self._conn = self._context.__enter__()
 
+    def _reconnect(self) -> None:
+        try:
+            if self._context is not None:
+                self._context.__exit__(None, None, None)
+        except Exception:
+            pass
+        self._open()
+
     def execute(self, query: str, params: list[Any] | tuple[Any, ...] | None = None) -> _PostgresActivityResult:
         sql = self._translate_sql(query)
-        with self._conn.cursor() as cur:
-            cur.execute(sql, params or [])
-            rows = cur.fetchall() if cur.description else []
-        return _PostgresActivityResult(rows)
+        with self._lock:
+            for attempt in range(2):
+                try:
+                    with self._conn.cursor() as cur:
+                        cur.execute(sql, params or [])
+                        rows = cur.fetchall() if cur.description else []
+                    return _PostgresActivityResult(rows)
+                except Exception:
+                    if attempt:
+                        raise
+                    self._reconnect()
+        return _PostgresActivityResult()
 
     def commit(self) -> None:
         self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
 
     def close(self) -> None:
         self._context.__exit__(None, None, None)
@@ -88,6 +115,8 @@ class ActivityRepository:
     """Small cache for external source state and normalized activities."""
 
     def __init__(self, db_path: str | Path | None = None):
+        self._transaction_depth = 0
+        self._lock = threading.RLock()
         self.db_path = Path(db_path) if db_path else config.DATA_DIR / "activity_intelligence.duckdb"
         if db_path is None and should_use_postgres():
             self.conn = _PostgresActivityConnection()
@@ -95,6 +124,30 @@ class ActivityRepository:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             self.conn = duckdb.connect(str(self.db_path))
         self._initialize_schema()
+
+    def _commit(self) -> None:
+        if self._transaction_depth == 0:
+            self.conn.commit()
+
+    @contextmanager
+    def transaction(self):
+        """Own one atomic repository transaction, including nested writers."""
+        with self._lock:
+            outermost = self._transaction_depth == 0
+            if outermost:
+                self.conn.execute("BEGIN")
+            self._transaction_depth += 1
+            try:
+                yield self
+            except Exception:
+                self._transaction_depth -= 1
+                if outermost:
+                    self.conn.rollback()
+                raise
+            else:
+                self._transaction_depth -= 1
+                if outermost:
+                    self.conn.commit()
 
     def _initialize_schema(self) -> None:
         self.conn.execute(
@@ -239,7 +292,20 @@ class ActivityRepository:
             )
             """
         )
-        self.conn.commit()
+        for statement in (
+            "CREATE INDEX IF NOT EXISTS idx_ai_source_payload_time ON ai_raw_source_payloads(source_id, fetched_at_utc)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_dxcc_call_source ON ai_dxpeditions(callsign, source_id)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_alias_call ON ai_dxpedition_aliases(alias_call)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_contest_dates ON ai_contests(start_utc, end_utc)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_portable_call_seen ON ai_portable_activations(activator_call, last_seen_utc)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_portable_expiry ON ai_portable_activations(expires_utc)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_weather_time ON ai_space_weather_snapshots(timestamp_utc)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_rbn_call_band_time ON ai_rbn_spots(spotted_call, band, timestamp_utc)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_rbn_time ON ai_rbn_spots(timestamp_utc)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_station_time ON ai_station_state_samples(timestamp_utc)",
+        ):
+            self.conn.execute(statement)
+        self._commit()
 
     def get_source_state(self, source_id: str) -> SourceSyncState:
         row = self.conn.execute(
@@ -287,7 +353,7 @@ class ActivityRepository:
                 state.consecutive_failures,
             ],
         )
-        self.conn.commit()
+        self._commit()
 
     def list_source_states(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -326,7 +392,7 @@ class ActivityRepository:
             """,
             [payload_id, source_id, fetched_at_utc, content_hash, content_type, payload],
         )
-        self.conn.commit()
+        self._commit()
         return content_hash
 
     def prune_raw_payloads(self, keep_days: int) -> None:
@@ -335,7 +401,26 @@ class ActivityRepository:
             "DELETE FROM ai_raw_source_payloads WHERE fetched_at_utc < ?",
             [iso_utc(cutoff)],
         )
-        self.conn.commit()
+        self._commit()
+
+    def prune_operational_history(self, keep_days: int = 30) -> dict[str, int]:
+        """Bound high-frequency history while preserving current source snapshots."""
+        cutoff = iso_utc(datetime.now(UTC) - timedelta(days=max(1, int(keep_days))))
+        expiry_cutoff = iso_utc(datetime.now(UTC) - timedelta(days=1))
+        tables = {
+            "rbn_spots": ("ai_rbn_spots", "timestamp_utc", cutoff),
+            "station_samples": ("ai_station_state_samples", "timestamp_utc", cutoff),
+            "space_weather": ("ai_space_weather_snapshots", "timestamp_utc", cutoff),
+            "portable_activations": ("ai_portable_activations", "expires_utc", expiry_cutoff),
+        }
+        removed: dict[str, int] = {}
+        with self.transaction():
+            for label, (table, column, threshold) in tables.items():
+                before = self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                self.conn.execute(f"DELETE FROM {table} WHERE {column} IS NOT NULL AND {column} < ?", [threshold])
+                after = self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                removed[label] = int(before or 0) - int(after or 0)
+        return removed
 
     def delete_current_source_records(self, source_id: str) -> None:
         """Remove current normalized rows for a source before inserting a fresh snapshot."""
@@ -350,7 +435,7 @@ class ActivityRepository:
             "DELETE FROM ai_portable_references WHERE payload_json LIKE ?",
             [f'%"source_id": "{source_id}"%'],
         )
-        self.conn.commit()
+        self._commit()
 
     def upsert_dxpeditions(self, items: list[Dxpedition]) -> None:
         for item in items:
@@ -376,7 +461,7 @@ class ActivityRepository:
                     "INSERT INTO ai_dxpedition_aliases VALUES (?, ?, ?, ?, ?)",
                     [alias_id, item.id, alias.upper(), 1.0, item.source_id],
                 )
-        self.conn.commit()
+        self._commit()
 
     def upsert_contests(self, items: list[ContestEvent]) -> None:
         for item in items:
@@ -385,7 +470,7 @@ class ActivityRepository:
                 "INSERT INTO ai_contests VALUES (?, ?, ?, ?, ?, ?, ?)",
                 [item.id, item.source_id, item.name, item.start_utc, item.end_utc, _json(item), item.last_updated_utc],
             )
-        self.conn.commit()
+        self._commit()
 
     def upsert_portable_activations(self, items: list[PortableActivation]) -> None:
         for item in items:
@@ -411,7 +496,7 @@ class ActivityRepository:
                     item.last_seen_utc,
                 ],
             )
-        self.conn.commit()
+        self._commit()
 
     def upsert_portable_references(self, items: list[PortableReference]) -> None:
         for item in items:
@@ -424,7 +509,7 @@ class ActivityRepository:
                 "INSERT INTO ai_portable_references VALUES (?, ?, ?, ?, ?)",
                 [ref_id, item.program, item.reference, _json(item), item.last_verified_utc],
             )
-        self.conn.commit()
+        self._commit()
 
     def upsert_space_weather(self, items: list[SpaceWeatherSnapshot]) -> None:
         for item in items:
@@ -433,7 +518,7 @@ class ActivityRepository:
                 "INSERT INTO ai_space_weather_snapshots VALUES (?, ?, ?, ?, ?)",
                 [item.id, item.timestamp_utc, item.kp, item.xray_class, _json(item)],
             )
-        self.conn.commit()
+        self._commit()
 
     def upsert_rbn_spot(self, item: RbnSpot) -> None:
         self.conn.execute("DELETE FROM ai_rbn_spots WHERE id = ?", [item.id])
@@ -453,7 +538,7 @@ class ActivityRepository:
                 _json(item),
             ],
         )
-        self.conn.commit()
+        self._commit()
 
     def upsert_station_state_sample(self, item: StationStateSample) -> None:
         self.conn.execute("DELETE FROM ai_station_state_samples WHERE id = ?", [item.id])
@@ -474,7 +559,7 @@ class ActivityRepository:
                 _json(item),
             ],
         )
-        self.conn.commit()
+        self._commit()
 
     def nearest_station_state(self, timestamp_utc: str, window_seconds: int = 120) -> dict[str, Any] | None:
         if not timestamp_utc:

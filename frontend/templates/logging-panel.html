@@ -590,7 +590,7 @@
                 
                 <div v-else-if="qrzProfile.success" class="qrz-profile-content">
                     <div class="qrz-profile-image">
-                        <img v-if="qrzProfile.image_url" :src="qrzProfile.image_url" :alt="qrzProfile.name" onerror="this.style.display='none'">
+                        <img v-if="qrzProfile.image_url" :src="qrzProfile.image_url" :alt="qrzProfile.name" @error="$event.target.style.display='none'">
                         <div v-if="!qrzProfile.image_url" style="color: #666; text-align: center; padding: 20px;">📷 No photo</div>
                     </div>
                     
@@ -931,7 +931,7 @@
                     
                     <div v-else-if="qrzProfile.success">
                         <div class="qrz-profile-image-modal">
-                            <img v-if="qrzProfile.image_url" :src="qrzProfile.image_url" :alt="qrzProfile.name" onerror="this.style.display='none'">
+                            <img v-if="qrzProfile.image_url" :src="qrzProfile.image_url" :alt="qrzProfile.name" @error="$event.target.style.display='none'">
                             <div v-if="!qrzProfile.image_url" style="color: #666; text-align: center; padding: 40px;">📷 No photo available</div>
                         </div>
                         

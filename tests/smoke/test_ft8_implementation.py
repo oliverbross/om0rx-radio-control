@@ -25,22 +25,15 @@ def test_frontend_uses_engine_boundary_not_retired_decoder():
     assert "loadFT8Decoder" not in modal
 
 
-def test_digital_button_uses_native_window_not_main_modal_or_browser_tab():
+def test_digital_button_launches_the_patched_wsjtz_engine():
     modal = read_text("frontend/js/ft8-modal.js")
+    config_modal = read_text("frontend/js/config-modal.js")
     controls = read_text("frontend/templates/controls-row1.html")
-    controls_section = read_text("frontend/controls-section.html")
-    launcher = read_text("scripts/launch/launch_windows.py")
 
-    assert '@click="openDigitalWindow"' in controls
-    assert '@click="openDigitalWindow"' in controls_section
-    assert "async openDigitalWindow()" in modal
-    assert "window.pywebview.api.open_digital_window()" in modal
+    assert '@click="launchPatchedWsjtxEngine"' in controls
+    assert "async launchPatchedWsjtxEngine()" in config_modal
     assert "window.open(" not in modal
-    assert "Digital window can only be opened from the native launcher." in modal
-    assert "class DesktopApi" in launcher
-    assert "def open_digital_window(self):" in launcher
-    assert "url=DIGITAL_WINDOW_CONFIG[\"url\"]" in launcher
-    assert "js_api=api" in launcher
+    assert "/api/wsjtx/launch-patched-engine" in config_modal
 
 
 def test_engine_uses_mit_ft8lib_without_mshv_dependency():
@@ -1426,7 +1419,7 @@ def test_backend_decoded_messages_are_enriched_for_automation_targets():
 
     queued = service.automation_controller.status()["targets"][0]
     assert queued["call"] == "OK1ABC"
-    assert queued["score"] == 1000
+    assert queued["score"] == 10000
     assert queued["reason"] == "new-dxcc"
 
 

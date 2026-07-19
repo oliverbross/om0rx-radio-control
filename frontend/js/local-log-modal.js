@@ -213,14 +213,17 @@ const LocalLogModal = {
         if (!tableBody) return;
         
         // Clear existing rows
-        tableBody.innerHTML = '';
+        tableBody.replaceChildren();
         
         // Get QSOs for current page
         const pageQsos = this.getPaginatedQsos();
         
         if (pageQsos.length === 0) {
             const row = tableBody.insertRow();
-            row.innerHTML = '<td colspan="9" style="text-align: center; padding: 20px; color: #888;">No QSOs found</td>';
+            const cell = row.insertCell();
+            cell.colSpan = 10;
+            cell.textContent = 'No QSOs found';
+            cell.style.cssText = 'text-align:center;padding:20px;color:#888';
             this.updatePaginationInfo();
             return;
         }
@@ -237,18 +240,29 @@ const LocalLogModal = {
             if (qso.iota) awards.push(qso.iota);
             const awardsText = awards.join(' / ') || '-';
             
-            row.innerHTML = `
-                <td class="cell-date">${this.formatDate(qso.qso_date)}</td>
-                <td class="cell-time">${this.formatTime(qso.time_on)}</td>
-                <td class="cell-call"><strong>${qso.call}</strong></td>
-                <td class="cell-freq">${this.formatFrequency(qso.frequency)}</td>
-                <td class="cell-band">${qso.band || '-'}</td>
-                <td class="cell-mode">${qso.mode}</td>
-                <td class="cell-rst">${qso.rst_sent}/${qso.rst_rcvd}</td>
-                <td class="cell-dxcc">${qso.country || '-'}</td>
-                <td class="cell-awards">${awardsText}</td>
-                <td class="cell-name"><span class="name-qth-text" title="${qso.name || qso.qth || '-'}">${qso.name || qso.qth || '-'}</span></td>
-            `;
+            const values = [
+                ['cell-date', this.formatDate(qso.qso_date)],
+                ['cell-time', this.formatTime(qso.time_on)],
+                ['cell-call', qso.call || '-'],
+                ['cell-freq', this.formatFrequency(qso.frequency)],
+                ['cell-band', qso.band || '-'],
+                ['cell-mode', qso.mode || '-'],
+                ['cell-rst', `${qso.rst_sent ?? '-'}/${qso.rst_rcvd ?? '-'}`],
+                ['cell-dxcc', qso.country || '-'],
+                ['cell-awards', awardsText],
+                ['cell-name', qso.name || qso.qth || '-']
+            ];
+            values.forEach(([className, value], index) => {
+                const cell = row.insertCell();
+                cell.className = className;
+                const content = index === 2 ? document.createElement('strong') : document.createElement('span');
+                content.textContent = String(value ?? '');
+                if (index === 9) {
+                    content.className = 'name-qth-text';
+                    content.title = String(value ?? '-');
+                }
+                cell.appendChild(content);
+            });
         });
         
         this.updatePaginationInfo();

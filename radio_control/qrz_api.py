@@ -5,17 +5,27 @@ Handles callsign lookups and profile information
 
 import aiohttp
 import asyncio
-import json
 import logging
 from typing import Optional, Dict, Any
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
 from urllib.parse import urlencode
-from pathlib import Path
 from datetime import datetime, timezone
 from radio_control import config
 from radio_control.utils import generate_callsign_variants
+from radio_control.persistence import atomic_write_json, read_json_object
 
 logger = logging.getLogger(__name__)
+MAX_XML_RESPONSE_BYTES = 2 * 1024 * 1024
+
+
+async def _bounded_response_text(response, max_bytes: int = MAX_XML_RESPONSE_BYTES) -> str:
+    content_length = response.headers.get("Content-Length")
+    if content_length and int(content_length) > max_bytes:
+        raise ValueError("QRZ response exceeded the allowed size")
+    payload = await response.content.read(max_bytes + 1)
+    if len(payload) > max_bytes:
+        raise ValueError("QRZ response exceeded the allowed size")
+    return payload.decode(response.charset or "utf-8", errors="replace")
 
 QRZ_HTTP_TIMEOUT_SEC = 6
 QRZ_PROFILE_CACHE_TTL_SEC = 24 * 60 * 60
@@ -36,10 +46,7 @@ class QRZClient:
 
     def _load_profile_cache(self) -> Dict[str, Dict[str, Any]]:
         try:
-            if not self.cache_path.exists():
-                return {}
-            with self.cache_path.open("r", encoding="utf-8") as fh:
-                data = json.load(fh)
+            data = read_json_object(self.cache_path, quarantine_corrupt=True)
             return data if isinstance(data, dict) else {}
         except Exception as exc:
             logger.debug("Could not load QRZ profile cache: %s", exc)
@@ -47,9 +54,7 @@ class QRZClient:
 
     def _save_profile_cache(self) -> None:
         try:
-            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.cache_path.open("w", encoding="utf-8") as fh:
-                json.dump(self.profile_cache, fh, ensure_ascii=True, indent=2)
+            atomic_write_json(self.cache_path, self.profile_cache)
         except Exception as exc:
             logger.debug("Could not save QRZ profile cache: %s", exc)
 
@@ -99,11 +104,10 @@ class QRZClient:
                     url,
                     timeout=aiohttp.ClientTimeout(total=QRZ_HTTP_TIMEOUT_SEC)
                 ) as resp:
-                    logger.info(f"📊 QRZ session response status: {resp.status}")
+                    logger.info("QRZ authentication response status: %s", resp.status)
                     
                     if resp.status == 200:
-                        response_text = await resp.text()
-                        logger.info(f"📝 QRZ session response (first 500 chars): {response_text[:500]}")
+                        response_text = await _bounded_response_text(resp)
                         
                         try:
                             # Parse XML response
@@ -137,14 +141,14 @@ class QRZClient:
                                     
                                 if key_elem is not None and key_elem.text:
                                     self.session_key = key_elem.text
-                                    logger.info(f"✅ QRZ session established, key: {self.session_key[:15]}...")
+                                    logger.info("QRZ session established")
                                     return self.session_key
                                 else:
-                                    logger.error(f"❌ No session key in QRZ response")
+                                    logger.error("❌ No session key in QRZ response")
                                     logger.debug(f"Full response: {response_text[:1000]}")
                                     return None
                             else:
-                                logger.error(f"❌ No Session element in QRZ response")
+                                logger.error("❌ No Session element in QRZ response")
                                 logger.debug(f"Full response: {response_text[:1000]}")
                                 return None
                                 
@@ -153,7 +157,7 @@ class QRZClient:
                             logger.debug(f"Response text (first 1000 chars): {response_text[:1000]}")
                             return None
                     else:
-                        response_text = await resp.text()
+                        response_text = await _bounded_response_text(resp)
                         logger.error(f"❌ QRZ session request failed: HTTP {resp.status}")
                         logger.debug(f"Error response: {response_text[:500]}")
                         return None
@@ -194,11 +198,11 @@ class QRZClient:
         try:
             # Re-authenticate if needed
             if not self.session_key:
-                logger.info(f"ℹ️ No session key, re-authenticating...")
+                logger.info("ℹ️ No session key, re-authenticating...")
                 await self._get_session_key()
             
             if not self.session_key:
-                logger.error(f"❌ Failed to obtain QRZ session key")
+                logger.error("❌ Failed to obtain QRZ session key")
                 return self._auth_failure_result()
             
             # Build callsign lookup request
@@ -218,7 +222,7 @@ class QRZClient:
                     logger.info(f"📊 QRZ profile response status: {resp.status} for {callsign}")
                     
                     if resp.status == 200:
-                        response_text = await resp.text()
+                        response_text = await _bounded_response_text(resp)
                         logger.debug(f"📝 QRZ profile response (first 200 chars): {response_text[:200]}")
                         
                         try:
@@ -353,7 +357,7 @@ class QRZClient:
                             logger.error(f"Failed to parse QRZ profile XML: {pe}")
                             return {'success': False, 'message': f'XML parse error: {str(pe)}'}
                     else:
-                        response_text = await resp.text()
+                        response_text = await _bounded_response_text(resp)
                         logger.error(f"QRZ profile request failed: HTTP {resp.status}")
                         return {'success': False, 'message': f'QRZ lookup failed: HTTP {resp.status}'}
                         
@@ -454,7 +458,7 @@ class QRZClient:
                 await self._get_session_key()
             
             if not self.session_key:
-                logger.warning(f"Cannot fetch history without session key")
+                logger.warning("Cannot fetch history without session key")
                 return {'success': False, 'data': []}
             
             # Get profile first (which updates session)

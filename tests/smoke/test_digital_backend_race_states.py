@@ -564,7 +564,8 @@ def test_backend_logging_skips_when_recent_wavelog_row_exists(monkeypatch, tmp_p
     assert result["success"] is True
     assert result["duplicate"] is True
     assert fake_wavelog.calls == 0
-    assert fake_adif.calls == 0
+    assert fake_adif.calls == 1
+    assert result["adif_saved"] is True
 
 
 def test_qso_logging_enriches_missing_fields_from_qrz(monkeypatch):

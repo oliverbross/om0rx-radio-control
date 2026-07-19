@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from radio_control import config
 from radio_control.wavelog_api import WavelogClient
+from radio_control.persistence import atomic_write_text, durable_append_text, locked_file
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,7 @@ class QSOOutbox:
     def __init__(self, outbox_path: str | Path | None = None):
         self.outbox_path = Path(outbox_path or (config.LOGS_DIR / "wavelog_outbox.adif"))
         self.outbox_path.parent.mkdir(parents=True, exist_ok=True)
+        self._replay_lock = asyncio.Lock()
 
     def enqueue(self, qso_data: Dict[str, Any], reason: str = "") -> bool:
         """Append one failed Wavelog upload to the outbox."""
@@ -47,20 +48,19 @@ class QSOOutbox:
             if not normalized:
                 return False
 
-            existing_records = self.records()
-            existing = set(existing_records)
-            if normalized in existing:
-                logger.info("QSO already exists in Wavelog outbox; skipping duplicate")
-                return True
-            identity = self._loose_identity(normalized)
-            if identity and identity in {self._loose_identity(record) for record in existing_records}:
-                logger.info("QSO already exists in Wavelog outbox by call/date/band/mode; skipping duplicate")
-                return True
+            with locked_file(self.outbox_path):
+                existing_records = self._records_unlocked()
+                existing = set(existing_records)
+                if normalized in existing:
+                    logger.info("QSO already exists in Wavelog outbox; skipping duplicate")
+                    return True
+                identity = self._loose_identity(normalized)
+                if identity and identity in {self._loose_identity(record) for record in existing_records}:
+                    logger.info("QSO already exists in Wavelog outbox by call/date/band/mode; skipping duplicate")
+                    return True
 
-            self._ensure_file()
-            with open(self.outbox_path, "a", encoding="utf-8") as handle:
-                handle.write(normalized + "\n\n")
-                handle.flush()
+                self._ensure_file_unlocked()
+                durable_append_text(self.outbox_path, normalized + "\n\n")
             logger.warning("Queued QSO for later Wavelog upload: %s", self.outbox_path)
             return True
         except Exception as exc:
@@ -69,6 +69,10 @@ class QSOOutbox:
 
     def records(self) -> list[str]:
         """Return queued ADIF records without the header."""
+        with locked_file(self.outbox_path):
+            return self._records_unlocked()
+
+    def _records_unlocked(self) -> list[str]:
         if not self.outbox_path.exists():
             return []
         content = self.outbox_path.read_text(encoding="utf-8", errors="ignore")
@@ -98,43 +102,38 @@ class QSOOutbox:
         on_resolved_record: Optional[Callable[[str], None]] = None,
     ) -> dict[str, Any]:
         """Try to upload queued records to Wavelog and remove successes."""
-        client = wavelog_client or WavelogClient()
-        records = self.records()
-        if not records:
-            return {"success": True, "attempted": 0, "uploaded": 0, "remaining": 0}
+        async with self._replay_lock:
+            client = wavelog_client or WavelogClient()
+            records = self.records()
+            if not records:
+                return {"success": True, "attempted": 0, "uploaded": 0, "remaining": 0}
 
-        attempted = 0
-        uploaded = 0
-        duplicates = 0
-        failures = []
-        remaining = records[:]
-
-        for record in records[:max_records]:
-            attempted += 1
-            result = await client.submit_adif_string(record)
-            if result.get("success"):
-                uploaded += 1
-                remaining.remove(record)
+            attempted = 0
+            uploaded = 0
+            duplicates = 0
+            failures = []
+            for record in records[:max_records]:
+                attempted += 1
+                result = await client.submit_adif_string(record)
+                resolved = bool(result.get("success")) or self._is_duplicate_upload_result(result)
+                if not resolved:
+                    failures.append(result.get("message") or result.get("error") or "Unknown error")
+                    break
+                if result.get("success"):
+                    uploaded += 1
+                else:
+                    duplicates += 1
+                self._remove_record(record)
                 self._notify_resolved(record, on_resolved_record)
-                logger.info("Uploaded queued Wavelog outbox record (%d/%d)", uploaded, attempted)
-            elif self._is_duplicate_upload_result(result):
-                duplicates += 1
-                remaining.remove(record)
-                self._notify_resolved(record, on_resolved_record)
-                logger.info("Removed queued Wavelog outbox record already present in Wavelog (%d/%d)", duplicates, attempted)
-            else:
-                failures.append(result.get("message") or result.get("error") or "Unknown error")
-                break
-
-        self._rewrite(remaining)
-        return {
-            "success": not failures,
-            "attempted": attempted,
-            "uploaded": uploaded,
-            "duplicates": duplicates,
-            "remaining": len(remaining),
-            "failures": failures,
-        }
+            remaining_count = self.count()
+            return {
+                "success": not failures,
+                "attempted": attempted,
+                "uploaded": uploaded,
+                "duplicates": duplicates,
+                "remaining": remaining_count,
+                "failures": failures,
+            }
 
     async def replay_periodically(
         self,
@@ -156,18 +155,29 @@ class QSOOutbox:
             await asyncio.sleep(interval_seconds)
 
     def _ensure_file(self) -> None:
+        with locked_file(self.outbox_path):
+            self._ensure_file_unlocked()
+
+    def _ensure_file_unlocked(self) -> None:
         if not self.outbox_path.exists():
-            self.outbox_path.write_text(self.ADIF_HEADER + "\n\n", encoding="utf-8")
+            atomic_write_text(self.outbox_path, self.ADIF_HEADER + "\n\n")
 
     def _rewrite(self, records: list[str]) -> None:
-        self._ensure_file()
-        backup_path = self.outbox_path.with_suffix(self.outbox_path.suffix + ".bak")
-        shutil.copy2(self.outbox_path, backup_path)
-        content = self.ADIF_HEADER + "\n\n"
-        if records:
-            content += "\n\n".join(self._normalize_record(record) for record in records)
-            content += "\n\n"
-        self.outbox_path.write_text(content, encoding="utf-8")
+        with locked_file(self.outbox_path):
+            content = self.ADIF_HEADER + "\n\n"
+            if records:
+                content += "\n\n".join(self._normalize_record(record) for record in records) + "\n\n"
+            atomic_write_text(self.outbox_path, content, backup=True)
+
+    def _remove_record(self, resolved_record: str) -> None:
+        """Remove one resolved record without erasing records enqueued during upload."""
+        with locked_file(self.outbox_path):
+            current = self._records_unlocked()
+            try:
+                current.remove(self._normalize_record(resolved_record))
+            except ValueError:
+                return
+            self._rewrite(current)
 
     @staticmethod
     def _normalize_record(adif_record: str) -> str:

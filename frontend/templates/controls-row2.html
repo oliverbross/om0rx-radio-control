@@ -1,37 +1,92 @@
-        <!-- Row 2: Bands on left, Modes/Filters on right in 2-line layout -->
-        <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" class="control-row" style="flex-wrap: wrap; align-items: flex-start;">
-            <!-- Band buttons on LEFT -->
-            <div class="control-group" style="flex: 0 0 auto;">
-                <button v-for="band in bands" 
-                        :key="band"
-                        @click="setBand(band)"
-                        :class="isActiveBand(band) ? 'active' : ''">
-                    {{ band }}
-                </button>
+        <!-- Full-mode tuning row: frequency, aligned band/mode/filter controls, and tuning selectors. -->
+        <div v-if="configData.RADIO_SHOW_DETAILED_CONTROLS" class="control-row tuning-control-row">
+            <div class="tuning-frequency-panel">
+                <div class="freq-display tuning-frequency-display"
+                     tabindex="0"
+                     @keydown="handleFrequencyKeydown"
+                     @wheel.passive="handleFrequencyWheel"
+                     title="Use arrow keys or mouse wheel to tune (Step: {{ currentStep }})">
+                    {{ formattedFrequency }}
+                </div>
+                <div class="tuning-dsp-buttons">
+                    <button @click="toggleDSP('nb')" :class="['dsp-button', { active: radioStatus.nb_enabled }]">NB</button>
+                    <button @click="toggleDSP('nr')" :class="['dsp-button', { active: radioStatus.nr_enabled }]">NR</button>
+                    <button @click="toggleDSP('anf')" :class="['dsp-button', { active: radioStatus.anf_enabled }]">ANF</button>
+                    <button @click="toggleDSP('apf')" :class="['dsp-button', { active: radioStatus.apf_enabled }]">APF</button>
+                </div>
             </div>
-            
-            <div class="spacer" style="flex: 1;"></div>
-            
-            <!-- Modes and Filters - 2-line layout on RIGHT -->
-            <div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-end; flex: 0 0 auto;">
-                <!-- Modes Row (Line 1) -->
-                <div class="control-group">
-                    <button v-for="mode in modes" 
+
+            <div class="tuning-button-matrix">
+                <span class="tuning-row-label">Band</span>
+                <div class="control-group tuning-button-group">
+                    <button v-for="band in bands"
+                            :key="band"
+                            @click="setBand(band)"
+                            :class="isActiveBand(band) ? 'active' : ''">
+                        {{ band }}
+                    </button>
+                </div>
+
+                <span class="tuning-row-label">Mode</span>
+                <div class="control-group tuning-button-group">
+                    <button v-for="mode in modes"
                             :key="mode"
                             @click="setMode(mode)"
                             :class="radioStatus.mode === mode ? 'active' : ''">
                         {{ mode }}
                     </button>
                 </div>
-                
-                <!-- Filters Row (Line 2) -->
-                <div class="control-group" v-if="currentFilters.length > 0">
-                    <button v-for="filter in currentFilters" 
+
+                <span class="tuning-row-label">Filter</span>
+                <div class="control-group tuning-button-group" v-if="currentFilters.length > 0">
+                    <button v-for="filter in currentFilters"
                             :key="filter.label"
                             @click="setFilter(filter.lo, filter.hi)"
                             :class="isActiveFilter(filter) ? 'active' : ''">
                         {{ filter.label }}
                     </button>
+                </div>
+            </div>
+
+            <div class="tuning-selectors">
+                <label>
+                    <span>Step</span>
+                    <select v-model="currentStepIndex" @change="setTuningStep" class="step-select">
+                        <option v-for="(step, index) in (stepsByMode[radioStatus.mode] || stepsByMode['USB'])" :key="index" :value="index">{{ step }}</option>
+                    </select>
+                </label>
+                <label>
+                    <span>AGC</span>
+                    <select :value="radioStatus.agc_mode || 'med'" @change="setAGC($event.target.value)" class="agc-select">
+                        <option value="off">OFF</option>
+                        <option value="slow">SLOW</option>
+                        <option value="med">MED</option>
+                        <option value="fast">FAST</option>
+                    </select>
+                </label>
+            </div>
+
+            <div v-if="showDSPSlider.nb || showDSPSlider.nr || showDSPSlider.anf || showDSPSlider.apf"
+                 class="tuning-dsp-levels">
+                <div v-if="showDSPSlider.nb" class="slider-group">
+                    <span class="slider-label">NB</span>
+                    <input type="range" v-model.number="dspLevels.nb" @input="setDSPLevel('nb')" min="0" max="100">
+                    <span class="slider-value">{{ dspLevels.nb }}</span>
+                </div>
+                <div v-if="showDSPSlider.nr" class="slider-group">
+                    <span class="slider-label">NR</span>
+                    <input type="range" v-model.number="dspLevels.nr" @input="setDSPLevel('nr')" min="0" max="100">
+                    <span class="slider-value">{{ dspLevels.nr }}</span>
+                </div>
+                <div v-if="showDSPSlider.anf" class="slider-group">
+                    <span class="slider-label">ANF</span>
+                    <input type="range" v-model.number="dspLevels.anf" @input="setDSPLevel('anf')" min="0" max="100">
+                    <span class="slider-value">{{ dspLevels.anf }}</span>
+                </div>
+                <div v-if="showDSPSlider.apf" class="slider-group">
+                    <span class="slider-label">APF</span>
+                    <input type="range" v-model.number="dspLevels.apf" @input="setDSPLevel('apf')" min="0" max="100">
+                    <span class="slider-value">{{ dspLevels.apf }}</span>
                 </div>
             </div>
         </div>

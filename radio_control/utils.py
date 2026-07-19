@@ -4,8 +4,6 @@ import logging
 import sys
 import re
 import socket
-import webbrowser
-from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
 
@@ -59,7 +57,6 @@ def setup_flex_logging():
 def _apply_dark_theme(root):
     """Apply dark theme to tkinter window"""
     try:
-        import tkinter as tk
         from tkinter import ttk
         style = ttk.Style(root)
         # Use 'clam' which allows color config
@@ -141,7 +138,7 @@ PHONE_SEG = [("10m",28300.0,29700.0),("12m",24940.0,24990.0),("15m",21200.0,2145
              ("80m",3700.0,4000.0),("6m",50100.0,54000.0)]
 CW_SEG    = [("10m",28000.0,28150.0),("12m",24890.0,24910.0),("15m",21000.0,21070.0),
              ("17m",18068.0,18095.0),("20m",14000.0,14060.0),("40m",7000.0,7040.0),
-             ("80m",3500.0,3560.0)]
+             ("30m",10100.0,10150.0),("80m",3500.0,3560.0),("160m",1800.0,1840.0)]
 
 
 def near_any(freq, table, tol=1.6): 

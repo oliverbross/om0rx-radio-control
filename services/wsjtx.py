@@ -24,6 +24,7 @@ from typing import Optional, Dict, Any
 from fastapi import Body, HTTPException, Request
 
 # Import required modules
+from radio_control.activity_references import extract_activity_references, reference_items_to_qso_fields
 from radio_control.spot_processor import band_from_khz, infer_mode
 from radio_control.qso_outbox import get_qso_outbox
 from radio_control.spot_classification import classify_call_status, classify_dxcc_status
@@ -222,6 +223,15 @@ def _dxcc_priority_target(payload: Dict[str, Any]) -> bool:
     except Exception:
         dxcc_status = str(_first_present(payload, "dxcc_status", "dxccStatus") or "").strip().lower()
         return dxcc_status in {"atno", "worked"} or "new band" in dxcc_status or "new mode" in dxcc_status
+
+
+def _reference_priority_target(payload: Dict[str, Any]) -> bool:
+    try:
+        from services.digital_automation import reference_is_needed, normalise_reference_items
+
+        return any(reference_is_needed(item) for item in normalise_reference_items(payload))
+    except Exception:
+        return bool(extract_activity_references(payload))
 
 
 def _automation_current_dial_frequency_hz(automation_payload: Dict[str, Any]) -> Optional[int]:
@@ -589,6 +599,57 @@ class WSJTXService:
         except Exception as exc:
             logger.debug("Unable to mark automation QSO complete for WSJT-X logged QSO %s: %s", call, exc)
 
+    def _logged_qso_reference_fields(
+        self,
+        req: Dict[str, Any],
+        adif_fields: Dict[str, Any],
+        *,
+        call: str,
+        band: str,
+        mode: str,
+    ) -> Dict[str, str]:
+        """Resolve award references from ADIF/request and the active hunt target."""
+        payload: Dict[str, Any] = {
+            **req,
+            "pota": req.get("pota") or adif_fields.get("pota_ref"),
+            "sota": req.get("sota") or adif_fields.get("sota_ref"),
+            "iota": req.get("iota") or adif_fields.get("iota"),
+            "wwff": req.get("wwff") or adif_fields.get("wwff_ref"),
+            "sig": req.get("sig") or adif_fields.get("sig"),
+            "sig_info": req.get("sig_info") or adif_fields.get("sig_info"),
+        }
+        references = extract_activity_references(payload)
+        try:
+            from services.ft8_service import get_ft8_service
+
+            controller = getattr(get_ft8_service(), "automation_controller", None)
+            candidates = list(getattr(controller, "targets", {}).values()) if controller else []
+            candidates = [
+                target
+                for target in candidates
+                if target.call == call
+                and (not band or not target.band or target.band == band)
+                and (not mode or not target.mode or target.mode == mode)
+                and target.reference_items
+            ]
+            candidates.sort(
+                key=lambda target: (
+                    target.key == getattr(controller, "active_target_key", None),
+                    target.updated_at,
+                ),
+                reverse=True,
+            )
+            if candidates:
+                references.extend(dict(item) for item in candidates[0].reference_items)
+        except Exception as exc:
+            logger.debug("Unable to resolve automation references for %s: %s", call, exc)
+
+        fields = reference_items_to_qso_fields(references)
+        if payload.get("sig") and payload.get("sig_info"):
+            fields.setdefault("sig", str(payload["sig"]).strip().upper())
+            fields.setdefault("sig_info", str(payload["sig_info"]).strip().upper())
+        return fields
+
     def _finish_async_logged_qso(
         self,
         qso_data: Dict[str, Any],
@@ -681,9 +742,38 @@ class WSJTXService:
                 adif_fields.get("qso_date", ""),
                 adif_fields.get("time_on") or adif_fields.get("time_off", ""),
             )
+            reference_fields = self._logged_qso_reference_fields(
+                req,
+                adif_fields,
+                call=call,
+                band=band,
+                mode=mode,
+            )
 
             if adif_text and _coerce_bool(req.get("async_upload")):
+                qrz_data = req.get("qrz_data", {}) or {}
+                if not qrz_data and self.qrz_client:
+                    try:
+                        logger.info("📡 Fetching QRZ data for %s before WSJT-X bridge log...", call)
+                        qrz_data = await self.qrz_client.lookup(call) or {}
+                        if qrz_data:
+                            logger.info(
+                                "✅ QRZ lookup successful for %s: %s from %s",
+                                call,
+                                qrz_data.get("fname", "N/A"),
+                                qrz_data.get("country", "N/A"),
+                            )
+                    except Exception as exc:
+                        logger.warning("⚠️  QRZ lookup failed for %s: %s", call, exc)
+                        qrz_data = {}
+
                 cty_data = {}
+                if self.cty_resolver:
+                    try:
+                        cty_data = self.cty_resolver.lookup(call) or {}
+                    except Exception as exc:
+                        logger.debug("CTY lookup failed for %s: %s", call, exc)
+
                 qso_data = {
                     "callsign": call,
                     "frequency": frequency_hz / 1_000_000 if frequency_hz else None,
@@ -695,80 +785,134 @@ class WSJTXService:
                     "date": req.get("date") or adif_fields.get("qso_date") or None,
                     "time_off": req.get("time_off") or adif_fields.get("time_off") or adif_fields.get("time_on") or None,
                     "date_time": date_time,
-                    "name": adif_fields.get("name") or "",
-                    "qth": adif_fields.get("qth") or "",
-                    "gridsquare": req.get("grid") or adif_fields.get("gridsquare") or "",
+                    "name": adif_fields.get("name") or qrz_data.get("fname", ""),
+                    "qth": adif_fields.get("qth") or qrz_data.get("state") or qrz_data.get("country", ""),
+                    "gridsquare": req.get("grid") or adif_fields.get("gridsquare") or qrz_data.get("grid", ""),
                     "notes": req.get("comments") or adif_fields.get("comment") or adif_fields.get("comments") or f"Auto-logged from WSJT-X ({mode})",
                     "continent": cty_data.get("continent", ""),
                     "dxcc": cty_data.get("dxcc"),
-                    "country": cty_data.get("entity") or cty_data.get("country") or "",
-                    "state": "",
-                    "cq_zone": cty_data.get("cq"),
-                    "itu_zone": cty_data.get("itu"),
+                    "country": qrz_data.get("country") or cty_data.get("entity") or cty_data.get("country") or "",
+                    "state": qrz_data.get("state", ""),
+                    "cq_zone": qrz_data.get("cqzone") or cty_data.get("cq"),
+                    "itu_zone": qrz_data.get("ituzone") or cty_data.get("itu"),
+                    "lotw_member": qrz_data.get("lotw", False),
+                    "email": qrz_data.get("email", ""),
+                    "tx_pwr": adif_fields.get("tx_pwr") or None,
+                    "prop_mode": adif_fields.get("prop_mode") or None,
+                    "freq_rx": adif_fields.get("freq_rx") or None,
+                    "mode_rx": adif_fields.get("mode_rx") or None,
+                    **reference_fields,
                 }
                 qso_key = ""
                 loose_qso_key = ""
+                dedupe_keys = []
                 try:
                     from services.qso_logging import (
                         _claim_dedupe_keys,
+                        _record_dedupe_entries,
+                        _recent_wavelog_duplicate_entry,
                         build_qso_dedupe_key,
-                        build_qso_loose_dedupe_key,
+                        build_qso_loose_dedupe_keys,
                     )
 
                     qso_key = str(req.get("qso_key") or build_qso_dedupe_key(qso_data))
-                    loose_qso_key = build_qso_loose_dedupe_key(qso_data)
+                    loose_qso_keys = build_qso_loose_dedupe_keys(qso_data)
+                    loose_qso_key = loose_qso_keys[1] if len(loose_qso_keys) > 1 else (loose_qso_keys[0] if loose_qso_keys else "")
                     qso_data["qso_key"] = qso_key
-                    dedupe_keys = [key for key in (qso_key, loose_qso_key) if key]
+                    dedupe_keys = [key for key in (qso_key, *loose_qso_keys) if key]
                     dedupe_entry = _claim_dedupe_keys(dedupe_keys, qso_data)
                     if dedupe_entry:
-                        outbox_queued = False
-                        if not dedupe_entry.get("wavelog_success"):
-                            outbox_queued = get_qso_outbox().enqueue_adif(adif_text)
-                            self._schedule_wavelog_outbox_replay()
-                            logger.info(
-                                "Retrying duplicate WSJT-X async QSO without confirmed Wavelog success: %s %s %s (Outbox: %s)",
-                                call,
-                                band,
-                                mode,
-                                outbox_queued,
-                            )
                         asyncio.create_task(asyncio.to_thread(self._record_logged_qso_in_status_cache, qso_data))
                         return {
                             "success": True,
                             "duplicate": True,
                             "async_upload": True,
-                            "message": (
-                                "Duplicate WSJT-X QSO log request retried via Wavelog outbox"
-                                if not dedupe_entry.get("wavelog_success")
-                                else "Duplicate WSJT-X QSO log request ignored"
-                            ),
-                            "outbox_queued": outbox_queued,
+                            "message": "Duplicate WSJT-X QSO log request ignored",
+                            "outbox_queued": bool(dedupe_entry.get("outbox_queued")),
                             "qso_key": qso_key,
                             "loose_qso_key": loose_qso_key,
                             "dedupe": dedupe_entry,
                         }
+                    recent_duplicate = _recent_wavelog_duplicate_entry(qso_data)
+                    if recent_duplicate:
+                        logger.info("Skipping WSJT-X bridge QSO already present in Wavelog/read-cache: %s", call)
+                        _record_dedupe_entries(dedupe_keys, qso_data, {"wavelog": {"success": True}, "adif_saved": True})
+                        asyncio.create_task(asyncio.to_thread(self._record_logged_qso_in_status_cache, qso_data))
+                        return {
+                            "success": True,
+                            "duplicate": True,
+                            "async_upload": True,
+                            "message": "QSO already present in Wavelog/read-cache",
+                            "outbox_queued": False,
+                            "qso_key": qso_key,
+                            "loose_qso_key": loose_qso_key,
+                            "dedupe": recent_duplicate,
+                            "qso_data": {
+                                "callsign": call,
+                                "frequency": qso_data["frequency"],
+                                "mode": mode,
+                                "gridsquare": qso_data["gridsquare"],
+                                "rst_sent": qso_data["rst_sent"],
+                                "rst_received": qso_data["rst_received"],
+                                "country": qso_data["country"],
+                                "continent": qso_data["continent"],
+                            },
+                        }
                 except Exception as exc:
                     logger.debug("Async WSJT-X QSO dedupe guard unavailable for %s: %s", call, exc, exc_info=True)
 
-                outbox_queued = get_qso_outbox().enqueue_adif(adif_text)
-                self._schedule_wavelog_outbox_replay()
-                asyncio.create_task(
-                    asyncio.to_thread(
-                        self._finish_async_logged_qso,
+                result = await self.wavelog_client.log_qso(qso_data)
+                adif_saved = False
+                try:
+                    if self.adif_handler:
+                        adif_saved = self.adif_handler.add_qso(qso_data)
+                except Exception as exc:
+                    logger.debug("Async WSJT-X local ADIF save failed for %s: %s", call, exc, exc_info=True)
+
+                outbox_queued = False
+                if not result.get("success"):
+                    outbox_queued = get_qso_outbox().enqueue(
                         qso_data,
-                        qso_key=qso_key,
-                        loose_qso_key=loose_qso_key,
-                        outbox_queued=outbox_queued,
+                        reason=result.get("message") or result.get("error") or "WSJT-X bridge Wavelog upload failed",
                     )
+                    self._schedule_wavelog_outbox_replay()
+
+                if result.get("success") or outbox_queued:
+                    self._record_logged_qso_in_status_cache(qso_data)
+                if qso_key:
+                    try:
+                        from services.qso_logging import _record_dedupe_entries, _release_dedupe_keys
+
+                        response_for_dedupe = {
+                            "wavelog": result,
+                            "adif_saved": adif_saved,
+                            "outbox_queued": outbox_queued,
+                        }
+                        if result.get("success") or outbox_queued:
+                            _record_dedupe_entries(dedupe_keys, qso_data, response_for_dedupe)
+                        else:
+                            _release_dedupe_keys(dedupe_keys)
+                    except Exception as exc:
+                        logger.debug("Unable to record async WSJT-X QSO dedupe entry for %s: %s", call, exc, exc_info=True)
+
+                logger.info(
+                    "✅ Processed WSJT-X bridge logged QSO: %s %s %s (Wavelog: %s, ADIF: %s, Outbox: %s)",
+                    call,
+                    qso_data.get("band"),
+                    qso_data.get("mode"),
+                    result.get("success"),
+                    adif_saved,
+                    outbox_queued,
                 )
                 return {
-                    "success": True,
+                    "success": bool(result.get("success") or outbox_queued),
                     "async_upload": True,
-                    "adif_saved": None,
+                    "wavelog": result,
+                    "adif_saved": adif_saved,
                     "outbox_queued": outbox_queued,
                     "qso_key": qso_key,
                     "loose_qso_key": loose_qso_key,
-                    "message": "QSO accepted into local Wavelog upload queue",
+                    "message": result.get("message") or "QSO processed from WSJT-X bridge",
                     "qso_data": {
                         "callsign": call,
                         "frequency": qso_data["frequency"],
@@ -831,10 +975,12 @@ class WSJTXService:
                 "notes": req.get('comments') or adif_fields.get("comment") or adif_fields.get("comments") or f"Auto-logged from WSJT-X ({mode})",
                 
                 # Activation programs
-                "pota": None,
-                "sota": None,
-                "iota": None,
-                "wwff": None,
+                "pota": reference_fields.get("pota"),
+                "sota": reference_fields.get("sota"),
+                "iota": reference_fields.get("iota"),
+                "wwff": reference_fields.get("wwff"),
+                "sig": reference_fields.get("sig"),
+                "sig_info": reference_fields.get("sig_info"),
                 
                 # Location info
                 "continent": cty_data.get("continent", qrz_data.get("continent", "")),  # Prefer CTY continent if available
@@ -1062,7 +1208,9 @@ class WSJTXService:
                 )
                 # If Wavelog fails but ADIF saved, still return partial success
                 if adif_saved or outbox_queued:
-                    self._record_logged_qso_in_status_cache(qso_data)
+                    # Local ADIF alone is an archive, not a durable Wavelog delivery.
+                    if outbox_queued:
+                        self._record_logged_qso_in_status_cache(qso_data)
                     if qso_key:
                         try:
                             from services.qso_logging import _record_dedupe_entry
@@ -1616,7 +1764,11 @@ class WSJTXService:
         url = _command_url_to_status_url(
             getattr(config, 'WSJTX_BRIDGE_COMMAND_URL', 'http://127.0.0.1:8092/wsjtx/command')
         )
-        request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+        bridge_token = str(getattr(config, "WSJTX_BRIDGE_TOKEN", "") or "")
+        headers = {"Accept": "application/json"}
+        if bridge_token:
+            headers["X-OM0RX-Control-Token"] = bridge_token
+        request = urllib.request.Request(url, headers=headers, method="GET")
         with urllib.request.urlopen(request, timeout=1.0) as response:
             data = response.read().decode("utf-8")
             return json.loads(data) if data else {}
@@ -2114,10 +2266,14 @@ class WSJTXService:
             "command": command,
             "payload": payload,
         }).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        bridge_token = str(getattr(config, "WSJTX_BRIDGE_TOKEN", "") or "")
+        if bridge_token:
+            headers["X-OM0RX-Control-Token"] = bridge_token
         request = urllib.request.Request(
             url,
             data=request_payload,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
 
@@ -2325,7 +2481,6 @@ def _local_wsjtx_decode_status(req: Dict[str, Any], request: Request) -> Dict[st
                 mode_value = str(mode or "").strip().upper()
 
                 call_worked = call_value in getattr(store, "call_worked", set())
-                call_confirmed = call_value in getattr(store, "call_confirmed", set())
                 call_new_band = bool(band_value) and (
                     call_value,
                     band_value,
@@ -2573,6 +2728,7 @@ def register_wsjtx_endpoints(app):
                     "listenOnly": True,
                     "returnToOrigin": True,
                     "targetId": pending_return.get("target_key") or "",
+                    "watchdogMinutes": ft8_service.automation_controller.settings.hunter_restore_watchdog_minutes,
                 }
                 if ft8_service.automation_controller.settings.dry_run:
                     ft8_service.automation_controller._set_decision({
@@ -2613,6 +2769,8 @@ def register_wsjtx_endpoints(app):
             if hasattr(ft8_service.automation_controller, "next_listen_target"):
                 listen_target = ft8_service.automation_controller.next_listen_target()
             if listen_target:
+                if hasattr(ft8_service.automation_controller, "prepare_command"):
+                    ft8_service.automation_controller.prepare_command(listen_target.key)
                 origin_band = str(_first_present(automation_payload, "currentBand", "current_band") or "").strip().lower()
                 origin_mode = str(_first_present(automation_payload, "currentMode", "current_mode", "mode") or getattr(ft8_service, "mode", "FT8") or "FT8").strip().upper()
                 origin_frequency = (
@@ -2640,6 +2798,10 @@ def register_wsjtx_endpoints(app):
                 wsjtx_target.setdefault("targetId", listen_target.target_id)
                 wsjtx_target.setdefault("commandId", listen_target.command_id or "")
                 wsjtx_target["priorityHunt"] = _dxcc_priority_target(target_payload)
+                if _reference_priority_target(target_payload):
+                    wsjtx_target["priorityHunt"] = True
+                    wsjtx_target["watchdogMinutes"] = ft8_service.automation_controller.settings.hunter_watchdog_minutes
+                    wsjtx_target["huntReason"] = listen_target.reason or "reference-hunt"
 
                 if ft8_service.automation_controller.settings.dry_run:
                     ft8_service.automation_controller._set_decision({
@@ -2662,7 +2824,7 @@ def register_wsjtx_endpoints(app):
                 return {
                     "success": True,
                     "action": "listening",
-                    "reason": "spot-dxcc-listen-probe",
+                    "reason": "spot-reference-listen-probe" if _reference_priority_target(target_payload) else "spot-dxcc-listen-probe",
                     "target": target_payload,
                     "wsjtx_target": wsjtx_target,
                     "bridge": bridge_result,
@@ -2680,6 +2842,37 @@ def register_wsjtx_endpoints(app):
             }
 
         target_payload = target.to_dict()
+        prepared_command_id = None
+        if hasattr(ft8_service.automation_controller, "prepare_command"):
+            prepared_command_id = ft8_service.automation_controller.prepare_command(target.key)
+            target_payload = target.to_dict()
+        final_eligibility = ft8_service.automation_controller._target_eligibility(
+            target,
+            cq_only=bool(policy["txOptions"].get("cq_only")),
+            auto_call_start_only=True,
+        )
+        if not final_eligibility.get("eligible"):
+            ft8_service.automation_controller.release_target(
+                target.key,
+                reason="final-transmit-eligibility-failed",
+            )
+            ft8_service.automation_controller._set_decision({
+                "decision": "blocked",
+                "reason": "final-transmit-eligibility-failed",
+                "call": target.call,
+                "band": target.band,
+                "mode": target.mode,
+                "eligibility_reasons": final_eligibility.get("reasons", []),
+            })
+            return {
+                "success": True,
+                "action": "idle",
+                "reason": "final-transmit-eligibility-failed",
+                "eligibility": final_eligibility,
+                "automation": ft8_service.automation_controller.status(),
+                "stats": ft8_service.get_stats(),
+                "status_sources": status_sources,
+            }
         wsjtx_target = service.build_target_from_automation_target(target_payload)
         wsjtx_target["enableTx"] = _coerce_bool(
             _first_present(automation_payload, "enableTx", "enable_tx"),
@@ -2693,7 +2886,11 @@ def register_wsjtx_endpoints(app):
         wsjtx_target["txFirst"] = bool(policy["txOptions"].get("tx_even_first"))
         wsjtx_target.setdefault("targetId", target.target_id)
         wsjtx_target.setdefault("commandId", target.command_id or "")
-        if _dxcc_priority_target(target_payload):
+        if _reference_priority_target(target_payload):
+            wsjtx_target["priorityHunt"] = True
+            wsjtx_target["watchdogMinutes"] = ft8_service.automation_controller.settings.hunter_watchdog_minutes
+            wsjtx_target["huntReason"] = target.reason or "reference-hunt"
+        elif _dxcc_priority_target(target_payload):
             wsjtx_target["priorityHunt"] = True
             wsjtx_target["watchdogMinutes"] = 20
             wsjtx_target["huntReason"] = target.reason or "dxcc-hunt"
@@ -2728,7 +2925,10 @@ def register_wsjtx_endpoints(app):
                 ft8_service.automation_controller.release_target(target.key, reason="bridge-command-failed")
                 bridge_failed = True
             else:
-                recorded = ft8_service.automation_controller.record_attempt(target.key)
+                recorded = ft8_service.automation_controller.record_attempt(
+                    target.key,
+                    command_id=prepared_command_id,
+                )
                 if recorded:
                     wsjtx_target["commandId"] = recorded.command_id
                     target_payload = recorded.to_dict()

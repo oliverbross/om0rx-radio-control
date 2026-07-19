@@ -146,7 +146,7 @@ async def get_wavelog_sync_status(request: Request):
             "syncing": False,
             "last_sync": None,
             "total_records": 0,
-            "error": str(e)
+            "error": "Wavelog statistics are unavailable"
         }
 
 

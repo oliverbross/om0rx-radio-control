@@ -14,6 +14,7 @@ import duckdb
 import httpx
 
 from radio_control import config
+from radio_control.activity_references import extract_activity_references
 from radio_control.postgres_store import connect as connect_postgres
 from radio_control.postgres_store import should_use_postgres
 from radio_control.rotor_math import bearing_from_coordinates, grid_to_latlon
@@ -119,8 +120,9 @@ class ActivityIntelligenceService:
                     results.append(result)
             try:
                 self.repository.prune_raw_payloads(int(self.settings.get("keepRawPayloadsDays", 14)))
+                self.repository.prune_operational_history(int(self.settings.get("keepOperationalHistoryDays", 30)))
             except Exception:
-                logger.debug("Activity raw payload pruning failed", exc_info=True)
+                logger.debug("Activity history pruning failed", exc_info=True)
             return {"ok": True, "sources": results}
 
     async def _refresh_adapter(self, client: httpx.AsyncClient, adapter: Any, state: SourceSyncState) -> dict[str, Any]:
@@ -139,19 +141,20 @@ class ActivityIntelligenceService:
                 return {"sourceId": adapter.source_id, "ok": True, "notModified": True}
             if raw.http_status and raw.http_status >= 400:
                 raise RuntimeError(f"HTTP {raw.http_status}")
-            self.repository.store_raw_payload(adapter.source_id, raw.content_type, raw.body, raw.fetched_at_utc)
             parsed = adapter.parse(raw)
-            self.repository.delete_current_source_records(adapter.source_id)
-            self.repository.upsert_dxpeditions(parsed.get("dxpeditions", []))
-            self.repository.upsert_contests(parsed.get("contests", []))
-            self.repository.upsert_portable_activations(parsed.get("portable_activations", []))
-            self.repository.upsert_portable_references(parsed.get("portable_references", []))
-            self.repository.upsert_space_weather(parsed.get("space_weather", []))
             state.last_success_at_utc = raw.fetched_at_utc
             state.last_error = None
             state.consecutive_failures = 0
             state.next_allowed_at_utc = iso_utc(datetime.now(UTC) + timedelta(seconds=adapter.get_recommended_poll_interval_seconds()))
-            self.repository.upsert_source_state(state)
+            with self.repository.transaction():
+                self.repository.store_raw_payload(adapter.source_id, raw.content_type, raw.body, raw.fetched_at_utc)
+                self.repository.delete_current_source_records(adapter.source_id)
+                self.repository.upsert_dxpeditions(parsed.get("dxpeditions", []))
+                self.repository.upsert_contests(parsed.get("contests", []))
+                self.repository.upsert_portable_activations(parsed.get("portable_activations", []))
+                self.repository.upsert_portable_references(parsed.get("portable_references", []))
+                self.repository.upsert_space_weather(parsed.get("space_weather", []))
+                self.repository.upsert_source_state(state)
             return {
                 "sourceId": adapter.source_id,
                 "ok": True,
@@ -274,6 +277,7 @@ class ActivityIntelligenceService:
 
         portable_matches = self.repository.find_portable_by_call_or_ref(call, " ".join(_extract_comment_refs(spot.get("comment") or "")))
         seen_refs: set[str] = set()
+        reference_statuses: dict[tuple[str, str], dict[str, Any]] = {}
         for portable in portable_matches[:3]:
             for ref in portable.get("references") or []:
                 if ref in seen_refs:
@@ -288,7 +292,8 @@ class ActivityIntelligenceService:
                 tags.append(ActivityTag(tag_type, f"{program} {ref}", 0.82, portable.get("source_id", program), ref))
                 ai_score += int(weights.get("portableActive", 20))
                 reasons.append(f"{program} {ref}")
-                ref_status = self.portable_reference_status(program, ref)
+                ref_status = self.portable_reference_status(program, ref, callsign=call)
+                reference_statuses[(program, str(ref).upper())] = ref_status
                 if ref_status.get("worked"):
                     tags.append(ActivityTag("DUPLICATE", f"Worked {ref}", 0.88, "WAVELOG", ref))
                     reasons.append(f"worked {program} ref")
@@ -333,6 +338,20 @@ class ActivityIntelligenceService:
 
         priority = max(0, min(100, max(base_score, ai_score)))
         spot["activity_tags"] = [compact_dict(tag) for tag in tags]
+        references = extract_activity_references(spot)
+        for reference in references:
+            program = str(reference.get("type") or "").upper()
+            ref_id = str(reference.get("reference_id") or "").upper()
+            status = reference_statuses.get((program, ref_id))
+            if status is None:
+                status = self.portable_reference_status(program, ref_id, callsign=call)
+            if status.get("worked"):
+                reference["status"] = "worked"
+                reference.pop("need_reason", None)
+            else:
+                reference["status"] = "needed"
+                reference["need_reason"] = program.lower()
+        spot["reference_items"] = references
         spot["priority_score"] = priority
         spot["spot_score"] = priority
         spot["spot_score_reasons"] = list(dict.fromkeys([str(reason) for reason in reasons if reason]))[:5]
@@ -860,7 +879,7 @@ class ActivityIntelligenceService:
         use_postgres = should_use_postgres() and not self._explicit_qso_db_path
         if not use_postgres and not self.qso_db_path.exists():
             return {"worked": False, "count": 0, "status": "no-cache"}
-        field = {"POTA": "pota_ref", "SOTA": "sota_ref", "WWFF": "wwff_ref"}.get(program)
+        field = {"POTA": "pota_ref", "SOTA": "sota_ref", "IOTA": "iota", "WWFF": "wwff_ref"}.get(program)
         clauses = []
         params: list[Any] = []
         placeholder = "%s" if use_postgres else "?"

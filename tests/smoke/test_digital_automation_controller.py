@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import _bootstrap  # noqa: F401
+import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
@@ -236,12 +237,12 @@ def test_controller_status_exposes_reason_panel_timeline_and_worked_flags():
     assert status["active_target"]["worked_flags"]["new_call"] is True
 
 
-def test_treat_73_as_cq_allows_non_direct_73_activity_to_seed_auto_call():
+def test_treat_73_as_cq_cannot_make_non_direct_73_activity_callable():
     disabled = DigitalAutomationController(
         mycall="OM0RX",
         settings=DigitalAutomationSettings(treat_73_as_cq=False),
     )
-    assert disabled.ingest_target({
+    disabled_target = disabled.ingest_target({
         "source": "decoded",
         "message": "EA1AA K1ABC 73",
         "band": "20m",
@@ -249,7 +250,8 @@ def test_treat_73_as_cq_allows_non_direct_73_activity_to_seed_auto_call():
         "heard": True,
         "call_status": "New Call",
         "dxcc_status": "ATNO",
-    }) is None
+    })
+    assert disabled_target is None
     assert disabled.last_decision["reason"] == "not-auto-call-start-message"
 
     enabled = DigitalAutomationController(
@@ -266,9 +268,8 @@ def test_treat_73_as_cq_allows_non_direct_73_activity_to_seed_auto_call():
         "dxcc_status": "ATNO",
     })
 
-    assert target is not None
-    assert target.call == "EA1AA"
-    assert enabled.next_target(auto_call_start_only=True, cq_only=True).call == "EA1AA"
+    assert target is None
+    assert enabled.last_decision["reason"] == "not-auto-call-start-message"
 
 
 def test_controller_ignores_calls_from_native_wsjtz_style_policy():
@@ -344,7 +345,7 @@ def test_controller_requires_heard_spot_before_calling():
     assert selected.reason == "new-dxcc"
 
 
-def test_controller_rejects_non_cq_decodes_as_auto_call_starters():
+def test_controller_rejects_non_cq_new_dxcc_as_priority_starter():
     controller = DigitalAutomationController(mycall="OM0RX")
     controller.apply_operator_settings({"automation": {"avoidLogged": True}})
 
@@ -486,7 +487,7 @@ def test_stale_heard_spot_is_not_called_hours_later():
     assert controller.last_decision["reason"] == "no-eligible-targets"
 
 
-def test_fresh_decode_revives_expired_target_for_73_hunting():
+def test_third_party_73_does_not_revive_expired_target():
     controller = DigitalAutomationController(mycall="OM0RX")
     controller.apply_operator_settings({
         "automation": {
@@ -522,14 +523,12 @@ def test_fresh_decode_revives_expired_target_for_73_hunting():
         "dxcc_status": "Confirmed",
     })
 
-    assert revived is first
-    assert revived.state == "heard"
-    selected = controller.next_target(auto_call_start_only=True, cq_only=True)
-    assert selected is not None
-    assert selected.call == "EA8ACW"
+    assert revived is None
+    assert first.state == "expired"
+    assert controller.last_decision["reason"] == "not-auto-call-start-message"
 
 
-def test_treat_73_as_cq_allows_auto_call_selection():
+def test_treat_73_as_cq_setting_cannot_allow_auto_call_selection():
     controller = DigitalAutomationController(mycall="OM0RX")
     controller.apply_operator_settings({
         "automation": {
@@ -551,10 +550,8 @@ def test_treat_73_as_cq_allows_auto_call_selection():
         "dxcc_status": "Confirmed",
     })
 
-    assert target is not None
-    selected = controller.next_target(auto_call_start_only=True, cq_only=True)
-    assert selected is not None
-    assert selected.call == "EA1AA"
+    assert target is None
+    assert controller.last_decision["reason"] == "not-auto-call-start-message"
 
 
 def test_raw_wsjtx_decode_row_is_normalized_before_auto_call_filter():
@@ -585,7 +582,7 @@ def test_raw_wsjtx_decode_row_is_normalized_before_auto_call_filter():
     assert selected.call == "G7UAK"
 
 
-def test_raw_wsjtx_73_row_is_eligible_when_treat_73_as_cq_enabled():
+def test_raw_wsjtx_73_row_is_never_eligible_for_new_qso():
     controller = DigitalAutomationController(mycall="OM0RX")
     controller.apply_operator_settings({
         "automation": {
@@ -606,12 +603,8 @@ def test_raw_wsjtx_73_row_is_eligible_when_treat_73_as_cq_enabled():
         "dxcc_status": "Confirmed",
     })
 
-    assert target is not None
-    assert target.call == "BA5AW"
-    assert target.message == "BA5AW PY1SX RR73"
-    selected = controller.next_target(auto_call_start_only=True, cq_only=True)
-    assert selected is not None
-    assert selected.call == "BA5AW"
+    assert target is None
+    assert controller.last_decision["reason"] == "not-auto-call-start-message"
 
 
 def test_treat_73_as_cq_disabled_keeps_73_lines_out_of_auto_call():
@@ -980,6 +973,7 @@ def test_spot_hunt_listens_for_unconfirmed_dxcc_before_calling():
         "band": "12m",
         "mode": "FT8",
         "source": "rbl",
+        "propagation": {"score": 80, "label": "GOOD"},
         "frequency_mhz": 24.915,
         "call_status": "Worked",
         "dxcc_status": "Worked",
@@ -1074,6 +1068,7 @@ def test_live_decoded_candidate_preempts_spot_listen_probe():
         "band": "12m",
         "mode": "FT8",
         "source": "rbl",
+        "propagation": {"score": 80, "label": "GOOD"},
         "frequency_mhz": 24.915,
         "dxcc_status": "ATNO",
     })
@@ -1102,7 +1097,7 @@ def test_live_decoded_candidate_preempts_spot_listen_probe():
     assert controller.last_decision["reason"] != "spot-listen-in-progress"
 
 
-def test_treat_73_candidate_preempts_spot_listen_probe():
+def test_third_party_73_cannot_preempt_spot_listen_probe():
     now = datetime(2026, 6, 5, 10, 15, tzinfo=timezone.utc)
     controller = DigitalAutomationController(mycall="OM0RX")
     controller.apply_operator_settings({
@@ -1119,6 +1114,7 @@ def test_treat_73_candidate_preempts_spot_listen_probe():
         "band": "12m",
         "mode": "FT8",
         "source": "rbl",
+        "propagation": {"score": 80, "label": "GOOD"},
         "frequency_mhz": 24.915,
         "dxcc_status": "ATNO",
     })
@@ -1136,11 +1132,9 @@ def test_treat_73_candidate_preempts_spot_listen_probe():
         "dxcc_status": "Confirmed",
     })
 
-    assert heard is not None
-    selected = controller.next_target(now=now + timedelta(seconds=5), auto_call_start_only=True, cq_only=True)
-    assert selected is not None
-    assert selected.call == "EA1AA"
-    assert controller.listen_target_key is None
+    assert heard is None
+    assert controller.last_decision["reason"] == "not-auto-call-start-message"
+    assert controller.listen_target_key is not None
 
 
 def test_spot_listen_respects_allowed_modes_after_mode_switching_off():
@@ -1170,6 +1164,7 @@ def test_spot_listen_respects_allowed_modes_after_mode_switching_off():
         "band": "30m",
         "mode": "FT8",
         "source": "rbl",
+        "propagation": {"score": 80, "label": "GOOD"},
         "frequency_mhz": 10.136,
         "dxcc_status": "ATNO",
     })
@@ -1258,6 +1253,7 @@ def test_active_listen_probe_is_cleared_when_mode_becomes_disabled():
         "band": "40m",
         "mode": "FT4",
         "source": "rbl",
+        "propagation": {"score": 80, "label": "GOOD"},
         "frequency_mhz": 7.0468,
         "dxcc_status": "ATNO",
     })
@@ -1293,6 +1289,7 @@ def test_spot_hunt_probe_expires_when_not_heard():
         "band": "12m",
         "mode": "FT8",
         "source": "cluster",
+        "propagation": {"score": 80, "label": "GOOD"},
         "frequency_mhz": 24.915,
         "call_status": "New Call",
         "dxcc_status": "ATNO",
@@ -1411,9 +1408,10 @@ def test_controller_records_attempts_and_backoff():
     backed_off = controller.record_attempt(target.key)
 
     assert backed_off is not None
-    assert backed_off.state == "backoff"
-    assert backed_off.backoff_until is not None
-    assert backed_off.backoff_until > datetime.now(timezone.utc)
+    assert backed_off.state == "calling"
+    assert backed_off.campaign_count == 2
+    assert backed_off.campaign_expires_at is not None
+    assert backed_off.backoff_until is None
     assert controller.next_target() is None
 
 
@@ -1773,6 +1771,112 @@ def test_priority_trace_shows_reply_to_us_as_emergency_top_score():
     assert trace[0]["score_reason"] == "reply-to-us"
 
 
+def test_cq_decode_does_not_inherit_stale_direct_reply_priority():
+    now = datetime.now(timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+
+    direct = controller.ingest_target({
+        "message": "OM0RX EA1SAL -10",
+        "callsign": "EA1SAL",
+        "band": "40m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "timestamp": now.isoformat(),
+        "call_status": "Confirmed",
+        "dxcc_status": "Confirmed",
+        "snr": -10,
+    })
+    assert direct is not None
+    assert direct.direct_caller is True
+    assert direct.score_reason == "reply-to-us"
+
+    cq = controller.ingest_target({
+        "message": "CQ EA1SAL IN71",
+        "callsign": "EA1SAL",
+        "band": "40m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "timestamp": (now + timedelta(seconds=15)).isoformat(),
+        "call_status": "New Band",
+        "dxcc_status": "Confirmed",
+        "snr": -6,
+    })
+
+    assert cq is not None
+    assert cq.direct_caller is False
+    assert cq.score < 99999
+    assert cq.score_reason != "reply-to-us"
+    assert "direct" not in cq.need_reasons
+
+
+def test_stale_direct_reply_is_not_used_as_emergency_override():
+    now = datetime.now(timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    active = controller.ingest_target({
+        "message": "CQ VK8RX PH57",
+        "callsign": "VK8RX",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "timestamp": now.isoformat(),
+        "dxcc_status": "ATNO",
+        "snr": -8,
+    })
+    assert active is not None
+    active.sync_state("selected", active_state="candidate_selected")
+    controller.active_target_key = active.key
+    controller.active_qso_state = "idle"
+
+    stale = controller.ingest_target({
+        "message": "OM0RX PA3DRI -10",
+        "callsign": "PA3DRI",
+        "band": "40m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "timestamp": (now - timedelta(minutes=5)).isoformat(),
+        "call_status": "Confirmed",
+        "dxcc_status": "Confirmed",
+        "snr": -10,
+    })
+    assert stale is not None
+    stale.last_heard_at = now - timedelta(minutes=5)
+
+    selected = controller.next_target(now=now, auto_call_start_only=True, cq_only=True)
+
+    assert selected is None
+    assert controller.active_target_key == active.key
+    assert controller.last_decision["reason"] == "active-qso-in-progress"
+
+
+def test_stale_direct_reply_is_blocked_in_reason_panel():
+    now = datetime.now(timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    stale = controller.ingest_target({
+        "message": "OM0RX PA3DRI -10",
+        "callsign": "PA3DRI",
+        "band": "40m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "timestamp": (now - timedelta(minutes=5)).isoformat(),
+        "call_status": "Confirmed",
+        "dxcc_status": "Confirmed",
+        "snr": -10,
+    })
+    assert stale is not None
+    stale.last_heard_at = now - timedelta(minutes=5)
+
+    rows = controller.status()["reason_panel"]["why_not_tx"]
+
+    row = next(item for item in rows if item["call"] == "PA3DRI")
+    assert row["action"] == "blocked"
+    assert "heard-target-too-old" in row["reason_codes"]
+
+
 def test_idle_state_direct_reply_overrides_stale_active_target():
     now = datetime.now(timezone.utc)
     controller = DigitalAutomationController(mycall="OM0RX")
@@ -1812,7 +1916,95 @@ def test_idle_state_direct_reply_overrides_stale_active_target():
     assert selected is not None
     assert selected.call == "PA3DRI"
     assert controller.targets[stale.key].state == "backoff"
-    assert any(entry["reason"] == "direct-reply-emergency" for entry in controller.status()["decision_log"])
+    assert any(entry.get("reason") == "direct-reply-emergency" for entry in controller.status()["decision_log"])
+
+
+def test_direct_reply_overrides_one_sided_calling_target():
+    now = datetime.now(timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    calling = controller.ingest_target({
+        "message": "CQ WD4OOZ EM73",
+        "callsign": "WD4OOZ",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "timestamp": now.isoformat(),
+        "call_status": "New Call",
+        "dxcc_status": "Worked",
+        "snr": -7,
+    })
+    assert calling is not None
+    selected = controller.next_target(now=now, auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    assert selected.call == "WD4OOZ"
+    controller.record_attempt(selected.key)
+    controller.handle_wsjtx_status({"dxCall": "WD4OOZ", "mode": "FT8", "band": "20m", "tx": True})
+    assert controller.status()["active_qso_state"] == "calling"
+
+    direct = controller.ingest_target({
+        "message": "K2JC OM0RX R-15",
+        "callsign": "K2JC",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "timestamp": (now + timedelta(seconds=1)).isoformat(),
+        "call_status": "Confirmed",
+        "dxcc_status": "Confirmed",
+        "snr": -15,
+    })
+    assert direct is not None
+    assert direct.direct_caller is True
+
+    reply = controller.next_target(now=now + timedelta(seconds=2), auto_call_start_only=True, cq_only=True)
+
+    assert reply is not None
+    assert reply.call == "K2JC"
+    assert controller.targets[calling.key].state == "backoff"
+    assert controller.status()["active_qso_state"] == "candidate_selected"
+    assert any(entry.get("reason") == "direct-reply-emergency" for entry in controller.status()["decision_log"])
+
+
+def test_direct_reply_does_not_override_real_qso_progress():
+    now = datetime.now(timezone.utc)
+    controller = DigitalAutomationController(mycall="OM0RX")
+    active = controller.ingest_target({
+        "message": "CQ WD4OOZ EM73",
+        "callsign": "WD4OOZ",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "timestamp": now.isoformat(),
+        "call_status": "New Call",
+        "dxcc_status": "Worked",
+        "snr": -7,
+    })
+    assert active is not None
+    selected = controller.next_target(now=now, auto_call_start_only=True, cq_only=True)
+    assert selected is not None
+    selected.sync_state("calling", active_state="waiting_rrr")
+    controller.active_target_key = selected.key
+    controller.active_qso_state = "waiting_rrr"
+
+    direct = controller.ingest_target({
+        "message": "K2JC OM0RX R-15",
+        "callsign": "K2JC",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "timestamp": (now + timedelta(seconds=1)).isoformat(),
+        "call_status": "Confirmed",
+        "dxcc_status": "Confirmed",
+        "snr": -15,
+    })
+    assert direct is not None
+
+    assert controller.next_target(now=now + timedelta(seconds=2), auto_call_start_only=True, cq_only=True) is None
+    assert controller.status()["active_target"]["call"] == "WD4OOZ"
+    assert controller.status()["last_decision"]["reason"] == "active-qso-protects-against-direct-reply"
 
 
 def test_wsjtz_qso_state_heartbeat_is_trusted_over_inference():
@@ -1852,6 +2044,50 @@ def test_wsjtz_qso_state_heartbeat_updates_without_active_target():
     assert normalise_wsjtz_qso_state({"qsoState": "wait rrr"}) == "waiting_rrr"
     assert outcome["status"] == "blocked"
     assert controller.status()["qso_state"] == "blocked"
+
+
+def test_wsjtz_impossible_busy_heartbeat_without_tx_is_cleared():
+    controller = DigitalAutomationController(mycall="OM0RX")
+
+    outcome = controller.handle_wsjtx_status({
+        "qsoState": "calling",
+        "dxCall": "",
+        "txEnabled": False,
+        "transmitting": True,
+    })
+
+    assert outcome["status"] == "idle"
+    assert outcome["qso_state"] == "idle"
+    assert controller.status()["active_qso_state"] == "idle"
+    assert controller.last_decision["reason"] == "invalid-wsjtz-busy-status"
+
+
+def test_wsjtz_heartbeat_cannot_bypass_unrelated_dx_call_guard():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    target = controller.ingest_target({
+        "message": "CQ VK8RX PH57",
+        "callsign": "VK8RX",
+        "mode": "FT8",
+        "band": "20m",
+        "dial_frequency": 14.074,
+        "source": "decoded",
+        "heard": True,
+        "dxcc_status": "ATNO",
+    })
+    assert target is not None
+    controller.active_target_key = target.key
+    target.sync_state("calling", active_state="calling")
+
+    outcome = controller.handle_wsjtx_status({
+        "qsoState": "waiting-73",
+        "dxCall": "K1ABC",
+        "mode": "FT8",
+        "band": "20m",
+    })
+
+    assert outcome["status"] == "observed"
+    assert outcome["decision"]["reason"] == "stale-or-unrelated-dx-call"
+    assert target.state == "calling"
 
 
 def test_controller_decision_log_explains_skip_queue_and_selection():
@@ -1979,7 +2215,7 @@ def test_safe_automation_soak_completes_ten_targets_without_duplicate_wavelog_lo
             auto_log_to_wavelog=True,
             max_attempts_per_target=5,
             dwell_seconds=30,
-            band_plan="05:20m,17m,15m,12m,10m\n20:30m,40m,80m,160m",
+            band_plan="00:20m,17m,15m,12m,10m",
         ),
     )
     fake_wavelog = _FakeWavelogClient()
@@ -2348,6 +2584,7 @@ def test_wsjtx_automation_tick_sends_spot_probe_as_listen_only(monkeypatch):
         "band": "15m",
         "mode": "FT8",
         "source": "rbl",
+        "propagation": {"score": 80, "label": "GOOD"},
         "frequency_mhz": 21.074,
         "call_status": "Worked",
         "dxcc_status": "Worked",
@@ -2475,7 +2712,7 @@ def test_heard_cluster_dxcc_hunt_arms_wsjtz_priority_watchdog(monkeypatch):
         "dxcc_status": "ATNO",
     })
     assert heard is not None
-    assert heard.source == "cluster"
+    assert heard.source == "decoded"
     assert heard.heard is True
 
     class FakeFt8Service:
@@ -2521,6 +2758,7 @@ def test_heard_cluster_dxcc_hunt_arms_wsjtz_priority_watchdog(monkeypatch):
     assert target_payload["enableTx"] is True
     assert target_payload["priorityHunt"] is True
     assert target_payload["watchdogMinutes"] == 20
+    assert target_payload["commandId"]
 
 
 def test_completed_cluster_dxcc_hunt_returns_wsjtz_to_origin(monkeypatch):
@@ -3166,3 +3404,117 @@ def test_planner_promote_and_skip_endpoints_do_not_select_or_tx(monkeypatch):
     assert skipped["target"]["state"] == "skipped"
     assert skipped["target"]["reason"] == "operator-removed"
     assert skipped["automation"]["active_target"] is None
+
+
+def test_spot_hunt_requires_favorable_propagation_before_qsy():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({"automation": {
+        "enabled": True,
+        "spotHuntEnabled": True,
+        "bandHopping": True,
+        "bandPlan": "00:20m,15m,10m",
+    }})
+    target = controller.ingest_target({
+        "callsign": "P29ABC",
+        "band": "15m",
+        "mode": "FT8",
+        "source": "cluster",
+        "frequency_mhz": 21.074,
+        "dxcc_status": "ATNO",
+        "propagation": {"score": 34, "label": "MARGINAL"},
+    })
+    assert target is not None
+    assert controller.next_listen_target() is None
+    assert controller.last_decision["rejected"]["unfavorable-propagation"] == 1
+
+
+def test_non_cq_decoded_atno_is_not_an_autocall_candidate():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({"automation": {
+        "enabled": True,
+        "requireHeardBeforeCall": True,
+        "allowedModes": {"FT8": True},
+    }})
+    target = controller.ingest_target({
+        "callsign": "P29ABC",
+        "message": "K1ABC P29ABC -05",
+        "band": "20m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "dxcc_status": "ATNO",
+    })
+    assert target is None
+    assert controller.last_decision["reason"] == "not-auto-call-start-message"
+
+
+@pytest.mark.parametrize(
+    ("message", "callsign"),
+    [
+        ("YT1QEA OE5HHR JN67", "YT1QEA"),
+        ("9A2KO SP9JP JO90", "9A2KO"),
+    ],
+)
+def test_observed_third_party_qso_never_becomes_callable_new_dxcc(message, callsign):
+    controller = DigitalAutomationController(mycall="OM0RX")
+
+    target = controller.ingest_target({
+        "callsign": callsign,
+        "message": message,
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "dxcc_status": "ATNO",
+    })
+
+    assert target is None
+    assert controller.last_decision["reason"] == "not-auto-call-start-message"
+
+
+def test_atno_waits_for_current_qso_then_becomes_next_target():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({"automation": {
+        "enabled": True,
+        "requireHeardBeforeCall": True,
+        "allowedModes": {"FT8": True},
+    }})
+    ordinary = controller.ingest_target({
+        "callsign": "DL1ABC", "message": "CQ DL1ABC JO50", "band": "20m",
+        "mode": "FT8", "source": "decoded", "heard": True,
+        "call_status": "New Band", "dxcc_status": "Confirmed",
+    })
+    assert ordinary is not None
+    assert controller.next_target(auto_call_start_only=True) is ordinary
+    controller.record_attempt(ordinary.key)
+
+    atno = controller.ingest_target({
+        "callsign": "P29ABC", "message": "CQ P29ABC QI30", "band": "20m",
+        "mode": "FT8", "source": "decoded", "heard": True, "dxcc_status": "ATNO",
+    })
+    assert atno is not None
+    assert controller.next_target(auto_call_start_only=True) is None
+    controller.mark_done(ordinary.key)
+    assert controller.next_target(auto_call_start_only=True) is atno
+
+
+def test_dxcc_campaign_runs_twenty_minutes_then_enters_five_minute_cooldown():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    controller.apply_operator_settings({"automation": {
+        "enabled": True,
+        "requireHeardBeforeCall": True,
+        "allowedModes": {"FT8": True},
+    }})
+    target = controller.ingest_target({
+        "callsign": "P29ABC", "message": "CQ P29ABC QI30", "band": "20m",
+        "mode": "FT8", "source": "decoded", "heard": True, "dxcc_status": "ATNO",
+    })
+    assert target is not None
+    assert controller.next_target(auto_call_start_only=True) is target
+    controller.record_attempt(target.key)
+    assert target.campaign_expires_at == target.campaign_started_at + timedelta(minutes=20)
+
+    campaign_expires_at = target.campaign_expires_at
+    controller.next_target(now=campaign_expires_at + timedelta(seconds=1), auto_call_start_only=True)
+    assert target.state == "backoff"
+    assert target.backoff_until == campaign_expires_at + timedelta(minutes=5, seconds=1)

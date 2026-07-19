@@ -148,6 +148,24 @@ const websocketMethods = {
             log('error', 'api', 'Failed to fetch status:', error);
         }
     },
+
+    startRadioStatusReconciliation() {
+        if (this.radioStatusReconciliationTimer) {
+            clearInterval(this.radioStatusReconciliationTimer);
+        }
+        // WebSocket remains the fast path. This low-rate authoritative read is
+        // the safety net for browser suspension or a dropped change frame.
+        this.radioStatusReconciliationTimer = setInterval(() => {
+            this.fetchInitialStatus();
+        }, 10000);
+    },
+
+    stopRadioStatusReconciliation() {
+        if (this.radioStatusReconciliationTimer) {
+            clearInterval(this.radioStatusReconciliationTimer);
+            this.radioStatusReconciliationTimer = null;
+        }
+    },
     
     async loadConfig() {
         try {

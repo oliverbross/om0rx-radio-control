@@ -15,6 +15,8 @@ INDEX = FRONTEND / "index.html"
 RADIO_CONTROLS = FRONTEND / "js" / "radio-controls.js"
 DX_SPOTS = FRONTEND / "js" / "dx-spots.js"
 VISUAL_MAP_STANDALONE = FRONTEND / "js" / "visual-map-standalone.js"
+ROTOR_COMPASS_HTML = FRONTEND / "rotor-compass.html"
+ROTOR_COMPASS_JS = FRONTEND / "js" / "rotor-compass.js"
 COMPACT_RADIO_PARTIAL = FRONTEND / "templates" / "partials" / "compact-radio-controls.html"
 SOURCE_MONITOR_PARTIAL = FRONTEND / "templates" / "partials" / "spots-source-monitor.html"
 DX_SPOTS_TEMPLATE = FRONTEND / "templates" / "dx-spots.html"
@@ -80,6 +82,16 @@ def test_wavelog_stats_refresh_after_qso_contract():
     assert "!options.force" in utils
 
 
+def test_wsjtx_logged_qso_result_modal_contract():
+    handler = (FRONTEND / "js" / "wsjtx-handler.js").read_text(encoding="utf-8")
+
+    assert "case 'wsjtx_log_result':" in handler
+    assert "function handleWsjtxLogResult(data)" in handler
+    assert "showWsjtxSaveModal(status, modalData)" in handler
+    assert "Auto-closing in <span class=\"wsjtx-modal-timer\">6</span>s" in handler
+    assert "showSaveModal: showWsjtxSaveModal" in handler
+
+
 def test_obvious_frontend_junk_is_not_tracked():
     assert not (FRONTEND / "conosle.log").exists(), "frontend/conosle.log should not exist"
 
@@ -109,7 +121,6 @@ def test_rotator_frontend_resolution_contract():
 
 def test_compact_radio_controls_are_shared_and_persistent():
     row1 = (FRONTEND / "templates" / "controls-row1.html").read_text(encoding="utf-8")
-    legacy_section = (FRONTEND / "controls-section.html").read_text(encoding="utf-8")
     partial = COMPACT_RADIO_PARTIAL.read_text(encoding="utf-8")
     radio_controls = RADIO_CONTROLS.read_text(encoding="utf-8")
     core = (FRONTEND / "js" / "core.js").read_text(encoding="utf-8")
@@ -117,9 +128,7 @@ def test_compact_radio_controls_are_shared_and_persistent():
 
     include = "<!-- @include templates/partials/compact-radio-controls.html -->"
     assert include in row1
-    assert include in legacy_section
     assert row1.count("compact-radio-row") == 0
-    assert legacy_section.count("compact-radio-row") == 0
 
     for token in (
         "getRadioLayoutPreset()",
@@ -307,6 +316,46 @@ def test_visual_map_native_window_launcher_contract():
     assert "def _resolve_visual_map_url(self, url=None):" in launcher
 
 
+def test_rotor_compass_window_contract():
+    partial = COMPACT_RADIO_PARTIAL.read_text(encoding="utf-8")
+    detailed_controls = (FRONTEND / "templates" / "controls-row3.html").read_text(encoding="utf-8")
+    radio_controls = RADIO_CONTROLS.read_text(encoding="utf-8")
+    app_main = APP_MAIN.read_text(encoding="utf-8")
+    html = ROTOR_COMPASS_HTML.read_text(encoding="utf-8")
+    script = ROTOR_COMPASS_JS.read_text(encoding="utf-8")
+    launcher = LAUNCH_WINDOWS.read_text(encoding="utf-8")
+
+    assert "openRotorCompassWindow" in partial
+    assert "rotor-compass-btn" in partial
+    assert "openRotorCompassWindow" in detailed_controls
+    assert "rotor-compass-btn" in detailed_controls
+    assert "openRotorCompassWindow" in radio_controls
+    assert "open_rotor_compass_window" in radio_controls
+    assert "rotor-compass.html" in radio_controls
+    assert "rotorCompassWindow" in app_main
+
+    assert 'data-rotor-compass-standalone="true"' in html
+    assert "rotor-compass.css" in html
+    assert "js/rotor-compass.js" in html
+
+    assert "/api/rotor/status?fresh=1" in script
+    assert "/api/rotor/auto/status" in script
+    assert "/api/country/data" in script
+    assert "convertTopoJsonToFeatures" in script
+    assert "maidenheadToLatLon" in script
+    assert "angularDistanceAndBearing" in script
+    assert "setZoom" in script
+    assert "drawGrayline" in script
+    assert "getSunSubpoint" in script
+    assert "graylineEnabled" in script
+    assert "beamWidth = 260" in script
+    assert "ResizeObserver" in script
+
+    assert "ROTOR_COMPASS_WINDOW_CONFIG" in launcher
+    assert "def open_rotor_compass_window(self):" in launcher
+    assert "self._rotor_compass_window" in launcher
+
+
 if __name__ == "__main__":
     test_required_modules_load_before_app_main()
     test_required_modules_expose_expected_globals()
@@ -319,4 +368,5 @@ if __name__ == "__main__":
     test_visual_spots_map_contract()
     test_visual_map_standalone_window_contract()
     test_visual_map_native_window_launcher_contract()
+    test_rotor_compass_window_contract()
     print("Frontend module contract smoke checks passed")

@@ -28,6 +28,13 @@ if ($env:BACKEND_PORT) {
 }
 
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$LocalSecretsPath = Join-Path $ProjectRoot "settings\local_secrets.json"
+if (-not $env:WSJTX_BRIDGE_TOKEN -and (Test-Path -LiteralPath $LocalSecretsPath)) {
+    try {
+        $LocalSecrets = Get-Content -LiteralPath $LocalSecretsPath -Raw | ConvertFrom-Json
+        if ($LocalSecrets.WSJTX_BRIDGE_TOKEN) { $env:WSJTX_BRIDGE_TOKEN = [string]$LocalSecrets.WSJTX_BRIDGE_TOKEN }
+    } catch { Write-Warning "Could not read the local bridge token; bridge commands will remain loopback-only." }
+}
 $LogDir = Join-Path $ProjectRoot "logs"
 $BridgeScript = Join-Path $ProjectRoot "bridge\sdc-bridge-server.js"
 $LauncherScript = Join-Path $ProjectRoot "scripts\launch\launch_windows.py"
@@ -84,6 +91,27 @@ function Test-ProtectedProcessId {
     return (Get-ProtectedProcessIds) -contains $ProcessId
 }
 
+function Test-ProjectOwnedProcessId {
+    param([int]$ProcessId)
+
+    $seen = @()
+    $current = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    while ($current -and $seen -notcontains [int]$current.ProcessId) {
+        $seen += [int]$current.ProcessId
+        if ($current.CommandLine -and $current.CommandLine -match [regex]::Escape($ProjectRoot)) {
+            return $true
+        }
+
+        $parentId = [int]$current.ParentProcessId
+        if ($parentId -le 0) {
+            break
+        }
+        $current = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
+    }
+
+    return $false
+}
+
 function Stop-ProcessTree {
     param([int]$ProcessId)
 
@@ -123,10 +151,14 @@ function Stop-ProcessId {
 function Stop-ProcessesOnPort {
     param([int]$Port)
 
-    $owners = @(Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue |
+    $owners = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty OwningProcess -Unique)
 
     foreach ($owner in $owners) {
+        $ownerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $owner" -ErrorAction SilentlyContinue
+        if (-not (Test-ProjectOwnedProcessId -ProcessId $owner)) {
+            throw "Port $Port is owned by unrelated PID $owner ($($ownerProcess.Name)). Stop it manually or choose another port."
+        }
         Stop-ProcessId -ProcessId $owner -Reason "port $Port is already in use"
     }
 }
@@ -148,8 +180,8 @@ function Stop-ProjectProcesses {
             $protectedProcessIds -notcontains [int]$_.ProcessId -and
             $commandLine -and
             (
-                ($commandLine -match [regex]::Escape($ProjectRoot) -and ($patterns | Where-Object { $commandLine -like "*$_*" })) -or
-                $commandLine -like "*backend.main:app*"
+                $commandLine -match [regex]::Escape($ProjectRoot) -and
+                ($patterns | Where-Object { $commandLine -like "*$_*" })
             )
         }
 
@@ -330,17 +362,20 @@ try {
 
         if ($launcherProcess -and $launcherProcess.HasExited) {
             $launcherRuntime = ((Get-Date) - $launcherStartedAt).TotalSeconds
-            if ($launcherRuntime -lt 10) {
+            if ($launcherProcess.ExitCode -ne 0) {
                 Write-Host "⚠️ Launcher exited after $([math]::Round($launcherRuntime, 1))s; services will stay running." -ForegroundColor Yellow
                 Write-Host "   Open $BackendUrl directly, or inspect:" -ForegroundColor Yellow
                 Write-Host "   $LauncherStdoutLog" -ForegroundColor Gray
                 Write-Host "   $LauncherStderrLog" -ForegroundColor Gray
-                $launcherProcess = $null
-                continue
+            }
+            else {
+                Write-Host "👋 Launcher windows closed; background services remain available." -ForegroundColor Cyan
             }
 
-            Write-Host "👋 Launcher windows closed" -ForegroundColor Cyan
-            break
+            # The launcher owns desktop windows, not the service lifecycle. A
+            # closed or failed window must never tear down a healthy backend.
+            $launcherProcess = $null
+            continue
         }
 
         Start-Sleep -Seconds 1

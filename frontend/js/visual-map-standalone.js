@@ -231,7 +231,6 @@
             },
 
             refreshStandaloneFallback() {
-                this.visualFallbackFilterKey = '';
                 this.loadSpotSourceStats();
                 this.loadVisualFallbackSpots();
             },

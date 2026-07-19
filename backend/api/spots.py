@@ -5,8 +5,8 @@ Handles DX spot tuning, filtering, and spot management endpoints
 
 import logging
 import asyncio
-from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field
 from typing import Any, Dict, Optional, List
 
 logger = logging.getLogger(__name__)
@@ -15,8 +15,13 @@ router = APIRouter()
 
 
 class SpotTuneRequest(BaseModel):
-    frequency: float
+    frequency: float = Field(ge=0.01, le=6000)
     mode: Optional[str] = None
+    callsign: Optional[str] = None
+    spotter: Optional[str] = None
+    comment: Optional[str] = None
+    source: Optional[str] = None
+    tag: Optional[str] = None
 
 
 class SpotPopoutCommandRequest(BaseModel):
@@ -27,7 +32,7 @@ class SpotPopoutCommandRequest(BaseModel):
 
 class SpotFilterRequest(BaseModel):
     """Request model for filtered spot search"""
-    limit: int = 100
+    limit: int = Field(default=100, ge=1, le=500)
     callsign: Optional[str] = None
     bands: Optional[List[str]] = None
     modes: Optional[List[str]] = None
@@ -66,6 +71,62 @@ def _radio_mode_for_spot(mode: Optional[str], frequency_mhz: Optional[float]) ->
 
     valid_modes = {"AM", "LSB", "USB", "CW", "NFM", "DIGL", "DIGU", "FM", "SAM", "DFM", "RTTY"}
     return value if value in valid_modes else value
+
+
+async def _halt_tx_before_qsy(flex: Any, frequency_mhz: float) -> Dict[str, Any]:
+    """Stop digital TX before changing dial frequency.
+
+    SmartSDR drops PTT when a CAT client changes frequency during a TX slot.
+    Without this interlock WSJT-Z continues playing the slot and still reports
+    ``transmitting=true``, even though the radio has returned to RX.
+    """
+    current_frequency = getattr(flex, "current_freq", None)
+    try:
+        frequency_changed = current_frequency is None or abs(float(current_frequency) - float(frequency_mhz)) > 0.0005
+    except (TypeError, ValueError):
+        frequency_changed = True
+
+    result: Dict[str, Any] = {
+        "frequency_changed": frequency_changed,
+        "wsjtx_halted": False,
+        "radio_dekeyed": False,
+    }
+    if not frequency_changed:
+        return result
+
+    try:
+        from services.wsjtx import get_wsjtx_service
+
+        wsjtx = get_wsjtx_service()
+        bridge_status = await asyncio.to_thread(wsjtx.get_bridge_status)
+        stats = bridge_status.get("stats") if isinstance(bridge_status, dict) else {}
+        last_status = stats.get("lastStatus") if isinstance(stats, dict) else {}
+        wsjtx_tx_active = bool(
+            isinstance(last_status, dict)
+            and (last_status.get("transmitting") or last_status.get("txEnabled"))
+        )
+        if wsjtx_tx_active:
+            halt_result = await asyncio.to_thread(
+                wsjtx.send_bridge_command,
+                "halt_tx",
+                {"autoOnly": False, "reason": "radio-qsy"},
+            )
+            if isinstance(halt_result, dict) and halt_result.get("success") is False:
+                raise HTTPException(status_code=409, detail="WSJT-X did not acknowledge halt before QSY")
+            result["wsjtx_halted"] = True
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # A stopped/unconfigured bridge must not prevent normal non-digital
+        # tuning. The radio-side MOX guard below remains authoritative.
+        logger.debug("WSJT-X pre-QSY status check unavailable: %s", exc)
+
+    if getattr(flex, "current_mox", None) is True:
+        if not flex.set_mox(False):
+            raise HTTPException(status_code=409, detail="Radio could not be returned to RX before QSY")
+        result["radio_dekeyed"] = True
+
+    return result
 
 
 def _spot_timestamp_seconds(spot: Dict[str, Any]) -> float:
@@ -346,6 +407,24 @@ async def _refresh_uncertain_spot_classifications(
         spot["dxcc_status_source"] = "verified"
 
 
+async def _enrich_worked_before_dates(app_state: Any, spots: List[Dict[str, Any]]) -> None:
+    """Attach latest exact call/band/mode QSO dates from the local QSO index."""
+    classifier = getattr(app_state, "classifier", None)
+    store = getattr(classifier, "qso_status_store", None) if classifier else None
+    if not store or not hasattr(store, "worked_before_date") or not spots:
+        return
+
+    def enrich() -> None:
+        for spot in spots:
+            spot["worked_before_date"] = store.worked_before_date(
+                spot.get("callsign"),
+                spot.get("band"),
+                spot.get("mode"),
+            )
+
+    await asyncio.to_thread(enrich)
+
+
 @router.get("/api/spots")
 async def get_spots(
     request: Request,
@@ -358,9 +437,7 @@ async def get_spots(
 ):
     """Get DX spots with optional filtering (from cache only)"""
     dx_spots_cache = getattr(request.app.state, 'dx_spots_cache', [])
-    await _refresh_uncertain_spot_classifications(request.app.state, dx_spots_cache)
-    _enrich_spot_cty_locations(request.app.state, dx_spots_cache)
-    filtered_spots = dx_spots_cache
+    filtered_spots = [dict(spot) for spot in dx_spots_cache]
     
     # Apply filters
     if band:
@@ -387,31 +464,18 @@ async def get_spots(
         specials = set(special.split(','))
         filtered_spots = [s for s in filtered_spots if s.get('special') in specials or ('(none)' in specials and not s.get('special'))]
 
-    try:
-        from radio_control.spot_intelligence import enrich_spot_intelligence
-        from radio_control.local_heard import correlate_local_heard
-        from services.ft8_service import get_ft8_service
-        from radio_control import config as app_config
-        from activity_intelligence.services import get_activity_intelligence_service
-
-        decoded_messages = get_ft8_service().get_decoded_messages(limit=100)
-        activity_intelligence = get_activity_intelligence_service()
-        for spot in filtered_spots:
-            correlate_local_heard(spot, decoded_messages, mycall=getattr(app_config, "MY_STATION", ""))
-            enrich_spot_intelligence(spot)
-            activity_intelligence.enrich_spot(spot)
-    except Exception:
-        logger.debug("Could not enrich cached spots with intelligence fields", exc_info=True)
-    
-    return {"spots": filtered_spots}
+    await _enrich_worked_before_dates(request.app.state, filtered_spots)
+    return {"spots": filtered_spots, "source": "live_snapshot"}
 
 
 @router.get("/api/spots/live-cache")
 async def get_live_spot_cache(request: Request, limit: int = 250):
-    """Return current in-memory spot cache rows without expensive enrichment."""
+    """Return current in-memory spots with cheap local worked-date enrichment."""
     dx_spots_cache = getattr(request.app.state, "dx_spots_cache", [])
     safe_limit = max(1, min(int(limit or 250), 500))
-    return {"spots": [dict(spot) for spot in dx_spots_cache[:safe_limit]]}
+    spots = [dict(spot) for spot in dx_spots_cache[:safe_limit]]
+    await _enrich_worked_before_dates(request.app.state, spots)
+    return {"spots": spots}
 
 
 @router.post("/api/spots/popout-command")
@@ -627,7 +691,7 @@ async def search_filtered_spots(req: SpotFilterRequest, request: Request):
         logger.info(f"🔍 Filtered search: callsign={req.callsign}, bands={req.bands}, modes={req.modes}, limit={req.limit}")
         
         spots_logger = get_spots_logger()
-        spots = spots_logger.get_filtered_spots(
+        spots = await asyncio.to_thread(spots_logger.get_filtered_spots,
             limit=req.limit,
             callsign=req.callsign,
             bands=req.bands,
@@ -643,24 +707,9 @@ async def search_filtered_spots(req: SpotFilterRequest, request: Request):
             sort_by=req.sort_by,
         )
         _enrich_spot_cty_locations(request.app.state, spots)
-        if not req.visual_map:
-            try:
-                from radio_control.local_heard import correlate_local_heard
-                from radio_control.spot_intelligence import enrich_spot_intelligence
-                from services.ft8_service import get_ft8_service
-                from radio_control import config as app_config
-                from activity_intelligence.services import get_activity_intelligence_service
-
-                decoded_messages = get_ft8_service().get_decoded_messages(limit=100)
-                activity_intelligence = get_activity_intelligence_service()
-                for spot in spots:
-                    correlate_local_heard(spot, decoded_messages, mycall=getattr(app_config, "MY_STATION", ""))
-                    enrich_spot_intelligence(spot)
-                    activity_intelligence.enrich_spot(spot)
-                if req.sort_by == "score":
-                    spots.sort(key=lambda spot: (spot.get("spot_score", 0), spot.get("timestamp", 0)), reverse=True)
-            except Exception:
-                logger.debug("Could not correlate filtered spots with local decodes", exc_info=True)
+        await _enrich_worked_before_dates(request.app.state, spots)
+        if req.sort_by == "score":
+            spots.sort(key=lambda spot: (spot.get("spot_score", 0), spot.get("timestamp", 0)), reverse=True)
         
         logger.debug(f"✓ Filtered search returned {len(spots)} spots (using pre-computed classifications from database)")
         return {"ok": True, "spots": spots, "count": len(spots)}
@@ -713,6 +762,11 @@ async def tune_to_spot(req: SpotTuneRequest, request: Request):
     try:
         # Import broadcast function
         from services.websocket import broadcast_status
+
+        # A CAT frequency change while WSJT-Z is keyed makes SmartSDR drop
+        # PTT while WSJT-Z continues to display a false TX state. Halt/dekey
+        # first so the QSY and the next TX slot cannot race.
+        tx_interlock = await _halt_tx_before_qsy(flex, req.frequency)
         
         # Tune frequency
         success = flex.tune_mhz(req.frequency)
@@ -733,7 +787,7 @@ async def tune_to_spot(req: SpotTuneRequest, request: Request):
             update["mode"] = radio_mode
         await broadcast_status(update)
         
-        return {"success": True, "mode": radio_mode}
+        return {"success": True, "mode": radio_mode, "tx_interlock": tx_interlock}
     except HTTPException:
         raise
     except Exception as e:
@@ -791,7 +845,7 @@ async def get_spots_source_stats(request: Request, fast: bool = False):
             "live": live_stats,
             "all_time": {},
             "windows": [],
-            "error": str(e),
+            "error": "Spot source statistics are unavailable",
         }
 
 
@@ -805,7 +859,7 @@ async def get_spots_stats_by_band(date: Optional[str] = None):
         return {"ok": True, "data": stats, "date_filter": date}
     except Exception as e:
         logger.error(f"Error getting band statistics: {e}", exc_info=True)
-        return {"ok": False, "data": [], "date_filter": date, "error": str(e)}
+        return {"ok": False, "data": [], "date_filter": date, "error": "Band statistics are unavailable"}
 
 
 @router.get("/api/spots/stats/mode")
@@ -818,7 +872,7 @@ async def get_spots_stats_by_mode(date: Optional[str] = None):
         return {"ok": True, "data": stats, "date_filter": date}
     except Exception as e:
         logger.error(f"Error getting mode statistics: {e}", exc_info=True)
-        return {"ok": False, "data": [], "date_filter": date, "error": str(e)}
+        return {"ok": False, "data": [], "date_filter": date, "error": "Mode statistics are unavailable"}
 
 
 @router.get("/api/spots/stats/country")
@@ -834,7 +888,7 @@ async def get_spots_stats_by_country(
         return {"ok": True, "data": stats, "limit": limit, "date_filter": date}
     except Exception as e:
         logger.error(f"Error getting country statistics: {e}", exc_info=True)
-        return {"ok": False, "data": [], "limit": limit, "date_filter": date, "error": str(e)}
+        return {"ok": False, "data": [], "limit": limit, "date_filter": date, "error": "Country statistics are unavailable"}
 
 
 @router.get("/api/spots/special")
@@ -847,22 +901,32 @@ async def get_special_event_spots(limit: int = 100):
         return {"ok": True, "data": spots, "count": len(spots)}
     except Exception as e:
         logger.error(f"Error getting special event spots: {e}", exc_info=True)
-        return {"ok": False, "data": [], "count": 0, "error": str(e)}
+        return {"ok": False, "data": [], "count": 0, "error": "Special spots are unavailable"}
 
 
 @router.get("/api/spots/recent")
-async def get_recent_spots(request: Request, limit: int = 999999):
-    """Get recent spots from persistent database (not just cache)"""
+async def get_recent_spots(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+    before: Optional[str] = Query(default=None, max_length=64),
+):
+    """Return one bounded, newest-first page from the persistent database."""
     try:
         from radio_control.spots_logger import get_spots_logger
         spots_logger = get_spots_logger()
-        spots = spots_logger.get_recent_spots(limit)
-        return {"spots": spots}
-    except Exception as e:
-        logger.error(f"Error getting recent spots: {e}")
-        # Fallback to cache if database is unavailable
-        dx_spots_cache = getattr(request.app.state, 'dx_spots_cache', [])
-        return {"spots": dx_spots_cache[:limit]}
+        spots = await asyncio.to_thread(spots_logger.get_recent_spots, limit, before)
+        await _enrich_worked_before_dates(request.app.state, spots)
+        next_cursor = spots[-1].get("received_at") if len(spots) == limit else None
+        return {
+            "success": True,
+            "spots": spots,
+            "count": len(spots),
+            "next_cursor": next_cursor,
+            "source": "spots_database",
+        }
+    except Exception:
+        logger.exception("Persistent spots query failed")
+        raise HTTPException(status_code=503, detail="Spots database is unavailable")
 
 
 @router.get("/api/spots/callsign/{callsign}")
@@ -871,7 +935,8 @@ async def get_spots_by_callsign(callsign: str, request: Request, limit: int = 10
     try:
         from radio_control.spots_logger import get_spots_logger
         spots_logger = get_spots_logger()
-        spots = spots_logger.get_spots_by_callsign(callsign, limit)
+        spots = await asyncio.to_thread(spots_logger.get_spots_by_callsign, callsign, limit)
+        await _enrich_worked_before_dates(request.app.state, spots)
         return {"callsign": callsign, "count": len(spots), "spots": spots}
     except Exception as e:
         logger.error(f"Error getting spots for {callsign}: {e}")
@@ -884,36 +949,26 @@ async def get_spots_by_callsign(callsign: str, request: Request, limit: int = 10
 
 @router.post("/api/spots/add-to-radio")
 async def add_spot_to_radio(req: SpotTuneRequest, request: Request):
-    """Tune to DX spot frequency and optionally change mode (alias for /api/spots/tune)"""
+    """Add a DX spot marker to SmartSDR without changing radio frequency."""
     flex = getattr(request.app.state, 'flex', None)
     
     if not flex:
         return {"success": False, "error": "Radio not initialized"}
     
     try:
-        # Import broadcast function
-        from services.websocket import broadcast_status
-        
-        # Tune frequency
-        success = flex.tune_mhz(req.frequency)
+        radio_mode = _radio_mode_for_spot(req.mode, req.frequency) or (req.mode or "")
+        success = flex.add_spot(
+            req.frequency,
+            req.callsign or "",
+            radio_mode,
+            req.source or "OM0RX",
+            req.spotter or "Cluster",
+            req.comment or "",
+        )
         if not success:
-            return {"success": False, "error": "Tune command failed"}
-        
-        radio_mode = _radio_mode_for_spot(req.mode, req.frequency)
+            return {"success": False, "error": "SmartSDR spot add failed"}
 
-        # Set mode if provided
-        if radio_mode:
-            mode_success = flex.set_mode(radio_mode)
-            if not mode_success:
-                logger.warning(f"Mode change to {radio_mode} failed, but frequency changed")
-        
-        # Broadcast status update
-        update = {"frequency": req.frequency}
-        if radio_mode:
-            update["mode"] = radio_mode
-        await broadcast_status(update)
-        
-        return {"success": True, "mode": radio_mode}
+        return {"success": True, "mode": radio_mode, "tuned": False}
     except Exception as e:
         logger.error(f"Add spot to radio error: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": "Callsign spot history is unavailable"}

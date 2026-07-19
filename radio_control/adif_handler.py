@@ -8,6 +8,7 @@ from typing import Dict, Any
 from datetime import datetime
 from pathlib import Path
 from radio_control import config
+from radio_control.persistence import durable_append_text
 logger = logging.getLogger(__name__)
 
 
@@ -96,6 +97,12 @@ class ADIFHandler:
         
         if qso.get('wwff'):
             record += f"\n{self._format_adif_field('WWFF_REF', qso['wwff'])}"
+
+        if qso.get('sig'):
+            record += f"\n{self._format_adif_field('SIG', qso['sig'])}"
+
+        if qso.get('sig_info'):
+            record += f"\n{self._format_adif_field('SIG_INFO', qso['sig_info'])}"
         
         # Comments/Notes
         if qso.get('notes'):
@@ -122,26 +129,14 @@ class ADIFHandler:
         
         for attempt in range(max_retries):
             try:
-                # Create file if it doesn't exist
-                if not self.log_path.exists():
-                    try:
-                        with open(self.log_path, 'w', encoding='utf-8') as f:
-                            f.write(self.ADIF_HEADER + "\n\n")
-                        logger.info(f"✅ Created ADIF log file: {self.log_path}")
-                    except (IOError, OSError) as e:
-                        logger.warning(f"Failed to create ADIF file on attempt {attempt+1}: {str(e)}")
-                        if attempt < max_retries - 1:
-                            time.sleep(retry_delay)
-                            retry_delay *= 2  # Exponential backoff
-                            continue
-                        raise
-                
                 # Append QSO record with explicit encoding and error handling
                 adif_record = self._qso_to_adif_record(qso)
                 try:
-                    with open(self.log_path, 'a', encoding='utf-8') as f:
-                        f.write(adif_record + "\n\n")
-                        f.flush()  # Explicitly flush to disk
+                    durable_append_text(
+                        self.log_path,
+                        adif_record + "\n\n",
+                        prefix_if_missing=self.ADIF_HEADER + "\n\n",
+                    )
                 except (IOError, OSError) as e:
                     logger.warning(f"Failed to write ADIF record on attempt {attempt+1}: {str(e)}")
                     if attempt < max_retries - 1:
@@ -277,7 +272,6 @@ class ADIFHandler:
         import re
         pattern = r'<([A-Z_]+):(\d+)>'
         
-        pos = 0
         for match in re.finditer(pattern, record):
             field_name = match.group(1).lower()
             field_length = int(match.group(2))

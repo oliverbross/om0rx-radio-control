@@ -163,6 +163,20 @@ class PostgresWavelogSync(WavelogDuckDBSync):
             )
         return "updated" if exists else "added"
 
+    def _reconcile_deleted_records(self, conn) -> int:
+        source_ids = self._fetch_source_ids()
+        with conn.cursor() as cur:
+            # Legacy/imported rows may have no Wavelog primary key. They cannot be
+            # reconciled against the source and previously crashed int(None).
+            cur.execute("DELETE FROM qso_records WHERE wavelog_id IS NULL")
+            invalid_count = max(cur.rowcount, 0)
+            cur.execute("SELECT wavelog_id FROM qso_records WHERE wavelog_id IS NOT NULL")
+            stale_ids = sorted({int(row[0]) for row in cur.fetchall()} - source_ids)
+            for start in range(0, len(stale_ids), 500):
+                batch = stale_ids[start:start + 500]
+                cur.execute("DELETE FROM qso_records WHERE wavelog_id = ANY(%s)", (batch,))
+        return invalid_count + len(stale_ids)
+
     def sync(self, batch_size: int = 1000) -> Dict[str, Any]:
         self._sync_active = True
         try:
@@ -195,34 +209,26 @@ class PostgresWavelogSync(WavelogDuckDBSync):
                     batch_added = 0
                     batch_updated = 0
                     for wavelog_record in wavelog_records:
-                        try:
-                            record = self._convert_wavelog_to_duckdb(wavelog_record)
-                            action = self._upsert_record(conn, record)
-                            if action == "added":
-                                added_count += 1
-                                batch_added += 1
-                            else:
-                                updated_count += 1
-                                batch_updated += 1
+                        record = self._convert_wavelog_to_duckdb(wavelog_record)
+                        action = self._upsert_record(conn, record)
+                        if action == "added":
+                            added_count += 1
+                            batch_added += 1
+                        else:
+                            updated_count += 1
+                            batch_updated += 1
 
-                            record_modified = wavelog_record.get("last_modified")
-                            record_id = wavelog_record.get("COL_PRIMARY_KEY")
-                            if is_initial_sync and record_id and record_id > initial_cursor_id:
-                                initial_cursor_id = record_id
-                            if record_modified and (latest_modified is None or record_modified > latest_modified):
-                                latest_modified = record_modified
-                                latest_id = record_id
-                            elif record_modified == latest_modified and record_id > latest_id:
-                                latest_id = record_id
-                            elif is_initial_sync and latest_modified is None and record_id > latest_id:
-                                latest_id = record_id
-                        except Exception as exc:
-                            logger.error(
-                                "❌ Error processing Wavelog record %s: %s",
-                                wavelog_record.get("COL_PRIMARY_KEY"),
-                                exc,
-                            )
-                            continue
+                        record_modified = wavelog_record.get("last_modified")
+                        record_id = wavelog_record.get("COL_PRIMARY_KEY")
+                        if is_initial_sync and record_id and record_id > initial_cursor_id:
+                            initial_cursor_id = record_id
+                        if record_modified and (latest_modified is None or record_modified > latest_modified):
+                            latest_modified = record_modified
+                            latest_id = record_id
+                        elif record_modified == latest_modified and record_id > latest_id:
+                            latest_id = record_id
+                        elif is_initial_sync and latest_modified is None and record_id > latest_id:
+                            latest_id = record_id
 
                     conn.commit()
                     total_records = self._count_records(conn)
@@ -237,6 +243,7 @@ class PostgresWavelogSync(WavelogDuckDBSync):
                     if not is_initial_sync or len(wavelog_records) < batch_size:
                         break
 
+                deleted_count = self._reconcile_deleted_records(conn)
                 conn.commit()
                 total_records = self._count_records(conn)
                 self._update_sync_metadata(conn, latest_modified, latest_id, total_records, added_count, updated_count)
@@ -249,6 +256,7 @@ class PostgresWavelogSync(WavelogDuckDBSync):
                     "total_records": total_records,
                     "last_sync_added": added_count,
                     "last_sync_updated": updated_count,
+                    "last_sync_deleted": deleted_count,
                     "last_sync_error": None,
                     "status": "ok",
                 }
@@ -256,6 +264,7 @@ class PostgresWavelogSync(WavelogDuckDBSync):
                     "synced": True,
                     "records_added": added_count,
                     "records_updated": updated_count,
+                    "records_deleted": deleted_count,
                     "total_records": total_records,
                     "message": f"Synced {added_count + updated_count} records from Wavelog",
                 }

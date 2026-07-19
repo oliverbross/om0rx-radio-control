@@ -11,7 +11,10 @@ def _same_text(left: Any, right: Any) -> bool:
 
 
 def _confirmed(qso: dict[str, Any]) -> bool:
-    return str(qso.get("lotw_qsl") or qso.get("lotw_rcvd") or "").strip().upper() in {"Y", "YES", "1", "TRUE"}
+    return any(
+        str(qso.get(field) or "").strip().upper() in {"Y", "V", "YES", "1", "TRUE"}
+        for field in ("lotw_qsl", "lotw_qsl_rcvd", "lotw_rcvd", "qsl_rcvd")
+    )
 
 
 async def call_status_from_recent_qsos(callsign: str, band: Optional[str], mode: Optional[str]) -> Optional[str]:

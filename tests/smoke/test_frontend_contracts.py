@@ -68,7 +68,7 @@ GET_ROUTES = [
     "/api/wavelog-log/wp-statistics",
     "/api/solar",
     "/api/solar/health",
-    "/logs/qso_log.adif",
+    "/api/qso/worked-status",
 ]
 
 POST_ROUTES = [
@@ -212,6 +212,16 @@ def test_frontend_routes_are_registered():
             missing.append(f"WS {path}")
 
     assert not missing, "Missing frontend contract routes:\n" + "\n".join(missing)
+
+
+def test_spots_database_loads_spots_during_initialization():
+    page = (Path(__file__).parents[2] / "frontend" / "spots-database.html").read_text(encoding="utf-8")
+    initialization = page[page.index("document.addEventListener('DOMContentLoaded'"):]
+    initialization = initialization[:initialization.index("});") + 3]
+
+    assert "setupEventListeners()" in initialization
+    assert "await loadData()" in initialization
+    assert "loadWorkedCallsigns" not in initialization
 
 
 def test_legacy_adif_duckdb_routes_are_retired():
@@ -439,6 +449,30 @@ def test_activity_intelligence_frontend_static_contracts():
     assert "repeat(auto-fit, minmax(180px, 1fr))" in styles
 
 
+def test_spots_band_filter_includes_60m():
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "frontend" / "js" / "dx-spots.js").read_text(encoding="utf-8")
+
+    assert "availableBands: ['160m', '80m', '60m', '40m'" in script
+
+
+def test_worked_before_uses_per_spot_local_index_result_without_bulk_download():
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "frontend" / "js" / "dx-spots.js").read_text(encoding="utf-8")
+    standalone = (root / "frontend" / "js" / "spots-standalone.js").read_text(encoding="utf-8")
+    database_page = (root / "frontend" / "spots-database.html").read_text(encoding="utf-8")
+    template = (root / "frontend" / "templates" / "dx-spots.html").read_text(encoding="utf-8")
+
+    assert "/api/wavelog-log/entries?limit=5000" not in script
+    assert "/api/qso/worked-status" not in database_page
+    assert "getWorkedDate(spot)" in script
+    assert "spot?.worked_before_date" in script
+    assert "getWorkedDate(spot.callsign" not in standalone
+    assert "spot?.worked_before_date" in database_page
+    assert "{{ getWorkedDate(spot) }}" in template
+    assert "isWorkedToday(spot)" in template
+
+
 def test_docked_spots_panel_can_shrink_without_clipping_status_rows():
     root = Path(__file__).resolve().parents[2]
     styles = (root / "frontend" / "main-styles.css").read_text(encoding="utf-8")
@@ -470,14 +504,14 @@ def test_database_config_modal_exposes_postgres_controls():
 def test_wsjtx_target_action_frontend_static_contracts():
     root = Path(__file__).resolve().parents[2]
     template = (root / "frontend" / "templates" / "dx-spots.html").read_text(encoding="utf-8")
-    section = (root / "frontend" / "dx-spots-section.html").read_text(encoding="utf-8")
+    section = template
     script = (root / "frontend" / "js" / "dx-spots.js").read_text(encoding="utf-8")
     app_main = (root / "frontend" / "js" / "app-main.js").read_text(encoding="utf-8")
     config_modal = (root / "frontend" / "js" / "config-modal.js").read_text(encoding="utf-8")
     config_template = (root / "frontend" / "templates" / "modal-config.html").read_text(encoding="utf-8")
-    config_section = (root / "frontend" / "modals-section.html").read_text(encoding="utf-8")
+    config_section = config_template
     controls_template = (root / "frontend" / "templates" / "controls-row1.html").read_text(encoding="utf-8")
-    controls_section = (root / "frontend" / "controls-section.html").read_text(encoding="utf-8")
+    controls_section = controls_template
     compact_controls = (root / "frontend" / "templates" / "partials" / "compact-radio-controls.html").read_text(encoding="utf-8")
     index = (root / "frontend" / "index.html").read_text(encoding="utf-8")
     visual_map = (root / "frontend" / "visual-map.html").read_text(encoding="utf-8")
@@ -683,7 +717,9 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "/api/wsjtx/reply" in config_modal
     assert "20260604-wsjtx-launch-outbox-2" in index
     assert "20260604-wsjtx-launch-outbox-2" in visual_map
-    assert "20260604-wsjtx-launch-outbox-2" in (root / "frontend" / "templates-loader.js").read_text(encoding="utf-8")
+    loader = (root / "frontend" / "templates-loader.js").read_text(encoding="utf-8")
+    assert "Promise.allSettled" in loader
+    assert "templates/modal-ft8.html" in loader
 
 
 if __name__ == "__main__":

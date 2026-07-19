@@ -99,7 +99,6 @@ def _decode_status(payload: dict[str, Any]) -> dict[str, Any]:
         mode_value = mode
 
         call_worked = call_value in store.call_worked
-        call_confirmed = call_value in store.call_confirmed
         call_new_band = bool(band_value) and (call_value, band_value) not in store.call_band_worked
         call_new_mode = bool(mode_value) and (call_value, mode_value) not in store.call_mode_worked
         call_bandmode_confirmed = (

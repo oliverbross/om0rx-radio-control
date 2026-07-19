@@ -55,6 +55,48 @@ behavior that differs from upstream `sq9fve/wsjt-z`.
     not answered" can be replayed by tests.
 17. The backend planner has a browser-visible dry-run mode. In dry-run the UI
     shows what would be prepared or QSYed, but no WSJT bridge command is sent.
+18. WSJT-Z logged QSOs have a single write path: WSJT-Z UDP `LoggedADIF` goes
+    to the bridge, the bridge posts `/api/wsjtx/log-qso`, and the backend
+    enriches the QSO from QRZ/CTY before Wavelog upload, local ADIF backup,
+    read-cache update, and dedupe recording. The browser WSJT-X handler is
+    display-only for `wsjtx_logged_adif` events and must not submit a second
+    Wavelog save.
+19. WSJT-Z never treats final-message/report tokens such as `RR73`, `73`,
+    `RRR`, `R-14`, or signal reports as a DX grid. Stored settings, decoded
+    messages, QRZ lookup, manual selection, and backend target commands all
+    sanitize grid values before they update `m_hisGrid`. If an automated QSO
+    reaches the log step but `acceptQSO()` does not clear the active DX state,
+    WSJT-Z clears the completed target instead of staying stuck on Tx5.
+20. Native Auto Call must not call a station already worked on the same
+    band/mode. Decode-status cache entries include Wavelog `needed` and
+    `needed_on_band` flags; if those flags say the exact call/band/mode is
+    already done, WSJT-Z may display the station but cannot select it as an
+    Auto Call candidate or keep a 20-minute priority hunt active for it.
+21. SmartSDR antenna routing is enforced by the OM0RX backend after frequency
+    changes, including WSJT-Z band hopping. The default policy is ANT2 RX/TX on
+    160m, 80m, 60m, 40m, and 30m, and ANT1 RX/TX on 20m, 17m, 15m, 12m, and
+    10m. The policy is configurable in Config > Flex & UDP as
+    `FLEX_ANTENNA_POLICY`. If SmartSDR reports TX is active, the backend defers
+    antenna changes until the interlock/MOX state returns to receive.
+22. Auto Call is hunting-only. If Auto Call is enabled and Auto CQ is disabled,
+    WSJT-Z must never transmit `CQ OM0RX ...` after a completed or idle QSO.
+    A transmit-gate guard cancels Tx6 CQ before PTT can be asserted and clears
+    the stale completed target so normal hunting can continue.
+23. Stale direct-reply priority is time bounded. A decode can only keep
+    `reply-to-us=99999` while it is fresh; old persisted direct-caller targets
+    are shown as blocked by age and cannot keep the planner or UI reason panel
+    parked on an hours-old station.
+24. Final `73` transmit side effects only run when a real transmit waveform is
+    starting or already active. A pre-PTT `m_restart` regeneration pass must
+    not display/write a yellow `Tx ... 73` row and must not disable Auto TX
+    before RF is actually keyed.
+25. The OM0RX WSJT-Z launcher forces the hunting startup profile before
+    launching: Auto Call on, Auto Seq on, and `Watch for new/unconfirmed
+    DXCC's` on. Auto CQ and auto mode switching are explicitly disabled by the
+    launcher so stale profile state cannot untick Auto Call at startup. WSJT-Z
+    reads the active Auto Call setting from `[Common]/AutoCall`, so the launcher
+    writes the startup automation keys into `[Common]` as well as the visible
+    `[MainWindow]` block.
 
 ## Upstream Automation Map
 
@@ -126,10 +168,16 @@ Trigger:
 - The decoded station must pass the normal WSJT-Z filter path first.
 - The decoded message must be eligible for Auto Call selection, currently CQ or
   optionally 73 when the upstream `CQonlyIncl73` option allows it.
-- The DXCC status must be `ATNO` / `ATTNO`, or a DXCC new-band slot such as
-  `W/New Band`, `C/New Band`, or `C/New Band+Mode`.
+- If `Watch for new/unconfirmed DXCC's` is enabled, non-CQ/non-73 decodes may
+  also enter Auto Call selection when the DXCC status is `ATNO` / `ATTNO`,
+  worked-but-not-confirmed (`W` / `Worked`), or a DXCC new-band/new-mode slot
+  such as `W/New Band`, `C/New Band`, `C/New Mode`, or `C/New Band+Mode`.
+- The non-CQ DXCC watch path is still blocked when the same callsign is already
+  worked or confirmed on the current band/mode. This prevents repeated calls to
+  the same station on the same slot while still allowing a needed DXCC to be
+  chased through a different heard station.
 - Ordinary new calls do not trigger this session unless the DXCC side is also
-  ATNO/new-band.
+  ATNO, worked-but-not-confirmed, new-band, or new-mode.
 
 Behavior:
 
@@ -154,6 +202,8 @@ Non-goals:
 - It does not interrupt an active QSO to chase the new target.
 - It does not bypass the existing WSJT-Z filters.
 - It does not make Wavelog HTTP calls synchronous or delay decoding.
+- It does not enable non-CQ DXCC chasing unless the operator turns on
+  `Watch for new/unconfirmed DXCC's`.
 
 ## Cluster DXCC/Bandslot Hunt
 
@@ -297,16 +347,41 @@ This is an OM0RX safety fix for hunting mode.
 - When a decoded line is addressed to OM0RX, such as `OM0RX G8NAI -03`, WSJT-Z
   promotes that sender into the active QSO path immediately.
 - If automation/Auto Seq is active, TX is not running, and the QSO state is
-  idle or already in a finished `ROGERS`/`SIGNOFF` state, the direct reply is
-  processed and TX is armed immediately from the decode path. This covers the
-  case where a previous QSO has just finished and the next station calls OM0RX
-  before the operator clicks anything.
+  idle, calling without a reply yet, or already in a finished
+  `ROGERS`/`SIGNOFF` state, the direct reply is processed and TX is armed
+  immediately from the decode path. This covers both cases where a previous QSO
+  has just finished and where WSJT-Z is repeatedly calling a station that has
+  not replied yet.
+- If WSJT-Z is only armed in `CALLING` for an unanswered Auto Call target, the
+  direct reply cancels that armed call, clears the stale DX fields, processes
+  the caller-to-OM0RX decode, and re-arms TX for the caller. This is the RA4CIY
+  not-answering / VK4FOO calling-OM0RX case.
+- If TX is currently active, or the QSO has progressed beyond the unanswered
+  `CALLING` state, the direct reply is held and `ZProcess()` prevents unrelated
+  Auto Call candidates until the active QSO finishes.
+- Held direct replies store the original decoded line, not just the callsign.
+  When the protected QSO returns to safe `CALLING` with TX unarmed, `ZProcess()`
+  replays that decoded line through the normal `processMessage()` path and arms
+  TX for the caller before any watchdog, priority hunt, band hop, or Auto Call
+  candidate can run.
 - Any stale `m_priorityCall` or pending OM0RX priority-hunt target is cleared
   for that cycle, so the watchdog/Auto Call path cannot start a different
   station while a reply is waiting.
 - While the QSO state is not idle, `ZProcess()` refuses to start another Auto
   Call candidate. Once the QSO returns to `CALLING`/idle or the replied station
   is logged, normal Auto Call resumes.
+- A logged, inactive QSO must not keep WSJT-Z latched in `ROGERS`/`SIGNOFF` or
+  report `waiting_73`. If TX is not armed/running and the active DX call matches
+  `m_lastCall`, OM0RX clears the stale finished state back to `CALLING` before
+  the next direct-reply or Auto Call selection cycle.
+- An unlogged or unmatched inactive final state must not block hunting forever.
+  If WSJT-Z remains in `ROGERS`/`SIGNOFF` with TX off and no active transmit
+  after the final-state grace period, OM0RX clears the stale DX state so Auto
+  Call can continue.
+- OM0RX `CS`/`DS` annotation must preserve the standard WSJT-Z right-side
+  appendage from `Show DXCC, grid, and worked-before status`. The annotation
+  may replace existing OM0RX status columns, but it must reinsert the original
+  country/grid/distance/filter suffix after the two status columns.
 - This does not change generated messages, filters, double-click behavior, or
   the normal WSJT-Z sequencing states. It only prevents a newly selected station
   from outranking a station that has already replied to us.
@@ -356,8 +431,81 @@ This is an OM0RX safety fix for hunting mode.
 
 ## Change Log
 
+### 2026-06-28
+
+- Fixed a final-73 transmit gating bug in WSJT-Z. The GUI could display and
+  write a yellow `Tx ... 73` row during a pre-PTT `m_restart` message
+  regeneration pass, then run the disable-after-73 cleanup before actual PTT
+  start. Final-73 display/logging and cleanup are now gated on a real TX
+  waveform start or an already-active transmit restart.
+- Added WSJT-Z Auto Call persistence and made the OM0RX launcher force the
+  `MainWindow/AutoCall` profile setting on startup, along with Auto Seq and
+  Watch-unconfirmed-DXCC.
+- Fixed the launcher startup profile to set `[Common]/AutoCall=true`, which is
+  the key WSJT-Z actually reads when restoring the Auto Call checkbox.
+- Fixed stale browser frequency on websocket reconnect. The initial websocket
+  radio status now prefers a fresh SmartSDR snapshot over cached backend
+  `flex.current_freq`, matching the service-health radio readout.
+
+### 2026-06-18
+
+- Fixed a live stuck WSJT-Z state where the client continued to report
+  `qsoState=waiting_73` and a stale `dxCall` even though TX was off and no QSO
+  progress was happening. `om0rx_clear_stale_final_qso_state()` now clears idle
+  `ROGERS`/`SIGNOFF` states after a short grace period, including cases where
+  the last logged call does not match the stale active field.
+- Fixed stale direct-caller priority in the backend planner. `direct_caller`
+  now reflects the current decode instead of being OR-sticky forever, stale
+  direct callers are excluded from emergency overrides, and the browser
+  `Why not TX?` panel marks old persisted direct callers as
+  `heard-target-too-old`.
+- Rebuilt and replaced
+  `data/build/wsjt-z-om0rx/build-msys/wsjt-z.exe`, restarted WSJT-Z, restarted
+  the backend, and restarted the WSJT bridge. Final live checks showed the
+  backend WSJT health as `ok`, the bridge connected to
+  `WSJT-X - OM0RX-WSJT-Z`, and WSJT-Z reporting `qsoState=idle`.
+
+### 2026-06-14
+
+- Fixed post-QSO CQ leakage in Auto Call mode. A completed QSO could leave
+  Tx6 selected with `CQ OM0RX JN88` and still key the transmitter even though
+  Auto CQ was not enabled. `om0rx_stop_forbidden_autocall_cq()` now runs from
+  `ZProcess()` and the transmit gate, and `om0rx_clear_stale_logged_qso()` may
+  clear this specific bad state even when Enable Tx is still checked.
+- Fixed a WSJT-Z stuck state seen after a completed Auto Call QSO. The live
+  failure showed `dxGridEntry` holding `RR73`; that invalid token could flow
+  into `m_hisGrid`, poison the log dialog state, and leave automation parked on
+  the completed station after sending `73`.
+- Added `om0rx_sanitized_grid()` and applied it to restored settings, decoded
+  grids, double-click/manual target paths, backend target commands, QRZ lookup,
+  and log-QSO preparation.
+- Added an automation completion guard: after an attempted automated log, if
+  the completed call is still active, WSJT-Z clears the DX state so Auto Call
+  can continue instead of remaining stuck on Tx5.
+- Rebuilt `wsjtx.exe`, killed the running stuck `wsjt-z.exe`, and replaced
+  `data/build/wsjt-z-om0rx/build-msys/wsjt-z.exe` with the rebuilt binary.
+- Added a smoke regression test for grid sanitizing and the post-log stuck
+  clear guard.
+- Fixed stale actionable decode-status cache entries causing already-worked
+  stations such as `VP2MAA` on 20m FT8 to be selected again. The cache now
+  stores Wavelog `needed` flags, actionable cache entries are refreshed, exact
+  call/band/mode matches are vetoed for TX, and a priority hunt whose target is
+  no longer needed clears itself so the watchdog returns to the configured
+  2-minute FT8 value.
+
 ### 2026-06-11
 
+- Added `Watch for new/unconfirmed DXCC's` next to `Treat 73's as CQ` in
+  WSJT-Z. When enabled, Auto Call can consider non-CQ/non-73 decodes for ATNO,
+  worked-but-not-confirmed DXCC, and DXCC new-band/new-mode needs. The existing
+  WSJT-Z filters still run first, and same-call/current-band/current-mode
+  `Worked` or `Confirmed` entries are blocked to avoid duplicate slot QSOs.
+  Accepted candidates use the existing priority-hunt path and 20-minute
+  watchdog.
+- Restored native double-click station selection after CS/DS enrichment. Manual
+  double-click now strips the OM0RX status/country suffix before passing the row
+  to `DecodedText`, and it clears pending OM0RX priority/reply targets so the
+  operator-selected station replaces the automation target immediately.
 - Added the backend-driven Cluster DXCC/Bandslot Hunt contract. Cross-band
   cluster hunting is now limited to ATNO/ATTNO, worked-but-unconfirmed DXCC,
   and DXCC band/mode slot needs. Ordinary new calls no longer pull WSJT-Z away

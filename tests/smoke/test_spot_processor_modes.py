@@ -26,6 +26,11 @@ def test_infer_mode_does_not_let_ft2_comment_override_explicit_ft8():
     assert infer_mode("FT8 Anyone want to try FT2 in ES", "6m", 50313.0) == "FT8"
 
 
+def test_infer_mode_recognizes_cw_only_and_low_band_segments():
+    assert infer_mode("SOTA activation", "30m", 10122.9) == "CW"
+    assert infer_mode("", "160m", 1829.6) == "CW"
+
+
 def test_band_from_khz_keeps_six_meter_ft2_in_band():
     assert band_from_khz(50320.0) == "6m"
 

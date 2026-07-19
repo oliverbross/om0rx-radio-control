@@ -6,8 +6,8 @@ Wraps RotatorService methods as HTTP endpoints.
 """
 
 import logging
-from fastapi import APIRouter, HTTPException, Body
-from typing import Optional, Dict, Any
+from fastapi import APIRouter, HTTPException, Body, Query
+from typing import Dict, Any
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -31,11 +31,11 @@ def get_rotor_service():
 # === Rotor Status Endpoints ===
 
 @router.get("/rotor/status")
-async def get_rotor_status():
+async def get_rotor_status(fresh: bool = Query(False)):
     """Get current rotor status"""
     service = get_rotor_service()
     try:
-        return await service.get_rotor_status()
+        return await service.get_rotor_status(fresh=fresh)
     except Exception as e:
         logger.error(f"Error getting rotor status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
