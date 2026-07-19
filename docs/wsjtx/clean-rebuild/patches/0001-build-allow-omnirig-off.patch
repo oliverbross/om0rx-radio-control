@@ -1,0 +1,115 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4994d0d..0c77c4f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -132,6 +132,9 @@ option (WSJT_RIG_NONE_CAN_SPLIT "Allow split operation with \"None\" as rig.")
+ option (WSJT_TRACE_UDP "Debugging option that turns on UDP message protocol diagnostics.")
+ option (WSJT_BUILD_UTILS "Build simulators and code demonstrators." ON)
+ option (WSJT_FOX_OTP "Enable Fox OTP Verification Messages." ON)
++option (OM0RX_BUILD_WITH_OMNIRIG
++  "Build optional Windows OmniRig COM transceiver support."
++  OFF)
+ CMAKE_DEPENDENT_OPTION (WSJT_QDEBUG_IN_RELEASE "Leave Qt debugging statements in Release configuration." OFF
+   "NOT is_debug_build" OFF)
+ CMAKE_DEPENDENT_OPTION (WSJT_ENABLE_EXPERIMENTAL_FEATURES "Enable features not fully ready for public releases." ON
+@@ -325,12 +328,14 @@ if (WIN32)
+     ${wsjt_CXXSRCS}
+     killbyname.cpp
+     )
++endif (WIN32)
+ 
++if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+   set (wsjt_qt_CXXSRCS
+     ${wsjt_qt_CXXSRCS}
+     Transceiver/OmniRigTransceiver.cpp
+     )
+-endif (WIN32)
++endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+ 
+ set (wsjt_FSRCS
+   # put module sources first in the hope that they get rebuilt before use
+@@ -904,7 +909,7 @@ set_source_files_properties (lib/filbig.f90 PROPERTIES COMPILE_FLAGS "-Wno-alias
+ set_property (SOURCE ${all_C_and_CXXSRCS} APPEND_STRING PROPERTY COMPILE_FLAGS " -include wsjtx_config.h")
+ set_property (SOURCE ${all_C_and_CXXSRCS} APPEND PROPERTY OBJECT_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/wsjtx_config.h)
+ 
+-if (WIN32)
++if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+   # generate the OmniRig COM interface source
+   find_program (DUMPCPP dumpcpp)
+   if (DUMPCPP-NOTFOUND)
+@@ -921,7 +926,7 @@ if (WIN32)
+   endif (NOT AXSERVER)
+   string (REPLACE "\"" "" AXSERVER ${AXSERVER})
+   file (TO_CMAKE_PATH ${AXSERVER} AXSERVERSRCS)
+-endif ()
++endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+ 
+ 
+ #
+@@ -1025,8 +1030,10 @@ find_package (Qt5 COMPONENTS Widgets SerialPort Multimedia PrintSupport Sql Ling
+ 
+ if (WIN32)
+   add_definitions (-DQT_NEEDS_QTMAIN)
+-  find_package (Qt5AxContainer REQUIRED)
+ endif (WIN32)
++if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
++  find_package (Qt5AxContainer REQUIRED)
++endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+ 
+ #
+ # Library building setup
+@@ -1511,9 +1518,9 @@ add_library (wsjt_qt STATIC ${wsjt_qt_CXXSRCS} ${wsjt_qt_GENUISRCS} ${GENAXSRCS
+ # set wsjtx_udp exports to static variants
+ target_compile_definitions (wsjt_qt PUBLIC UDP_STATIC_DEFINE)
+ target_link_libraries (wsjt_qt Hamlib::Hamlib Boost::log qcp Qt5::Widgets Qt5::Network Qt5::Sql Qt5::WebSockets)
+-if (WIN32)
++if (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+   target_link_libraries (wsjt_qt Qt5::AxContainer Qt5::AxBase)
+-endif (WIN32)
++endif (WIN32 AND OM0RX_BUILD_WITH_OMNIRIG)
+ 
+ # build a library of package Qt functionality used in Fortran utilities
+ add_library (fort_qt STATIC ${fort_qt_CXXSRCS})
+diff --git a/Transceiver/TransceiverFactory.cpp b/Transceiver/TransceiverFactory.cpp
+index 2146eac..9328835 100644
+--- a/Transceiver/TransceiverFactory.cpp
++++ b/Transceiver/TransceiverFactory.cpp
+@@ -8,7 +8,7 @@
+ #include "HRDTransceiver.hpp"
+ #include "EmulateSplitTransceiver.hpp"
+ 
+-#if defined (WIN32)
++#if OM0RX_BUILD_WITH_OMNIRIG
+ #include "OmniRigTransceiver.hpp"
+ #endif
+ 
+@@ -42,7 +42,7 @@ TransceiverFactory::TransceiverFactory ()
+   DXLabSuiteCommanderTransceiver::register_transceivers (&logger_, &transceivers_, CommanderId);
+   HRDTransceiver::register_transceivers (&logger_, &transceivers_, HRDId);
+   
+-#if defined (WIN32)
++#if OM0RX_BUILD_WITH_OMNIRIG
+   // OmniRig is ActiveX/COM server so only on Windows
+   OmniRigTransceiver::register_transceivers (&logger_, &transceivers_, OmniRigOneId, OmniRigTwoId);
+ #endif
+@@ -160,7 +160,7 @@ std::unique_ptr<Transceiver> TransceiverFactory::create (ParameterPack const& par
+       }
+       break;
+ 
+-#if defined (WIN32)
++#if OM0RX_BUILD_WITH_OMNIRIG
+     case OmniRigOneId:
+       {
+         std::unique_ptr<TransceiverBase> basic_transceiver;
+diff --git a/wsjtx_config.h.in b/wsjtx_config.h.in
+index 5d66589..f8efa9f 100644
+--- a/wsjtx_config.h.in
++++ b/wsjtx_config.h.in
+@@ -48,6 +48,7 @@ extern "C"  {
+ #cmakedefine01 WSJT_ENABLE_EXPERIMENTAL_FEATURES
+ #cmakedefine01 WSJT_RIG_NONE_CAN_SPLIT
+ #cmakedefine01 WSJT_TRACE_UDP
++#cmakedefine01 OM0RX_BUILD_WITH_OMNIRIG
+ 
+ /* consistent UNICODE behaviour */
+ #ifndef UNICODE

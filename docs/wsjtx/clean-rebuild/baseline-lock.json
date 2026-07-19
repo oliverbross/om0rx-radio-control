@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-07-19",
+  "upstream": {
+    "repository": "https://github.com/sq9fve/wsjt-z.git",
+    "ref": "v2.0.14",
+    "commit": "fa53f635462def9f37b54f63f18e407ecda2ba12",
+    "tree": "2d23c72ddb826f18d21876ac7b6a89642ee0ef34",
+    "reported_wsjtx_core_version": "3.0.0",
+    "reported_wsjtz_version": "2.0.14"
+  },
+  "reference_runtime": {
+    "description": "Preserved pre-rebuild customized executable used only as a behavior reference",
+    "executable_path": "data/build/wsjt-z-om0rx/build-msys/wsjt-z.exe",
+    "executable_sha256": "7FF03F03F754CC9431472D10605273AC0750736FA28753DC0491DB86178B33F6",
+    "decoder_path": "data/build/wsjt-z-om0rx/build-msys/jt9.exe",
+    "decoder_sha256": "600846C4350E071ABCBF48BB13E7DBD15572281395FCFAAAAC8B1E39A4D616B7"
+  },
+  "identity_note": "The v3.0.2 title in the preserved customized build came from changing Versions.cmake patch level. The pinned upstream source itself reports WSJT-X core 3.0.0. Do not infer source identity from the window title."
+}
+

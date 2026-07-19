@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "built_at": "2026-07-19",
+  "source_commit": "fa53f635462def9f37b54f63f18e407ecda2ba12",
+  "source_tree": "2d23c72ddb826f18d21876ac7b6a89642ee0ef34",
+  "toolchain": {
+    "environment": "JTSDK64 Tools MSYS2 MinGW64",
+    "cmake": "4.1.1",
+    "ninja": "1.13.1",
+    "gcc_fortran_package": "15.2.0-8",
+    "qt5_base_package": "5.15.17+kde+r122-1",
+    "boost_package": "1.89.0-1",
+    "fftw_package": "3.3.10-5"
+  },
+  "pristine_configure": {
+    "result": "failed_as_expected",
+    "reason": "Upstream Windows configure requires an installed OmniRig COM server."
+  },
+  "compatibility_patches": [
+    "0001-build-allow-omnirig-off.patch",
+    "0002-build-link-fftw-threads-on-windows.patch"
+  ],
+  "build_result": "success",
+  "artifacts": {
+    "executable_path": "data/build/wsjt-z-clean/build-msys/wsjt-z-clean.exe",
+    "executable_size": 62105500,
+    "executable_sha256": "340A7EAFAE6B16B106FC886752D85D24CF92C246153195978162EA19E5FE94FC",
+    "decoder_path": "data/build/wsjt-z-clean/build-msys/jt9.exe",
+    "decoder_size": 3137185,
+    "decoder_sha256": "A24D8C4D1E100DA7EFBE29AA911D53DF6E3CA7F81645E0A25F8D9449603E34FA"
+  },
+  "runtime_smoke": {
+    "result": "success",
+    "profile": "OM0RX-WSJTZ-CLEAN",
+    "arguments": [
+      "--rig-name",
+      "OM0RX-WSJTZ-CLEAN",
+      "--config",
+      "OM0RX-WSJTZ-CLEAN",
+      "--test-mode"
+    ],
+    "enrichment_started": false,
+    "ini_mutated_by_launcher": false
+  }
+}
+

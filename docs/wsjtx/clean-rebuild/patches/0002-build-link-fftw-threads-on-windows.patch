@@ -1,0 +1,16 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0c77c4f..49c190e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1000,6 +1000,10 @@ find_package (OpenMP)
+ # fftw3 single precision library
+ #
+ find_package (FFTW3 COMPONENTS single threads REQUIRED)
++find_library (OM0RX_FFTW3F_THREADS_LIBRARY NAMES fftw3f_threads)
++if (OM0RX_FFTW3F_THREADS_LIBRARY AND NOT OM0RX_FFTW3F_THREADS_LIBRARY IN_LIST FFTW3_LIBRARIES)
++  list (INSERT FFTW3_LIBRARIES 0 ${OM0RX_FFTW3F_THREADS_LIBRARY})
++endif ()
+ 
+ #
+ # hamlib setup
+

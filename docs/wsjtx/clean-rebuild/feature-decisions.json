@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-07-19",
+  "source_document": "docs/wsjtx/OM0RX_WSJTZ_CLEAN_REBUILD_PLAN.docx",
+  "scope_note": "Build the basics first. Award-reference exceptions for POTA, SOTA, IOTA, lighthouse, WWFF, and BOTA are deferred.",
+  "working_defaults": {
+    "dial_frequency_owner": "WSJT-Z via CAT/Hamlib",
+    "unknown_classification": "normal upstream operation, show unknown, no OM0RX priority",
+    "cross_band_cluster_hunt": "later",
+    "antenna_failure": "inhibit TX"
+  },
+  "items": {
+    "1": "KEEP",
+    "2": "KEEP",
+    "3": "KEEP_LATER",
+    "4": "LATER",
+    "5": "KEEP",
+    "6": "KEEP",
+    "7": "KEEP",
+    "8": "LATER",
+    "9": "KEEP",
+    "10": "LATER",
+    "11": "DROP",
+    "12": "LATER",
+    "13": "KEEP",
+    "14": "LATER",
+    "15": "DROP",
+    "16": "UNDECIDED",
+    "17": "LATER",
+    "18": "KEEP",
+    "19": "LATER",
+    "20": "KEEP_BASIC_NO_AWARD_REFERENCE_EXCEPTIONS",
+    "21": "KEEP",
+    "22": "VERIFY_UPSTREAM_THEN_KEEP_ONLY_IF_NEEDED",
+    "23": "LATER",
+    "24": "LATER",
+    "25": "KEEP_AS_EXPLICIT_SETTINGS_PROFILE"
+  }
+}
+
