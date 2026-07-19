@@ -1,0 +1,28 @@
+{
+  "milestone": 11,
+  "name": "stale backend target ownership recovery",
+  "incident": {
+    "stale_target": "RM1B|10m|FT8",
+    "command_sent_at": "2026-07-19T09:42:34.855104+02:00",
+    "observed_state": "target calling while WSJT-Z idle and TX disabled",
+    "blocked_fresh_candidates": 7
+  },
+  "policy": {
+    "startup_grace_seconds": 60,
+    "idle_calling_target": "back off after grace and select the next eligible candidate",
+    "dxcc_campaign": "idle/TX-disabled command failure is released before the 20-minute campaign expiry",
+    "different_native_call": "release the backend target when WSJT-Z explicitly reports TX armed or transmitting for another call",
+    "native_qso": "never halt or replace the different native call"
+  },
+  "verification": {
+    "focused_tests": "179 passed",
+    "rm1b_released": true,
+    "first_recovery_target": "G4ZCN",
+    "observed_g4zcn_tx_slots": 2,
+    "native_call_change_observed": "G4ZCN to F4JMV",
+    "stale_g4zcn_backend_ownership_released": true,
+    "later_rotation": "DN9MNE",
+    "backend_and_wsjtz_aligned": true,
+    "wsjtz_process_id": 23416
+  }
+}

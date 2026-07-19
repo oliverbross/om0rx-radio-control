@@ -2297,7 +2297,18 @@ class DigitalAutomationController:
         return direct_targets[0]
 
     def _expire_stale_active_target(self, target: DigitalTarget, now: datetime) -> bool:
-        if target.campaign_expires_at:
+        # An idle WSJT-Z heartbeat can arrive after a target command was
+        # acknowledged but never armed TX.  That heartbeat deliberately sets
+        # active_state to idle.  It must not let a persisted ``calling`` target
+        # bypass stale-attempt cleanup (or monopolise a DXCC campaign for the
+        # full 20-minute watchdog).
+        idle_command_attempt = (
+            target.active_state == "idle"
+            and target.state in {"selected", "calling"}
+            and bool(target.last_command_at or target.last_attempt_at)
+        )
+
+        if target.campaign_expires_at and not idle_command_attempt:
             if target.active_state in {
                 "in_qso", "waiting_rrr", "waiting_73", "reply_received",
                 "report_sent", "rr73_seen", "logged", "completed",
@@ -2334,7 +2345,8 @@ class DigitalAutomationController:
         }
         if target.active_state in protected_states:
             return False
-        if target.active_state not in {"candidate_selected", "command_sent", "waiting_for_tx", "calling"}:
+        one_sided_states = {"candidate_selected", "command_sent", "waiting_for_tx", "calling"}
+        if target.active_state not in one_sided_states and not idle_command_attempt:
             return False
         if target.active_state == "candidate_selected":
             progress_sources = (
@@ -2357,7 +2369,7 @@ class DigitalAutomationController:
             return False
         last_progress_at = max(markers)
         stale_after = max(30, int(self.settings.dwell_seconds or 0))
-        if target.active_state in {"command_sent", "waiting_for_tx", "calling"}:
+        if target.active_state in {"command_sent", "waiting_for_tx", "calling"} or idle_command_attempt:
             # Hunting should not sit on a one-sided call for the full spot-listen
             # dwell. Replies advance the target into protected states above.
             stale_after = max(45, min(stale_after, 60))
@@ -2367,9 +2379,12 @@ class DigitalAutomationController:
         target.reason = "stale-active-no-progress"
         target.completion_reason = "stale-active-no-progress"
         target.backoff_until = now + timedelta(minutes=max(1, int(self.settings.retry_backoff_minutes or 1)))
+        target.campaign_started_at = None
+        target.campaign_expires_at = None
         target.updated_at = now
         self.active_target_key = None
         self.active_qso_state = "idle"
+        self._queue_return_to_origin(target, reason=target.reason)
         self._persist_target(target)
         self._set_decision({
             "decision": "expired",
@@ -2894,6 +2909,10 @@ class DigitalAutomationController:
         active = self.targets.get(self.active_target_key) if self.active_target_key else None
         manual_override = _bool(payload.get("manual") or payload.get("operatorAction") or payload.get("operator_action"), False)
         dx_call = str(payload.get("dxCall") or payload.get("dx_call") or payload.get("call") or "").strip().upper()
+        heartbeat_state = normalise_wsjtz_qso_state(payload)
+        has_tx_enabled = "txEnabled" in payload or "tx_enabled" in payload
+        tx_enabled = _bool(payload.get("txEnabled") or payload.get("tx_enabled"), False)
+        transmitting = _bool(payload.get("transmitting") or payload.get("tx"), False)
         if active and manual_override and dx_call and dx_call not in {active.call, self.mycall}:
             target = self.abandon_active_target(reason="manual-dx-call-change")
             return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
@@ -2907,6 +2926,20 @@ class DigitalAutomationController:
             return {"status": "abandoned", "target": target.to_dict() if target else None, "decision": self.last_decision}
 
         if active and dx_call and dx_call not in {active.call, self.mycall}:
+            # A bare unrelated callsign may be a stale UI field, but when the
+            # native client explicitly reports TX armed/active it owns a real
+            # attempt with that other station. Retire our old target without
+            # touching the native QSO, then let the planner's busy-state guard
+            # wait for that exchange to finish.
+            if (has_tx_enabled and tx_enabled) or transmitting:
+                target = self.abandon_active_target(reason="wsjtz-active-call-changed")
+                return {
+                    "status": "abandoned",
+                    "target": target.to_dict() if target else None,
+                    "decision": self.last_decision,
+                    "qso_state": heartbeat_state,
+                    "reported_dx_call": dx_call,
+                }
             self._set_decision({
                 "decision": "status-observed",
                 "reason": "stale-or-unrelated-dx-call",
@@ -2950,10 +2983,7 @@ class DigitalAutomationController:
         # The custom heartbeat is useful only after the ordinary status fields
         # confirm that it still describes our active target. Otherwise a stale
         # non-empty qsoState could bypass every manual-override safety check.
-        heartbeat_state = normalise_wsjtz_qso_state(payload)
         busy_heartbeat_states = {"calling", "in_qso", "waiting_rrr", "waiting_73", "transmitting", "tx"}
-        has_tx_enabled = "txEnabled" in payload or "tx_enabled" in payload
-        tx_enabled = _bool(payload.get("txEnabled") or payload.get("tx_enabled"), False)
         if not active and heartbeat_state in busy_heartbeat_states and not dx_call and has_tx_enabled and not tx_enabled:
             self.transition_active_qso("idle", reason="invalid-wsjtz-busy-status")
             return {

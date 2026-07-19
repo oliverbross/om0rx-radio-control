@@ -843,6 +843,151 @@ def test_unanswered_command_sent_target_is_not_released_before_short_timeout():
     assert controller.last_decision["reason"] == "active-qso-in-progress"
 
 
+def test_idle_wsjtz_heartbeat_does_not_trap_stale_calling_target():
+    controller = DigitalAutomationController(
+        mycall="OM0RX",
+        settings=DigitalAutomationSettings(dwell_seconds=120),
+    )
+    now = datetime(2026, 7, 19, 10, 15, tzinfo=timezone.utc)
+    stale = controller.ingest_target({
+        "message": "CQ RM1B KO59",
+        "callsign": "RM1B",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "call_status": "New Band",
+        "dxcc_status": "Confirmed",
+    })
+    fresh = controller.ingest_target({
+        "message": "CQ HG2DX JN97",
+        "callsign": "HG2DX",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "call_status": "New Band",
+        "dxcc_status": "Confirmed",
+    })
+    assert stale is not None
+    assert fresh is not None
+    stale.last_command_at = now - timedelta(seconds=61)
+    stale.last_attempt_at = stale.last_command_at
+    stale.sync_state("calling", active_state="command_sent")
+    controller.active_target_key = stale.key
+    controller.active_qso_state = "command_sent"
+    fresh.last_heard_at = now
+    fresh.updated_at = now
+
+    status = controller.handle_wsjtx_status({
+        "dxCall": "RM1B",
+        "dialFrequency": 28_074_000,
+        "qsoState": "idle",
+        "txEnabled": False,
+        "transmitting": False,
+    })
+    selected = controller.next_target(now=now, auto_call_start_only=True, cq_only=True)
+
+    assert status["qso_state"] == "idle"
+    assert stale.active_state == "failed"
+    assert stale.state == "backoff"
+    assert stale.reason == "stale-active-no-progress"
+    assert selected is fresh
+    assert controller.active_target_key == fresh.key
+
+
+def test_idle_wsjtz_heartbeat_keeps_normal_command_startup_grace():
+    controller = DigitalAutomationController(
+        mycall="OM0RX",
+        settings=DigitalAutomationSettings(dwell_seconds=120),
+    )
+    now = datetime(2026, 7, 19, 10, 15, tzinfo=timezone.utc)
+    target = controller.ingest_target({
+        "message": "CQ RM1B KO59",
+        "callsign": "RM1B",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "call_status": "New Band",
+        "dxcc_status": "Confirmed",
+    })
+    assert target is not None
+    target.last_command_at = now - timedelta(seconds=44)
+    target.last_attempt_at = target.last_command_at
+    target.sync_state("calling", active_state="command_sent")
+    controller.active_target_key = target.key
+    controller.active_qso_state = "command_sent"
+
+    controller.handle_wsjtx_status({
+        "dxCall": "RM1B",
+        "dialFrequency": 28_074_000,
+        "qsoState": "idle",
+        "txEnabled": False,
+    })
+    selected = controller.next_target(now=now, auto_call_start_only=True, cq_only=True)
+
+    assert selected is None
+    assert target.state == "calling"
+    assert target.active_state == "idle"
+    assert controller.active_target_key == target.key
+    assert controller.last_decision["reason"] == "active-qso-in-progress"
+
+
+def test_idle_wsjtz_heartbeat_releases_failed_dxcc_hunt_before_twenty_minutes():
+    controller = DigitalAutomationController(
+        mycall="OM0RX",
+        settings=DigitalAutomationSettings(dwell_seconds=120),
+    )
+    now = datetime(2026, 7, 19, 10, 15, tzinfo=timezone.utc)
+    stale = controller.ingest_target({
+        "message": "CQ P29ABC QI30",
+        "callsign": "P29ABC",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "dxcc_status": "ATNO",
+    })
+    fresh = controller.ingest_target({
+        "message": "CQ EA5OL IM98",
+        "callsign": "EA5OL",
+        "band": "10m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "call_status": "New Band",
+        "dxcc_status": "Confirmed",
+    })
+    assert stale is not None
+    assert fresh is not None
+    stale.last_command_at = now - timedelta(seconds=61)
+    stale.last_attempt_at = stale.last_command_at
+    stale.campaign_started_at = stale.last_command_at
+    stale.campaign_expires_at = stale.last_command_at + timedelta(minutes=20)
+    original_campaign_expiry = stale.campaign_expires_at
+    stale.sync_state("calling", active_state="command_sent")
+    controller.active_target_key = stale.key
+    controller.active_qso_state = "command_sent"
+    fresh.last_heard_at = now
+    fresh.updated_at = now
+
+    controller.handle_wsjtx_status({
+        "dxCall": "P29ABC",
+        "dialFrequency": 28_074_000,
+        "qsoState": "idle",
+        "txEnabled": False,
+    })
+    selected = controller.next_target(now=now, auto_call_start_only=True, cq_only=True)
+
+    assert now < original_campaign_expiry
+    assert stale.state == "backoff"
+    assert stale.reason == "stale-active-no-progress"
+    assert stale.campaign_started_at is None
+    assert stale.campaign_expires_at is None
+    assert selected is fresh
+
+
 def test_cluster_target_is_not_rejected_as_non_cq_decode():
     controller = DigitalAutomationController(mycall="OM0RX")
     controller.apply_operator_settings({
@@ -2478,6 +2623,40 @@ def test_wsjtx_status_unrelated_dx_call_does_not_abandon_auto_qso():
     assert result["decision"]["reason"] == "stale-or-unrelated-dx-call"
     assert controller.status()["active_target"]["call"] == "E51ABC"
     assert controller.status()["active_qso_state"] == "command_sent"
+
+
+def test_wsjtx_tx_armed_for_different_call_releases_backend_target_without_interrupting_native_qso():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    target = controller.ingest_target({
+        "callsign": "G4ZCN",
+        "band": "10m",
+        "mode": "FT8",
+        "message": "CQ G4ZCN IO70",
+        "call_status": "New Band",
+        "dxcc_status": "Confirmed",
+        "frequency_mhz": 28.074,
+        "heard": True,
+    })
+    assert target is not None
+    assert controller.next_target() is target
+    controller.record_attempt(target.key)
+
+    result = controller.handle_wsjtx_status({
+        "dxCall": "F4JMV",
+        "mode": "FT8",
+        "band": "10m",
+        "dialFrequency": 28_074_000,
+        "qsoState": "calling",
+        "txEnabled": True,
+        "transmitting": True,
+    })
+
+    assert result["status"] == "abandoned"
+    assert result["qso_state"] == "calling"
+    assert result["reported_dx_call"] == "F4JMV"
+    assert result["decision"]["reason"] == "wsjtz-active-call-changed"
+    assert target.state == "backoff"
+    assert controller.status()["active_target"] is None
 
 
 def test_prepare_wsjtx_target_dry_run_does_not_send_bridge_command(monkeypatch):

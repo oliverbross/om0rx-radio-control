@@ -108,3 +108,14 @@ DXCC watchdog strictly owned by the hunted call. It releases the override when
 native Auto Call selects another station, when the DX target is abandoned, or
 when the backend sends any non-priority target command. The ordinary configured
 watchdog (currently two minutes) then becomes effective immediately.
+
+## Milestone 11 implementation
+
+The backend planner now retires contradictory persisted targets whose lifecycle
+is still `calling` after WSJT-Z reports an idle, TX-disabled state for more than
+the normal command-start grace. This applies before the 20-minute DXCC campaign
+window so a command that never armed TX cannot block all other candidates.
+When native Auto Call is visibly armed or transmitting for a different call,
+the backend releases its old target without halting or altering the native QSO.
+The recovery behavior and live-radio evidence are recorded in
+`milestone-11-lock.json`.
