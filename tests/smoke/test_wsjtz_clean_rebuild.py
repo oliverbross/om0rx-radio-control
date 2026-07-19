@@ -50,6 +50,7 @@ def test_clean_build_separates_build_compatibility_and_band_control_patches() ->
     assert "0002-build-link-fftw-threads-on-windows.patch" in script
     assert "0100-band-qsy-transaction-tracing.patch" in script
     assert "0200-display-status-columns.patch" in script
+    assert "0300-dxcc-priority-hunt.patch" in script
     assert "om0rx-wsjtz-enrichment.patch" not in script
     assert "OM0RX_BUILD_WITH_OMNIRIG=OFF" in script
     assert "data\\build\\wsjt-z-clean" in script
@@ -97,6 +98,20 @@ def test_status_columns_patch_uses_exact_row_identity_and_fixed_width_cells() ->
     assert 'QObject::tr ("CS     DS")' in patch
     assert "label.left (6).leftJustified (6)" in patch
     assert "http://127.0.0.1:8765/api/wsjtx/decode-status" in patch
+
+
+def test_dxcc_priority_patch_is_current_band_fail_closed_and_watchdog_scoped() -> None:
+    patch = (CLEAN_DOC_ROOT / "patches" / "0300-dxcc-priority-hunt.patch").read_text(encoding="utf-8")
+
+    assert "cbWatchUnconfirmedDXCC" in patch
+    assert "band != current_band" in patch
+    assert 'dxcc_status == "Unknown"' in patch
+    assert "!ui->cbAutoCall->isChecked ()" in patch
+    assert "m_transmitting || m_tune || m_tx_watchdog" in patch
+    assert "m_om0rxPriorityHuntWatchdogMinutes = 20" in patch
+    assert 'clear_om0rx_priority_hunt ("band change")' in patch
+    assert 'clear_om0rx_priority_hunt ("QSO logged")' in patch
+    assert 'clear_om0rx_priority_hunt ("watchdog triggered")' in patch
 
 
 def test_basic_antenna_policy_lock_defers_award_reference_exceptions() -> None:

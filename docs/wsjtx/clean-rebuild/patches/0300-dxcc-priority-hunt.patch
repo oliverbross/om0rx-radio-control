@@ -1,0 +1,271 @@
+diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
+index 6128440..9291ee8 100644
+--- a/widgets/mainwindow.h
++++ b/widgets/mainwindow.h
+@@ -72,6 +72,7 @@ namespace Ui {
+ }
+ 
+ class QProcessEnvironment;
++class QJsonObject;
+ class QSharedMemory;
+ class QSplashScreen;
+ class QSettings;
+@@ -433,6 +434,11 @@ private slots:
+      void apply_om0rx_decode_status (QString const& callsign, QString const& band,
+                                      QString const& mode, QString const& call_status,
+                                      QString const& dxcc_status);
++     void consider_om0rx_priority_hunt (QJsonObject const& status, QString const& callsign,
++                                        QString const& band, QString const& mode, bool is_cq,
++                                        int time_sec, QString const& grid, QString const& message,
++                                        int audio_frequency);
++     void clear_om0rx_priority_hunt (QString const& reason);
+      void on_actionCall_info_triggered();
+      void on_actionDark_mode_triggered();
+      void qrzInit();
+@@ -746,6 +752,12 @@ private:
+   int     m_maxSignal = -30;
+   QString m_priorityCall;
+   bool    m_priorityCallPreferCQTarget = false;
++  bool    m_om0rxPriorityHuntActive = false;
++  QString m_om0rxPriorityHuntCall;
++  QString m_om0rxPriorityHuntBand;
++  QString m_om0rxPriorityHuntMode;
++  int     m_om0rxPriorityHuntRank = -1;
++  int     m_om0rxPriorityHuntWatchdogMinutes = 20;
+   int     m_decodeCount = 0;
+   bool    m_prioTxFirst;
+   int     m_prioFreq;
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+index c920e3c..8354af0 100644
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -818,6 +818,10 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+            this, &MainWindow::request_om0rx_decode_status);
+   connect (ui->decodedTextBrowser2, &DisplayText::decodedCallsign,
+            this, &MainWindow::request_om0rx_decode_status);
++  connect (ui->cbWatchUnconfirmedDXCC, &QCheckBox::toggled, this,
++           [this] (bool checked) {
++    if (!checked) clear_om0rx_priority_hunt ("operator disabled watch");
++  });
+   ui->groupBox->setVisible(false);
+ 
+   // initialize decoded text font and hook up font change signals
+@@ -1605,6 +1609,7 @@ void MainWindow::writeSettings()
+   m_settings->setValue ("AutoIgnore", ui->cb_IgnoreAfterWD->isChecked());
+   m_settings->setValue ("filter_LOTW", ui->cb_f_LOTW->isChecked());
+   m_settings->setValue ("CQonlyIncl73", ui->cbCQonlyIncl73->isChecked());
++  m_settings->setValue ("WatchUnconfirmedDXCC", ui->cbWatchUnconfirmedDXCC->isChecked());
+   m_settings->setValue ("dockWaterfall", ui->cbDockWF->isChecked());
+   m_settings->setValue ("showCallInfo", ui->actionCall_info->isChecked());
+   m_settings->setValue ("filter_enabled", ui->cb_filtering->isChecked());
+@@ -1830,6 +1835,7 @@ void MainWindow::readSettings()
+   ui->le_CustomAlerts->setText(m_settings->value("customAlerts").toString());
+   ui->cb_IgnoreAfterWD->setChecked(m_settings->value("AutoIgnore",true).toBool());
+   ui->cbCQonlyIncl73->setChecked(m_settings->value("CQonlyIncl73", false).toBool());
++  ui->cbWatchUnconfirmedDXCC->setChecked(m_settings->value("WatchUnconfirmedDXCC", true).toBool());
+   ui->cbDockWF->setChecked(m_settings->value("dockWaterfall", false).toBool());
+   ui->actionCall_info->setChecked(m_settings->value("showCallInfo", false).toBool());
+   ui->actionDark_mode->setChecked(m_settings->value("darkMode", false).toBool());
+@@ -8434,6 +8440,8 @@ void MainWindow::acceptQSO (QDateTime const& QSO_date_off, QString const& call,
+ 
+   // Z
+   m_om0rx_status_cache.clear ();
++  if (call.trimmed ().toUpper () == m_om0rxPriorityHuntCall)
++    clear_om0rx_priority_hunt ("QSO logged");
+   updateQsoCounter(true);
+   clearDX();
+ 
+@@ -11634,6 +11642,7 @@ void MainWindow::tx_watchdog (bool triggered)
+   m_tx_watchdog = triggered;
+   if (triggered)
+     {
++      clear_om0rx_priority_hunt ("watchdog triggered");
+       if (m_zdebug) log("TXWatchdog: TRUE");
+       m_bTxTime=false;
+       // Z
+@@ -13964,8 +13973,6 @@ void MainWindow::request_om0rx_decode_status (double freq_hz, QString const& cal
+                                               bool is_cq, int time_sec, QString const& decode_band,
+                                               QString const& grid, QString const& message, int snr)
+ {
+-  Q_UNUSED (is_cq);
+-  Q_UNUSED (time_sec);
+   auto call = callsign.trimmed ().toUpper ();
+   call.remove ('<');
+   call.remove ('>');
+@@ -13978,9 +13985,12 @@ void MainWindow::request_om0rx_decode_status (double freq_hz, QString const& cal
+   auto cache_key = QString {"%1|%2|%3"}.arg (call, band, mode);
+   if (m_om0rx_status_cache.contains (cache_key))
+     {
+-      auto values = m_om0rx_status_cache.value (cache_key).split ('|');
+-      apply_om0rx_decode_status (call, band, mode, values.value (0, "Unknown"),
+-                                 values.value (1, "Unknown"));
++      auto status = QJsonDocument::fromJson (m_om0rx_status_cache.value (cache_key).toUtf8 ()).object ();
++      apply_om0rx_decode_status (call, band, mode,
++                                 status.value ("call_status").toString ("Unknown"),
++                                 status.value ("dxcc_status").toString ("Unknown"));
++      consider_om0rx_priority_hunt (status, call, band, mode, is_cq, time_sec,
++                                    grid, message, static_cast<int> (freq_hz));
+       return;
+     }
+   if (m_om0rx_status_inflight.contains (cache_key)) return;
+@@ -14004,7 +14014,7 @@ void MainWindow::request_om0rx_decode_status (double freq_hz, QString const& cal
+   connect (timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
+   timeout->start (5000);
+   connect (reply, &QNetworkReply::finished, this,
+-           [this, reply, call, band, mode, cache_key] {
++           [this, reply, call, band, mode, cache_key, is_cq, time_sec, grid, message, freq_hz] {
+     if (auto * timeout = reply->findChild<QTimer *> ()) timeout->stop ();
+     m_om0rx_status_inflight.remove (cache_key);
+     QString call_status {"Unknown"};
+@@ -14017,7 +14027,10 @@ void MainWindow::request_om0rx_decode_status (double freq_hz, QString const& cal
+             call_status = status.value ("call_status").toString ("Unknown");
+             dxcc_status = status.value ("dxcc_status").toString ("Unknown");
+             if (m_om0rx_status_cache.size () >= 4096) m_om0rx_status_cache.clear ();
+-            m_om0rx_status_cache.insert (cache_key, call_status + "|" + dxcc_status);
++            m_om0rx_status_cache.insert (cache_key,
++                                         QString::fromUtf8 (QJsonDocument {status}.toJson (QJsonDocument::Compact)));
++            consider_om0rx_priority_hunt (status, call, band, mode, is_cq, time_sec,
++                                          grid, message, static_cast<int> (freq_hz));
+           }
+       }
+     else if (m_zdebug)
+@@ -14029,6 +14042,91 @@ void MainWindow::request_om0rx_decode_status (double freq_hz, QString const& cal
+   });
+ }
+ 
++void MainWindow::clear_om0rx_priority_hunt (QString const& reason)
++{
++  if (m_om0rxPriorityHuntActive && m_zdebug)
++    log ("OM0RX priority hunt cleared: " + reason + " call=" + m_om0rxPriorityHuntCall);
++  m_om0rxPriorityHuntActive = false;
++  m_om0rxPriorityHuntCall.clear ();
++  m_om0rxPriorityHuntBand.clear ();
++  m_om0rxPriorityHuntMode.clear ();
++  m_om0rxPriorityHuntRank = -1;
++  update_watchdog_label ();
++}
++
++void MainWindow::consider_om0rx_priority_hunt (QJsonObject const& status,
++                                                QString const& callsign,
++                                                QString const& band,
++                                                QString const& mode,
++                                                bool is_cq,
++                                                int time_sec,
++                                                QString const& grid,
++                                                QString const& message,
++                                                int audio_frequency)
++{
++  if (!ui->cbWatchUnconfirmedDXCC->isChecked () || !is_cq
++      || !ui->cbAutoCall->isChecked () || ui->autoButton->isChecked ()
++      || m_transmitting || m_tune || m_tx_watchdog)
++    return;
++
++  auto current_band = m_currentBand.trimmed ().toLower ();
++  if (current_band.isEmpty ()) current_band = ui->bandComboBox->currentText ().trimmed ().toLower ();
++  if (band != current_band || mode != m_mode.trimmed ().toUpper ()) return;
++  if (callsign == m_lastCall || callsign == m_hisCall) return;
++  if (!ui->dxCallEntry->text ().isEmpty () && ui->dxCallEntry->text ().trimmed ().toUpper () != callsign) return;
++
++  auto const needed = status.value ("needed").toObject ();
++  auto const needed_on_band = status.value ("needed_on_band").toObject ();
++  auto const dxcc_status = status.value ("dxcc_status").toString ().trimmed ();
++  if (dxcc_status.isEmpty () || dxcc_status == "Unknown") return;
++
++  int rank = -1;
++  if (needed.value ("dxcc").toBool () || dxcc_status == "ATNO") rank = 300;
++  else if (dxcc_status == "Worked" || dxcc_status.startsWith ("W/")) rank = 250;
++  else if (needed_on_band.value ("dxcc").toBool () && needed_on_band.value ("dxcc_mode").toBool ()) rank = 220;
++  else if (needed_on_band.value ("dxcc").toBool ()) rank = 210;
++  else if (needed_on_band.value ("dxcc_mode").toBool ()) rank = 200;
++  if (rank < 0) return;
++
++  if (m_om0rxPriorityHuntActive)
++    {
++      if (m_om0rxPriorityHuntCall == callsign) return;
++      if (rank <= m_om0rxPriorityHuntRank) return;
++    }
++
++  int nmod;
++  if (m_mode == "FT2")
++    {
++      auto period = static_cast<int> (round (static_cast<double> (time_sec) / m_TRperiod));
++      nmod = period % 2;
++    }
++  else
++    {
++      nmod = fmod (static_cast<double> (time_sec), 2.0 * m_TRperiod);
++    }
++  auto const tx_first = (nmod != 0);
++  if (m_TxFirstLock && ui->txFirstCheckBox->isChecked () != tx_first) return;
++
++  DecodedText decoded {message};
++  m_priorityCall = callsign;
++  m_priorityCallPreferCQTarget = false;
++  m_prioFreq = audio_frequency;
++  m_nextRpt = decoded.report ();
++  m_prioTxFirst = tx_first;
++  m_prioGrid = grid;
++  m_om0rxPriorityHuntActive = true;
++  m_om0rxPriorityHuntCall = callsign;
++  m_om0rxPriorityHuntBand = band;
++  m_om0rxPriorityHuntMode = mode;
++  m_om0rxPriorityHuntRank = rank;
++  m_idleMinutes = 0;
++  update_watchdog_label ();
++  log (QString {"OM0RX priority hunt selected call=%1 band=%2 mode=%3 dxcc=%4 watchdog=%5m"}
++       .arg (callsign, band, mode, dxcc_status)
++       .arg (m_om0rxPriorityHuntWatchdogMinutes));
++  QTimer::singleShot (0, this, [this] { ZProcess (); });
++}
++
+ void MainWindow::dxLookup(QString dxCall, QString dxGrid) {
+ 
+     if (!ui->w_callInfo->isVisible()) return;
+@@ -14470,6 +14568,7 @@ void MainWindow::toggleBands() {
+ 
+ void MainWindow::switchBand(int row, QString const& origin) {
+     if (row >= 0) {
++        clear_om0rx_priority_hunt ("band change");
+         ui->stopTxButton->click ();
+         ui->bandComboBox->setCurrentIndex (row);
+         m_nextBandQsyOrigin = origin;
+@@ -14655,6 +14754,9 @@ void MainWindow::resetAutoSwitch() {
+ }
+ 
+ int MainWindow::watchdog() {
++    if (m_om0rxPriorityHuntActive && ui->cbWatchUnconfirmedDXCC->isChecked()) {
++        return m_om0rxPriorityHuntWatchdogMinutes;
++    }
+     if (m_config.wd_Timer()) {
+         if (m_mode == "FT8") return m_config.wd_FT8();
+         if (m_mode == "FT2") return m_config.wd_FT2();
+diff --git a/widgets/mainwindow.ui b/widgets/mainwindow.ui
+index 848e90b..ae47165 100644
+--- a/widgets/mainwindow.ui
++++ b/widgets/mainwindow.ui
+@@ -3700,7 +3700,7 @@ list. The list can be maintained in Settings (F2).</string>
+                        <item row="2" column="0" colspan="2">
+                         <layout class="QHBoxLayout" name="horizontalLayout_17">
+                          <item>
+-                          <widget class="QCheckBox" name="cbCQonlyIncl73">
++                         <widget class="QCheckBox" name="cbCQonlyIncl73">
+                            <property name="toolTip">
+                             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;When &amp;quot;CQ Only&amp;quot; selected, include stations calling 73/RR73.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                            </property>
+@@ -3709,6 +3709,16 @@ list. The list can be maintained in Settings (F2).</string>
+                            </property>
+                           </widget>
+                          </item>
++                         <item>
++                          <widget class="QCheckBox" name="cbWatchUnconfirmedDXCC">
++                           <property name="toolTip">
++                            <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;When Auto Call is active, prioritize callable current-band CQ/73 messages for new or unconfirmed DXCC entities and extend the active QSO watchdog to 20 minutes.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
++                           </property>
++                           <property name="text">
++                            <string>Watch for new/unconfirmed DXCC's</string>
++                           </property>
++                          </widget>
++                         </item>
+                          <item>
+                           <spacer name="horizontalSpacer_8">
+                            <property name="orientation">

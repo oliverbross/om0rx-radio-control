@@ -14,7 +14,8 @@ $patchPaths = @(
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0001-build-allow-omnirig-off.patch"),
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0002-build-link-fftw-threads-on-windows.patch"),
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0100-band-qsy-transaction-tracing.patch"),
-    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0200-display-status-columns.patch")
+    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0200-display-status-columns.patch"),
+    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0300-dxcc-priority-hunt.patch")
 )
 $bash = Join-Path $MsysRoot "usr\bin\bash.exe"
 
@@ -52,19 +53,35 @@ if ($actualCommit -ne $expectedCommit) {
     throw "Clean source is at $actualCommit, expected $expectedCommit."
 }
 
-foreach ($patchPath in $patchPaths) {
-    git -C $sourceRoot apply --reverse --check $patchPath 2>$null
-    $patchAlreadyApplied = $LASTEXITCODE -eq 0
-    if (-not $patchAlreadyApplied) {
-        git -C $sourceRoot apply --check $patchPath
-        if ($LASTEXITCODE -ne 0) {
-            throw "Build compatibility patch does not apply cleanly: $patchPath"
-        }
-        git -C $sourceRoot apply $patchPath
-        if ($LASTEXITCODE -ne 0) {
-            throw "Unable to apply build compatibility patch: $patchPath"
+$patchStatePath = Join-Path $workRoot "APPLIED-PATCHES.txt"
+$expectedPatchState = @($patchPaths | ForEach-Object { Split-Path -Leaf $_ })
+$actualPatchState = if (Test-Path -LiteralPath $patchStatePath) {
+    @(Get-Content -LiteralPath $patchStatePath | Where-Object { $_ })
+} else { @() }
+$patchStateMatches = ($actualPatchState.Count -eq $expectedPatchState.Count) -and
+    (-not (Compare-Object $actualPatchState $expectedPatchState -SyncWindow 0))
+
+if (-not $patchStateMatches) {
+    # If the final dependent patch reverses cleanly, the complete ordered stack is present.
+    git -C $sourceRoot apply --reverse --check $patchPaths[-1] 2>$null
+    $completeStackAlreadyApplied = $LASTEXITCODE -eq 0
+    if (-not $completeStackAlreadyApplied) {
+        foreach ($patchPath in $patchPaths) {
+            git -C $sourceRoot apply --reverse --check $patchPath 2>$null
+            $patchAlreadyApplied = $LASTEXITCODE -eq 0
+            if (-not $patchAlreadyApplied) {
+                git -C $sourceRoot apply --check $patchPath
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Clean rebuild patch does not apply in sequence: $patchPath"
+                }
+                git -C $sourceRoot apply $patchPath
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Unable to apply clean rebuild patch: $patchPath"
+                }
+            }
         }
     }
+    Set-Content -LiteralPath $patchStatePath -Value $expectedPatchState -Encoding ASCII
 }
 
 $packages = @(
@@ -132,7 +149,7 @@ $exeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sideBySideExe).Hash
 $decoderHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $decoder).Hash
 $identity = @(
     "source_commit=$actualCommit"
-    "patches=0001-build-allow-omnirig-off.patch,0002-build-link-fftw-threads-on-windows.patch,0100-band-qsy-transaction-tracing.patch,0200-display-status-columns.patch"
+    "patches=0001-build-allow-omnirig-off.patch,0002-build-link-fftw-threads-on-windows.patch,0100-band-qsy-transaction-tracing.patch,0200-display-status-columns.patch,0300-dxcc-priority-hunt.patch"
     "executable_sha256=$exeHash"
     "decoder_sha256=$decoderHash"
 )

@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-07-19",
+  "milestone": "current-band new/unconfirmed DXCC priority hunt",
+  "source": {
+    "upstream_commit": "fa53f635462def9f37b54f63f18e407ecda2ba12",
+    "patch": "patches/0300-dxcc-priority-hunt.patch"
+  },
+  "selection": {
+    "requires_auto_call": true,
+    "requires_callable_cq_or_enabled_73": true,
+    "requires_current_band_and_mode": true,
+    "unknown_classification": "no priority",
+    "cross_band_hunt": "deferred",
+    "award_reference_exceptions": "deferred"
+  },
+  "safety": {
+    "second_cat_or_tuning_path": false,
+    "refuse_during_tx_or_tune": true,
+    "respect_tx_first_lock": true,
+    "watchdog_minutes_during_priority_qso": 20,
+    "clear_on": [
+      "QSO logged",
+      "band change",
+      "watchdog triggered",
+      "operator disables watch"
+    ]
+  },
+  "artifacts": {
+    "executable_sha256": "D0297FB3FCD61B35F0509CE026042DC0EFC302E8D5BD85D732E69177F324A87F",
+    "decoder_sha256": "A24D8C4D1E100DA7EFBE29AA911D53DF6E3CA7F81645E0A25F8D9449603E34FA"
+  },
+  "verification": {
+    "native_release_build": "success",
+    "ordered_patch_stack": "success"
+  }
+}
