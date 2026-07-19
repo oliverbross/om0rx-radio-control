@@ -1,0 +1,29 @@
+{
+  "milestone": 8,
+  "name": "direct caller reply ownership",
+  "policy": {
+    "direct_message_priority": "absolute when no progressed QSO exists with another station",
+    "same_decode_batch": "ordinary CQ candidates cannot replace the direct caller",
+    "filters": "direct messages to OM0RX bypass ordinary candidate filters",
+    "active_qso_guard": "a progressed QSO with another station is never interrupted",
+    "fallback": "queued direct reply is processed at the first non-transmitting opportunity",
+    "stale_unanswered_lock_seconds": 120
+  },
+  "incident_reproduction": {
+    "direct_reply": "055700 Rx OM0RX LY3QR +12",
+    "competing_cq": "055700 Rx CQ YO3AUM KN34",
+    "incorrect_old_transmission": "055715 Tx YO3AUM OM0RX JN88",
+    "expected": "continue the LY3QR exchange"
+  },
+  "verification": {
+    "native_build": "success",
+    "focused_tests": "65 passed",
+    "safe_cutover_qso_state": "idle",
+    "halt_tx_acknowledged": true,
+    "launched_process_id": 23204,
+    "live_direct_reply_decode": "062445 Rx OM0RX OH1NHX +05",
+    "live_next_transmission": "062500 Tx OH1NHX OM0RX R+01",
+    "live_qso_log": "OH1NHX 17m FT8 written to WSJT-Z ADIF and Wavelog"
+  },
+  "executable_sha256": "385BAB16FCD5C904D61C0641E38229D59938AF5018EB3C656F8A888E02646FB1"
+}

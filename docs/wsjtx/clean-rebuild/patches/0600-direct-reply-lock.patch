@@ -1,0 +1,135 @@
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+index ce72ba0..da6efcc 100644
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -7941,6 +7941,10 @@ void MainWindow::clearDX ()
+   m_qsoStart.clear ();
+   m_qsoStop.clear ();
+   m_inQSOwith.clear();
++  m_om0rxDirectReplyCall.clear();
++  m_om0rxPendingDirectReplyLine.clear();
++  m_om0rxDirectReplySeen = QDateTime {};
++  m_om0rxPendingDirectReply = false;
+   genStdMsgs (QString {});
+   if (m_mode=="FT8" and SpecOp::HOUND == m_specOp) {
+     m_ntx=1;
+@@ -13381,6 +13385,37 @@ void MainWindow::rebuildFilterCache() const
+ static const QRegularExpression kReDigit{"[0-9]"};
+ static const QRegularExpression kReCqStart{"^(CQ|CQ\\s\\w+)$"};
+ 
++bool MainWindow::om0rx_process_pending_direct_reply()
++{
++    if (!m_om0rxPendingDirectReply || m_transmitting) return false;
++
++    auto const locked_base = Radio::base_callsign(m_om0rxDirectReplyCall);
++    auto const current_base = Radio::base_callsign(ui->dxCallEntry->text());
++    bool const progressed_qso = m_QSOProgress != CALLING && !current_base.isEmpty();
++
++    // Auto-sequence may already have consumed this decode before the queued
++    // callback runs. Do not process it twice, and never interrupt a QSO that
++    // has progressed with another station.
++    if (progressed_qso) {
++        m_om0rxPendingDirectReply = false;
++        m_om0rxPendingDirectReplyLine.clear();
++        if (current_base != locked_base) {
++            m_om0rxDirectReplyCall.clear();
++            m_om0rxDirectReplySeen = QDateTime {};
++        }
++        return false;
++    }
++
++    DecodedText message {m_om0rxPendingDirectReplyLine};
++    m_om0rxPendingDirectReply = false;
++    m_om0rxPendingDirectReplyLine.clear();
++    m_bDoubleClicked = true;
++    m_bAutoReply = true;
++    processMessage(message);
++    if (!ui->dxCallEntry->text().isEmpty()) auto_tx_mode(true);
++    return true;
++}
++
+ bool MainWindow::callsignFiltered(DecodedText dt)
+ {
+ 
+@@ -13434,6 +13469,58 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+     bool is_73 = (message_words.size() >= 5 && (message_words.contains("73") || message_words.contains("RR73")));
+     bool is_CQ = message_words.filter (kReCqStart).size();
+ 
++    // A decoded message addressed to us owns the reply slot. This check is
++    // deliberately ahead of every normal filter and CQ-priority calculation:
++    // filters must never discard a caller, and a later CQ in the same decode
++    // batch must never replace the station that is already replying to us.
++    bool const addressed_to_me = message_words.size() > 3
++        && (message_words.at(2).contains(m_baseCall)
++            || message_words.at(2).contains(m_config.my_callsign())
++            || "DE" == message_words.at(2));
++    auto const decoded_base = Radio::base_callsign(dxCall);
++    auto const current_base = Radio::base_callsign(ui->dxCallEntry->text());
++    bool const progressed_with_other = m_QSOProgress != CALLING
++        && !current_base.isEmpty() && current_base != decoded_base;
++
++    if (addressed_to_me && dxCall != m_baseCall && !progressed_with_other) {
++        m_om0rxDirectReplyCall = dxCall;
++        m_om0rxDirectReplySeen = QDateTime::currentDateTimeUtc();
++        m_priorityCall.clear();
++        m_priorityCallPreferCQTarget = false;
++
++        // A bare 73 from an unrelated station is not a new QSO invitation.
++        // For every actionable direct message, queue a fallback processor;
++        // normal auto-sequence gets first chance and the callback becomes a
++        // no-op if that already advanced the exchange.
++        if (!is_73) {
++            m_om0rxPendingDirectReplyLine = dt.string();
++            m_om0rxPendingDirectReply = true;
++            QTimer::singleShot(0, this, [this] {
++                om0rx_process_pending_direct_reply();
++            });
++        }
++        if (m_zdebug) log("Direct reply lock: " + dxCall);
++        return false;
++    }
++
++    // Release an unanswered stale lock after two minutes. Progressed QSOs are
++    // released by clearDX() when they finish or are abandoned.
++    if (!m_om0rxDirectReplyCall.isEmpty() && m_QSOProgress == CALLING
++        && m_om0rxDirectReplySeen.isValid()
++        && m_om0rxDirectReplySeen.secsTo(QDateTime::currentDateTimeUtc()) > 120) {
++        m_om0rxDirectReplyCall.clear();
++        m_om0rxDirectReplySeen = QDateTime {};
++        m_om0rxPendingDirectReply = false;
++        m_om0rxPendingDirectReplyLine.clear();
++    }
++
++    bool const direct_reply_locked_for_other = !m_om0rxDirectReplyCall.isEmpty()
++        && Radio::base_callsign(m_om0rxDirectReplyCall) != decoded_base;
++    if (direct_reply_locked_for_other && (is_CQ || is_73)) {
++        if (m_zdebug) log("CQ candidate suppressed by direct reply lock: " + dxCall);
++        return false;
++    }
++
+     // Auto call next
+     if (ui->cb_autoCallNext->isChecked() && dxCall == ui->dxCallEntry->text() ) {
+           if (is_CQ || is_73 || SpecOp::HOUND == m_config.special_op_id()) {
+@@ -14782,6 +14869,11 @@ void MainWindow::ZProcess ()
+         return;
+     }
+ 
++    if (om0rx_process_pending_direct_reply()) {
++        if (m_zdebug) log("ZProcess: direct reply took priority");
++        return;
++    }
++
+     if (m_config.ignoreListReset() != 0 && m_ignoreListReset.secsTo(QDateTime::currentDateTime()) / 60 >= m_config.ignoreListReset()) {
+         if (m_zdebug) log("ZProcess: Clearing ignore list");
+         on_btn_clearIgnore_clicked();
+diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
+index 56bcb43..f123138 100644
+--- a/widgets/mainwindow.h
++++ b/widgets/mainwindow.h
+@@ -376,0 +377,1 @@
++     bool om0rx_process_pending_direct_reply();
+@@ -755,0 +757,4 @@
++  QString m_om0rxDirectReplyCall;
++  QString m_om0rxPendingDirectReplyLine;
++  QDateTime m_om0rxDirectReplySeen;
++  bool    m_om0rxPendingDirectReply = false;

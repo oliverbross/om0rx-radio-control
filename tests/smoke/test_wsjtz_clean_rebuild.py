@@ -54,6 +54,7 @@ def test_clean_build_separates_build_compatibility_and_band_control_patches() ->
     assert "0300-dxcc-priority-hunt.patch" in script
     assert "0400-backend-target-command.patch" in script
     assert "0500-visible-automation-startup.patch" in script
+    assert "0600-direct-reply-lock.patch" in script
     assert "om0rx-wsjtz-enrichment.patch" not in script
     assert "OM0RX_BUILD_WITH_OMNIRIG=OFF" in script
     assert "data\\build\\wsjt-z-clean" in script
@@ -152,6 +153,19 @@ def test_visible_automation_controls_are_startup_defaults_and_tx_authority() -> 
     assert "!m_monitoring" in patch
     assert "enable_tx && !ui->cbAutoCall->isChecked ()" in patch
     assert "visible Auto Call is off" in patch
+
+
+def test_direct_reply_lock_prevents_same_batch_cq_replacement() -> None:
+    patch = (CLEAN_DOC_ROOT / "patches" / "0600-direct-reply-lock.patch").read_text(encoding="utf-8")
+
+    assert "addressed_to_me" in patch
+    assert "progressed_with_other" in patch
+    assert "Direct reply lock:" in patch
+    assert "CQ candidate suppressed by direct reply lock:" in patch
+    assert "om0rx_process_pending_direct_reply" in patch
+    assert "m_om0rxPendingDirectReplyLine = dt.string()" in patch
+    assert "processMessage(message)" in patch
+    assert "m_om0rxDirectReplyCall.clear()" in patch
 
 
 def test_basic_antenna_policy_lock_defers_award_reference_exceptions() -> None:

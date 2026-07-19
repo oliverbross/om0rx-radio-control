@@ -81,3 +81,12 @@ frequency owner. Its mapping, fail-closed TX behavior, deferred latest-band
 semantics, and remaining production interlock are recorded in
 `antenna-policy.md` and `milestone-2-lock.json`. Award-reference exceptions
 remain deferred.
+
+## Milestone 8 implementation
+
+Patch `0600-direct-reply-lock.patch` gives a decoded message addressed to
+OM0RX ownership of the reply slot whenever no QSO has progressed with another
+station. It bypasses ordinary station filters, suppresses later CQ promotion
+within the same decode batch, and queues a fallback reply for the first safe
+non-transmitting opportunity. The LY3QR/YO3AUM incident and deployed artifact
+identity are recorded in `milestone-8-lock.json`.
