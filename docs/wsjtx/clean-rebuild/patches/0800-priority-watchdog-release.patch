@@ -1,0 +1,32 @@
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -7955,5 +7955,13 @@ void MainWindow::clearDX ()
+ {
+   if (m_zdebug) log("clearDX");
++  // Keep the extended watchdog only while the queued/active target is the
++  // DXCC that armed it.  ZProcess clears DX between Auto Call attempts, so a
++  // matching queued priority call must survive that transitional clear.
++  auto const queued_priority_base = Radio::base_callsign (m_priorityCall).toUpper ();
++  auto const hunted_base = Radio::base_callsign (m_om0rxPriorityHuntCall).toUpper ();
++  if (m_om0rxPriorityHuntActive
++      && (queued_priority_base.isEmpty () || queued_priority_base != hunted_base))
++    clear_om0rx_priority_hunt ("DX target cleared or abandoned");
+   set_dateTimeQSO (-1);
+   // Z
+   //if (m_QSOProgress != CALLING) {
+@@ -8291,0 +8300,5 @@ void MainWindow::on_dxCallEntry_textChanged (QString const& call)
++  auto const active_base = Radio::base_callsign (call).toUpper ();
++  auto const hunted_base = Radio::base_callsign (m_om0rxPriorityHuntCall).toUpper ();
++  if (m_om0rxPriorityHuntActive && !active_base.isEmpty () && active_base != hunted_base)
++    clear_om0rx_priority_hunt ("active DX target changed");
++
+@@ -13215,7 +13228,7 @@ void MainWindow::remote_start_target_qso (QString const& payload_json)
+            .arg (call).arg (m_om0rxPriorityHuntWatchdogMinutes)
+            .arg (text_value ("huntReason", "DXCC priority")));
+     }
+-  else if (!priority_hunt && m_om0rxPriorityHuntActive && m_om0rxPriorityHuntCall != call)
++  else if (!priority_hunt && m_om0rxPriorityHuntActive)
+     {
+       clear_om0rx_priority_hunt ("non-priority backend target selected");
+     }

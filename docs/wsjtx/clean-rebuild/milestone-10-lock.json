@@ -1,0 +1,30 @@
+{
+  "milestone": 10,
+  "name": "priority DXCC watchdog ownership and release",
+  "policy": {
+    "priority_watchdog_minutes": 20,
+    "configured_watchdog_minutes": 2,
+    "owner": "exact hunted call, band, and mode attempt",
+    "release_events": [
+      "native Auto Call selects a different station",
+      "DX target is cleared or abandoned",
+      "backend sends a non-priority target command",
+      "QSO is logged",
+      "band changes",
+      "priority watchdog expires",
+      "operator disables DXCC watch"
+    ]
+  },
+  "verification": {
+    "native_build": "success",
+    "focused_tests": "68 passed",
+    "patch_reverse_forward_check": "success",
+    "safe_cutover": "Halt Tx acknowledged before process replacement",
+    "launched_process_id": 23416,
+    "bridge_heartbeat": "live",
+    "process_responding": true
+  },
+  "source_commit": "fa53f635462def9f37b54f63f18e407ecda2ba12",
+  "executable_sha256": "55D393D57D845706633825701077F812BFA520ADA0FDCB11D107A379CBCBEEF0",
+  "decoder_sha256": "A24D8C4D1E100DA7EFBE29AA911D53DF6E3CA7F81645E0A25F8D9449603E34FA"
+}

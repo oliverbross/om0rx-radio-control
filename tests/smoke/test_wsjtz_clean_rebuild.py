@@ -183,6 +183,17 @@ def test_logged_target_guard_and_semantic_decode_dedup_are_native() -> None:
     assert "m_om0rxSeenDecodeLines.contains(decode_identity)" in patch
 
 
+def test_priority_watchdog_releases_when_hunted_target_loses_ownership() -> None:
+    patch = (CLEAN_DOC_ROOT / "patches" / "0800-priority-watchdog-release.patch").read_text(encoding="utf-8")
+
+    assert 'clear_om0rx_priority_hunt ("DX target cleared or abandoned")' in patch
+    assert "queued_priority_base != hunted_base" in patch
+    assert 'clear_om0rx_priority_hunt ("active DX target changed")' in patch
+    assert "active_base != hunted_base" in patch
+    assert "+  else if (!priority_hunt && m_om0rxPriorityHuntActive)" in patch
+    assert "+  else if (!priority_hunt && m_om0rxPriorityHuntActive && m_om0rxPriorityHuntCall != call)" not in patch
+
+
 def test_basic_antenna_policy_lock_defers_award_reference_exceptions() -> None:
     lock = json.loads((CLEAN_DOC_ROOT / "milestone-2-lock.json").read_text(encoding="utf-8"))
 

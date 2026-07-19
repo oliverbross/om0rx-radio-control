@@ -100,3 +100,11 @@ before potentially slow QRZ and Wavelog work. Decoder rows are deduplicated
 before every output and automation path using UTC slot and decoded message,
 while ignoring decoder-estimate and hidden AP-suffix differences. Verification
 and the deployed artifact identity are recorded in `milestone-9-lock.json`.
+
+## Milestone 10 implementation
+
+Patch `0800-priority-watchdog-release.patch` makes the temporary 20-minute
+DXCC watchdog strictly owned by the hunted call. It releases the override when
+native Auto Call selects another station, when the DX target is abandoned, or
+when the backend sends any non-priority target command. The ordinary configured
+watchdog (currently two minutes) then becomes effective immediately.

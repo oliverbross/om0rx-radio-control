@@ -19,7 +19,8 @@ $patchPaths = @(
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0400-backend-target-command.patch"),
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0500-visible-automation-startup.patch"),
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0600-direct-reply-lock.patch"),
-    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0700-log-race-and-decode-dedup.patch")
+    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0700-log-race-and-decode-dedup.patch"),
+    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0800-priority-watchdog-release.patch")
 )
 $bash = Join-Path $MsysRoot "usr\bin\bash.exe"
 
