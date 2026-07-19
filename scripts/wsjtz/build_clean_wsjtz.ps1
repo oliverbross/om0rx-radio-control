@@ -15,7 +15,8 @@ $patchPaths = @(
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0002-build-link-fftw-threads-on-windows.patch"),
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0100-band-qsy-transaction-tracing.patch"),
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0200-display-status-columns.patch"),
-    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0300-dxcc-priority-hunt.patch")
+    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0300-dxcc-priority-hunt.patch"),
+    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0400-backend-target-command.patch")
 )
 $bash = Join-Path $MsysRoot "usr\bin\bash.exe"
 

@@ -1,0 +1,225 @@
+diff --git a/Network/MessageClient.cpp b/Network/MessageClient.cpp
+index c2100d1..4b7a3a9 100644
+--- a/Network/MessageClient.cpp
++++ b/Network/MessageClient.cpp
+@@ -407,6 +407,18 @@ void MessageClient::impl::parse_message (QByteArray const& msg)
+               }
+                 break;
+ 
++            case NetworkMessage::OM0RXStartTargetQSO:
++              {
++                QByteArray payload;
++                in >> payload;
++                TRACE_UDP ("OM0RXStartTargetQSO payload:" << payload);
++                if (check_status (in) != Fail)
++                  {
++                    Q_EMIT self_->start_target_qso (QString::fromUtf8 (payload));
++                  }
++              }
++              break;
++
+               default:
+               // Ignore
+               //
+diff --git a/Network/MessageClient.hpp b/Network/MessageClient.hpp
+index 2c87fe7..8bdac7f 100644
+--- a/Network/MessageClient.hpp
++++ b/Network/MessageClient.hpp
+@@ -126,6 +126,9 @@ public:
+   // this signal is emitted if the server has sent information about a callsign
+   Q_SIGNAL void annotation_info (QString const& dx_call, bool sort_order_provided, quint32 sort_order);
+ 
++  // OM0RX local extension: a trusted controller selected a QSO target.
++  Q_SIGNAL void start_target_qso (QString const& payload_json);
++
+     // this signal is emitted when network errors occur or if a host
+   // lookup fails
+   Q_SIGNAL void error (QString const&) const;
+diff --git a/Network/NetworkMessage.hpp b/Network/NetworkMessage.hpp
+index 74a268f..457cf72 100644
+--- a/Network/NetworkMessage.hpp
++++ b/Network/NetworkMessage.hpp
+@@ -561,6 +561,8 @@ namespace NetworkMessage
+       SwitchConfiguration,
+       Configure,
+       AnnotationInfo,
++      // OM0RX local extension. Keep in sync with bridge/wsjtx-protocol.js.
++      OM0RXStartTargetQSO,
+       maximum_message_type_     // ONLY add new message types
+                                 // immediately before here
+     };
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+index 8354af0..e906323 100644
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -692,6 +692,8 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+   connect (m_messageClient, &MessageClient::highlight_callsign, ui->decodedTextBrowser, &DisplayText::highlight_callsign);
+   connect (m_messageClient, &MessageClient::switch_configuration, m_multi_settings, &MultiSettings::select_configuration);
+   connect (m_messageClient, &MessageClient::configure, this, &MainWindow::remote_configure);
++  connect (m_messageClient, &MessageClient::start_target_qso,
++           this, &MainWindow::remote_start_target_qso);
+ 
+   // Hook up WSPR band hopping
+   connect (ui->band_hopping_schedule_push_button, &QPushButton::clicked
+@@ -13045,6 +13047,149 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
+   QApplication::alert (this);
+ }
+ 
++void MainWindow::remote_start_target_qso (QString const& payload_json)
++{
++  QJsonParseError parse_error;
++  auto document = QJsonDocument::fromJson (payload_json.toUtf8 (), &parse_error);
++  if (QJsonParseError::NoError != parse_error.error || !document.isObject ())
++    {
++      log ("OM0RX target command rejected: invalid JSON");
++      return;
++    }
++
++  auto root = document.object ();
++  auto target = root.value ("target").toObject ();
++  if (target.isEmpty ()) target = root;
++
++  auto text_value = [&target] (char const * name, QString const& fallback = QString {}) {
++    auto value = target.value (QLatin1String {name});
++    return value.isString () ? value.toString ().trimmed () : fallback;
++  };
++  auto bool_value = [&target] (char const * name, bool fallback) {
++    auto value = target.value (QLatin1String {name});
++    return value.isBool () ? value.toBool () : fallback;
++  };
++  auto uint_value = [&target] (char const * name, quint32 fallback) {
++    auto value = target.value (QLatin1String {name});
++    if (!value.isDouble ()) return fallback;
++    auto number = value.toDouble ();
++    return number >= 0.0 && number <= double (std::numeric_limits<quint32>::max ())
++        ? static_cast<quint32> (number) : fallback;
++  };
++
++  auto call = text_value ("dxCall", text_value ("call")).toUpper ();
++  call.remove ('<');
++  call.remove ('>');
++  auto grid = text_value ("dxGrid", text_value ("grid")).toUpper ();
++  auto mode = text_value ("mode", m_mode).toUpper ();
++  auto band = text_value ("band", m_currentBand).toLower ();
++  auto listen_only = bool_value ("listenOnly", false);
++  auto enable_tx = bool_value ("enableTx", true);
++  auto priority_hunt = bool_value ("priorityHunt", false);
++  auto dial_frequency = static_cast<Frequency> (uint_value ("dialFrequency", 0u));
++  auto rx_df = uint_value ("rxDf", quint32_max);
++  auto tx_df = uint_value ("txDf", quint32_max);
++  auto tr_period = uint_value ("trPeriod", quint32_max);
++
++  if (call.isEmpty () && !listen_only)
++    {
++      log ("OM0RX target command rejected: missing call");
++      return;
++    }
++
++  auto active_call = ui->dxCallEntry->text ().trimmed ().toUpper ();
++  active_call.remove ('<');
++  active_call.remove ('>');
++  auto different_active_call = !active_call.isEmpty () && active_call != call;
++  // Stale report/QSO fields can remain after Auto Tx has returned to idle.
++  // They must not block the next backend-selected target once Auto Tx is off.
++  auto exchange_started = m_transmitting || (ui->autoButton->isChecked ()
++      && (m_QSOProgress != CALLING || !m_rptSent.isEmpty ()
++          || !m_rptRcvd.isEmpty () || m_sentFirst73));
++  if (different_active_call && exchange_started)
++    {
++      log (QString {"OM0RX target command held out: active QSO=%1 requested=%2"}
++           .arg (active_call, call));
++      return;
++    }
++
++  if (!band.isEmpty () && !m_currentBand.isEmpty () && band != m_currentBand.toLower ()
++      && !ui->band_hopping_group_box->isChecked ())
++    {
++      log (QString {"OM0RX target command rejected: band hopping disabled %1->%2"}
++           .arg (m_currentBand, band));
++      return;
++    }
++  if (!mode.isEmpty () && mode != m_mode.toUpper () && !ui->cb_autoModeSwitch->isChecked ())
++    {
++      log (QString {"OM0RX target command rejected: mode switching disabled %1->%2"}
++           .arg (m_mode, mode));
++      return;
++    }
++
++  remote_configure (mode, uint_value ("frequencyTolerance", quint32_max),
++                    text_value ("submode").toUpper (), bool_value ("fastMode", false),
++                    tr_period, rx_df, listen_only ? QString {} : call,
++                    listen_only ? QString {} : grid,
++                    listen_only ? false : bool_value ("generateMessages", true));
++
++  if (dial_frequency) setRig (dial_frequency);
++  if (tx_df != quint32_max && ui->TxFreqSpinBox->isVisible ())
++    {
++      ui->TxFreqSpinBox->setValue (tx_df);
++      ui->TxFreqSpinBox->interpretText ();
++      setXIT (ui->TxFreqSpinBox->value ());
++    }
++  auto hold_tx = bool_value ("holdTxFreq", true);
++  if (ui->cbHoldTxFreq->isVisible () && ui->cbHoldTxFreq->isChecked () != hold_tx)
++    ui->cbHoldTxFreq->click ();
++  if (target.contains ("txFirst") && ui->txFirstCheckBox->isVisible ())
++    ui->txFirstCheckBox->setChecked (bool_value ("txFirst", ui->txFirstCheckBox->isChecked ()));
++
++  if (priority_hunt && ui->cbWatchUnconfirmedDXCC->isChecked () && !listen_only)
++    {
++      m_om0rxPriorityHuntActive = true;
++      m_om0rxPriorityHuntCall = call;
++      m_om0rxPriorityHuntBand = band;
++      m_om0rxPriorityHuntMode = mode;
++      m_om0rxPriorityHuntRank = 1000;
++      m_om0rxPriorityHuntWatchdogMinutes = qBound (1, static_cast<int> (
++          uint_value ("watchdogMinutes", 20u)), 120);
++      m_idleMinutes = 0;
++      update_watchdog_label ();
++      log (QString {"OM0RX backend priority hunt armed call=%1 watchdog=%2m reason=%3"}
++           .arg (call).arg (m_om0rxPriorityHuntWatchdogMinutes)
++           .arg (text_value ("huntReason", "DXCC priority")));
++    }
++  else if (!priority_hunt && m_om0rxPriorityHuntActive && m_om0rxPriorityHuntCall != call)
++    {
++      clear_om0rx_priority_hunt ("non-priority backend target selected");
++    }
++
++  if (listen_only)
++    {
++      tx_watchdog (false);
++      return;
++    }
++
++  switch (uint_value ("txMessageNumber", 1u))
++    {
++    case 2: ui->txb2->click (); break;
++    case 3: ui->txb3->click (); break;
++    case 4: ui->txb4->click (); break;
++    case 5: ui->txb5->click (); break;
++    case 6: ui->txb6->click (); break;
++    default: ui->txb1->click (); break;
++    }
++  if (enable_tx && !ui->autoButton->isChecked ())
++    {
++      m_bDoubleClicked = true;
++      ui->autoButton->click ();
++    }
++  tx_watchdog (false);
++  QApplication::alert (this);
++}
++
+ QString MainWindow::WSPR_message()
+ {
+   QString sdBm,msg0,msg1,msg2;
+diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
+index 9291ee8..39dc437 100644
+--- a/widgets/mainwindow.h
++++ b/widgets/mainwindow.h
+@@ -439,6 +439,7 @@ private slots:
+                                         int time_sec, QString const& grid, QString const& message,
+                                         int audio_frequency);
+      void clear_om0rx_priority_hunt (QString const& reason);
++     void remote_start_target_qso (QString const& payload_json);
+      void on_actionCall_info_triggered();
+      void on_actionDark_mode_triggered();
+      void qrzInit();

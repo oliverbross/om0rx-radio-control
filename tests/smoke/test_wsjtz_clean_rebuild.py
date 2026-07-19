@@ -52,6 +52,7 @@ def test_clean_build_separates_build_compatibility_and_band_control_patches() ->
     assert "0100-band-qsy-transaction-tracing.patch" in script
     assert "0200-display-status-columns.patch" in script
     assert "0300-dxcc-priority-hunt.patch" in script
+    assert "0400-backend-target-command.patch" in script
     assert "om0rx-wsjtz-enrichment.patch" not in script
     assert "OM0RX_BUILD_WITH_OMNIRIG=OFF" in script
     assert "data\\build\\wsjt-z-clean" in script
@@ -126,6 +127,18 @@ def test_dxcc_priority_patch_is_current_band_fail_closed_and_watchdog_scoped() -
     assert 'clear_om0rx_priority_hunt ("band change")' in patch
     assert 'clear_om0rx_priority_hunt ("QSO logged")' in patch
     assert 'clear_om0rx_priority_hunt ("watchdog triggered")' in patch
+
+
+def test_backend_target_patch_receives_commands_and_arms_priority_watchdog() -> None:
+    patch = (CLEAN_DOC_ROOT / "patches" / "0400-backend-target-command.patch").read_text(encoding="utf-8")
+
+    assert "OM0RXStartTargetQSO" in patch
+    assert "Q_SIGNAL void start_target_qso" in patch
+    assert "remote_start_target_qso" in patch
+    assert 'bool_value ("priorityHunt", false)' in patch
+    assert 'uint_value ("watchdogMinutes", 20u)' in patch
+    assert "OM0RX backend priority hunt armed" in patch
+    assert "active QSO=" in patch
 
 
 def test_basic_antenna_policy_lock_defers_award_reference_exceptions() -> None:
