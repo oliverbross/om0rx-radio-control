@@ -1,0 +1,29 @@
+{
+  "milestone": 6,
+  "name": "backend target ownership and priority watchdog",
+  "source": {
+    "upstream_commit": "fa53f635462def9f37b54f63f18e407ecda2ba12",
+    "patch": "patches/0400-backend-target-command.patch"
+  },
+  "protocol": {
+    "message_type": 17,
+    "name": "OM0RXStartTargetQSO",
+    "owner": "backend planner",
+    "active_qso_guard": "do not replace an armed or transmitting exchange"
+  },
+  "priority_watchdog": {
+    "normal_minutes": 2,
+    "dxcc_priority_minutes": 20,
+    "reset_on_log": true
+  },
+  "verification": {
+    "native_build": "success",
+    "focused_tests": "119 passed",
+    "dry_command_call": "M3VNI",
+    "dry_command_transmit_enabled": false,
+    "ui_target_after_command": "M3VNI",
+    "ui_watchdog_after_command": "WD:20m",
+    "result": "pass"
+  },
+  "executable_sha256": "889B22EB59B97071044B4A412F6A6ADCC79D32A905699BC7E833C58880E8DB32"
+}
