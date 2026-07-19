@@ -1,8 +1,8 @@
 param(
     [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path,
     [string]$MsysRoot = "C:\JTSDK64-Tools\tools\msys64",
-    [string]$RigName = "OM0RX-WSJTZ-CLEAN",
-    [string]$ConfigName = "OM0RX-WSJTZ-CLEAN",
+    [string]$RigName = "OM0RX-WSJT-Z",
+    [string]$ConfigName = "OM0RX-WSJT-Z",
     [switch]$TestMode,
     [switch]$SkipClassificationServer
 )
@@ -93,11 +93,10 @@ Start-Process `
     -FilePath $exe `
     -ArgumentList $args `
     -WorkingDirectory $buildRoot `
-    -WindowStyle Hidden `
     -RedirectStandardOutput $outLog `
     -RedirectStandardError $errLog
 
-Write-Host "Started clean WSJT-Z baseline without enrichment or INI mutation:"
+Write-Host "Started clean OM0RX WSJT-Z with local CS/DS classification and guarded DXCC priority:"
 Write-Host "  $exe"
 Write-Host "Arguments: $($args -join ' ')"
 Write-Host "Profile: WSJT-X - $RigName"

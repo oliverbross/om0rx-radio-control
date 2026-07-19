@@ -83,8 +83,8 @@ WSJT_CLIENT_FRESH_MS = 300_000
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PATCHED_ENGINE_BUILD_ROOT = PROJECT_ROOT / "data" / "build" / "wsjtx-improved-om0rx" / "build-msys"
 PATCHED_ENGINE_RUN_SCRIPT = PROJECT_ROOT / "scripts" / "wsjtx" / "run_om0rx_wsjtx.ps1"
-WSJTZ_ENGINE_BUILD_ROOT = PROJECT_ROOT / "data" / "build" / "wsjt-z-om0rx" / "build-msys"
-WSJTZ_ENGINE_RUN_SCRIPT = PROJECT_ROOT / "scripts" / "wsjtz" / "run_om0rx_wsjtz.ps1"
+WSJTZ_ENGINE_BUILD_ROOT = PROJECT_ROOT / "data" / "build" / "wsjt-z-clean" / "build-msys"
+WSJTZ_ENGINE_RUN_SCRIPT = PROJECT_ROOT / "scripts" / "wsjtz" / "run_clean_wsjtz.ps1"
 PATCHED_ENGINE_MSYS_ROOT = Path(os.environ.get("WSJTX_MSYS_ROOT", r"C:\JTSDK64-Tools\tools\msys64"))
 WSJTX_DECODE_CTY_CACHE_MAX = 4096
 _wsjtx_decode_cty_cache: Dict[str, Dict[str, Any]] = {}
@@ -1366,7 +1366,7 @@ class WSJTXService:
 
     def get_wsjtz_engine_status(self) -> Dict[str, Any]:
         """Return local OM0RX WSJT-Z launcher prerequisites."""
-        exe = WSJTZ_ENGINE_BUILD_ROOT / "wsjt-z.exe"
+        exe = WSJTZ_ENGINE_BUILD_ROOT / "wsjt-z-clean.exe"
         decoder = WSJTZ_ENGINE_BUILD_ROOT / "jt9.exe"
         mingw_bin = PATCHED_ENGINE_MSYS_ROOT / "mingw64" / "bin"
         usr_bin = PATCHED_ENGINE_MSYS_ROOT / "usr" / "bin"
@@ -1485,7 +1485,7 @@ class WSJTXService:
         if not status["script_exists"]:
             raise HTTPException(status_code=404, detail=f"Run script not found: {status['script']}")
         if not status["exe_exists"]:
-            raise HTTPException(status_code=404, detail="OM0RX WSJT-Z wsjt-z.exe not found. Build the OM0RX WSJT-Z engine first.")
+            raise HTTPException(status_code=404, detail="Clean OM0RX WSJT-Z executable not found. Build the clean WSJT-Z engine first.")
         if not status["decoder_exists"]:
             raise HTTPException(status_code=404, detail="OM0RX WSJT-Z jt9.exe not found. Build the OM0RX WSJT-Z engine first.")
         if not status["mingw_bin_exists"]:
@@ -1506,7 +1506,8 @@ class WSJTXService:
         if test_mode:
             command.append("--test-mode")
 
-        existing_pids = _wsjt_engine_process_ids("wsjt-z.exe", rig_name, test_mode=test_mode)
+        exe_name = Path(status["exe"]).name
+        existing_pids = _wsjt_engine_process_ids(exe_name, rig_name, test_mode=test_mode)
         log_paths = _patched_engine_log_paths(rig_name, app_prefix="wsjt-z")
 
         result = {
@@ -1571,7 +1572,7 @@ class WSJTXService:
                 err_handle.close()
 
         time.sleep(1.0)
-        launched_pids = _wsjt_engine_process_ids("wsjt-z.exe", rig_name, test_mode=test_mode)
+        launched_pids = _wsjt_engine_process_ids(exe_name, rig_name, test_mode=test_mode)
 
         result.update({
             "launcher_pid": process.pid,

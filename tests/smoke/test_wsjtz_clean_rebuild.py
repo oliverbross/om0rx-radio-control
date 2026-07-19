@@ -7,6 +7,7 @@ CLEAN_DOC_ROOT = PROJECT_ROOT / "docs" / "wsjtx" / "clean-rebuild"
 PREPARE_SCRIPT = PROJECT_ROOT / "scripts" / "wsjtz" / "prepare_clean_wsjtz.ps1"
 BUILD_SCRIPT = PROJECT_ROOT / "scripts" / "wsjtz" / "build_clean_wsjtz.ps1"
 RUN_SCRIPT = PROJECT_ROOT / "scripts" / "wsjtz" / "run_clean_wsjtz.ps1"
+SERVICE = PROJECT_ROOT / "services" / "wsjtx.py"
 
 
 def test_clean_baseline_identity_is_pinned() -> None:
@@ -86,6 +87,19 @@ def test_clean_launcher_starts_local_classifier_without_rewriting_ini() -> None:
     assert "AcceptUDPRequests" not in script
     assert "AutoCall" not in script
     assert "wsjt-z-clean.exe" in script
+    assert '[string]$RigName = "OM0RX-WSJT-Z"' in script
+    assert '[string]$ConfigName = "OM0RX-WSJT-Z"' in script
+    gui_launch = script.rsplit("Start-Process `", 1)[-1]
+    assert "-WindowStyle Hidden" not in gui_launch
+
+
+def test_station_ui_wsjtz_launcher_points_only_to_clean_rebuild() -> None:
+    service = SERVICE.read_text(encoding="utf-8")
+
+    assert 'WSJTZ_ENGINE_BUILD_ROOT = PROJECT_ROOT / "data" / "build" / "wsjt-z-clean" / "build-msys"' in service
+    assert 'WSJTZ_ENGINE_RUN_SCRIPT = PROJECT_ROOT / "scripts" / "wsjtz" / "run_clean_wsjtz.ps1"' in service
+    assert 'exe = WSJTZ_ENGINE_BUILD_ROOT / "wsjt-z-clean.exe"' in service
+    assert '_wsjt_engine_process_ids(exe_name, rig_name' in service
 
 
 def test_status_columns_patch_uses_exact_row_identity_and_fixed_width_cells() -> None:

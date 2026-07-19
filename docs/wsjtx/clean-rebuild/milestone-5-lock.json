@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-07-19",
+  "milestone": "station UI launcher cutover",
+  "active": {
+    "build_root": "data/build/wsjt-z-clean/build-msys",
+    "executable": "wsjt-z-clean.exe",
+    "launcher": "scripts/wsjtz/run_clean_wsjtz.ps1",
+    "rig_name": "OM0RX-WSJT-Z",
+    "config_name": "OM0RX-WSJT-Z"
+  },
+  "rollback": {
+    "build_preserved": "data/build/wsjt-z-om0rx/build-msys",
+    "launcher_preserved": "scripts/wsjtz/run_om0rx_wsjtz.ps1",
+    "procedure": "Revert the milestone-5 commit; no old build files were deleted or overwritten."
+  },
+  "verification": {
+    "launcher_dry_run": "success",
+    "ui_and_launcher_tests": "112 passed",
+    "clean_executable_sha256": "D0297FB3FCD61B35F0509CE026042DC0EFC302E8D5BD85D732E69177F324A87F"
+  }
+}
