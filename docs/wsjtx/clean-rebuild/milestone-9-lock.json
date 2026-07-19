@@ -1,0 +1,25 @@
+{
+  "milestone": 9,
+  "name": "logged-target retirement and decode deduplication",
+  "logged_target_policy": {
+    "backend": "retire the active target immediately when WSJT-Z reports Logged QSO, before QRZ or Wavelog network work",
+    "native_guard": "reject a transmit target matching the most recently logged call, band, and mode",
+    "different_band_or_mode": "allowed"
+  },
+  "decode_deduplication": {
+    "scope": ["FT8", "FT4", "FT2"],
+    "identity": ["UTC slot", "message"],
+    "ignored_differences": ["SNR", "DT estimate", "audio-frequency estimate", "hidden AP suffix"],
+    "pipeline_position": "before ALL.TXT, display, classification, UDP, and automation"
+  },
+  "verification": {
+    "native_build": "success",
+    "focused_tests": "67 passed",
+    "slow_enrichment_race_test": "active target retired before blocked QRZ lookup",
+    "safe_cutover": "Halt Tx acknowledged while calling without QSO progress",
+    "launched_process_id": 17500,
+    "fresh_live_rx_lines_checked": 48,
+    "fresh_live_semantic_duplicate_groups": 0
+  },
+  "executable_sha256": "E13DC1CE9A7F305433BFBF9602A4D44AC3324E85C2E4B0B3C0872DE9C7B1BBB0"
+}

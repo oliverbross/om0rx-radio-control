@@ -90,3 +90,13 @@ station. It bypasses ordinary station filters, suppresses later CQ promotion
 within the same decode batch, and queues a fallback reply for the first safe
 non-transmitting opportunity. The LY3QR/YO3AUM incident and deployed artifact
 identity are recorded in `milestone-8-lock.json`.
+
+## Milestone 9 implementation
+
+Patch `0700-log-race-and-decode-dedup.patch` rejects a backend transmit target
+that matches the most recently logged call, band, and mode. The backend also
+retires the active automation target as soon as WSJT-Z reports the logged QSO,
+before potentially slow QRZ and Wavelog work. Decoder rows are deduplicated
+before every output and automation path using UTC slot and decoded message,
+while ignoring decoder-estimate and hidden AP-suffix differences. Verification
+and the deployed artifact identity are recorded in `milestone-9-lock.json`.

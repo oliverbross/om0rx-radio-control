@@ -761,6 +761,14 @@ class WSJTXService:
                 adif_fields.get("qso_date", ""),
                 adif_fields.get("time_on") or adif_fields.get("time_off", ""),
             )
+            # The WSJT-Z Logged QSO event is authoritative. Retire its active
+            # automation target before any QRZ/Wavelog network work so a slow
+            # upload cannot let the scheduler re-arm the just-worked station.
+            self._mark_automation_qso_logged({
+                "callsign": call,
+                "band": band,
+                "mode": mode,
+            })
             reference_fields = self._logged_qso_reference_fields(
                 req,
                 adif_fields,

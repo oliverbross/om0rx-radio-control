@@ -1,0 +1,74 @@
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+index da6efcc..b61fda8 100644
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -5057,6 +5057,33 @@ void MainWindow::readFromStdout()                             //readFromStdout
+        || ui->actionReduce_false_decodes->isChecked());
+   while(proc_jt9.canReadLine()) {
+     auto line_read = proc_jt9.readLine ();
++    // jt9 can emit the same candidate through both its normal and AP paths.
++    // When AP information is hidden those rows become visually identical, and
++    // without an early guard they are also logged, classified, and forwarded
++    // to automation twice. Keep genuinely distinct SNR/DT/frequency/message
++    // rows, but collapse exact same-slot rows after removing only the AP tag.
++    if ((m_mode == "FT8" || m_mode == "FT4" || m_mode == "FT2")
++        && line_read.size() >= 22) {
++      QString decode_identity = QString::fromUtf8(line_read).trimmed();
++      static QRegularExpression const ap_suffix {
++          R"(\s+(?:\?\s+)?(?:a[1-9]|q[1-9][0-9*]?)\s*$)"};
++      decode_identity.remove(ap_suffix);
++      decode_identity = decode_identity.trimmed();
++      auto const decode_fields = decode_identity.split(' ', SkipEmptyParts);
++      QString const decode_slot = decode_fields.value(0);
++      if (decode_fields.size() >= 6
++          && decode_slot.contains(QRegularExpression {R"(^\d{6}$)"})) {
++        // Decoder passes can estimate SNR, DT, and audio frequency slightly
++        // differently. In one slot, an identical message is one station row.
++        decode_identity = decode_slot + '|' + decode_fields.mid(5).join(' ');
++        if (decode_slot != m_om0rxDecodeDedupSlot) {
++          m_om0rxDecodeDedupSlot = decode_slot;
++          m_om0rxSeenDecodeLines.clear();
++        }
++        if (m_om0rxSeenDecodeLines.contains(decode_identity)) continue;
++        m_om0rxSeenDecodeLines.insert(decode_identity);
++      }
++    }
+     if (dedup_on && line_read.size() >= 42
+         && earlyDecodes.contains(line_read.mid(23, 19))) {
+       continue;   // already emitted this cycle (MTD or a7/a8 dupes per wsjtx-orig comment)
+@@ -8409,6 +8436,9 @@ void MainWindow::on_logQSOButton_clicked()                 //Log QSO button
+ 
+          if (m_config.rxTotxFreq()) on_pbT2R_clicked();
+          m_lastCall = m_hisCall;
++         m_om0rxLastLoggedCall = Radio::base_callsign(m_hisCall).toUpper();
++         m_om0rxLastLoggedBand = m_currentBand.toLower();
++         m_om0rxLastLoggedMode = m_mode.toUpper();
+          if (ui->cbAutoCQ->isChecked() || ui->cbAutoCall->isChecked()) {
+              if (m_zdebug) log("QSO Logged: " + m_hisCall);
+              // initLogQSO already calls accept() when autoLog is on for contests
+@@ -13112,6 +13142,14 @@ void MainWindow::remote_start_target_qso (QString const& payload_json)
+       log (QString {"OM0RX target command rejected: visible Auto Call is off call=%1"}.arg (call));
+       return;
+     }
++  if (enable_tx && !listen_only
++      && Radio::base_callsign(call).toUpper() == m_om0rxLastLoggedCall
++      && band == m_om0rxLastLoggedBand && mode == m_om0rxLastLoggedMode)
++    {
++      log (QString {"OM0RX target command rejected: QSO already logged call=%1 band=%2 mode=%3"}
++           .arg (call, band, mode));
++      return;
++    }
+ 
+   auto active_call = ui->dxCallEntry->text ().trimmed ().toUpper ();
+   active_call.remove ('<');
+diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
+index 3e7e2be..8f00d55 100644
+--- a/widgets/mainwindow.h
++++ b/widgets/mainwindow.h
+@@ -760,0 +761,3 @@
++  QString m_om0rxLastLoggedCall;
++  QString m_om0rxLastLoggedBand;
++  QString m_om0rxLastLoggedMode;
+@@ -844,0 +848,2 @@
++  QString m_om0rxDecodeDedupSlot;
++  QSet<QString> m_om0rxSeenDecodeLines;

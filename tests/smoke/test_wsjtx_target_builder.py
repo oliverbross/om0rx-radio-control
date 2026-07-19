@@ -212,6 +212,70 @@ def test_wsjtx_logged_adif_marks_automation_target_complete(monkeypatch, tmp_pat
     assert target.completion_reason == "wsjtx-logged-qso"
 
 
+def test_wsjtx_logged_adif_retires_target_before_slow_enrichment(monkeypatch, tmp_path):
+    import services.ft8_service as ft8_module
+    import services.qso_logging as qlog
+
+    controller = DigitalAutomationController(mycall="OM0RX")
+    target = controller.ingest_target({
+        "message": "CQ OH1NHX KP01",
+        "callsign": "OH1NHX",
+        "band": "17m",
+        "mode": "FT8",
+        "source": "decoded",
+        "heard": True,
+        "call_status": "New Band",
+        "dxcc_status": "Confirmed",
+    })
+    assert target is not None
+    controller.active_target_key = target.key
+
+    class BlockingQRZ:
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def lookup(self, _call):
+            self.started.set()
+            await self.release.wait()
+            return {}
+
+    qrz = BlockingQRZ()
+    service = WSJTXService()
+    service.set_dependencies(
+        _FakeAdifWavelog(),
+        qrz,
+        None,
+        adif_handler=_FakeAdifBackup(),
+        qso_status_store=_FakeQsoStatusStore(),
+    )
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+    monkeypatch.setattr(
+        ft8_module,
+        "get_ft8_service",
+        lambda: SimpleNamespace(automation_controller=controller),
+    )
+
+    async def scenario():
+        task = asyncio.create_task(service.log_qso({
+            "source": "wsjtx-bridge",
+            "async_upload": True,
+            "adif_text": (
+                "<call:6>OH1NHX <freq:6>18.100 <band:3>17m <mode:3>FT8 "
+                "<qso_date:8>20260719 <time_on:6>062300 "
+                "<rst_sent:3>-05 <rst_rcvd:3>-03 <eor>"
+            ),
+        }))
+        await asyncio.wait_for(qrz.started.wait(), timeout=1)
+        assert controller.active_target_key is None
+        assert target.state == "done"
+        qrz.release.set()
+        return await task
+
+    result = asyncio.run(scenario())
+    assert result["success"] is True
+
+
 def test_wsjtx_logged_adif_duplicate_is_ignored(monkeypatch, tmp_path):
     import services.qso_logging as qlog
 

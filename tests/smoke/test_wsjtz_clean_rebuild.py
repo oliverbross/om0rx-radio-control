@@ -55,6 +55,7 @@ def test_clean_build_separates_build_compatibility_and_band_control_patches() ->
     assert "0400-backend-target-command.patch" in script
     assert "0500-visible-automation-startup.patch" in script
     assert "0600-direct-reply-lock.patch" in script
+    assert "0700-log-race-and-decode-dedup.patch" in script
     assert "om0rx-wsjtz-enrichment.patch" not in script
     assert "OM0RX_BUILD_WITH_OMNIRIG=OFF" in script
     assert "data\\build\\wsjt-z-clean" in script
@@ -166,6 +167,20 @@ def test_direct_reply_lock_prevents_same_batch_cq_replacement() -> None:
     assert "m_om0rxPendingDirectReplyLine = dt.string()" in patch
     assert "processMessage(message)" in patch
     assert "m_om0rxDirectReplyCall.clear()" in patch
+
+
+def test_logged_target_guard_and_semantic_decode_dedup_are_native() -> None:
+    patch = (CLEAN_DOC_ROOT / "patches" / "0700-log-race-and-decode-dedup.patch").read_text(encoding="utf-8")
+
+    assert "m_om0rxLastLoggedCall" in patch
+    assert "m_om0rxLastLoggedBand" in patch
+    assert "m_om0rxLastLoggedMode" in patch
+    assert "QSO already logged" in patch
+    assert "m_om0rxDecodeDedupSlot" in patch
+    assert "m_om0rxSeenDecodeLines" in patch
+    assert "decode_identity.remove(ap_suffix)" in patch
+    assert "decode_fields.mid(5).join(' ')" in patch
+    assert "m_om0rxSeenDecodeLines.contains(decode_identity)" in patch
 
 
 def test_basic_antenna_policy_lock_defers_award_reference_exceptions() -> None:
