@@ -1,0 +1,552 @@
+diff --git a/widgets/displaytext.h b/widgets/displaytext.h
+index 3394c47..d1e5de2 100644
+--- a/widgets/displaytext.h
++++ b/widgets/displaytext.h
+@@ -46,15 +46,23 @@ public:
+   bool m_bDisplayPoints;
+ 
+   Q_SIGNAL void selectCallsign (Qt::KeyboardModifiers);
++  Q_SIGNAL void decodedCallsign (double freq_hz, QString const& callsign,
++                                 bool is_cq, int time_sec,
++                                 QString const& band, QString const& grid,
++                                 QString const& message, int snr);
+   // Z
+   Q_SIGNAL void leftClick (Qt::KeyboardModifiers);
+ void log(QString s);
+   Q_SIGNAL void erased ();
+ 
+   Q_SLOT void insertText (QString const& text, QColor bg = QColor {}, QColor fg = QColor {}
+-                          , QString const& call1 = QString {}, QString const& call2 = QString {}, QTextCursor::MoveOperation location=QTextCursor::End);
++                          , QString const& call1 = QString {}, QString const& call2 = QString {}, QTextCursor::MoveOperation location=QTextCursor::End
++                          , QString const& decode_status_key = QString {});
+   Q_SLOT void erase ();
+   Q_SLOT void highlight_callsign (QString const& callsign, QColor const& bg, QColor const& fg, bool last_period_only);
++  Q_SLOT void annotate_decode_status (QString const& callsign, QString const& band,
++                                      QString const& mode, QString const& call_status,
++                                      QString const& dxcc_status);
+ 
+ private:
+   QString leftJustifyAppendage (QString message, QString const& appendage) const;
+@@ -66,7 +74,7 @@ private:
+ 
+ 
+   void flushUpdates();
+-  QList<std::tuple<QString, QColor, QColor, QString, QString, QTextCursor::MoveOperation>> m_updateBuffer;
++  QList<std::tuple<QString, QColor, QColor, QString, QString, QTextCursor::MoveOperation, QString>> m_updateBuffer;
+ 
+   void extend_vertical_scrollbar (int min, int max);
+ 
+diff --git a/widgets/displaytext.cpp b/widgets/displaytext.cpp
+index 6325334..6f13a6c 100644
+--- a/widgets/displaytext.cpp
++++ b/widgets/displaytext.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include <vector>
+ #include <algorithm>
++#include <utility>
+ 
+ #include <QMouseEvent>
+ #include <QDateTime>
+@@ -13,6 +14,8 @@
+ #include <QListIterator>
+ #include <QRegularExpression>
+ #include <QScrollBar>
++#include <QSet>
++#include <QTextBlockUserData>
+ 
+ #include "Configuration.hpp"
+ #include "Decoder/decodedtext.h"
+@@ -33,6 +36,80 @@ static QRegularExpression const kReRemoveExtra {QStringLiteral(R"(\? a[1-9]|a[1-
+ static QRegularExpression const kReAPPos {
+     QStringLiteral(R"((?:\?\s)?(?:a[0-9]|q[0-9][0-9*]?)$)")};
+ 
++namespace
++{
++  class DecodeStatusBlockData final : public QTextBlockUserData
++  {
++  public:
++    explicit DecodeStatusBlockData (QString value) : key {std::move (value)} {}
++    QString key;
++  };
++
++  QString normalized_status_call (QString value)
++  {
++    value = value.trimmed ().toUpper ();
++    value.remove ('<');
++    value.remove ('>');
++    return value;
++  }
++
++  bool is_status_callsign (QString const& value)
++  {
++    static QSet<QString> const reserved {"CQ", "CQDX", "QRZ", "DE", "RR73", "73", "RRR"};
++    auto call = normalized_status_call (value);
++    return call.size () >= 3 && call.size () <= 16
++        && !reserved.contains (call)
++        && QRegularExpression {QStringLiteral ("[A-Z]")}.match (call).hasMatch ()
++        && QRegularExpression {QStringLiteral ("[0-9]")}.match (call).hasMatch ()
++        && QRegularExpression {QStringLiteral ("^[A-Z0-9]+(/[A-Z0-9]+)?$")}.match (call).hasMatch ();
++  }
++
++  QString decode_status_key (QString const& call, QString const& band, QString const& mode)
++  {
++    return QString {"%1|%2|%3"}.arg (normalized_status_call (call),
++                                     band.trimmed ().toLower (),
++                                     mode.trimmed ().toUpper ());
++  }
++
++  QTextCharFormat status_format (QString const& status, QFont const& font)
++  {
++    auto normalized = status.trimmed ().toLower ();
++    QColor foreground {45, 45, 45};
++    if (normalized.contains ("atno") || normalized.contains ("new call")) foreground = QColor {210, 70, 32};
++    else if (normalized.contains ("new band") || normalized.contains ("new mode")) foreground = QColor {0, 104, 178};
++    else if (normalized.contains ("worked")) foreground = QColor {74, 85, 104};
++    else if (normalized.contains ("confirmed")) foreground = QColor {0, 126, 72};
++    QTextCharFormat format;
++    format.clearBackground ();
++    format.setForeground (foreground);
++    format.setFont (font);
++    format.setFontWeight (QFont::Normal);
++    return format;
++  }
++
++  QString status_cell (QString status)
++  {
++    auto normalized = status.trimmed ().toLower ();
++    QString prefix;
++    if (normalized.startsWith ("c/") || normalized.startsWith ("w/"))
++      {
++        prefix = normalized.left (1).toUpper () + "/";
++        normalized = normalized.mid (2).trimmed ();
++      }
++    QString label {"?"};
++    if (normalized == "checking") label = "...";
++    else if (normalized == "confirmed") label = "C";
++    else if (normalized == "worked") label = "W";
++    else if (normalized.contains ("atno")) label = "ATNO";
++    else if (normalized.contains ("new call")) label = "NC";
++    else if (normalized.contains ("new band") && normalized.contains ("mode")) label = "NB+M";
++    else if (normalized.contains ("new band")) label = "NB";
++    else if (normalized.contains ("new mode")) label = "NM";
++    if (!prefix.isEmpty () && label != "?" && label != "...") label = prefix + label;
++    return label.left (6).leftJustified (6);
++  }
++}
++
+ DisplayText::DisplayText(QWidget *parent)
+   : QTextEdit(parent)
+   , m_config {nullptr}
+@@ -150,11 +227,12 @@ namespace
+ }
+ 
+ void DisplayText::insertText(QString const& text, QColor bg, QColor fg
+-                             , QString const& call1, QString const& call2, QTextCursor::MoveOperation location)
++                             , QString const& call1, QString const& call2, QTextCursor::MoveOperation location
++                             , QString const& decode_status_key)
+ {
+ 
+     if (m_freezeUpdates) {
+-        m_updateBuffer.append({text, bg, fg, call1, call2, location});
++        m_updateBuffer.append({text, bg, fg, call1, call2, location, decode_status_key});
+         return;
+     }
+ 
+@@ -231,6 +309,10 @@ void DisplayText::insertText(QString const& text, QColor bg, QColor fg
+         }
+     }
+   cursor.insertText(text.mid (text_index), format);
++  if (!decode_status_key.isEmpty ())
++    {
++      cursor.block ().setUserData (new DecodeStatusBlockData {decode_status_key});
++    }
+ 
+   // position so viewport scrolled to left
+   cursor.movePosition (QTextCursor::StartOfLine);
+@@ -555,7 +637,67 @@ void DisplayText::displayDecodedText(DecodedText const& decodedText, QString con
+   if (filtered)
+         message = leftJustifyAppendage (message, "[F]");
+ 
+-  insertText (message.trimmed (), bg, fg, decodedText.call (), dxCall);
++  auto my_call = normalized_status_call (myCall);
++  auto status_call = CQcall ? normalized_status_call (decodedText.CQersCall ())
++                            : normalized_status_call (dxCall);
++  if (!is_status_callsign (status_call) || status_call == my_call)
++    {
++      auto first_call = normalized_status_call (decodedText.call ());
++      if (is_status_callsign (first_call) && first_call != my_call) status_call = first_call;
++    }
++  auto const status_key = is_status_callsign (status_call) && status_call != my_call
++      ? decode_status_key (status_call, currentBand, mode) : QString {};
++
++  insertText (message.trimmed (), bg, fg, decodedText.call (), dxCall,
++              QTextCursor::End, status_key);
++  if (!status_key.isEmpty ())
++    {
++      annotate_decode_status (status_call, currentBand, mode, "Checking", "Checking");
++      Q_EMIT decodedCallsign (decodedText.frequencyOffset (), status_call, CQcall,
++                              static_cast<int> (decodedText.timeInSeconds ()), currentBand,
++                              dxGrid, decodedText.string ().trimmed (), decodedText.snr ());
++    }
++}
++
++void DisplayText::annotate_decode_status (QString const& callsign, QString const& band,
++                                          QString const& mode, QString const& call_status,
++                                          QString const& dxcc_status)
++{
++  auto const key = decode_status_key (callsign, band, mode);
++  for (auto block = document ()->begin (); block.isValid (); block = block.next ())
++    {
++      auto * data = dynamic_cast<DecodeStatusBlockData *> (block.userData ());
++      if (!data || data->key != key) continue;
++
++      auto text = block.text ();
++      auto appendage_start = text.indexOf (QChar::Nbsp);
++      QString appendage;
++      if (appendage_start >= 0)
++        {
++          appendage = text.mid (appendage_start + 1).simplified ();
++          text = text.left (appendage_start).trimmed ();
++        }
++      static QRegularExpression const existing_columns {
++          QStringLiteral (R"(\s{1,}(?:\.\.\.|\?|NC|NB\+M|NB|NM|C|W|ATNO|C/NB\+M|W/NB\+M|C/NB|W/NB|C/NM|W/NM)\s{1,}(?:\.\.\.|\?|NC|NB\+M|NB|NM|C|W|ATNO|C/NB\+M|W/NB\+M|C/NB|W/NB|C/NM|W/NM)\s*$)")};
++      auto match = existing_columns.match (text);
++      if (match.hasMatch ()) text = text.left (match.capturedStart ()).trimmed ();
++
++      QTextCursor cursor {block};
++      cursor.movePosition (QTextCursor::StartOfBlock);
++      cursor.movePosition (QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
++      cursor.removeSelectedText ();
++      auto separator = cursor.charFormat ();
++      separator.clearBackground ();
++      separator.setFont (char_font_);
++      separator.setForeground (QColor {100, 116, 139});
++      separator.setFontWeight (QFont::Normal);
++      cursor.insertText (text, separator);
++      cursor.insertText (QString {std::max (1, 45 - text.size ()), QChar {' '}}, separator);
++      cursor.insertText (status_cell (call_status), status_format (call_status, char_font_));
++      cursor.insertText (QString {" "}, separator);
++      cursor.insertText (status_cell (dxcc_status), status_format (dxcc_status, char_font_));
++      if (!appendage.isEmpty ()) cursor.insertText (QString {QChar::Nbsp} + appendage, separator);
++    }
+ }
+ 
+ 
+@@ -783,10 +925,11 @@ void DisplayText::flushUpdates() {
+         QColor bg, fg;
+         QString call1, call2;
+         QTextCursor::MoveOperation location;
++        QString decode_status_key;
+ 
+-        std::tie(text, bg, fg, call1, call2, location) = update;
++        std::tie(text, bg, fg, call1, call2, location, decode_status_key) = update;
+ 
+-        insertText(text, bg, fg, call1, call2, location);
++        insertText(text, bg, fg, call1, call2, location, decode_status_key);
+     }
+     m_updateBuffer.clear();
+ }
+diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
+index 1459d07..6128440 100644
+--- a/widgets/mainwindow.h
++++ b/widgets/mainwindow.h
+@@ -427,6 +427,12 @@ private slots:
+      void on_txrb6_doubleClicked ();
+      void dxLookup(QString dxCall, QString dxGrid);
+      void leftClickHandler(Qt::KeyboardModifiers modifiers);
++     void request_om0rx_decode_status (double freq_hz, QString const& callsign,
++                                       bool is_cq, int time_sec, QString const& band,
++                                       QString const& grid, QString const& message, int snr);
++     void apply_om0rx_decode_status (QString const& callsign, QString const& band,
++                                     QString const& mode, QString const& call_status,
++                                     QString const& dxcc_status);
+      void on_actionCall_info_triggered();
+      void on_actionDark_mode_triggered();
+      void qrzInit();
+@@ -799,6 +805,8 @@ private:
+   QString qrzSessionKey;
+   QString qrzPendingLookupCall;
+   QNetworkAccessManager * networkManager;
++  QSet<QString> m_om0rx_status_inflight;
++  QHash<QString, QString> m_om0rx_status_cache;
+ 
+   QLabel auto_tx_label;
+   QLabel band_hopping_label;
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+index b670bc5..c920e3c 100644
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -42,6 +42,8 @@
+ #include <QUdpSocket>
+ #include <QAbstractItemView>
+ #include <QInputDialog>
++#include <QJsonDocument>
++#include <QJsonObject>
+ #if QT_VERSION >= QT_VERSION_CHECK (5, 15, 0)
+ #include <QRandomGenerator>
+ #endif
+@@ -111,6 +113,21 @@
+ 
+ #define FCL fortran_charlen_t
+ 
++namespace
++{
++  QString om0rx_decode_heading (QString const& prefix = QString {})
++  {
++    return prefix + QString {"UTC   dB   DT Freq    Message"}.leftJustified (45)
++        + QObject::tr ("CS     DS");
++  }
++
++  QString om0rx_fast_decode_heading (QString const& prefix = QString {})
++  {
++    return prefix + QString {"UTC   dB    T Freq    Message"}.leftJustified (45)
++        + QObject::tr ("CS     DS");
++  }
++}
++
+ extern "C" {
+   //----------------------------------------------------- C and Fortran routines
+   void symspec_(struct dec_data *, int* k, double* trperiod, int* nsps, int* ingain,
+@@ -797,6 +814,10 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+   // Z
+   connect (ui->decodedTextBrowser2, &DisplayText::leftClick, this, &MainWindow::leftClickHandler);
+   connect (ui->decodedTextBrowser, &DisplayText::leftClick, this, &MainWindow::leftClickHandler);
++  connect (ui->decodedTextBrowser, &DisplayText::decodedCallsign,
++           this, &MainWindow::request_om0rx_decode_status);
++  connect (ui->decodedTextBrowser2, &DisplayText::decodedCallsign,
++           this, &MainWindow::request_om0rx_decode_status);
+   ui->groupBox->setVisible(false);
+ 
+   // initialize decoded text font and hook up font change signals
+@@ -1031,7 +1052,7 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+   m_dateTimeSentTx3=QDateTime::currentDateTimeUtc();
+   // Z
+   labAz.setText("");
+-  auto t = "UTC   dB   DT Freq    " + tr ("Message");
++  auto t = om0rx_decode_heading ();
+   ui->lh_decodes_headings_label->setText(t);
+   ui->rh_decodes_headings_label->setText(t);
+   readSettings();            //Restore user's setup parameters
+@@ -8412,6 +8433,7 @@ void MainWindow::acceptQSO (QDateTime const& QSO_date_off, QString const& call,
+   m_messageClient->logged_ADIF (ADIF);
+ 
+   // Z
++  m_om0rx_status_cache.clear ();
+   updateQsoCounter(true);
+   clearDX();
+ 
+@@ -8700,7 +8722,7 @@ void MainWindow::on_actionFT2_triggered()
+   ui->cbAutoSeq->setChecked(true);
+   m_fastGraph->hide();
+   m_wideGraph->show();
+-  ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+   m_wideGraph->setPeriod(m_TRperiod,m_nsps);
+   if (m_tci_audio && ui->bandComboBox->currentText()!="OOB")
+     Q_EMIT m_config.transceiver_period(m_TRperiod);
+@@ -8710,7 +8732,7 @@ void MainWindow::on_actionFT2_triggered()
+   }
+   ui->rh_decodes_title_label->setText(tr ("Rx Frequency"));
+   ui->lh_decodes_title_label->setText(tr ("Band Activity"));
+-  ui->lh_decodes_headings_label->setText( "  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+   displayWidgets(nWidgets("11101000010011100001000000011000100000"));
+   ui->txrb2->setEnabled(true);
+   ui->txrb4->setEnabled(true);
+@@ -8757,7 +8779,7 @@ void MainWindow::on_actionFT4_triggered()
+   ui->cbAutoSeq->setChecked(true);
+   m_fastGraph->hide();
+   m_wideGraph->show();
+-  ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+   m_wideGraph->setPeriod(m_TRperiod,m_nsps);
+   if (m_tci_audio && ui->bandComboBox->currentText()!="OOB")
+     Q_EMIT m_config.transceiver_period(m_TRperiod);
+@@ -8767,7 +8789,7 @@ void MainWindow::on_actionFT4_triggered()
+   }
+   ui->rh_decodes_title_label->setText(tr ("Rx Frequency"));
+   ui->lh_decodes_title_label->setText(tr ("Band Activity"));
+-  ui->lh_decodes_headings_label->setText( "  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+ //                         01234567890123456789012345678901234567
+   displayWidgets(nWidgets("11101000010011100001000000011000100000"));
+   ui->txrb2->setEnabled(true);
+@@ -8810,7 +8832,7 @@ void MainWindow::on_actionFT8_triggered()
+   ui->sbFtol->setValue (m_settings->value ("Ftol_SF", 50).toInt()); // restore last used Ftol parameter
+   m_fastGraph->hide();
+   m_wideGraph->show();
+-  ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+   m_wideGraph->setPeriod(m_TRperiod,m_nsps);
+   if (m_tci_audio && ui->bandComboBox->currentText()!="OOB")
+     Q_EMIT m_config.transceiver_period(m_TRperiod);
+@@ -8824,7 +8846,7 @@ void MainWindow::on_actionFT8_triggered()
+     ui->lh_decodes_headings_label->setText( "Call         Grid   dB  Freq   Dist Age Cont Score");
+   } else {
+     ui->lh_decodes_title_label->setText(tr ("Band Activity"));
+-    ui->lh_decodes_headings_label->setText( "  UTC   dB   DT Freq    " + tr ("Message"));
++    ui->lh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+   }
+ //                         01234567890123456789012345678901234567
+   displayWidgets(nWidgets("11101000010011100001000010011000100000"));
+@@ -8975,8 +8997,8 @@ void MainWindow::on_actionJT4_triggered()
+   m_bFast9=false;
+   setup_status_bar (bVHF);
+   ui->sbSubmode->setMaximum(6);
+-  ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
+-  ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
+   if(bVHF) {
+     // restore last used parameters
+     ui->sbFtol->setValue (m_settings->value ("Ftol_JT4", 50).toInt());
+@@ -9049,15 +9071,15 @@ void MainWindow::on_actionJT9_triggered()
+     m_fastGraph->showNormal();
+     ui->TxFreqSpinBox->setValue(700);
+     ui->RxFreqSpinBox->setValue(700);
+-    ui->lh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
+-    ui->rh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
++    ui->lh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
++    ui->rh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
+   } else {
+     ui->cbAutoSeq->setChecked(false);
+     if (m_mode != "FST4")
+       {
+         m_TRperiod=60.0;
+-        ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
+-        ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++        ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
++        ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
+       }
+   }
+   m_wideGraph->setPeriod(m_TRperiod,m_nsps);
+@@ -9193,8 +9215,8 @@ void MainWindow::on_actionQ65_triggered()
+   switch_mode (Modes::Q65);
+ //                         01234567890123456789012345678901234567
+   displayWidgets(nWidgets("11111101011011010011100000010000000011"));
+-  ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
+-  ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
++  ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
+ 
+   m_specOp=m_config.special_op_id();
+   if(m_specOp!=SpecOp::NONE and m_specOp!=SpecOp::FOX and m_specOp!=SpecOp::HOUND) {
+@@ -9273,8 +9295,8 @@ void MainWindow::on_actionMSK144_triggered()
+   ui->RxFreqSpinBox->setMinimum(1400);
+   ui->RxFreqSpinBox->setMaximum(1600);
+   ui->RxFreqSpinBox->setSingleStep(10);
+-  ui->lh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
+-  ui->rh_decodes_headings_label->setText("  UTC   dB    T Freq    " + tr ("Message"));
++  ui->lh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
++  ui->rh_decodes_headings_label->setText(om0rx_fast_decode_heading ("  "));
+   if (m_tci_audio && ui->bandComboBox->currentText()!="OOB")
+     Q_EMIT m_config.transceiver_period(m_TRperiod);
+   if (!m_tci_audio) {
+@@ -10638,18 +10660,18 @@ void MainWindow::on_sbTR_valueChanged(int value)
+       {
+         if (m_TRperiod < 60)
+           {
+-            ui->lh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++            ui->lh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+             if (m_mode != "FST4W")
+               {
+-                ui->rh_decodes_headings_label->setText("  UTC   dB   DT Freq    " + tr ("Message"));
++                ui->rh_decodes_headings_label->setText(om0rx_decode_heading ("  "));
+               }
+           }
+         else
+           {
+-            ui->lh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++            ui->lh_decodes_headings_label->setText(om0rx_decode_heading ());
+             if (m_mode != "FST4W")
+               {
+-                ui->rh_decodes_headings_label->setText("UTC   dB   DT Freq    " + tr ("Message"));
++                ui->rh_decodes_headings_label->setText(om0rx_decode_heading ());
+               }
+           }
+ 
+@@ -13930,6 +13952,83 @@ void MainWindow::leftClickHandler(Qt::KeyboardModifiers modifiers) {
+   }
+ }
+ 
++void MainWindow::apply_om0rx_decode_status (QString const& callsign, QString const& band,
++                                            QString const& mode, QString const& call_status,
++                                            QString const& dxcc_status)
++{
++  ui->decodedTextBrowser->annotate_decode_status (callsign, band, mode, call_status, dxcc_status);
++  ui->decodedTextBrowser2->annotate_decode_status (callsign, band, mode, call_status, dxcc_status);
++}
++
++void MainWindow::request_om0rx_decode_status (double freq_hz, QString const& callsign,
++                                              bool is_cq, int time_sec, QString const& decode_band,
++                                              QString const& grid, QString const& message, int snr)
++{
++  Q_UNUSED (is_cq);
++  Q_UNUSED (time_sec);
++  auto call = callsign.trimmed ().toUpper ();
++  call.remove ('<');
++  call.remove ('>');
++  if (call.isEmpty ()) return;
++
++  auto band = decode_band.trimmed ().toLower ();
++  if (band.isEmpty ()) band = m_currentBand.trimmed ().toLower ();
++  if (band.isEmpty ()) band = ui->bandComboBox->currentText ().trimmed ().toLower ();
++  auto mode = m_mode.trimmed ().toUpper ();
++  auto cache_key = QString {"%1|%2|%3"}.arg (call, band, mode);
++  if (m_om0rx_status_cache.contains (cache_key))
++    {
++      auto values = m_om0rx_status_cache.value (cache_key).split ('|');
++      apply_om0rx_decode_status (call, band, mode, values.value (0, "Unknown"),
++                                 values.value (1, "Unknown"));
++      return;
++    }
++  if (m_om0rx_status_inflight.contains (cache_key)) return;
++  m_om0rx_status_inflight.insert (cache_key);
++
++  QJsonObject payload;
++  payload.insert ("call", call);
++  payload.insert ("band", band);
++  payload.insert ("mode", mode);
++  payload.insert ("frequency_hz", static_cast<double> (m_freqNominal));
++  payload.insert ("audioOffset", static_cast<int> (freq_hz));
++  payload.insert ("grid", grid.trimmed ().toUpper ());
++  payload.insert ("message", message.trimmed ());
++  payload.insert ("snr", snr);
++
++  QNetworkRequest request {QUrl {"http://127.0.0.1:8765/api/wsjtx/decode-status"}};
++  request.setHeader (QNetworkRequest::ContentTypeHeader, "application/json");
++  auto * reply = networkManager->post (request, QJsonDocument {payload}.toJson (QJsonDocument::Compact));
++  auto * timeout = new QTimer {reply};
++  timeout->setSingleShot (true);
++  connect (timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
++  timeout->start (5000);
++  connect (reply, &QNetworkReply::finished, this,
++           [this, reply, call, band, mode, cache_key] {
++    if (auto * timeout = reply->findChild<QTimer *> ()) timeout->stop ();
++    m_om0rx_status_inflight.remove (cache_key);
++    QString call_status {"Unknown"};
++    QString dxcc_status {"Unknown"};
++    if (QNetworkReply::NoError == reply->error ())
++      {
++        auto status = QJsonDocument::fromJson (reply->readAll ()).object ();
++        if (status.value ("success").toBool ())
++          {
++            call_status = status.value ("call_status").toString ("Unknown");
++            dxcc_status = status.value ("dxcc_status").toString ("Unknown");
++            if (m_om0rx_status_cache.size () >= 4096) m_om0rx_status_cache.clear ();
++            m_om0rx_status_cache.insert (cache_key, call_status + "|" + dxcc_status);
++          }
++      }
++    else if (m_zdebug)
++      {
++        log ("OM0RX decode-status unavailable for " + call + ": " + reply->errorString ());
++      }
++    apply_om0rx_decode_status (call, band, mode, call_status, dxcc_status);
++    reply->deleteLater ();
++  });
++}
++
+ void MainWindow::dxLookup(QString dxCall, QString dxGrid) {
+ 
+     if (!ui->w_callInfo->isVisible()) return;

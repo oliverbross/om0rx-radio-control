@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-07-19",
+  "milestone": "CS/DS decode status columns",
+  "source": {
+    "upstream_commit": "fa53f635462def9f37b54f63f18e407ecda2ba12",
+    "patch": "patches/0200-display-status-columns.patch"
+  },
+  "behavior": {
+    "row_identity": "normalized callsign + band + mode",
+    "column_width_characters": 6,
+    "lookup_endpoint": "http://127.0.0.1:8765/api/wsjtx/decode-status",
+    "lookup_failure": "show Unknown and continue normal upstream operation",
+    "cache_invalidated_after_log": true
+  },
+  "artifacts": {
+    "executable_sha256": "6E3D8B5C5F79E21FC183EB42F2846105E3717820A7F00EE3C7E92B37BB8AD5A1",
+    "decoder_sha256": "A24D8C4D1E100DA7EFBE29AA911D53DF6E3CA7F81645E0A25F8D9449603E34FA"
+  },
+  "verification": {
+    "native_release_build": "success",
+    "classifier_health": "success",
+    "classifier_contract": "success",
+    "targeted_tests": "24 passed",
+    "full_suite": "430 passed, 1 unrelated pre-existing portable-reference failure"
+  }
+}

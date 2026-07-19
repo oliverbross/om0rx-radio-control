@@ -49,6 +49,7 @@ def test_clean_build_separates_build_compatibility_and_band_control_patches() ->
     assert "0001-build-allow-omnirig-off.patch" in script
     assert "0002-build-link-fftw-threads-on-windows.patch" in script
     assert "0100-band-qsy-transaction-tracing.patch" in script
+    assert "0200-display-status-columns.patch" in script
     assert "om0rx-wsjtz-enrichment.patch" not in script
     assert "OM0RX_BUILD_WITH_OMNIRIG=OFF" in script
     assert "data\\build\\wsjt-z-clean" in script
@@ -73,15 +74,29 @@ def test_band_qsy_patch_has_correlated_request_outcomes() -> None:
     assert lock["artifacts"]["executable_sha256"] == "5AE228AB4C1B466B0F462F10CA32107BBA8A4C67B668B13C8AE55D5DC5FF2B7B"
 
 
-def test_clean_launcher_does_not_start_enrichment_or_rewrite_ini() -> None:
+def test_clean_launcher_starts_local_classifier_without_rewriting_ini() -> None:
     script = RUN_SCRIPT.read_text(encoding="utf-8")
 
-    assert "om0rx_decode_status_server" not in script
+    assert "om0rx_decode_status_server.py" in script
+    assert "/api/wsjtx/decode-status" not in script
+    assert "127.0.0.1:8765/health" in script
     assert "Set-IniValue" not in script
     assert "Set-IniSectionValue" not in script
     assert "AcceptUDPRequests" not in script
     assert "AutoCall" not in script
     assert "wsjt-z-clean.exe" in script
+
+
+def test_status_columns_patch_uses_exact_row_identity_and_fixed_width_cells() -> None:
+    patch = (CLEAN_DOC_ROOT / "patches" / "0200-display-status-columns.patch").read_text(encoding="utf-8")
+
+    assert "DecodeStatusBlockData" in patch
+    assert "decode_status_key" in patch
+    assert "call, band, mode" in patch
+    assert "leftJustified (45)" in patch
+    assert 'QObject::tr ("CS     DS")' in patch
+    assert "label.left (6).leftJustified (6)" in patch
+    assert "http://127.0.0.1:8765/api/wsjtx/decode-status" in patch
 
 
 def test_basic_antenna_policy_lock_defers_award_reference_exceptions() -> None:

@@ -13,7 +13,8 @@ $buildRoot = Join-Path $workRoot "build-msys"
 $patchPaths = @(
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0001-build-allow-omnirig-off.patch"),
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0002-build-link-fftw-threads-on-windows.patch"),
-    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0100-band-qsy-transaction-tracing.patch")
+    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0100-band-qsy-transaction-tracing.patch"),
+    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0200-display-status-columns.patch")
 )
 $bash = Join-Path $MsysRoot "usr\bin\bash.exe"
 
@@ -34,6 +35,9 @@ $allowedDirtyPaths = @(
     "Transceiver/TransceiverFactory.cpp",
     "widgets/mainwindow.cpp",
     "widgets/mainwindow.h",
+    "widgets/displaytext.cpp",
+    "widgets/displaytext.h",
+    "widgets/mainwindow.ui",
     "wsjtx_config.h.in"
 )
 $dirtyPaths = @(git -C $sourceRoot status --porcelain | ForEach-Object { $_.Substring(3).Replace("\", "/") })
@@ -128,7 +132,7 @@ $exeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sideBySideExe).Hash
 $decoderHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $decoder).Hash
 $identity = @(
     "source_commit=$actualCommit"
-    "patches=0001-build-allow-omnirig-off.patch,0002-build-link-fftw-threads-on-windows.patch,0100-band-qsy-transaction-tracing.patch"
+    "patches=0001-build-allow-omnirig-off.patch,0002-build-link-fftw-threads-on-windows.patch,0100-band-qsy-transaction-tracing.patch,0200-display-status-columns.patch"
     "executable_sha256=$exeHash"
     "decoder_sha256=$decoderHash"
 )
