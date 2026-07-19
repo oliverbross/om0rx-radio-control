@@ -1,0 +1,28 @@
+{
+  "milestone": 7,
+  "name": "visible automation startup authority",
+  "startup_defaults": {
+    "monitor": true,
+    "auto_call": true,
+    "cq_only": true,
+    "automatic_logging": true
+  },
+  "safety": {
+    "backend_transmit_requires_visible_auto_call": true,
+    "monitor_may_show_off_during_tx": true,
+    "monitor_returns_on_in_receive": true
+  },
+  "direct_callers": {
+    "priority": "ahead of ordinary CQ targets after active QSO completion",
+    "ft8_reply_period": "first legal opposite 15-second slot"
+  },
+  "verification": {
+    "native_build": "success",
+    "focused_tests": "144 passed",
+    "fresh_launch_auto_call": "On",
+    "fresh_launch_cq_only": "On",
+    "receive_period_monitor": "On",
+    "bridge_command_errors": 0
+  },
+  "executable_sha256": "798C928F465C08620712D71045C0C6E301FCBDB1E22035313D81AE34BFCC8C09"
+}

@@ -248,6 +248,25 @@ def _automation_current_dial_frequency_hz(automation_payload: Dict[str, Any]) ->
     })
 
 
+def _direct_ft8_reply_tx_first(payload: Dict[str, Any]) -> Optional[bool]:
+    """Return the TX parity for the slot immediately after a directed FT8 decode."""
+    if not _coerce_bool(_first_present(payload, "direct_caller", "directCaller"), False):
+        return None
+    if str(_first_present(payload, "mode") or "FT8").strip().upper() != "FT8":
+        return None
+    heard_slot = _first_present(payload, "heard_slot_start_at", "heardSlotStartAt")
+    if not heard_slot:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(heard_slot).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    slot_seconds = parsed.second + (parsed.microsecond / 1_000_000.0)
+    # A call heard in the odd FT8 slot (15/45) is answered in the next
+    # even/first slot (00/30), and vice versa.
+    return (slot_seconds % 30.0) >= 15.0
+
+
 def _normalise_trace_id(value: Any) -> str:
     text = str(value or "").strip()
     return "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in text)[:80]
@@ -2884,7 +2903,12 @@ def register_wsjtx_endpoints(app):
             True,
         )
         wsjtx_target["txDf"] = policy["txOptions"].get("tx_audio_frequency") or wsjtx_target.get("txDf") or 1500
-        wsjtx_target["txFirst"] = bool(policy["txOptions"].get("tx_even_first"))
+        direct_reply_tx_first = _direct_ft8_reply_tx_first(target_payload)
+        wsjtx_target["txFirst"] = (
+            direct_reply_tx_first
+            if direct_reply_tx_first is not None
+            else bool(policy["txOptions"].get("tx_even_first"))
+        )
         wsjtx_target.setdefault("targetId", target.target_id)
         wsjtx_target.setdefault("commandId", target.command_id or "")
         if _reference_priority_target(target_payload):

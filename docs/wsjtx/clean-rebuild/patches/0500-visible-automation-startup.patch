@@ -1,0 +1,46 @@
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+index e906323..ce72ba0 100644
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -830,6 +830,9 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+   // defer initialization until after construction otherwise menu fonts do not get set
+   // with 50 ms delay we are on the safe side
+   QTimer::singleShot (50, this, SLOT (initialize_fonts ()));
++  QTimer::singleShot (1500, this, [this] {
++    if (m_mode != "Echo" && !m_monitoring) on_monitorButton_clicked (true);
++  });
+   connect (&m_config, &Configuration::text_font_changed, [this] (QFont const& font) {
+       set_application_font (font);
+     });
+@@ -1854,6 +1857,10 @@ void MainWindow::readSettings()
+   m_infoMessageShown = m_settings->value("infoMessageShown12-2024", false).toBool();
+   ui->cb_ignoreCQTarget->setCurrentIndex(m_settings->value("ignoreCQTargetIndex", 0).toInt());
+   ui->tx1->setEnabled(m_settings->value("tx1State", true).toBool());
++  // Start the unattended OM0RX profile in the operating state shown to the
++  // operator. The Auto Call handler also selects and locks CQ-only.
++  ui->cbCQonly->setChecked (true);
++  ui->cbAutoCall->setChecked (true);
+   m_unfilteredViewGeometry = m_settings->value("rawViewGeometry").toByteArray();
+   m_pskReporterViewGeometry = m_settings->value("pskViewGeometry").toByteArray();
+   auto showRawView =m_settings->value("rawViewDisplayed", false).toBool();
+@@ -10131,7 +10138,7 @@ void MainWindow::handle_transceiver_update (Transceiver::TransceiverState const&
+   if (old_state.online () == false && s.online () == true)
+     {
+       // initializing
+-      on_monitorButton_clicked (!(m_config.monitor_off_at_startup() or m_mode=="Echo"));
++      on_monitorButton_clicked (m_mode != "Echo");
+     }
+   if (s.frequency () != old_state.frequency () || s.split () != m_splitMode)
+     {
+@@ -13096,6 +13103,11 @@ void MainWindow::remote_start_target_qso (QString const& payload_json)
+       log ("OM0RX target command rejected: missing call");
+       return;
+     }
++  if (enable_tx && !ui->cbAutoCall->isChecked ())
++    {
++      log (QString {"OM0RX target command rejected: visible Auto Call is off call=%1"}.arg (call));
++      return;
++    }
+ 
+   auto active_call = ui->dxCallEntry->text ().trimmed ().toUpper ();
+   active_call.remove ('<');

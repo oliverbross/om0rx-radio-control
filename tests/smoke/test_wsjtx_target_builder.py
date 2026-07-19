@@ -823,6 +823,26 @@ def test_wsjtx_target_builder_accepts_ranked_automation_target():
     assert target["traceId"].startswith("wsjtx-")
 
 
+def test_direct_ft8_reply_uses_the_immediately_opposite_slot():
+    from services.wsjtx import _direct_ft8_reply_tx_first
+
+    assert _direct_ft8_reply_tx_first({
+        "direct_caller": True,
+        "mode": "FT8",
+        "heard_slot_start_at": "2026-07-19T04:04:15+00:00",
+    }) is True
+    assert _direct_ft8_reply_tx_first({
+        "direct_caller": True,
+        "mode": "FT8",
+        "heard_slot_start_at": "2026-07-19T04:04:30+00:00",
+    }) is False
+    assert _direct_ft8_reply_tx_first({
+        "direct_caller": False,
+        "mode": "FT8",
+        "heard_slot_start_at": "2026-07-19T04:04:15+00:00",
+    }) is None
+
+
 def test_wsjtx_target_builder_does_not_send_rr73_as_grid():
     service = WSJTXService()
 

@@ -53,6 +53,7 @@ def test_clean_build_separates_build_compatibility_and_band_control_patches() ->
     assert "0200-display-status-columns.patch" in script
     assert "0300-dxcc-priority-hunt.patch" in script
     assert "0400-backend-target-command.patch" in script
+    assert "0500-visible-automation-startup.patch" in script
     assert "om0rx-wsjtz-enrichment.patch" not in script
     assert "OM0RX_BUILD_WITH_OMNIRIG=OFF" in script
     assert "data\\build\\wsjt-z-clean" in script
@@ -139,6 +140,18 @@ def test_backend_target_patch_receives_commands_and_arms_priority_watchdog() -> 
     assert 'uint_value ("watchdogMinutes", 20u)' in patch
     assert "OM0RX backend priority hunt armed" in patch
     assert "active QSO=" in patch
+
+
+def test_visible_automation_controls_are_startup_defaults_and_tx_authority() -> None:
+    patch = (CLEAN_DOC_ROOT / "patches" / "0500-visible-automation-startup.patch").read_text(encoding="utf-8")
+
+    assert "ui->cbCQonly->setChecked (true)" in patch
+    assert "ui->cbAutoCall->setChecked (true)" in patch
+    assert 'on_monitorButton_clicked (m_mode != "Echo")' in patch
+    assert "QTimer::singleShot (1500" in patch
+    assert "!m_monitoring" in patch
+    assert "enable_tx && !ui->cbAutoCall->isChecked ()" in patch
+    assert "visible Auto Call is off" in patch
 
 
 def test_basic_antenna_policy_lock_defers_award_reference_exceptions() -> None:
