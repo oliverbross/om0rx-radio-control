@@ -1442,6 +1442,7 @@ def test_auto_call_uses_decoded_slot_timestamp_for_opposite_tx_over():
     class Service(FT8Service):
         async def _automation_prepare_radio(self, target):
             self.prepared_target = target
+            return True
 
         async def transmit_queued_now_if_possible(self, force_current_slot=False):
             self.transmit_requested = force_current_slot
@@ -1474,6 +1475,73 @@ def test_auto_call_uses_decoded_slot_timestamp_for_opposite_tx_over():
     assert service.pending_tx_intent["scheduled_slot_utc"] is not None
     assert service.pending_tx_intent["heard_slot_utc"] == slot_start.isoformat()
     assert service.transmit_requested is True
+
+
+def test_wsjtz_dial_owner_blocks_backend_qsy(monkeypatch):
+    from services.ft8_service import FT8Service
+    from services import radio
+
+    class FakeFlex:
+        current_freq = 14.074
+
+        def __init__(self):
+            self.tune_calls = []
+
+        def set_mode(self, mode):
+            raise AssertionError(f"backend must not set radio mode while WSJT-Z owns QSY: {mode}")
+
+        def tune_mhz(self, frequency):
+            self.tune_calls.append(frequency)
+            return True
+
+    flex = FakeFlex()
+    monkeypatch.setattr(radio, "get_radio_instance", lambda: flex)
+    service = FT8Service(mycall="OM0RX", mygrid="JN88")
+    service.automation_controller.apply_operator_settings({
+        "automation": {"dialFrequencyOwner": "wsjtz"}
+    })
+    target = SimpleNamespace(call="A61AA", mode="FT8", dial_frequency=7.074)
+
+    prepared = asyncio.run(service._automation_prepare_radio(target))
+
+    assert prepared is False
+    assert flex.tune_calls == []
+    assert service.automation_prepare_block_reason == "dial-frequency-owner-blocked"
+    assert "WSJT-Z owns dial frequency" in service.automation_status
+
+
+def test_backend_dial_owner_retains_explicit_legacy_tune_path(monkeypatch):
+    from services.ft8_service import FT8Service
+    from services import radio
+
+    class FakeFlex:
+        current_freq = 14.074
+
+        def __init__(self):
+            self.modes = []
+            self.tune_calls = []
+
+        def set_mode(self, mode):
+            self.modes.append(mode)
+
+        def tune_mhz(self, frequency):
+            self.tune_calls.append(frequency)
+            return True
+
+    flex = FakeFlex()
+    monkeypatch.setattr(radio, "get_radio_instance", lambda: flex)
+    service = FT8Service(mycall="OM0RX", mygrid="JN88")
+    service.automation_controller.apply_operator_settings({
+        "automation": {"dialFrequencyOwner": "backend"}
+    })
+    target = SimpleNamespace(call="A61AA", mode="FT8", dial_frequency=7.074)
+
+    prepared = asyncio.run(service._automation_prepare_radio(target))
+
+    assert prepared is True
+    assert service.automation_prepare_block_reason is None
+    assert flex.modes == ["DIGU"]
+    assert flex.tune_calls == [7.074]
 
 
 def test_auto_call_uses_live_heard_slot_start_for_tx_parity():
@@ -1575,7 +1643,7 @@ def test_wsjtz_automation_settings_are_wired_to_runtime_behaviour():
     assert "autoIgnoredStations" in modal
     service = read_text("services/ft8_service.py")
     assert "async def _automation_loop" in service
-    assert "await self._automation_prepare_radio(target)" in service
+    assert "if not await self._automation_prepare_radio(target)" in service
     assert "await self.engage_target(" in service
     assert "await asyncio.sleep(0.25)" in service
     assert "or self.auto_call_enabled" in service

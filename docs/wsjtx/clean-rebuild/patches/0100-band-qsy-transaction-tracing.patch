@@ -1,0 +1,243 @@
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+index ee26233..b71b35d 100644
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -9741,6 +9741,9 @@ void MainWindow::on_bandComboBox_editTextChanged (QString const& text)
+ 
+ void MainWindow::on_bandComboBox_activated (int index)
+ {
++  m_activeBandQsyOrigin = m_nextBandQsyOrigin.isEmpty ()
++    ? QStringLiteral ("operator-band-selector") : m_nextBandQsyOrigin;
++  m_nextBandQsyOrigin.clear ();
+   auto const& frequencies = m_config.frequencies ();
+   auto const& source_index = frequencies->mapToSource (frequencies->index (index, FrequencyList_v2_101::frequency_column));
+   Frequency frequency {m_freqNominal};
+@@ -9750,6 +9753,7 @@ void MainWindow::on_bandComboBox_activated (int index)
+     }
+   m_bandEdited = true;
+   band_changed (frequency);
++  m_activeBandQsyOrigin.clear ();
+   m_wideGraph->setRxBand (m_config.bands ()->find (frequency));
+ //  m_specOp=m_config.special_op_id();
+ //  if (m_specOp==SpecOp::HOUND) auto_tx_mode(false);
+@@ -9803,7 +9807,8 @@ void MainWindow::band_changed (Frequency f)
+       m_freqNominal = f;
+       m_freqTxNominal = m_freqNominal;
+     }
+-    setRig (f);
++    setRig (f, m_activeBandQsyOrigin.isEmpty ()
++            ? QStringLiteral ("band-change-internal") : m_activeBandQsyOrigin);
+     setXIT (ui->TxFreqSpinBox->value ());
+     m_specOp=m_config.special_op_id();
+     if (m_specOp==SpecOp::FOX) FoxReset("BandChange");  // when changing bands, don't preserve the Fox queues
+@@ -10060,6 +10065,30 @@ void MainWindow::handle_transceiver_update (Transceiver::TransceiverState const&
+     }
+   }
+   m_rigState = s;
++  if (m_pendingQsySequence && s.online ())
++    {
++      auto const reported_frequency = m_pendingQsyPath == QStringLiteral ("tx-frequency")
++        ? s.tx_frequency () : s.frequency ();
++      auto const delta = reported_frequency > m_pendingQsyFrequency
++        ? reported_frequency - m_pendingQsyFrequency
++        : m_pendingQsyFrequency - reported_frequency;
++      if (delta <= 1)
++        {
++          qInfo ().noquote ()
++            << QStringLiteral ("OM0RX_QSY result=ack sequence=%1 origin=%2 path=%3 requested_hz=%4 reported_hz=%5 elapsed_ms=%6")
++              .arg (m_pendingQsySequence)
++              .arg (m_pendingQsyOrigin)
++              .arg (m_pendingQsyPath)
++              .arg (m_pendingQsyFrequency)
++              .arg (reported_frequency)
++              .arg (QDateTime::currentMSecsSinceEpoch () - m_pendingQsyStartedMs);
++          m_pendingQsySequence = 0;
++          m_pendingQsyFrequency = 0;
++          m_pendingQsyStartedMs = 0;
++          m_pendingQsyOrigin.clear ();
++          m_pendingQsyPath.clear ();
++        }
++    }
+   auto old_freqNominal = m_freqNominal;
+   if (!old_freqNominal)
+     {
+@@ -10119,6 +10148,21 @@ void MainWindow::handle_transceiver_update (Transceiver::TransceiverState const&
+ 
+ void MainWindow::handle_transceiver_failure (QString const& reason)
+ {
++  if (m_pendingQsySequence)
++    {
++      qWarning ().noquote ()
++        << QStringLiteral ("OM0RX_QSY result=failed sequence=%1 origin=%2 path=%3 requested_hz=%4 reason=%5")
++          .arg (m_pendingQsySequence)
++          .arg (m_pendingQsyOrigin)
++          .arg (m_pendingQsyPath)
++          .arg (m_pendingQsyFrequency)
++          .arg (reason);
++      m_pendingQsySequence = 0;
++      m_pendingQsyFrequency = 0;
++      m_pendingQsyStartedMs = 0;
++      m_pendingQsyOrigin.clear ();
++      m_pendingQsyPath.clear ();
++    }
+   update_dynamic_property (ui->readFreq, "state", "error");
+   ui->readFreq->setEnabled (true);
+   if (m_zdebug) log("on_stopTxButton_clicked: handle_transceiver_failure");
+@@ -11222,6 +11266,7 @@ void MainWindow::WSPR_scheduling ()
+     m_WSPR_tx_next = hop_data.tx_next_;
+     if (hop_data.frequencies_index_ >= 0) { // new band
+       ui->bandComboBox->setCurrentIndex (hop_data.frequencies_index_);
++      m_nextBandQsyOrigin = QStringLiteral ("wspr-band-hopper");
+       on_bandComboBox_activated (hop_data.frequencies_index_);
+       // Execute user's hardware controller
+       auto band = m_config.bands ()->find (m_freqNominal).remove ('m');
+@@ -11326,7 +11371,53 @@ void MainWindow::astroUpdate ()
+     }
+ }
+ 
+-void MainWindow::setRig (Frequency f)
++void MainWindow::traceRigFrequencyRequest (Frequency frequency, QString const& origin, QString const& path)
++{
++  if (m_pendingQsySequence)
++    {
++      qWarning ().noquote ()
++        << QStringLiteral ("OM0RX_QSY result=superseded sequence=%1 origin=%2 path=%3 requested_hz=%4 elapsed_ms=%5")
++          .arg (m_pendingQsySequence)
++          .arg (m_pendingQsyOrigin)
++          .arg (m_pendingQsyPath)
++          .arg (m_pendingQsyFrequency)
++          .arg (QDateTime::currentMSecsSinceEpoch () - m_pendingQsyStartedMs);
++    }
++
++  m_pendingQsySequence = ++m_qsySequence;
++  m_pendingQsyFrequency = frequency;
++  m_pendingQsyStartedMs = QDateTime::currentMSecsSinceEpoch ();
++  m_pendingQsyOrigin = origin;
++  m_pendingQsyPath = path;
++  qInfo ().noquote ()
++    << QStringLiteral ("OM0RX_QSY result=request sequence=%1 origin=%2 path=%3 requested_hz=%4")
++      .arg (m_pendingQsySequence)
++      .arg (m_pendingQsyOrigin)
++      .arg (m_pendingQsyPath)
++      .arg (m_pendingQsyFrequency);
++
++  auto const sequence = m_pendingQsySequence;
++  QTimer::singleShot (5000, this, [this, sequence] {
++    if (m_pendingQsySequence == sequence)
++      {
++        qWarning ().noquote ()
++          << QStringLiteral ("OM0RX_QSY result=timeout sequence=%1 origin=%2 path=%3 requested_hz=%4 last_reported_hz=%5 elapsed_ms=%6")
++            .arg (m_pendingQsySequence)
++            .arg (m_pendingQsyOrigin)
++            .arg (m_pendingQsyPath)
++            .arg (m_pendingQsyFrequency)
++            .arg (m_rigState.frequency ())
++            .arg (QDateTime::currentMSecsSinceEpoch () - m_pendingQsyStartedMs);
++        m_pendingQsySequence = 0;
++        m_pendingQsyFrequency = 0;
++        m_pendingQsyStartedMs = 0;
++        m_pendingQsyOrigin.clear ();
++        m_pendingQsyPath.clear ();
++      }
++  });
++}
++
++void MainWindow::setRig (Frequency f, QString const& origin)
+ {
+   if (f)
+     {
+@@ -11344,11 +11435,23 @@ void MainWindow::setRig (Frequency f)
+     {
+       if (m_transmitting && m_config.split_mode () && !(m_config.superFox() && m_specOp==SpecOp::FOX))
+         {
+-          m_config.transceiver_tx_frequency (m_freqTxNominal + m_astroCorrection.tx);
++          auto const requested_frequency = m_freqTxNominal + m_astroCorrection.tx;
++          auto const current_frequency = m_rigState.tx_frequency ();
++          auto const delta = requested_frequency > current_frequency
++            ? requested_frequency - current_frequency : current_frequency - requested_frequency;
++          if (delta > 1)
++            traceRigFrequencyRequest (requested_frequency, origin, QStringLiteral ("tx-frequency"));
++          m_config.transceiver_tx_frequency (requested_frequency);
+         }
+       else
+         {
+-          m_config.transceiver_frequency (m_freqNominal + m_astroCorrection.rx);
++          auto const requested_frequency = m_freqNominal + m_astroCorrection.rx;
++          auto const current_frequency = m_rigState.frequency ();
++          auto const delta = requested_frequency > current_frequency
++            ? requested_frequency - current_frequency : current_frequency - requested_frequency;
++          if (delta > 1)
++            traceRigFrequencyRequest (requested_frequency, origin, QStringLiteral ("dial-frequency"));
++          m_config.transceiver_frequency (requested_frequency);
+         }
+     }
+ }
+@@ -14260,16 +14363,17 @@ void MainWindow::toggleBands() {
+     m_wideGraph->setRxBand (newBand);
+     m_lastBand = newBand;
+ 
+-    switchBand(row);
++    switchBand(row, QStringLiteral ("native-band-hopper"));
+ 
+     if (m_zdebug) log("toggleBands: EXIT");
+ 
+ }
+ 
+-void MainWindow::switchBand(int row) {
++void MainWindow::switchBand(int row, QString const& origin) {
+     if (row >= 0) {
+         ui->stopTxButton->click ();
+         ui->bandComboBox->setCurrentIndex (row);
++        m_nextBandQsyOrigin = origin;
+         on_bandComboBox_activated (row);
+         m_priorityCall = QString();
+         m_priorityCallPreferCQTarget = false;
+@@ -14597,7 +14701,7 @@ void MainWindow::pskTableClicked(QString callsign, QString band) {
+     unsigned long long f = band.toULongLong();
+     Radio::Frequency freq {f};
+     auto const& row = m_config.frequencies ()->best_working_frequency (freq);
+-    switchBand(row);
++    switchBand(row, QStringLiteral ("decoded-spot"));
+     m_nextCall = callsign;
+     useNextCall();
+     on_txb1_clicked();
+diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
+index fa1f473..fa6b6b1 100644
+--- a/widgets/mainwindow.h
++++ b/widgets/mainwindow.h
+@@ -486,7 +486,7 @@ private:
+   // Z
+   void ci_gridLookup();
+   void toggleBands();
+-  void switchBand(int row);
++  void switchBand(int row, QString const& origin = "native-band-hopper");
+   void ZMessage();
+   void ZProcess();
+ 
+@@ -555,7 +555,15 @@ private:
+   QScopedPointer<FoxLogWindow> m_foxLogWindow;
+   QScopedPointer<CabrilloLogWindow> m_contestLogWindow;
+   QScopedPointer<ColorHighlighting> m_colorHighlighting;
+-  Transceiver::TransceiverState m_rigState;
++  Transceiver::TransceiverState m_rigState;
++  quint64 m_qsySequence {0};
++  quint64 m_pendingQsySequence {0};
++  Frequency m_pendingQsyFrequency {0};
++  qint64 m_pendingQsyStartedMs {0};
++  QString m_pendingQsyOrigin;
++  QString m_pendingQsyPath;
++  QString m_nextBandQsyOrigin;
++  QString m_activeBandQsyOrigin;
+   Frequency  m_lastDialFreq;
+   QString m_lastBand;
+   QString m_lastCallsign;
+@@ -1020,7 +1028,8 @@ private:
+   void switch_mode (Mode);
+   void WSPR_scheduling ();
+   void freqCalStep();
+-  void setRig (Frequency = 0);  // zero frequency means no change
++  void setRig (Frequency = 0, QString const& origin = "internal");  // zero frequency means no change
++  void traceRigFrequencyRequest (Frequency, QString const&, QString const&);
+   void WSPR_history(Frequency dialFreq, int ndecodes);
+   QString beacon_start_time (int n = 0);
+   QString WSPR_message();

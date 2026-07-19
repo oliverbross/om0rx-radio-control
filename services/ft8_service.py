@@ -166,6 +166,7 @@ class FT8Service:
         self.tx_status = "idle"
         self.automation_status = "idle"
         self.automation_last_error: Optional[str] = None
+        self.automation_prepare_block_reason: Optional[str] = None
         self._time_sync_cache = {"ok": None, "status": "not checked"}
         self._time_sync_checked_at = 0.0
         self.auto_cq_enabled = False
@@ -734,7 +735,20 @@ class FT8Service:
             self._record_decision("automation-skip", "no-eligible-targets")
             return
 
-        await self._automation_prepare_radio(target)
+        if not await self._automation_prepare_radio(target):
+            block_reason = self.automation_prepare_block_reason or "radio-prepare-failed"
+            self.automation_controller.release_target(
+                target.key,
+                reason=block_reason,
+            )
+            self._record_decision(
+                "automation-skip",
+                block_reason,
+                call=target.call,
+                owner=self.automation_controller.settings.dial_frequency_owner,
+                target_frequency=target.dial_frequency,
+            )
+            return
 
         final_eligibility = self.automation_controller._target_eligibility(
             target,
@@ -784,23 +798,41 @@ class FT8Service:
         self.automation_status = f"queued {message}"
         self._record_decision("target-engaged", "auto-call-selected-target", call=target.call, message=message, attempt_id=self.active_attempt_id)
 
-    async def _automation_prepare_radio(self, target) -> None:
+    async def _automation_prepare_radio(self, target) -> bool:
+        self.automation_prepare_block_reason = None
         if target.mode and target.mode != self.mode:
             self.set_mode(target.mode)
 
         frequency = float(target.dial_frequency or 0)
         if frequency <= 0:
-            return
+            return True
 
         from services.radio import get_radio_instance
 
         flex = get_radio_instance()
         if not flex:
             self.automation_status = f"selected {target.call}; radio unavailable"
-            return
+            self.automation_prepare_block_reason = "radio-unavailable"
+            return False
         current = float(getattr(flex, "current_freq", 0) or 0)
         if abs(current - frequency) <= 0.0005:
-            return
+            return True
+
+        owner = self.automation_controller.settings.dial_frequency_owner
+        if owner == "wsjtz":
+            self.automation_status = (
+                f"blocked {target.call}; WSJT-Z owns dial frequency "
+                f"({current:.6f} -> {frequency:.6f} MHz)"
+            )
+            logger.warning(
+                "Digital automation QSY blocked: owner=%s call=%s current=%.6f target=%.6f",
+                owner,
+                target.call,
+                current,
+                frequency,
+            )
+            self.automation_prepare_block_reason = "dial-frequency-owner-blocked"
+            return False
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: flex.set_mode("DIGU"))
@@ -809,6 +841,8 @@ class FT8Service:
             self.automation_status = f"radio tuned {frequency:.6f} MHz for {target.call}"
         else:
             self.automation_status = f"radio tune failed for {target.call}"
+            self.automation_prepare_block_reason = "radio-tune-failed"
+        return bool(tuned)
 
     def _auto_call_attempt_budget(self) -> int:
         configured = int(self.auto_call_limit or 0)

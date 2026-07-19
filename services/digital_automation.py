@@ -619,6 +619,7 @@ class DigitalAutomationSettings:
     hunter_spot_filters: dict[str, Any] = field(default_factory=dict)
     band_hopping: bool = False
     mode_switching: bool = False
+    dial_frequency_owner: str = "wsjtz"
     current_band: str = ""
     allowed_modes: set[str] = field(default_factory=lambda: {"FT8", "FT4"})
     min_signal: int = -30
@@ -726,6 +727,11 @@ class DigitalAutomationSettings:
             self.hunter_spot_filters = dict(hunter_filters)
         self.band_hopping = _bool(automation.get("bandHopping", automation.get("band_hopping")), self.band_hopping)
         self.mode_switching = _bool(automation.get("modeSwitching", automation.get("mode_switching")), self.mode_switching)
+        owner = str(
+            automation.get("dialFrequencyOwner", automation.get("dial_frequency_owner", self.dial_frequency_owner))
+            or self.dial_frequency_owner
+        ).strip().lower()
+        self.dial_frequency_owner = owner if owner in {"wsjtz", "backend"} else "wsjtz"
         current_band = str(automation.get("currentBand", automation.get("current_band", self.current_band)) or "").strip().lower()
         if re.match(r"^\d{1,3}m$", current_band):
             self.current_band = current_band
@@ -858,6 +864,7 @@ class DigitalAutomationSettings:
             "hunter_spot_filters": dict(self.hunter_spot_filters),
             "band_hopping": self.band_hopping,
             "mode_switching": self.mode_switching,
+            "dial_frequency_owner": self.dial_frequency_owner,
             "current_band": self.current_band,
             "allowed_modes": sorted(self.allowed_modes),
             "min_signal": self.min_signal,

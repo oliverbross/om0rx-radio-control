@@ -43,14 +43,34 @@ def test_basic_scope_defers_award_reference_exceptions() -> None:
     assert "deferred" in decisions["scope_note"].lower()
 
 
-def test_clean_build_uses_only_isolated_build_compatibility_patches() -> None:
+def test_clean_build_separates_build_compatibility_and_band_control_patches() -> None:
     script = BUILD_SCRIPT.read_text(encoding="utf-8")
 
     assert "0001-build-allow-omnirig-off.patch" in script
     assert "0002-build-link-fftw-threads-on-windows.patch" in script
+    assert "0100-band-qsy-transaction-tracing.patch" in script
     assert "om0rx-wsjtz-enrichment.patch" not in script
     assert "OM0RX_BUILD_WITH_OMNIRIG=OFF" in script
     assert "data\\build\\wsjt-z-clean" in script
+
+
+def test_band_qsy_patch_has_correlated_request_outcomes() -> None:
+    patch = (CLEAN_DOC_ROOT / "patches" / "0100-band-qsy-transaction-tracing.patch").read_text(encoding="utf-8")
+
+    assert "OM0RX_QSY result=request sequence=" in patch
+    assert "OM0RX_QSY result=ack sequence=" in patch
+    assert "OM0RX_QSY result=timeout sequence=" in patch
+    assert "OM0RX_QSY result=superseded sequence=" in patch
+    assert "OM0RX_QSY result=failed sequence=" in patch
+    assert "operator-band-selector" in patch
+    assert "native-band-hopper" in patch
+    assert "wspr-band-hopper" in patch
+    assert "decoded-spot" in patch
+
+    lock = json.loads((CLEAN_DOC_ROOT / "milestone-1-lock.json").read_text(encoding="utf-8"))
+    assert lock["dial_frequency_owner"]["default"] == "wsjtz"
+    assert lock["live_flex_qualification"]["result"] == "pending_operator_test"
+    assert lock["artifacts"]["executable_sha256"] == "5AE228AB4C1B466B0F462F10CA32107BBA8A4C67B668B13C8AE55D5DC5FF2B7B"
 
 
 def test_clean_launcher_does_not_start_enrichment_or_rewrite_ini() -> None:

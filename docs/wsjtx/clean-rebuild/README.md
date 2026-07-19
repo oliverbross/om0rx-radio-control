@@ -63,3 +63,12 @@ build-only compatibility patches. Artifact and toolchain hashes are recorded
 in `build-lock.json`. A runtime smoke launch used the isolated
 `OM0RX-WSJTZ-CLEAN` test profile; the launcher started no enrichment service
 and rewrote no INI setting.
+
+## Milestone 1 implementation
+
+Patch `0100-band-qsy-transaction-tracing.patch` keeps the upstream band-change
+path and adds correlated request/outcome diagnostics at its single CAT write
+boundary. Backend automation now defaults to `wsjtz` as the dial-frequency
+owner and refuses to issue a competing cross-frequency Flex tune. See
+`band-control-acceptance.md` for the diagnostic contract and the deliberately
+manual live-radio qualification.

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "built_at": "2026-07-19",
+  "milestone": "band-control-single-frequency-owner",
+  "source_commit": "fa53f635462def9f37b54f63f18e407ecda2ba12",
+  "source_tree": "2d23c72ddb826f18d21876ac7b6a89642ee0ef34",
+  "patches": [
+    "0001-build-allow-omnirig-off.patch",
+    "0002-build-link-fftw-threads-on-windows.patch",
+    "0100-band-qsy-transaction-tracing.patch"
+  ],
+  "dial_frequency_owner": {
+    "default": "wsjtz",
+    "backend_cross_frequency_automation": "blocked",
+    "operator_spot_click_tune": "unchanged",
+    "explicit_legacy_value": "backend"
+  },
+  "artifacts": {
+    "executable_path": "data/build/wsjt-z-clean/build-msys/wsjt-z-clean.exe",
+    "executable_size": 62119315,
+    "executable_sha256": "5AE228AB4C1B466B0F462F10CA32107BBA8A4C67B668B13C8AE55D5DC5FF2B7B",
+    "decoder_path": "data/build/wsjt-z-clean/build-msys/jt9.exe",
+    "decoder_size": 3137185,
+    "decoder_sha256": "A24D8C4D1E100DA7EFBE29AA911D53DF6E3CA7F81645E0A25F8D9449603E34FA"
+  },
+  "automated_tests": {
+    "result": "success",
+    "passed": 169
+  },
+  "runtime_smoke": {
+    "result": "success",
+    "profile": "OM0RX-WSJTZ-CLEAN",
+    "test_mode": true,
+    "enrichment_started": false,
+    "ini_mutated_by_launcher": false
+  },
+  "live_flex_qualification": {
+    "result": "pending_operator_test",
+    "instructions": "band-control-acceptance.md"
+  },
+  "deferred": [
+    "antenna switching",
+    "CS/DS columns",
+    "DXCC priority watchdog",
+    "award-reference exceptions including POTA and SOTA"
+  ]
+}

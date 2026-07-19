@@ -24,6 +24,19 @@ from services.digital_automation import (
 from services.wsjtx import WSJTXService, register_wsjtx_endpoints
 
 
+def test_clean_rebuild_defaults_to_wsjtz_as_dial_frequency_owner():
+    settings = DigitalAutomationSettings.from_operator_settings({})
+
+    assert settings.dial_frequency_owner == "wsjtz"
+    assert settings.to_dict()["dial_frequency_owner"] == "wsjtz"
+
+    settings.apply_operator_settings({"automation": {"dialFrequencyOwner": "backend"}})
+    assert settings.dial_frequency_owner == "backend"
+
+    settings.apply_operator_settings({"automation": {"dialFrequencyOwner": "invalid"}})
+    assert settings.dial_frequency_owner == "wsjtz"
+
+
 class _FakeCtyResolver:
     def __init__(self, info):
         self.info = info
