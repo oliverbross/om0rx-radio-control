@@ -1,0 +1,195 @@
+diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
+index db12d93..3be3569 100644
+--- a/widgets/mainwindow.h
++++ b/widgets/mainwindow.h
+@@ -441,6 +441,9 @@ private slots:
+                                         int audio_frequency);
+      void clear_om0rx_priority_hunt (QString const& reason);
+      void remote_start_target_qso (QString const& payload_json);
++     void send_om0rx_filter_policy ();
++     bool om0rx_backend_target_passes_visible_filters (QJsonObject const& target,
++                                                        QString * reason = nullptr);
+      void on_actionCall_info_triggered();
+      void on_actionDark_mode_triggered();
+      void qrzInit();
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+index 4d7710f..357dea5 100644
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -1065,6 +1065,33 @@ MainWindow::MainWindow(QDir const& temp_directory, bool multiple,
+   ui->lh_decodes_headings_label->setText(t);
+   ui->rh_decodes_headings_label->setText(t);
+   readSettings();            //Restore user's setup parameters
++  // The visible WSJT-Z Filtering pane is the operator authority for both the
++  // native selector and the OM0RX backend planner. Connect only after settings
++  // restoration so startup publishes one coherent saved policy snapshot.
++  auto sync_om0rx_filter_policy = [this] (bool) { send_om0rx_filter_policy (); };
++  for (auto const& name : QStringList {
++         "cbAutoCall", "cbAutoCQ", "cbCQonly", "cbCQonlyIncl73",
++         "cb_filtering", "cb_callB4", "cb_countryB4", "cb_continentB4",
++         "cb_gridB4", "cb_CQZoneB4", "cb_ITUZoneB4", "cb_callB4onBand",
++         "cb_countryB4onBand", "cb_continentB4onBand", "cb_gridB4onBand",
++         "cb_CQZoneB4onBand", "cb_ITUZoneB4onBand", "cb_c_EU", "cb_c_AF",
++         "cb_c_AN", "cb_c_AS", "cb_c_NA", "cb_c_SA", "cb_c_OC", "cb_f_LOTW"})
++    {
++      if (auto * box = findChild<QCheckBox *> (name))
++        {
++          connect (box, &QCheckBox::toggled, this, sync_om0rx_filter_policy);
++        }
++    }
++  connect (ui->cb_bandHopper, &QGroupBox::toggled, this, sync_om0rx_filter_policy);
++  connect (ui->cb_autoModeSwitch, &QGroupBox::toggled, this, sync_om0rx_filter_policy);
++  connect (ui->sbMindB, static_cast<void (QSpinBox::*) (int)> (&QSpinBox::valueChanged),
++           this, [this] (int) { send_om0rx_filter_policy (); });
++  connect (ui->cb_autoCallPriority,
++           static_cast<void (QComboBox::*) (int)> (&QComboBox::currentIndexChanged),
++           this, [this] (int) { send_om0rx_filter_policy (); });
++  connect (ui->pte_IgnoredStations, &QPlainTextEdit::textChanged,
++           this, &MainWindow::send_om0rx_filter_policy);
++  QTimer::singleShot (2000, this, &MainWindow::send_om0rx_filter_policy);
+   update_mode_switch_status_label ();
+   connect (ui->cb_bandHopper, &QGroupBox::toggled, this, [this] (bool) {
+       update_mode_switch_status_label ();
+@@ -13101,6 +13128,110 @@ void MainWindow::remote_configure (QString const& mode, quint32 frequency_tolera
+   QApplication::alert (this);
+ }
+ 
++void MainWindow::send_om0rx_filter_policy ()
++{
++  QJsonObject filter_new;
++  filter_new.insert ("call", ui->cb_callB4->isChecked ());
++  filter_new.insert ("dxcc", ui->cb_countryB4->isChecked ());
++  filter_new.insert ("continent", ui->cb_continentB4->isChecked ());
++  filter_new.insert ("grid", ui->cb_gridB4->isChecked ());
++  filter_new.insert ("cqZone", ui->cb_CQZoneB4->isChecked ());
++  filter_new.insert ("ituZone", ui->cb_ITUZoneB4->isChecked ());
++
++  QJsonObject filter_band;
++  filter_band.insert ("call", ui->cb_callB4onBand->isChecked ());
++  filter_band.insert ("dxcc", ui->cb_countryB4onBand->isChecked ());
++  filter_band.insert ("continent", ui->cb_continentB4onBand->isChecked ());
++  filter_band.insert ("grid", ui->cb_gridB4onBand->isChecked ());
++  filter_band.insert ("cqZone", ui->cb_CQZoneB4onBand->isChecked ());
++  filter_band.insert ("ituZone", ui->cb_ITUZoneB4onBand->isChecked ());
++
++  QJsonObject continents;
++  continents.insert ("EU", ui->cb_c_EU->isChecked ());
++  continents.insert ("AF", ui->cb_c_AF->isChecked ());
++  continents.insert ("AN", ui->cb_c_AN->isChecked ());
++  continents.insert ("AS", ui->cb_c_AS->isChecked ());
++  continents.insert ("NA", ui->cb_c_NA->isChecked ());
++  continents.insert ("SA", ui->cb_c_SA->isChecked ());
++  continents.insert ("OC", ui->cb_c_OC->isChecked ());
++
++  QString priority {"last"};
++  if (1 == ui->cb_autoCallPriority->currentIndex ()) priority = "signal";
++  else if (2 == ui->cb_autoCallPriority->currentIndex ()) priority = "distance";
++
++  QJsonObject automation;
++  automation.insert ("autoCall", ui->cbAutoCall->isChecked ());
++  automation.insert ("autoCQ", ui->cbAutoCQ->isChecked ());
++  automation.insert ("cqOnly", ui->cbCQonly->isChecked ());
++  automation.insert ("minSignal", ui->sbMindB->value ());
++  automation.insert ("bandHopping", ui->cb_bandHopper->isChecked ());
++  automation.insert ("modeSwitching", ui->cb_autoModeSwitch->isChecked ());
++  automation.insert ("currentBand", m_currentBand);
++  automation.insert ("currentMode", m_mode);
++  automation.insert ("treat73AsCQ", ui->cbCQonlyIncl73->isChecked ());
++  automation.insert ("filterMatrixEnabled", ui->cb_filtering->isChecked ());
++  automation.insert ("filterNew", filter_new);
++  automation.insert ("filterNewOnBand", filter_band);
++  automation.insert ("filterContinents", continents);
++  automation.insert ("lotwOnly", ui->cb_f_LOTW->isChecked ());
++  automation.insert ("ignoreList", ui->pte_IgnoredStations->toPlainText ());
++  automation.insert ("priority", priority);
++  automation.insert ("answerDirectCallers", true);
++
++  QJsonObject root;
++  root.insert ("source", "native-wsjtz-visible-filters");
++  root.insert ("automation", automation);
++  QNetworkRequest request {QUrl {"http://127.0.0.1:8080/api/wsjtx/automation/settings"}};
++  request.setHeader (QNetworkRequest::ContentTypeHeader, "application/json");
++  auto * reply = m_network_manager.post (
++      request, QJsonDocument {root}.toJson (QJsonDocument::Compact));
++  connect (reply, &QNetworkReply::finished, this, [this, reply] {
++    if (QNetworkReply::NoError != reply->error ())
++      {
++        log (QString {"OM0RX visible filter sync failed: %1"}.arg (reply->errorString ()));
++      }
++    reply->deleteLater ();
++  });
++}
++
++bool MainWindow::om0rx_backend_target_passes_visible_filters (
++    QJsonObject const& target, QString * reason)
++{
++  if (!ui->cb_filtering->isChecked ()) return true;
++  if (!m_filterCacheValid) rebuildFilterCache ();
++
++  auto reject = [reason] (QString const& text) {
++    if (reason) *reason = text;
++    return false;
++  };
++  auto call = target.value ("dxCall").toString (
++      target.value ("call").toString ()).trimmed ().toUpper ();
++  call.remove ('<');
++  call.remove ('>');
++  if (m_ignoredStationsCache.contains (call)) return reject ("ignored station");
++  if (ui->cb_f_LOTW->isChecked () && !m_config.lotw_users ().user (call))
++    return reject ("LoTW-only filter");
++  auto snr_value = target.value ("snr");
++  if (snr_value.isDouble () && ui->sbMindB->value () > -30
++      && snr_value.toInt () < ui->sbMindB->value ())
++    return reject ("minimum signal filter");
++
++  auto continent = target.value ("continent").toString ().trimmed ().toUpper ();
++  if (continent.isEmpty ())
++    {
++      auto const& looked_up = m_logBook.countries ()->lookup (call);
++      continent = AD1CCty::continent (looked_up.continent);
++    }
++  if (continent == "EU" && !ui->cb_c_EU->isChecked ()) return reject ("Europe filter");
++  if (continent == "AF" && !ui->cb_c_AF->isChecked ()) return reject ("Africa filter");
++  if (continent == "AN" && !ui->cb_c_AN->isChecked ()) return reject ("Antarctica filter");
++  if (continent == "AS" && !ui->cb_c_AS->isChecked ()) return reject ("Asia filter");
++  if (continent == "NA" && !ui->cb_c_NA->isChecked ()) return reject ("North America filter");
++  if (continent == "SA" && !ui->cb_c_SA->isChecked ()) return reject ("South America filter");
++  if (continent == "OC" && !ui->cb_c_OC->isChecked ()) return reject ("Oceania filter");
++  return true;
++}
++
+ void MainWindow::remote_start_target_qso (QString const& payload_json)
+ {
+   QJsonParseError parse_error;
+@@ -13140,6 +13271,7 @@ void MainWindow::remote_start_target_qso (QString const& payload_json)
+   auto listen_only = bool_value ("listenOnly", false);
+   auto enable_tx = bool_value ("enableTx", true);
+   auto priority_hunt = bool_value ("priorityHunt", false);
++  auto direct_caller = bool_value ("directCaller", false);
+   auto dial_frequency = static_cast<Frequency> (uint_value ("dialFrequency", 0u));
+   auto rx_df = uint_value ("rxDf", quint32_max);
+   auto tx_df = uint_value ("txDf", quint32_max);
+@@ -13155,6 +13287,14 @@ void MainWindow::remote_start_target_qso (QString const& payload_json)
+       log (QString {"OM0RX target command rejected: visible Auto Call is off call=%1"}.arg (call));
+       return;
+     }
++  QString visible_filter_reason;
++  if (enable_tx && !listen_only && !direct_caller
++      && !om0rx_backend_target_passes_visible_filters (target, &visible_filter_reason))
++    {
++      log (QString {"OM0RX target command rejected by visible filters: call=%1 reason=%2"}
++           .arg (call, visible_filter_reason));
++      return;
++    }
+   if (enable_tx && !listen_only
+       && Radio::base_callsign(call).toUpper() == m_om0rxLastLoggedCall
+       && band == m_om0rxLastLoggedBand && mode == m_om0rxLastLoggedMode)
+@@ -13181,7 +13321,7 @@ void MainWindow::remote_start_target_qso (QString const& payload_json)
+     }
+ 
+   if (!band.isEmpty () && !m_currentBand.isEmpty () && band != m_currentBand.toLower ()
+-      && !ui->band_hopping_group_box->isChecked ())
++      && !ui->cb_bandHopper->isChecked ())
+     {
+       log (QString {"OM0RX target command rejected: band hopping disabled %1->%2"}
+            .arg (m_currentBand, band));

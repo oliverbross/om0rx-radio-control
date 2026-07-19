@@ -873,6 +873,12 @@ def test_wsjtx_target_builder_accepts_ranked_automation_target():
         "grid": "bg08",
         "call_status": "New Band",
         "dxcc_status": "ATNO",
+        "message": "CQ E51ABC BG08",
+        "source": "decoded",
+        "continent": "OC",
+        "country": "South Cook Islands",
+        "snr": -14,
+        "direct_caller": False,
         "score": 1000,
         "enableTx": True,
     })
@@ -883,6 +889,12 @@ def test_wsjtx_target_builder_accepts_ranked_automation_target():
     assert target["rxDf"] == 1234
     assert target["txDf"] == 1700
     assert target["grid"] == "BG08"
+    assert target["message"] == "CQ E51ABC BG08"
+    assert target["source"] == "decoded"
+    assert target["continent"] == "OC"
+    assert target["country"] == "South Cook Islands"
+    assert target["snr"] == -14
+    assert target["directCaller"] is False
     assert target["enableTx"] is True
     assert target["traceId"].startswith("wsjtx-")
 

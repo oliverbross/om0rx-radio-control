@@ -56,6 +56,8 @@ def test_clean_build_separates_build_compatibility_and_band_control_patches() ->
     assert "0500-visible-automation-startup.patch" in script
     assert "0600-direct-reply-lock.patch" in script
     assert "0700-log-race-and-decode-dedup.patch" in script
+    assert "0800-priority-watchdog-release.patch" in script
+    assert "0900-visible-filter-authority.patch" in script
     assert "om0rx-wsjtz-enrichment.patch" not in script
     assert "OM0RX_BUILD_WITH_OMNIRIG=OFF" in script
     assert "data\\build\\wsjt-z-clean" in script
@@ -192,6 +194,21 @@ def test_priority_watchdog_releases_when_hunted_target_loses_ownership() -> None
     assert "active_base != hunted_base" in patch
     assert "+  else if (!priority_hunt && m_om0rxPriorityHuntActive)" in patch
     assert "+  else if (!priority_hunt && m_om0rxPriorityHuntActive && m_om0rxPriorityHuntCall != call)" not in patch
+
+
+def test_visible_filter_policy_is_backend_authority_with_native_tx_failsafe() -> None:
+    patch = (CLEAN_DOC_ROOT / "patches" / "0900-visible-filter-authority.patch").read_text(encoding="utf-8")
+
+    assert '"native-wsjtz-visible-filters"' in patch
+    assert '"http://127.0.0.1:8080/api/wsjtx/automation/settings"' in patch
+    assert 'automation.insert ("filterMatrixEnabled", ui->cb_filtering->isChecked ())' in patch
+    assert 'continents.insert ("EU", ui->cb_c_EU->isChecked ())' in patch
+    assert 'om0rx_backend_target_passes_visible_filters' in patch
+    assert 'rejected by visible filters' in patch
+    assert '!direct_caller' in patch
+    assert 'return reject ("Europe filter")' in patch
+    assert '+      && !ui->cb_bandHopper->isChecked ())' in patch
+    assert '+      && !ui->band_hopping_group_box->isChecked ())' not in patch
 
 
 def test_basic_antenna_policy_lock_defers_award_reference_exceptions() -> None:

@@ -1,0 +1,61 @@
+{
+  "milestone": 12,
+  "name": "visible WSJT-Z filter authority and native transmit fail-safe",
+  "incident": {
+    "reported_excluded_calls": [
+      "EA5OL",
+      "DN9SWH",
+      "PD4JOH",
+      "OZ station"
+    ],
+    "root_cause": "backend-selected targets bypassed native callsignFiltered policy",
+    "live_pre_fix_target": "YL3MJ",
+    "live_pre_fix_continent": "EU"
+  },
+  "policy": {
+    "operator_authority": "visible native WSJT-Z Filtering pane",
+    "backend_sync_endpoint": "http://127.0.0.1:8080/api/wsjtx/automation/settings",
+    "non_direct_exclusions": [
+      "continent",
+      "ignored call",
+      "LoTW only",
+      "minimum signal",
+      "new/new-on-band filter matrix"
+    ],
+    "direct_callers": "exempt; answer OM0RX callers when no QSO owns the slot",
+    "active_target_on_filter_change": "release immediately if newly excluded",
+    "empty_continent_selection": "block every non-direct continent target",
+    "band_change_guard": "visible WSJT-Z cb_bandHopper control"
+  },
+  "verification": {
+    "native_build": "success",
+    "focused_tests": "171 passed",
+    "patch_reverse_forward_check": "success",
+    "safe_cutover": "Halt Tx acknowledged before each process replacement",
+    "backend_restart": "success",
+    "launched_process_id": 22144,
+    "filter_matrix_enabled": true,
+    "allowed_continents": [
+      "AF",
+      "AN",
+      "AS",
+      "NA",
+      "OC",
+      "SA"
+    ],
+    "europe_allowed": false,
+    "new_on_band_call": true,
+    "new_on_band_grid": true,
+    "active_excluded_target": null,
+    "eligible_count_at_check": 0,
+    "post_deployment_log_events": [
+      "JA5JWQ",
+      "JJ1TKN"
+    ],
+    "direct_caller_live_check": "JJ1TKN (Asia) answered and completed as wsjtx-logged-qso on 17m FT8",
+    "excluded_europe_live_check": "Europe remained absent from allowed continents throughout observation"
+  },
+  "source_commit": "fa53f635462def9f37b54f63f18e407ecda2ba12",
+  "executable_sha256": "03BA1F311CD4A4C2F68252F8056CC96CDE6DF8F365F875BF1D48A140B2979A19",
+  "decoder_sha256": "A24D8C4D1E100DA7EFBE29AA911D53DF6E3CA7F81645E0A25F8D9449603E34FA"
+}

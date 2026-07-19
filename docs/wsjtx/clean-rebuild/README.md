@@ -119,3 +119,22 @@ When native Auto Call is visibly armed or transmitting for a different call,
 the backend releases its old target without halting or altering the native QSO.
 The recovery behavior and live-radio evidence are recorded in
 `milestone-11-lock.json`.
+
+## Milestone 12 implementation
+
+Patch `0900-visible-filter-authority.patch` makes the visible native WSJT-Z
+Filtering pane the policy source for backend automatic selection. Startup and
+every operator filter change publish the complete filter matrix, continent
+allow-list, LoTW-only flag, minimum signal, ignored calls, and selection
+priority to the backend. The native target-command receiver independently
+rejects non-direct automated targets excluded by its visible continent,
+ignored-call, LoTW, or minimum-signal controls. Direct callers remain exempt so
+OM0RX still answers a station calling it when no other QSO owns the slot.
+
+The backend now preserves an explicitly empty continent selection and releases
+an active non-direct target immediately when a new operator policy excludes it.
+Automated target metadata carries continent, country, SNR, source, message, and
+direct-caller identity to support the native fail-safe. The patch also corrects
+the remote band-change guard to use WSJT-Z's visible `Band hopping` control
+instead of the unrelated hidden WSPR control. Build identity and live policy
+verification are recorded in `milestone-12-lock.json`.

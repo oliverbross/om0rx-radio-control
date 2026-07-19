@@ -175,6 +175,78 @@ def test_wsjtz_filter_matrix_limits_continents_and_lotw():
     )
 
 
+def test_explicitly_empty_continent_filter_blocks_every_continent():
+    settings = DigitalAutomationSettings.from_operator_settings({
+        "automation": {
+            "filterMatrixEnabled": True,
+            "filterNew": {"call": True},
+            "filterContinents": {
+                "EU": False, "AF": False, "OC": False, "AS": False,
+                "SA": False, "NA": False, "AN": False,
+            },
+        }
+    })
+
+    assert settings.filter_continents == set()
+    assert not payload_matches_need_filters(
+        {"call_status": "New Call", "continent": "EU"}, settings,
+    )
+    assert not payload_matches_need_filters(
+        {"call_status": "New Call", "continent": "NA"}, settings,
+    )
+
+
+def test_filter_change_releases_active_excluded_continent_but_not_direct_caller():
+    controller = DigitalAutomationController(mycall="OM0RX")
+    europe = controller.ingest_target({
+        "callsign": "OZ5BC", "message": "CQ OZ5BC JO55", "band": "10m",
+        "mode": "FT8", "source": "decoded", "heard": True,
+        "continent": "EU", "call_status": "New Call", "dxcc_status": "Confirmed",
+    })
+    assert europe is not None
+    assert controller.next_target(auto_call_start_only=True) is europe
+    controller.record_attempt(europe.key)
+    # Policy exclusion is absolute even if a stale target's score has already
+    # been reduced to zero by another part of the planner.
+    europe.score = 0
+
+    controller.apply_operator_settings({"automation": {
+        "filterMatrixEnabled": True,
+        "filterNew": {"call": True},
+        "filterContinents": {
+            "EU": False, "AF": True, "OC": True, "AS": True,
+            "SA": True, "NA": True, "AN": True,
+        },
+    }})
+
+    assert controller.active_target_key is None
+    assert europe.state == "backoff"
+    assert controller.last_decision["reason"] == "operator-filter-changed"
+    assert controller.last_decision["blockers"] == ["Europe filter"]
+
+    direct = controller.ingest_target({
+        "callsign": "PD4JOH", "message": "PD4JOH OM0RX -04", "band": "10m",
+        "mode": "FT8", "source": "decoded", "heard": True,
+        "continent": "EU", "call_status": "New Call", "dxcc_status": "Confirmed",
+    })
+    assert direct is not None and direct.direct_caller
+    direct.backoff_until = None
+    direct.sync_state("calling", active_state="calling")
+    controller.active_target_key = direct.key
+    controller.active_qso_state = "calling"
+
+    controller.apply_operator_settings({"automation": {
+        "filterMatrixEnabled": True,
+        "filterContinents": {
+            "EU": False, "AF": True, "OC": True, "AS": True,
+            "SA": True, "NA": True, "AN": True,
+        },
+    }})
+
+    assert controller.active_target_key == direct.key
+    assert direct.state == "calling"
+
+
 def test_wsjtz_filter_matrix_keeps_new_and_new_on_band_separate():
     settings = DigitalAutomationSettings.from_operator_settings({
         "automation": {

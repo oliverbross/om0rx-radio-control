@@ -817,11 +817,14 @@ class DigitalAutomationSettings:
             self.filter_band_grid = _bool(filter_band.get("grid"), self.filter_band_grid)
             self.filter_band_cq_zone = _bool(filter_band.get("cqZone", filter_band.get("cq_zone")), self.filter_band_cq_zone)
             self.filter_band_itu_zone = _bool(filter_band.get("ituZone", filter_band.get("itu_zone")), self.filter_band_itu_zone)
-        continents = _normalise_filter_continents(
-            automation.get("filterContinents", automation.get("filter_continents", automation.get("continents")))
+        continents_raw = automation.get(
+            "filterContinents",
+            automation.get("filter_continents", automation.get("continents")),
         )
-        if continents:
-            self.filter_continents = continents
+        if continents_raw is not None:
+            # An explicitly empty map means the operator unchecked every
+            # continent; it must not silently restore the allow-all default.
+            self.filter_continents = _normalise_filter_continents(continents_raw)
         self.filter_lotw_only = _bool(
             automation.get("lotwOnly", automation.get("lotw_only")),
             self.filter_lotw_only,
@@ -1528,6 +1531,29 @@ class DigitalAutomationController:
 
     def apply_operator_settings(self, operator_settings: Optional[Mapping[str, Any]]) -> None:
         self.settings.apply_operator_settings(operator_settings or {})
+        active = self.targets.get(self.active_target_key) if self.active_target_key else None
+        if active and not active.direct_caller:
+            blockers: list[str] = []
+            if active.call in self.settings.ignored_calls:
+                blockers.append("ignored call")
+            if active.mode not in self.settings.allowed_modes:
+                blockers.append("mode disabled")
+            if active.snr is not None and active.snr < self.settings.min_signal:
+                blockers.append("minimum signal")
+            if active.score > 0 or self.settings.filter_matrix_enabled:
+                blockers.extend(payload_need_filter_blockers(active.to_dict(), self.settings))
+            blockers = list(dict.fromkeys(blockers))
+            if blockers:
+                released = self.abandon_active_target(reason="operator-filter-changed")
+                self._set_decision({
+                    "decision": "blocked",
+                    "reason": "operator-filter-changed",
+                    "call": released.call if released else active.call,
+                    "band": released.band if released else active.band,
+                    "mode": released.mode if released else active.mode,
+                    "blockers": blockers,
+                })
+                return
         self._set_decision({"decision": "settings-updated", "settings": self.settings.to_dict()})
 
     def update_mycall(self, mycall: str) -> None:
@@ -3614,7 +3640,7 @@ def payload_need_filter_blockers(payload: Mapping[str, Any], settings: DigitalAu
     blockers: list[str] = []
     if settings.filter_matrix_enabled:
         continent = str(payload.get("continent") or "").strip().upper()
-        if settings.filter_continents and continent and continent not in settings.filter_continents:
+        if continent and continent not in settings.filter_continents:
             continent_name = {
                 "EU": "Europe",
                 "AF": "Africa",
@@ -3625,7 +3651,7 @@ def payload_need_filter_blockers(payload: Mapping[str, Any], settings: DigitalAu
                 "AN": "Antarctica",
             }.get(continent, continent)
             blockers.append(f"{continent_name} filter")
-        if settings.filter_continents and len(settings.filter_continents) < 7 and not continent:
+        if len(settings.filter_continents) < 7 and not continent:
             blockers.append("continent unknown")
         if settings.filter_lotw_only:
             lotw_value = _first_present(payload, "lotw_member", "lotwMember", "lotw", "lotw_user", "lotwUser")

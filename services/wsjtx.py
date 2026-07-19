@@ -2216,6 +2216,17 @@ class WSJTXService:
 
         target = self.build_target_from_spot(spot_like)
         for source_key, target_key in (
+            (("message",), "message"),
+            (("source",), "source"),
+            (("continent",), "continent"),
+            (("country",), "country"),
+            (("snr",), "snr"),
+            (("directCaller", "direct_caller"), "directCaller"),
+        ):
+            value = _first_present(source, *source_key)
+            if value not in (None, ""):
+                target[target_key] = value
+        for source_key, target_key in (
             (("targetId", "target_id"), "targetId"),
             (("commandId", "command_id"), "commandId"),
         ):
