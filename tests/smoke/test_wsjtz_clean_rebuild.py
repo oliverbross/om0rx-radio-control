@@ -82,3 +82,23 @@ def test_clean_launcher_does_not_start_enrichment_or_rewrite_ini() -> None:
     assert "AcceptUDPRequests" not in script
     assert "AutoCall" not in script
     assert "wsjt-z-clean.exe" in script
+
+
+def test_basic_antenna_policy_lock_defers_award_reference_exceptions() -> None:
+    lock = json.loads((CLEAN_DOC_ROOT / "milestone-2-lock.json").read_text(encoding="utf-8"))
+
+    assert lock["trigger"] == "radio-reported slice frequency"
+    assert lock["default_mapping"] == {
+        "160m": "ANT2",
+        "80m": "ANT2",
+        "60m": "ANT2",
+        "40m": "ANT2",
+        "30m": "ANT2",
+        "20m": "ANT1",
+        "17m": "ANT1",
+        "15m": "ANT1",
+        "12m": "ANT1",
+        "10m": "ANT1",
+    }
+    assert lock["safety"]["unknown_tx_state"] == "defer"
+    assert lock["award_reference_exceptions"] == "deferred"

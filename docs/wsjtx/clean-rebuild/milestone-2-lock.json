@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "built_at": "2026-07-19",
+  "milestone": "basic-antenna-policy",
+  "implementation": "external OM0RX SmartSDR backend policy",
+  "trigger": "radio-reported slice frequency",
+  "default_mapping": {
+    "160m": "ANT2",
+    "80m": "ANT2",
+    "60m": "ANT2",
+    "40m": "ANT2",
+    "30m": "ANT2",
+    "20m": "ANT1",
+    "17m": "ANT1",
+    "15m": "ANT1",
+    "12m": "ANT1",
+    "10m": "ANT1"
+  },
+  "safety": {
+    "explicit_tx_state": "defer",
+    "unknown_tx_state": "defer",
+    "multiple_deferred_changes": "latest-frequency-wins",
+    "apply_after": "explicit receive or READY state",
+    "antenna_failure_tx_inhibit": "pending final safety milestone"
+  },
+  "automated_tests": {
+    "file": "tests/smoke/test_flex_connection_lifecycle.py",
+    "result": "success"
+  },
+  "live_flex_qualification": {
+    "result": "pending_operator_test",
+    "instructions": "antenna-policy.md"
+  },
+  "award_reference_exceptions": "deferred"
+}

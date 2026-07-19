@@ -72,3 +72,12 @@ boundary. Backend automation now defaults to `wsjtz` as the dial-frequency
 owner and refuses to issue a competing cross-frequency Flex tune. See
 `band-control-acceptance.md` for the diagnostic contract and the deliberately
 manual live-radio qualification.
+
+## Milestone 2 implementation
+
+The basic antenna mapping remains an external SmartSDR backend policy, so it
+reacts to the frequency reported by the radio without becoming a second CAT
+frequency owner. Its mapping, fail-closed TX behavior, deferred latest-band
+semantics, and remaining production interlock are recorded in
+`antenna-policy.md` and `milestone-2-lock.json`. Award-reference exceptions
+remain deferred.

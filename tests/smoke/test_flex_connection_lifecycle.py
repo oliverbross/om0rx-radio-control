@@ -197,6 +197,43 @@ def test_antenna_policy_remains_blocked_until_explicit_receive_state():
     assert flex._pending_antenna_policy_freq == 1.84
 
 
+def test_antenna_policy_fails_closed_when_tx_state_is_unknown():
+    flex = RecordingFlex()
+    flex.current_mox = None
+    flex.current_interlock_state = None
+    flex.current_rx_ant = "ANT1"
+    flex.current_tx_ant = "ANT1"
+
+    assert flex.enforce_antenna_policy(7.074, reason="unknown tx state") is False
+    assert flex.commands == []
+    assert flex._pending_antenna_policy_freq == 7.074
+
+
+def test_multiple_deferred_band_changes_keep_only_latest_confirmed_frequency():
+    flex = RecordingFlex()
+    flex.current_mox = True
+    flex.current_interlock_state = "TRANSMITTING"
+    flex.current_rx_ant = "ANT2"
+    flex.current_tx_ant = "ANT2"
+
+    assert flex.enforce_antenna_policy(7.074, reason="first QSY during TX") is False
+    assert flex.enforce_antenna_policy(14.074, reason="latest QSY during TX") is False
+    assert flex.commands == []
+    assert flex._pending_antenna_policy_freq == 14.074
+
+    flex.current_mox = False
+    flex.current_interlock_state = "READY"
+    assert flex.enforce_antenna_policy(
+        flex._pending_antenna_policy_freq,
+        reason="confirmed receive",
+    ) is True
+
+    assert "slice set 0 rxant=ANT1" in flex.commands
+    assert "slice set 0 txant=ANT1" in flex.commands
+    assert not any("ANT2" in command for command in flex.commands)
+    assert flex._pending_antenna_policy_freq is None
+
+
 def test_antenna_policy_applies_on_antenna_update_without_frequency_field():
     flex = RecordingFlex()
     flex.current_freq = 1.84
