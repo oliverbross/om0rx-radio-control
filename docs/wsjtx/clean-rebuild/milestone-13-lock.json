@@ -1,0 +1,33 @@
+{
+  "milestone": 13,
+  "name": "manual double-click TX authority and direct-caller preemption",
+  "incident": {
+    "direct_caller": "PY1AX",
+    "direct_decode_utc": "2026-07-20T21:37:30Z",
+    "direct_message": "OM0RX PY1AX GG87",
+    "incorrect_active_target": "LU6HOG",
+    "incorrect_following_tx_utc": "2026-07-20T21:37:45Z",
+    "incorrect_following_tx": "LU6HOG OM0RX JN88",
+    "root_cause": "native direct-reply lock treated the unanswered REPLYING/Tx1 state as a progressed QSO"
+  },
+  "policy": {
+    "manual_double_click": "always arm Enable Tx after a successfully processed decode",
+    "quick_call_preference": "does not weaken explicit double-click authority",
+    "unanswered_tx1": "may be preempted by a station addressing OM0RX",
+    "progressed_qso": "protected once report stage or equivalent report/73 evidence exists",
+    "direct_caller_filters": "direct callers retain their existing filter exemption"
+  },
+  "verification": {
+    "native_build": "success",
+    "focused_tests": "172 passed",
+    "patch_reverse_forward_check": "success",
+    "safe_cutover": "Halt Tx acknowledged before process replacement",
+    "launched_process_id": 11244,
+    "bridge_client_fresh": true,
+    "decode_stream_fresh": true,
+    "live_active_target_at_check": null
+  },
+  "source_commit": "fa53f635462def9f37b54f63f18e407ecda2ba12",
+  "executable_sha256": "5ABF960F8E8C0239E460483EB575C2C06D057E2CF331D1440C41651D66E3B310",
+  "decoder_sha256": "A24D8C4D1E100DA7EFBE29AA911D53DF6E3CA7F81645E0A25F8D9449603E34FA"
+}

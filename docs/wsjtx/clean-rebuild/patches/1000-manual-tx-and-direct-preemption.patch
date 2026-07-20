@@ -1,0 +1,65 @@
+diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
+index 3be3569..b778254 100644
+--- a/widgets/mainwindow.h
++++ b/widgets/mainwindow.h
+@@ -375,6 +375,7 @@ private slots:
+      void on_cbAutoCQ_toggled(bool b);
+      bool callsignFiltered(DecodedText dt);
+      bool om0rx_process_pending_direct_reply();
++     bool om0rx_qso_exchange_has_progressed() const;
+      // FT8 thread count selectors (Decode > Parameters > Number of threads)
+      void on_actionMTAuto_triggered();
+      void on_actionMT1_triggered();
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+index 84017c3..f945fae 100644
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -7626,7 +7626,10 @@ void MainWindow::processMessage (DecodedText const& message, Qt::KeyboardModifie
+   if (auto_seq && !m_bDoubleClicked && (m_mode!="FT4" and m_mode!="FT2")) {
+     return;
+   }
+-  if(m_config.quick_call() && m_bDoubleClicked) auto_tx_mode(true);
++  // A manual double-click is an explicit operator instruction to call the
++  // decoded station.  It must arm Enable Tx regardless of the Quick Call
++  // preference; Quick Call must not turn a double-click into prepare-only.
++  if(m_bDoubleClicked) auto_tx_mode(true);
+   m_bDoubleClicked=false;
+ }
+ 
+@@ -13576,13 +13579,21 @@ void MainWindow::rebuildFilterCache() const
+ static const QRegularExpression kReDigit{"[0-9]"};
+ static const QRegularExpression kReCqStart{"^(CQ|CQ\\s\\w+)$"};
+ 
++bool MainWindow::om0rx_qso_exchange_has_progressed() const
++{
++    auto const current_base = Radio::base_callsign(ui->dxCallEntry->text());
++    return !current_base.isEmpty()
++        && (m_QSOProgress >= REPORT || m_bSentReport
++            || !m_rptRcvd.trimmed().isEmpty() || m_sentFirst73);
++}
++
+ bool MainWindow::om0rx_process_pending_direct_reply()
+ {
+     if (!m_om0rxPendingDirectReply || m_transmitting) return false;
+ 
+     auto const locked_base = Radio::base_callsign(m_om0rxDirectReplyCall);
+     auto const current_base = Radio::base_callsign(ui->dxCallEntry->text());
+-    bool const progressed_qso = m_QSOProgress != CALLING && !current_base.isEmpty();
++    bool const progressed_qso = om0rx_qso_exchange_has_progressed();
+ 
+     // Auto-sequence may already have consumed this decode before the queued
+     // callback runs. Do not process it twice, and never interrupt a QSO that
+@@ -13670,8 +13681,11 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+             || "DE" == message_words.at(2));
+     auto const decoded_base = Radio::base_callsign(dxCall);
+     auto const current_base = Radio::base_callsign(ui->dxCallEntry->text());
+-    bool const progressed_with_other = m_QSOProgress != CALLING
+-        && !current_base.isEmpty() && current_base != decoded_base;
++    // REPLYING only means that we transmitted an initial Tx1 to a station;
++    // until a report-stage exchange begins, a station calling OM0RX owns the
++    // next reply slot and may preempt that unanswered outgoing call.
++    bool const progressed_with_other = om0rx_qso_exchange_has_progressed()
++        && current_base != decoded_base;
+ 
+     if (addressed_to_me && dxCall != m_baseCall && !progressed_with_other) {
+         m_om0rxDirectReplyCall = dxCall;

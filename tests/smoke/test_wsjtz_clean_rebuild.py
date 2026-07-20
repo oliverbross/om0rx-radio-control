@@ -58,6 +58,7 @@ def test_clean_build_separates_build_compatibility_and_band_control_patches() ->
     assert "0700-log-race-and-decode-dedup.patch" in script
     assert "0800-priority-watchdog-release.patch" in script
     assert "0900-visible-filter-authority.patch" in script
+    assert "1000-manual-tx-and-direct-preemption.patch" in script
     assert "om0rx-wsjtz-enrichment.patch" not in script
     assert "OM0RX_BUILD_WITH_OMNIRIG=OFF" in script
     assert "data\\build\\wsjt-z-clean" in script
@@ -209,6 +210,20 @@ def test_visible_filter_policy_is_backend_authority_with_native_tx_failsafe() ->
     assert 'return reject ("Europe filter")' in patch
     assert '+      && !ui->cb_bandHopper->isChecked ())' in patch
     assert '+      && !ui->band_hopping_group_box->isChecked ())' not in patch
+
+
+def test_manual_double_click_arms_tx_and_direct_call_preempts_only_unanswered_call() -> None:
+    patch = (CLEAN_DOC_ROOT / "patches" / "1000-manual-tx-and-direct-preemption.patch").read_text(encoding="utf-8")
+
+    assert "if(m_bDoubleClicked) auto_tx_mode(true);" in patch
+    assert "m_config.quick_call() && m_bDoubleClicked" in patch
+    assert "+  if(m_config.quick_call() && m_bDoubleClicked)" not in patch
+    assert "om0rx_qso_exchange_has_progressed() const" in patch
+    assert "m_QSOProgress >= REPORT" in patch
+    assert "!m_rptRcvd.trimmed().isEmpty()" in patch
+    assert "bool const progressed_qso = om0rx_qso_exchange_has_progressed();" in patch
+    assert "bool const progressed_with_other = om0rx_qso_exchange_has_progressed()" in patch
+    assert "+    bool const progressed_qso = m_QSOProgress != CALLING" not in patch
 
 
 def test_basic_antenna_policy_lock_defers_award_reference_exceptions() -> None:

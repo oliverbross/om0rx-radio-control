@@ -138,3 +138,16 @@ direct-caller identity to support the native fail-safe. The patch also corrects
 the remote band-change guard to use WSJT-Z's visible `Band hopping` control
 instead of the unrelated hidden WSPR control. Build identity and live policy
 verification are recorded in `milestone-12-lock.json`.
+
+## Milestone 13 implementation
+
+Patch `1000-manual-tx-and-direct-preemption.patch` fixes two operator-control
+and reply-priority regressions. A successful decode double-click now always
+arms `Enable Tx`; the separate Quick Call preference can no longer leave a
+manually selected station in prepare-only state. Direct-caller ownership now
+distinguishes an unanswered outgoing Tx1 from a real exchange. A station that
+addresses OM0RX may preempt the former, while an exchange that has reached the
+report stage remains protected.
+
+The PY1AX/LU6HOG incident, clean-build identity, and regression results are
+recorded in `milestone-13-lock.json`.

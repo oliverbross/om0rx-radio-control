@@ -21,7 +21,8 @@ $patchPaths = @(
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0600-direct-reply-lock.patch"),
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0700-log-race-and-decode-dedup.patch"),
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0800-priority-watchdog-release.patch"),
-    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0900-visible-filter-authority.patch")
+    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0900-visible-filter-authority.patch"),
+    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\1000-manual-tx-and-direct-preemption.patch")
 )
 $bash = Join-Path $MsysRoot "usr\bin\bash.exe"
 
