@@ -91,6 +91,7 @@ def _decode_status(payload: dict[str, Any]) -> dict[str, Any]:
     dxcc_tag = ""
     needed: dict[str, Any] = {}
     needed_on_band: dict[str, Any] = {}
+    worked_same_band_mode = False
     status_sources: list[str] = ["cty"]
 
     if getattr(store, "_loaded_at", None) is not None:
@@ -105,6 +106,11 @@ def _decode_status(payload: dict[str, Any]) -> dict[str, Any]:
             bool(band_value)
             and bool(mode_value)
             and (call_value, band_value, mode_value) in store.call_bandmode_confirmed
+        )
+        worked_same_band_mode = (
+            bool(band_value)
+            and bool(mode_value)
+            and (call_value, band_value, mode_value) in store.call_bandmode_worked
         )
         call_status = classify_call_status(
             call_worked,
@@ -156,6 +162,7 @@ def _decode_status(payload: dict[str, Any]) -> dict[str, Any]:
         "cq_zone": str(cq_zone),
         "itu_zone": str(itu_zone),
         "call_status": call_status,
+        "worked_same_band_mode": worked_same_band_mode,
         "dxcc_status": dxcc_status,
         "dxcc_tag": dxcc_tag,
         "needed": needed,

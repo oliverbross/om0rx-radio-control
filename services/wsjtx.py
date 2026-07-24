@@ -2503,6 +2503,7 @@ def _local_wsjtx_decode_status(req: Dict[str, Any], request: Request) -> Dict[st
     dxcc_tag = ""
     needed: Dict[str, Any] = {}
     needed_on_band: Dict[str, Any] = {}
+    worked_same_band_mode = False
     status_sources: list[str] = []
 
     if store:
@@ -2536,6 +2537,15 @@ def _local_wsjtx_decode_status(req: Dict[str, Any], request: Request) -> Dict[st
                         band_value,
                         mode_value,
                     ) in getattr(store, "call_bandmode_confirmed", set())
+                )
+                worked_same_band_mode = (
+                    bool(band_value)
+                    and bool(mode_value)
+                    and (
+                        call_value,
+                        band_value,
+                        mode_value,
+                    ) in getattr(store, "call_bandmode_worked", set())
                 )
                 call_status = classify_call_status(
                     call_worked,
@@ -2602,6 +2612,7 @@ def _local_wsjtx_decode_status(req: Dict[str, Any], request: Request) -> Dict[st
         "cq_zone": str(cq_zone),
         "itu_zone": str(itu_zone),
         "call_status": call_status,
+        "worked_same_band_mode": worked_same_band_mode,
         "dxcc_status": dxcc_status,
         "dxcc_tag": dxcc_tag,
         "needed": needed,

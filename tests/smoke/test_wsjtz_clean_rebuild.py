@@ -226,6 +226,28 @@ def test_manual_double_click_arms_tx_and_direct_call_preempts_only_unanswered_ca
     assert "+    bool const progressed_qso = m_QSOProgress != CALLING" not in patch
 
 
+def test_authoritative_worked_slot_veto_patch_is_isolated() -> None:
+    patch = (CLEAN_DOC_ROOT / "patches" / "1100-authoritative-worked-slot-veto.patch").read_text(
+        encoding="utf-8"
+    )
+    script = BUILD_SCRIPT.read_text(encoding="utf-8")
+
+    assert "1100-authoritative-worked-slot-veto.patch" in script
+    assert "worked_same_band_mode" in patch
+    assert "Authoritative worked-slot veto" in patch
+    assert "enforce_om0rx_authoritative_status" in patch
+    assert '-  else if (dxcc_status == "Worked"' in patch
+    assert '+  else if (dxcc_status == "Worked"' not in patch
+
+
+def test_clean_build_can_record_identity_when_deployed_binary_is_already_current() -> None:
+    script = BUILD_SCRIPT.read_text(encoding="utf-8")
+
+    assert "$sideBySideCurrent" in script
+    assert "Get-FileHash -Algorithm SHA256 -LiteralPath $sideBySideExe" in script
+    assert "if (-not $sideBySideCurrent)" in script
+
+
 def test_basic_antenna_policy_lock_defers_award_reference_exceptions() -> None:
     lock = json.loads((CLEAN_DOC_ROOT / "milestone-2-lock.json").read_text(encoding="utf-8"))
 

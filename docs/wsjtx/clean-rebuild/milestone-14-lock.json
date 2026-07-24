@@ -1,0 +1,51 @@
+{
+  "milestone": 14,
+  "name": "authoritative worked band/mode veto",
+  "incident": {
+    "callsign": "4L1FL",
+    "band": "20m",
+    "mode": "FT8",
+    "latest_matching_qso_date": "20240904",
+    "displayed_call_status": "Worked",
+    "displayed_dxcc_status": "Worked",
+    "incorrect_behavior": [
+      "native Auto Call repeatedly selected a station already worked on the same band and mode",
+      "generic Worked DXCC state armed the temporary 20-minute watchdog"
+    ],
+    "root_cause": [
+      "native Auto Call consulted its private ADIF log instead of the authoritative CS/DS result",
+      "priority ranking treated generic Worked DXCC state as an unconfirmed-DXCC campaign"
+    ]
+  },
+  "policy": {
+    "exact_worked_slot": "automatic CQ/73 selection is vetoed for an exact callsign, band, and mode already worked",
+    "late_classification": "an unanswered automatic target is released when the asynchronous authoritative result arrives",
+    "direct_caller": "a station addressing OM0RX remains exempt and is answered when no progressed QSO owns the slot",
+    "progressed_qso": "never aborted by a late classification result",
+    "priority_watchdog": "generic Worked or W/... DXCC state cannot arm 20 minutes",
+    "new_dxcc_or_slot": "ATNO and genuine new-band/new-mode DXCC opportunities retain priority eligibility",
+    "ordinary_watchdog_minutes": 2
+  },
+  "verification": {
+    "native_build": "success",
+    "focused_tests": "47 passed",
+    "patch_reverse_check": "success",
+    "live_decode_status": {
+      "call": "4L1FL",
+      "band": "20m",
+      "mode": "FT8",
+      "call_status": "Worked",
+      "dxcc_status": "Worked",
+      "worked_same_band_mode": true,
+      "needed_dxcc": false,
+      "needed_band_dxcc": false,
+      "needed_mode_dxcc": false
+    },
+    "launched_process_id": 21456,
+    "bridge_client_fresh": true,
+    "decode_stream_fresh": true
+  },
+  "source_commit": "fa53f635462def9f37b54f63f18e407ecda2ba12",
+  "executable_sha256": "877C50C00948F84082ECA47AFED6522A387AFA164842944F7FF4245820154C17",
+  "decoder_sha256": "A24D8C4D1E100DA7EFBE29AA911D53DF6E3CA7F81645E0A25F8D9449603E34FA"
+}

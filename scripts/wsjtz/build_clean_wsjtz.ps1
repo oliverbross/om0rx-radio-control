@@ -22,7 +22,8 @@ $patchPaths = @(
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0700-log-race-and-decode-dedup.patch"),
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0800-priority-watchdog-release.patch"),
     (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\0900-visible-filter-authority.patch"),
-    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\1000-manual-tx-and-direct-preemption.patch")
+    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\1000-manual-tx-and-direct-preemption.patch"),
+    (Join-Path $ProjectRoot "docs\wsjtx\clean-rebuild\patches\1100-authoritative-worked-slot-veto.patch")
 )
 $bash = Join-Path $MsysRoot "usr\bin\bash.exe"
 
@@ -152,7 +153,14 @@ foreach ($required in @($exe, $decoder, $allcallSource)) {
         throw "Build completed but required runtime file is missing: $required"
     }
 }
-Copy-Item -LiteralPath $exe -Destination $sideBySideExe -Force
+$sideBySideCurrent = Test-Path -LiteralPath $sideBySideExe
+if ($sideBySideCurrent) {
+    $sideBySideCurrent = (Get-FileHash -Algorithm SHA256 -LiteralPath $sideBySideExe).Hash -eq
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash
+}
+if (-not $sideBySideCurrent) {
+    Copy-Item -LiteralPath $exe -Destination $sideBySideExe -Force
+}
 Copy-Item -LiteralPath $allcallSource -Destination $allcallRuntime -Force
 
 $exeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sideBySideExe).Hash

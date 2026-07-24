@@ -67,6 +67,7 @@ class DuckDBQSOStatusStore:
         self.call_confirmed: set[str] = set()
         self.call_band_worked: set[tuple[str, str]] = set()
         self.call_mode_worked: set[tuple[str, str]] = set()
+        self.call_bandmode_worked: set[tuple[str, str, str]] = set()
         self.call_bandmode_confirmed: set[tuple[str, str, str]] = set()
         self.call_bandmode_latest_date: dict[tuple[str, str, str], str] = {}
         self.grid_worked: set[str] = set()
@@ -95,6 +96,7 @@ class DuckDBQSOStatusStore:
             "call_confirmed_count": len(self.call_confirmed),
             "call_band_worked_count": len(self.call_band_worked),
             "call_mode_worked_count": len(self.call_mode_worked),
+            "call_bandmode_worked_count": len(self.call_bandmode_worked),
             "call_bandmode_confirmed_count": len(self.call_bandmode_confirmed),
             "call_bandmode_latest_date_count": len(self.call_bandmode_latest_date),
             "grid_worked_count": len(self.grid_worked),
@@ -224,6 +226,8 @@ class DuckDBQSOStatusStore:
                 changed |= self._add(self.call_band_worked, (call_value, band_value))
             if mode_value:
                 changed |= self._add(self.call_mode_worked, (call_value, mode_value))
+            if band_value and mode_value:
+                changed |= self._add(self.call_bandmode_worked, (call_value, band_value, mode_value))
             if band_value and mode_value and confirmed:
                 changed |= self._add(self.call_bandmode_confirmed, (call_value, band_value, mode_value))
             if band_value and mode_value and qso_date:
@@ -483,6 +487,7 @@ class DuckDBQSOStatusStore:
             call_confirmed: set[str] = set()
             call_band_worked: set[tuple[str, str]] = set()
             call_mode_worked: set[tuple[str, str]] = set()
+            call_bandmode_worked: set[tuple[str, str, str]] = set()
             call_bandmode_confirmed: set[tuple[str, str, str]] = set()
             call_bandmode_latest_date: dict[tuple[str, str, str], str] = {}
             grid_worked: set[str] = set()
@@ -505,6 +510,8 @@ class DuckDBQSOStatusStore:
                         call_band_worked.add((call_value, band_value))
                     if mode_value:
                         call_mode_worked.add((call_value, mode_value))
+                    if band_value and mode_value:
+                        call_bandmode_worked.add((call_value, band_value, mode_value))
                     if band_value and mode_value and confirmed:
                         call_bandmode_confirmed.add((call_value, band_value, mode_value))
                     if band_value and mode_value and qso_date:
@@ -539,6 +546,7 @@ class DuckDBQSOStatusStore:
             self.call_confirmed = call_confirmed
             self.call_band_worked = call_band_worked
             self.call_mode_worked = call_mode_worked
+            self.call_bandmode_worked = call_bandmode_worked
             self.call_bandmode_confirmed = call_bandmode_confirmed
             self.call_bandmode_latest_date = call_bandmode_latest_date
             self.grid_worked = grid_worked

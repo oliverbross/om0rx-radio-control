@@ -326,6 +326,7 @@ def test_qso_status_store_records_new_logged_qso_in_memory():
 
     assert changed is True
     assert store.call_flags("EA1AA", "20m", "FT8") == (True, False, False, False, False)
+    assert ("EA1AA", "20m", "FT8") in store.call_bandmode_worked
     assert store.dxcc_overall(281) == (True, False)
     assert store.dxcc_bandmode_flags(281, "20m", "FT8") == (False, False, False)
     assert store.grid_flags("IN80ZZ", "20m", "FT8") == (False, False, False)

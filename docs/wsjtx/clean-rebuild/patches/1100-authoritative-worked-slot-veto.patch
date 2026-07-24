@@ -1,0 +1,108 @@
+diff --git a/widgets/mainwindow.h b/widgets/mainwindow.h
+--- a/widgets/mainwindow.h
++++ b/widgets/mainwindow.h
+@@ -436,6 +436,9 @@ private slots:
+      void apply_om0rx_decode_status (QString const& callsign, QString const& band,
+                                      QString const& mode, QString const& call_status,
+                                      QString const& dxcc_status);
++     bool om0rx_status_blocks_auto_call (QJsonObject const& status) const;
++     void enforce_om0rx_authoritative_status (QJsonObject const& status,
++                                               QString const& callsign);
+      void consider_om0rx_priority_hunt (QJsonObject const& status, QString const& callsign,
+                                         QString const& band, QString const& mode, bool is_cq,
+                                         int time_sec, QString const& grid, QString const& message,
+diff --git a/widgets/mainwindow.cpp b/widgets/mainwindow.cpp
+--- a/widgets/mainwindow.cpp
++++ b/widgets/mainwindow.cpp
+@@ -13718,6 +13718,25 @@ bool MainWindow::callsignFiltered(DecodedText dt)
+         return false;
+     }
+ 
++    // CS/DS is backed by the central QSO history and is authoritative over
++    // WSJT-Z's private ADIF log. A CQ/73 from a call already worked in this
++    // exact band/mode slot must not enter native Auto Call. Direct callers
++    // returned above and deliberately remain exempt.
++    if (is_CQ || is_73) {
++        auto band = m_currentBand.trimmed().toLower();
++        if (band.isEmpty()) band = ui->bandComboBox->currentText().trimmed().toLower();
++        auto const cache_key = QString {"%1|%2|%3"}.arg(
++            dxCall.trimmed().toUpper(), band, m_mode.trimmed().toUpper());
++        if (m_om0rx_status_cache.contains(cache_key)) {
++            auto const status = QJsonDocument::fromJson(
++                m_om0rx_status_cache.value(cache_key).toUtf8()).object();
++            if (om0rx_status_blocks_auto_call(status)) {
++                if (m_zdebug) log("Authoritative worked-slot veto: " + dxCall);
++                return true;
++            }
++        }
++    }
++
+     // Auto call next
+     if (ui->cb_autoCallNext->isChecked() && dxCall == ui->dxCallEntry->text() ) {
+           if (is_CQ || is_73 || SpecOp::HOUND == m_config.special_op_id()) {
+@@ -14438,6 +14457,7 @@ void MainWindow::request_om0rx_decode_status (double freq_hz, QString const& cal
+       apply_om0rx_decode_status (call, band, mode,
+                                  status.value ("call_status").toString ("Unknown"),
+                                  status.value ("dxcc_status").toString ("Unknown"));
++      enforce_om0rx_authoritative_status (status, call);
+       consider_om0rx_priority_hunt (status, call, band, mode, is_cq, time_sec,
+                                     grid, message, static_cast<int> (freq_hz));
+       return;
+@@ -14478,6 +14498,7 @@ void MainWindow::request_om0rx_decode_status (double freq_hz, QString const& cal
+             if (m_om0rx_status_cache.size () >= 4096) m_om0rx_status_cache.clear ();
+             m_om0rx_status_cache.insert (cache_key,
+                                          QString::fromUtf8 (QJsonDocument {status}.toJson (QJsonDocument::Compact)));
++            enforce_om0rx_authoritative_status (status, call);
+             consider_om0rx_priority_hunt (status, call, band, mode, is_cq, time_sec,
+                                           grid, message, static_cast<int> (freq_hz));
+           }
+@@ -14491,6 +14512,41 @@ void MainWindow::request_om0rx_decode_status (double freq_hz, QString const& cal
+   });
+ }
+ 
++bool MainWindow::om0rx_status_blocks_auto_call (QJsonObject const& status) const
++{
++  return status.value ("worked_same_band_mode").toBool (false);
++}
++
++void MainWindow::enforce_om0rx_authoritative_status (QJsonObject const& status,
++                                                      QString const& callsign)
++{
++  if (!om0rx_status_blocks_auto_call (status)) return;
++
++  auto const blocked_base = Radio::base_callsign (callsign);
++  auto const direct_base = Radio::base_callsign (m_om0rxDirectReplyCall);
++  auto const current_base = Radio::base_callsign (ui->dxCallEntry->text ());
++  if (blocked_base.isEmpty () || direct_base == blocked_base) return;
++
++  bool const selected = Radio::base_callsign (m_priorityCall) == blocked_base
++      || current_base == blocked_base;
++  if (!selected || (current_base == blocked_base && om0rx_qso_exchange_has_progressed ()))
++    return;
++
++  m_priorityCall.clear ();
++  m_priorityCallPreferCQTarget = false;
++  if (m_om0rxPriorityHuntActive
++      && Radio::base_callsign (m_om0rxPriorityHuntCall) == blocked_base)
++    clear_om0rx_priority_hunt ("authoritative worked band/mode veto");
++
++  if (current_base == blocked_base)
++    {
++      auto_tx_mode (false);
++      ui->stopTxButton->click ();
++      clearDX ();
++    }
++  log ("OM0RX authoritative worked band/mode veto released automatic target " + callsign);
++}
++
+ void MainWindow::clear_om0rx_priority_hunt (QString const& reason)
+ {
+   if (m_om0rxPriorityHuntActive && m_zdebug)
+@@ -14531,7 +14587,6 @@ void MainWindow::consider_om0rx_priority_hunt (QJsonObject const& status,
+ 
+   int rank = -1;
+   if (needed.value ("dxcc").toBool () || dxcc_status == "ATNO") rank = 300;
+-  else if (dxcc_status == "Worked" || dxcc_status.startsWith ("W/")) rank = 250;
+   else if (needed_on_band.value ("dxcc").toBool () && needed_on_band.value ("dxcc_mode").toBool ()) rank = 220;
+   else if (needed_on_band.value ("dxcc").toBool ()) rank = 210;
+   else if (needed_on_band.value ("dxcc_mode").toBool ()) rank = 200;

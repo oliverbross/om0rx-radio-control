@@ -151,3 +151,18 @@ report stage remains protected.
 
 The PY1AX/LU6HOG incident, clean-build identity, and regression results are
 recorded in `milestone-13-lock.json`.
+
+## Milestone 14 implementation
+
+Patch `1100-authoritative-worked-slot-veto.patch` makes the central CS/DS QSO
+history authoritative over WSJT-Z's private ADIF history for automatic
+selection. The classifier now reports an explicit exact callsign/band/mode
+worked fact. A cached worked slot is rejected before native Auto Call
+promotion; a late asynchronous result releases an unanswered automatic target
+and its priority-watchdog ownership. Direct callers and progressed QSOs retain
+their existing protection.
+
+Generic `Worked` and `W/...` DXCC display states no longer arm the temporary
+20-minute watchdog. ATNO and genuine new-band/new-mode DXCC opportunities
+remain eligible. The 4L1FL 20m FT8 incident, live classification evidence, and
+deployed artifact identity are recorded in `milestone-14-lock.json`.

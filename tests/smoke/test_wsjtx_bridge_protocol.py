@@ -250,6 +250,7 @@ def test_wsjtx_decode_status_returns_native_decode_enrichment(monkeypatch):
         call_confirmed = set()
         call_band_worked = set()
         call_mode_worked = set()
+        call_bandmode_worked = set()
         call_bandmode_confirmed = set()
 
     app.state.classifier = type("FakeClassifier", (), {"qso_status_store": FakeQsoStatusStore()})()
@@ -274,6 +275,7 @@ def test_wsjtx_decode_status_returns_native_decode_enrichment(monkeypatch):
     assert payload["success"] is True
     assert payload["call"] == "E51ABC"
     assert payload["call_status"] == "New Call"
+    assert payload["worked_same_band_mode"] is False
     assert payload["needed"]["call"] is True
     assert payload.get("automation_target") is None
 
@@ -287,6 +289,7 @@ def test_wsjtx_decode_status_reports_new_band_for_worked_call_on_other_band(monk
         call_confirmed = {"AD9GE"}
         call_band_worked = {("AD9GE", "10m")}
         call_mode_worked = {("AD9GE", "FT8")}
+        call_bandmode_worked = {("AD9GE", "10m", "FT8")}
         call_bandmode_confirmed = set()
 
     app.state.classifier = type("FakeClassifier", (), {"qso_status_store": FakeQsoStatusStore()})()
@@ -310,8 +313,44 @@ def test_wsjtx_decode_status_reports_new_band_for_worked_call_on_other_band(monk
     assert response.status_code == 200
     assert payload["success"] is True
     assert payload["call_status"] == "New Band"
+    assert payload["worked_same_band_mode"] is False
     assert payload["needed_on_band"]["call"] is True
     assert payload.get("automation_target") is None
+
+
+def test_wsjtx_decode_status_marks_exact_worked_band_mode(monkeypatch):
+    app = FastAPI()
+
+    class FakeQsoStatusStore:
+        _loaded_at = 1
+        call_worked = {"4L1FL"}
+        call_confirmed = set()
+        call_band_worked = {("4L1FL", "20m")}
+        call_mode_worked = {("4L1FL", "FT8")}
+        call_bandmode_worked = {("4L1FL", "20m", "FT8")}
+        call_bandmode_confirmed = set()
+
+    app.state.classifier = type("FakeClassifier", (), {"qso_status_store": FakeQsoStatusStore()})()
+    wsjtx_module.register_wsjtx_endpoints(app)
+
+    response = TestClient(app).post(
+        "/api/wsjtx/decode-status",
+        json={
+            "call": "4L1FL",
+            "grid": "LN21",
+            "band": "20m",
+            "mode": "FT8",
+            "frequency_hz": 14074000,
+            "audioOffset": 543,
+            "snr": -10,
+            "message": "CQ 4L1FL LN21",
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["call_status"] == "Worked"
+    assert payload["worked_same_band_mode"] is True
 
 
 def test_wsjtx_bridge_logged_qso_upload_payload_prefers_adif_fields():
