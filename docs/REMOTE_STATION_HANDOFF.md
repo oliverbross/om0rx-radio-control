@@ -282,6 +282,11 @@ Do not delete the macOS evidence or safety boundary.
   intentionally inactive while uncommissioned; the GUI exposes the guarded
   commissioning workflow, and a commissioned restart/follow transaction must
   align and verify the hardware before transmit is authorized.
+- Final read-only check at `2026-10-10T10:44:37Z`: FLEX was again on 15m with
+  ANT1, the KPA500/KAT500 remained on 15m, the route was `confirmed`, and alarm
+  counts were zero critical, zero warning, and one expected commissioning
+  information item. This state change was observed only; this session sent no
+  command to produce it. MOX remained false and the KPA500 remained in STBY.
 - Safety confirmation: no agent restart, station-control request, CAT write,
   PTT, TUNE, CWX, frequency/mode/antenna/RF-power write, or RF transmission was
   performed during implementation or testing. The bearer token was neither
