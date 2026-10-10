@@ -188,6 +188,58 @@ Do not delete the macOS evidence or safety boundary.
   merely for this handoff while the strict no-station-write boundary is in
   force.
 
+## macOS receive-only acceptance — 2026-10-10
+
+- Timestamp (UTC): `2026-10-10T09:46:33Z` final observation.
+- Windows fix source verified: fetched
+  `origin/codex/fix-flex-route-validation` at exactly
+  `b6611064b11f8f5390c62bcdfa96d4958634b18e` before acceptance.
+- Acceptance branch: `codex/mac-receive-only-acceptance`, created directly
+  from that verified Windows branch tip.
+- Authentication and stream: the already-running OM0RX-xCat process remained
+  authenticated to `https://om0rx-win10.tail5abcc0.ts.net`; its activity view
+  remained `Remote Station Agent connected`. The same process changed from
+  the earlier `ALARM 2`/FLEX `INVALID` state to the current `ALARM 1` state,
+  providing receive-only evidence that the authenticated WebSocket stream
+  delivered the corrected live state without a client restart.
+- FLEX state shown by OM0RX-xCat: VFO A `RX+TX`, approximately `21.048 MHz`,
+  `CW`; VFO B inactive. The invalid FLEX route warning is absent.
+- Raw-state correlation: the Windows authenticated state evidence above
+  records the bound station as `Maestro`, active/transmit slice A, RX `ANT1`,
+  TX `ANT1`, MOX `false`, and interlock `READY`. OM0RX-xCat 0.3 summarizes
+  these fields rather than rendering the station name, both antenna fields,
+  MOX, and interlock separately; the Mac acceptance therefore confirms their
+  decoded route/alarm outcome, while the Windows record remains the direct
+  raw-field evidence.
+- KPA500: OM0RX-xCat displayed `KPA STBY` throughout acceptance.
+- KAT500: OM0RX-xCat displayed `KAT ANT1` throughout acceptance.
+- Route: OM0RX-xCat displayed `Route 15m KAT ANT1`; the former FLEX
+  `INVALID`/ANT1 policy mismatch is absent.
+- Alarms: OM0RX-xCat displayed exactly `ALARM 1` with only `Station not
+  commissioned; Station control is locked pending commissioning`. Correlated
+  with the protocol-v1 alarm record above, acceptance is zero critical, zero
+  warning, and exactly one informational
+  `station-commissioning-required` alarm.
+- Safety controls: `Allow CAT transmit and CW commands` remained off;
+  automatic protocol-server startup remained off; Operate, Tune, and Cancel
+  remained disabled. `commissioned=false` was not changed.
+- Local consumers: OM0RX-xCat continued listening on `127.0.0.1:15002` and
+  `127.0.0.1:14532`; RUMlogNG retained an established TCP connection to the
+  CAT listener on port 15002.
+- Credential boundary: a separate command-line state read was abandoned when
+  macOS Keychain correctly withheld the credential from the diagnostic
+  process. The bearer credential was not returned, printed, logged, copied,
+  or committed; acceptance used the application's existing authenticated
+  connection.
+- Prohibited actions: no command endpoint request, CAT write, PTT, TUNE, CWX,
+  frequency/mode/antenna change, RIT/XIT change, RF-power change, station
+  action, application stop/restart, or other station-control write was
+  performed.
+- Result: **PASS for receive-only OM0RX-xCat acceptance**. This is not station
+  commissioning or transmit authorization; the intentional commissioning
+  information alarm must remain until physical commissioning is separately
+  completed.
+
 ## Handoff protocol
 
 After each bounded change:
