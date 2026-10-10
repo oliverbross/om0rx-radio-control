@@ -106,6 +106,36 @@ The bearer token is masked by default and is never written to the tray status
 or agent log. Regenerating it is explicit because every client credential must
 then be updated.
 
+Both **Settings** and **Show station widget** launch as ordinary Windows GUI
+windows with the PowerShell host console hidden.
+
+### Desktop station widget
+
+The tray starts a compact station widget automatically. Close it when it is not
+needed and choose **Show station widget** from the tray to open it again. The
+widget can be moved and resized, remembers its screen position, and is always
+on top by default. Right-click it to toggle always-on-top, reset its position,
+or close it.
+
+The widget updates from the authenticated read-only state endpoint and shows:
+
+- current FLEX frequency, mode, RX/TX state, interlock, and VFO A/B;
+- configured FLEX RF drive;
+- prominent transmit power and live/last SWR;
+- KPA500 operate/standby, band, measured output, temperature, voltage,
+  current, SWR, and fault;
+- KAT500 mode, band, antenna, tuning state, forward/reflected ADC, SWR, and
+  fault;
+- route, amplifier/barefoot policy, active drive, alarm count, and
+  commissioning state.
+
+When the amplifier is operating, **TX POWER** uses the KPA500 measured output.
+For barefoot transmission the available telemetry contains the FLEX requested
+drive rather than a calibrated antenna-output wattmeter, so the widget labels
+that value `~N W SET` instead of presenting it as measured power. SWR is marked
+`LIVE` only when the hardware reports a live/valid sample; otherwise the last
+available KAT500 sample is labelled `LAST`.
+
 Remove only the tray startup task with:
 
 ```powershell

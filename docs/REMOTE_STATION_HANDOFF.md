@@ -323,6 +323,31 @@ Do not delete the macOS evidence or safety boundary.
   Startup performed its designed receive/standby recovery and automatic route
   synchronization before the final state was accepted.
 
+## Windows console-free settings and station widget — 2026-10-10
+
+- Settings now launches from the tray with the PowerShell host window hidden,
+  leaving only the normal Windows settings form visible.
+- A compact station widget starts with the tray and can be reopened with
+  **Show station widget**. It is movable, resizable, always-on-top by default,
+  and persists position, size, and topmost preference locally without storing
+  credentials.
+- The read-only widget displays FLEX frequency/mode/RX-TX/interlock, VFO A/B,
+  RF drive and route; KPA500 state/band/measured output/SWR/temperature/voltage/
+  current/fault/firmware; KAT500 mode/band/antenna/tuning/SWR/forward-reflected
+  ADC/bypass/key-interrupt/fault/firmware; alarms and commissioning.
+- Transmit telemetry is labelled according to its authority: KPA500 output is
+  shown as measured watts when the amplifier is operating; barefoot operation
+  shows the FLEX requested power as `~N W SET`, never as a fabricated measured
+  antenna output. SWR is marked `LIVE` only for a live or valid hardware sample
+  and `LAST` otherwise.
+- Validation: complete Python smoke suite `846 passed, 0 failed`; focused
+  remote-agent/tray suite `33 passed, 0 failed`; PowerShell parser `4 passed, 0
+  failed`; station-widget WinForms transmit-telemetry smoke `1 passed, 0
+  failed`; Ruff `F,E9`, Python compile, and Git whitespace checks passed.
+- Implementation and offline validation issued no station-control command,
+  PTT, TUNE, CWX, or RF transmission and did not restart the commissioned
+  station agent.
+
 ## Handoff protocol
 
 After each bounded change:
