@@ -45,6 +45,14 @@ interval, while reusing existing subscriptions instead of resubscribing on
 every pass. This removes the previous approximately 1.55-second frequency
 widget lag without changing station policy or sending a transmit command.
 
+Follow-up live acceptance found that subscription status could be consumed
+while the driver was waiting for the matching `slice list` response. The FLEX
+cache was updated, but the poll returned no levels, so otherwise healthy state
+aged to stale. The driver now returns freshly consumed cached values and keeps
+an unchanged cache current after an acknowledged snapshot request. Repeated
+poll coverage proves external frequency/mode changes remain visible without
+subscription-command flooding.
+
 ## Remote configuration contract
 
 The same branch also exposes the station's non-secret public configuration to

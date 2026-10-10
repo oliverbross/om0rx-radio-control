@@ -96,6 +96,23 @@ class SnapshotFlex(RecordingFlex):
         return True, ""
 
 
+class SubscriptionCacheFlex(RecordingFlex):
+    def __init__(self):
+        super().__init__()
+        self.status_updates = [
+            "S1|slice 0 RF_frequency=14.045980 mode=CW",
+            "S1|slice 0 RF_frequency=28.465000 mode=USB",
+            None,
+        ]
+
+    def _send_with_response(self, cmd: str):
+        assert cmd == "slice list"
+        update = self.status_updates.pop(0)
+        if update:
+            self._record_basic_status_from_line(update)
+        return True, ""
+
+
 def test_add_spot_uses_argb_and_the_acknowledged_command_path():
     flex = RecordingFlex()
 
@@ -588,6 +605,22 @@ def test_snapshot_poll_reuses_recent_flex_subscriptions():
 
     flex.get_current_levels(timeout=0.01, apply_antenna_policy=False)
 
+    assert not any("sub slice all" in wire or "sub tx all" in wire for wire in sock.sent)
+
+
+def test_repeated_snapshot_polls_publish_consumed_subscription_updates_without_flooding():
+    flex = SubscriptionCacheFlex()
+    sock = RecordingScriptedSocket([TimeoutError(), TimeoutError(), TimeoutError()])
+    flex.sock = sock
+    flex.last_resubscribe_time = time.time()
+
+    first = flex.get_current_levels(timeout=0.01, apply_antenna_policy=False)
+    second = flex.get_current_levels(timeout=0.01, apply_antenna_policy=False)
+    unchanged = flex.get_current_levels(timeout=0.01, apply_antenna_policy=False)
+
+    assert (first["freq"], first["mode"]) == (14.045980, "CW")
+    assert (second["freq"], second["mode"]) == (28.465000, "USB")
+    assert (unchanged["freq"], unchanged["mode"]) == (28.465000, "USB")
     assert not any("sub slice all" in wire or "sub tx all" in wire for wire in sock.sent)
 
 

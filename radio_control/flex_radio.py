@@ -593,6 +593,8 @@ class FlexCtl:
 
     def _record_basic_status_from_line(self, line: str) -> None:
         """Update cached state from async status lines that arrive while sending commands."""
+        if line.startswith("S"):
+            self.last_radio_message_time = time.time()
         self._record_slice_status_from_line(line)
         if ("|client " in line or "|gui_client " in line) and " connected " in line:
             client_id = re.search(r"\bclient_id=([^\s]+)", line)
@@ -800,10 +802,12 @@ class FlexCtl:
         old_timeout = None
         import re as _re
         import time as _t
-        end = _t.time() + float(timeout)
+        observation_started = _t.time()
+        end = observation_started + float(timeout)
         buf = b""
         levels = {}
         state_changed = {}
+        snapshot_acknowledged = False
         try:
             if not self.connect():
                 logging.warning("FlexCtl get_current_levels: not connected")
@@ -930,6 +934,7 @@ class FlexCtl:
 
             # Request current state
             ok, slice_body = self._send_with_response("slice list")
+            snapshot_acknowledged = ok
             if ok and slice_body:
                 parse_values(slice_body)
             # The connection already subscribes to these streams. Refresh the
@@ -1148,6 +1153,33 @@ class FlexCtl:
                 # Timeout is normal
                 logging.debug(f"FlexCtl get_current_levels recv: {e}")
         
+        # A subscription update can arrive while ``slice list`` is waiting for
+        # its matching command response. ``_send_with_response`` intentionally
+        # consumes that status line and updates the driver cache, so carry the
+        # fresh cached values into this poll result instead of returning an
+        # empty dictionary and letting the runtime age healthy state to stale.
+        # A successful ``slice list`` acknowledgement also confirms that an
+        # unchanged subscribed cache remains current.
+        if snapshot_acknowledged or self.last_radio_message_time >= observation_started:
+            cached_levels = {
+                "freq": self.current_freq,
+                "mode": self.current_mode,
+                "audio_level": self.current_volume,
+                "filter_lo": self.current_filter_lo,
+                "filter_hi": self.current_filter_hi,
+                "rx_ant": self.current_rx_ant,
+                "tx_ant": self.current_tx_ant,
+                "rfpower": self.current_rfpower,
+                "tunepower": self.current_tunepower,
+                "miclevel": self.current_miclevel,
+                "vox_enable": self.current_vox_enable,
+                "mox": self.current_mox,
+                "interlock_state": self.current_interlock_state,
+            }
+            for key, value in cached_levels.items():
+                if value is not None:
+                    levels.setdefault(key, value)
+
         # Update instance tracking
         if "filter_lo" in levels:
             self.current_filter_lo = levels["filter_lo"]
