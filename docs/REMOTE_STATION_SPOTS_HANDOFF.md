@@ -33,3 +33,25 @@ coordinator while remaining authenticated and idempotent.
 
 Mac implementation and protocol detail are in OM0RX-xCat
 `docs/REMOTE_AGENT_SPOTS.md` on branch `codex/rumlog-flex-spots`.
+
+## Remote configuration contract
+
+The same branch also exposes the station's non-secret public configuration to
+OM0RX-xCat:
+
+- `GET /api/v1/config` returns the complete public `flex`, `kpa500`, `kat500`,
+  and `policy` objects.
+- Authenticated `PUT /api/v1/config` accepts
+  `{ "config": <complete public configuration> }`.
+- The update is validated using the normal agent configuration loader and is
+  written atomically. The existing server bind settings and bearer token are
+  preserved and are never returned to the Mac.
+- A successful update returns `restart_required: true`. Restart the Windows
+  Remote Station Agent before expecting new serial-port or policy values to
+  become active.
+
+The Mac **Station** tab edits KPA/KAT serial settings, FLEX station and antenna
+policy, tune limits, commissioning, KAT antenna names, and per-band PA,
+barefoot, digital-PA, drive-power, FLEX TX, and KAT-output rules. Do not use a
+configuration save as a transmit test; after the controlled restart, verify
+readback with MOX false and the KPA in standby.

@@ -1271,53 +1271,39 @@ class FlexCtl:
 
     def add_spot(self, rx_mhz, callsign, mode, source, spotter, comment, lifetime=3600, priority=3, color=None, ts_epoch=None) -> bool:
         """Add a spot to SmartSDR panadapter display (via TCPIP API)."""
-        if not self.sock:
-            if not self.connect():
-                return False
+        ts = ts_epoch if ts_epoch is not None else int(time.time())
 
-        self._io_lock.acquire()
-        try:
-            self.seq += 1
-            ts = ts_epoch if ts_epoch is not None else int(time.time())
-            
-            # Helper to encode strings (replace spaces with 0x7F)
-            def _enc(v: str) -> str:
-                return (v or "").replace(" ", "\x7F")
-            
-            parts = [
-                f"C{self.seq}|spot add",
-                f"rx_freq={rx_mhz:.6f}",
-                f"callsign={_enc(callsign)}",
-                f"mode={_enc(mode)}",
-                f"source={_enc(source)}",
-                f"spotter_callsign={_enc(spotter)}",
-                f"timestamp={ts}",
-                f"lifetime_seconds={int(lifetime)}",
-                f"priority={int(priority)}",
-                f"comment={_enc(comment)}",
-            ]
-            
-            if color:
-                parts.append(f"color={color}")
-            
-            cmd = " ".join(parts) + "\r"
-            logging.debug(f"FlexCtl add_spot: {callsign} {rx_mhz:.3f} MHz {mode}")
-            self.sock.sendall(cmd.encode("ascii", errors="ignore"))
-            
-            # Try to read response
-            try:
-                resp = self.sock.recv(256).decode(errors="ignore").strip()
-                if resp:
-                    logging.debug(f"FlexCtl add_spot response: {resp}")
-            except Exception:
-                pass
-            
-            return True
-        except Exception as e:
-            logging.warning(f"FlexCtl add_spot failed: {e}")
-            return False
-        finally:
-            self._io_lock.release()
+        # SmartSDR uses DEL for spaces in individual command fields.
+        def _enc(v: str) -> str:
+            return (v or "").replace(" ", "\x7F")
+
+        parts = [
+            "spot add",
+            f"rx_freq={rx_mhz:.6f}",
+            f"callsign={_enc(callsign)}",
+            f"mode={_enc(mode)}",
+            f"source={_enc(source)}",
+            f"spotter_callsign={_enc(spotter)}",
+            f"timestamp={ts}",
+            f"lifetime_seconds={int(lifetime)}",
+            f"priority={int(priority)}",
+            f"comment={_enc(comment)}",
+        ]
+
+        if color:
+            # The public xCat setting is normal RGB. SmartSDR's Spot API
+            # requires alpha-first ARGB, so make an opaque marker explicitly.
+            smart_sdr_color = color
+            if re.fullmatch(r"#[0-9A-Fa-f]{6}", smart_sdr_color):
+                smart_sdr_color = f"#FF{smart_sdr_color[1:]}"
+            parts.append(f"color={smart_sdr_color}")
+
+        command = " ".join(parts)
+        logging.debug(f"FlexCtl add_spot: {callsign} {rx_mhz:.3f} MHz {mode}")
+        # Use the normal sequenced command path so success means the radio
+        # returned a matching zero response, rather than merely accepting TCP
+        # bytes into the socket buffer.
+        return self._send(command)
 
     # --- Audio / TX controls ---
     # CRITICAL: Use correct SmartSDR API parameter names!

@@ -61,6 +61,40 @@ def test_public_config_never_exposes_control_token(tmp_path):
     public = config.public_summary()
     assert TOKEN not in repr(public)
     assert "control_token" not in repr(public)
+
+
+def test_authenticated_remote_config_update_is_validated_and_preserves_token(tmp_path):
+    config = _config(tmp_path)
+    client = TestClient(create_app(config, runtime=FakeRuntime()))
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    public = client.get("/api/v1/config", headers=headers).json()["config"]
+    public["policy"]["amplifier_drive_w"]["20m"] = 30
+    public["policy"]["barefoot_drive_w"]["20m"] = 70
+    public["policy"]["kat_antenna"]["20m"] = 2
+
+    response = client.put("/api/v1/config", headers=headers, json={"config": public})
+
+    assert response.status_code == 200
+    assert response.json()["restart_required"] is True
+    saved = json.loads(config.path.read_text(encoding="utf-8"))
+    assert saved["server"]["control_token"] == TOKEN
+    assert saved["station"]["amplifier_drive_w"]["20m"] == 30
+    assert saved["station"]["barefoot_drive_w"]["20m"] == 70
+    assert saved["station"]["kat_antenna_policy"]["20m"] == 2
+
+
+def test_remote_config_update_rejects_invalid_drive_without_changing_file(tmp_path):
+    config = _config(tmp_path)
+    client = TestClient(create_app(config, runtime=FakeRuntime()))
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    public = client.get("/api/v1/config", headers=headers).json()["config"]
+    before = config.path.read_text(encoding="utf-8")
+    public["policy"]["amplifier_drive_w"]["20m"] = 0
+
+    response = client.put("/api/v1/config", headers=headers, json={"config": public})
+
+    assert response.status_code == 422
+    assert config.path.read_text(encoding="utf-8") == before
     assert public["kpa500"]["enabled"] is True
     assert public["kat500"]["enabled"] is True
     assert public["policy"]["follow_radio"] is True

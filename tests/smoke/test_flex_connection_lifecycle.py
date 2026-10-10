@@ -96,6 +96,36 @@ class SnapshotFlex(RecordingFlex):
         return True, ""
 
 
+def test_add_spot_uses_argb_and_the_acknowledged_command_path():
+    flex = RecordingFlex()
+
+    assert flex.add_spot(
+        10.116,
+        "DL7PIA",
+        "CW",
+        "RUMlogNG Logbook",
+        "OM0RX",
+        "DX spot",
+        lifetime=600,
+        priority=2,
+        color="#64D2FF",
+        ts_epoch=1_791_630_000,
+    ) is True
+
+    assert flex.commands == [
+        "spot add rx_freq=10.116000 callsign=DL7PIA mode=CW "
+        "source=RUMlogNG\x7fLogbook spotter_callsign=OM0RX timestamp=1791630000 "
+        "lifetime_seconds=600 priority=2 comment=DX\x7fspot color=#FF64D2FF"
+    ]
+
+
+def test_add_spot_propagates_a_radio_rejection(monkeypatch):
+    flex = FlexCtl("127.0.0.1", 4992)
+    monkeypatch.setattr(flex, "_send", lambda _command: False)
+
+    assert flex.add_spot(14.025, "K1ABC", "CW", "RUMlogNG", "", "") is False
+
+
 def test_idle_subscription_poll_keeps_existing_flex_socket_open():
     flex = FlexCtl("127.0.0.1", 4992)
     sock = IdleSocket()

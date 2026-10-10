@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket,
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .config import AgentConfig, load_agent_config
+from .config import AgentConfig, AgentConfigError, load_agent_config, save_public_config
 from .runtime import PROTOCOL_VERSION, RemoteCommandError, RemoteStationRuntime
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,10 @@ class CommandRequest(BaseModel):
     request_id: str = Field(min_length=8, max_length=128)
     command: str = Field(min_length=1, max_length=64)
     arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConfigUpdateRequest(BaseModel):
+    config: dict[str, Any]
 
 
 def _bearer_token(value: str | None) -> str:
@@ -106,7 +110,20 @@ def create_app(
 
     @app.get("/api/v1/config", dependencies=[Depends(authorize)])
     async def public_config():
-        return {"success": True, "config": resolved_config.public_summary()}
+        return {"success": True, "config": app.state.agent_config.public_summary()}
+
+    @app.put("/api/v1/config", dependencies=[Depends(authorize)])
+    async def update_config(body: ConfigUpdateRequest):
+        try:
+            saved = save_public_config(app.state.agent_config, body.config)
+        except AgentConfigError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        app.state.agent_config = saved
+        return {
+            "success": True,
+            "config": saved.public_summary(),
+            "restart_required": True,
+        }
 
     @app.get("/api/v1/state", dependencies=[Depends(authorize)])
     async def state():

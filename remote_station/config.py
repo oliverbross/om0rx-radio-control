@@ -297,6 +297,92 @@ def write_default_config(path: Path | None = None) -> Path:
     return target
 
 
+def save_public_config(config: AgentConfig, payload: dict[str, Any]) -> AgentConfig:
+    """Atomically persist the authenticated public configuration, preserving secrets."""
+    if not isinstance(payload, dict):
+        raise AgentConfigError("config must be an object")
+    if payload.get("schema_version") != SCHEMA_VERSION:
+        raise AgentConfigError(f"schema_version must be {SCHEMA_VERSION}")
+    flex = payload.get("flex") or {}
+    kpa = payload.get("kpa500") or {}
+    kat = payload.get("kat500") or {}
+    policy = payload.get("policy") or {}
+    if not all(isinstance(value, dict) for value in (flex, kpa, kat, policy)):
+        raise AgentConfigError("flex, kpa500, kat500, and policy must be objects")
+
+    try:
+        existing = json.loads(config.path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AgentConfigError(f"Agent configuration could not be read: {exc}") from exc
+    server = existing.get("server") or {}
+    token = str(server.get("control_token") or "")
+    if token != config.control_token:
+        raise AgentConfigError("Stored control token no longer matches the running agent")
+
+    document = {
+        "schema_version": SCHEMA_VERSION,
+        "server": server,
+        "flex": {
+            "model": "FLEX-8400",
+            "host": flex.get("host", config.flex_host),
+            "port": flex.get("port", config.flex_port),
+            "slice_id": flex.get("slice_id", config.flex_slice_id),
+            "station_name": flex.get("station_name", config.flex_station_name),
+            "antenna_policy": policy.get("flex_antenna", config.flex_antenna_policy),
+        },
+        "kpa500": {
+            "enabled": kpa.get("enabled", config.kpa_enabled),
+            "port": kpa.get("port", config.kpa_port),
+            "baudrate": kpa.get("baudrate", config.kpa_baudrate),
+        },
+        "kat500": {
+            "enabled": kat.get("enabled", config.kat_enabled),
+            "port": kat.get("port", config.kat_port),
+            "baudrate": kat.get("baudrate", config.kat_baudrate),
+        },
+        "station": {
+            "commissioned": payload.get("commissioned", config.commissioned),
+            "follow_radio": policy.get("follow_radio", config.follow_radio),
+            "digital_kpa_policy": policy.get("digital_kpa_policy", config.digital_kpa_policy),
+            "kat_antenna_policy": policy.get("kat_antenna", config.kat_antenna_policy),
+            "kat_antenna_names": policy.get("kat_antenna_names", config.kat_antenna_names),
+            "amplifier_allowed_bands": policy.get(
+                "amplifier_allowed_bands", config.amplifier_allowed_bands
+            ),
+            "amplifier_drive_w": policy.get("amplifier_drive_w", config.amplifier_drive_w),
+            "barefoot_drive_w": policy.get("barefoot_drive_w", config.barefoot_drive_w),
+            "digital_amplifier_allowed_bands": policy.get(
+                "digital_amplifier_allowed_bands", config.digital_amplifier_allowed_bands
+            ),
+            "digital_amplifier_drive_w": policy.get(
+                "digital_amplifier_drive_w", config.digital_amplifier_drive_w
+            ),
+            "tune_power_w": policy.get("tune_power_w", config.tune_power_w),
+            "tune_target_swr": policy.get("tune_target_swr", config.tune_target_swr),
+            "tune_abort_swr": policy.get("tune_abort_swr", config.tune_abort_swr),
+            "tune_timeout_seconds": policy.get(
+                "tune_timeout_seconds", config.tune_timeout_seconds
+            ),
+        },
+    }
+    temporary = config.path.with_suffix(config.path.suffix + ".remote-update.tmp")
+    temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    try:
+        temporary.chmod(0o600)
+    except OSError:
+        pass
+    try:
+        load_agent_config(temporary)
+        temporary.replace(config.path)
+    except Exception:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return load_agent_config(config.path)
+
+
 def load_agent_config(path: Path | None = None) -> AgentConfig:
     source = (path or default_config_path()).expanduser().resolve()
     try:
