@@ -105,3 +105,27 @@ readback with MOX false and the KPA in standby.
   the new exact branch tip reported by the Mac session, deploy it without
   replacing \`agent.json\`, restart the agent, and verify Standby → Operate →
   Standby with MOX off and no RF carrier.
+
+## 2026-10-10 Windows recovery, CAT and launcher follow-up
+
+- Windows deployed and ran \`5bb0b46356b9c36f299f466f6ac7e032cc54cca9\`.
+  One controlled agent restart cleared the transient startup recovery latch.
+  FLEX was known and fresh with MOX false and interlock READY; KPA500 was in
+  standby at 0 W; KPA500 and KAT500 followed the observed band; the route was
+  confirmed and the alarm count was zero.
+- A RUMlog same-band CAT request to 14.190 MHz persisted instead of reverting.
+  A subsequent RUMlog spot selection persisted at 21.303 MHz for more than 20
+  seconds, and both Elecraft devices followed to 15 m. MOX remained false,
+  KPA500 remained in standby, output remained 0 W, and no PTT, TUNE, CWX or RF
+  transmission was used.
+- The Windows station widget resumed live updates after refreshing only the
+  tray/widget layer; the running radio agent was not restarted for that UI
+  refresh.
+- The branch now installs an **OM0RX Remote Station Agent** Windows Start-menu
+  shortcut with the tray startup task. Selecting it asks the existing tray
+  process to show its details window instead of creating a duplicate. The
+  uninstall script removes the shortcut as well.
+- The post-change Windows gate passed: 861 Python smoke tests, all 105
+  browser/widget tests, and all 105 MSHV safety tests. The focused tray contract
+  passed 11 tests. The existing \`agent.json\` hash was unchanged during the
+  tray and Start-menu deployment.

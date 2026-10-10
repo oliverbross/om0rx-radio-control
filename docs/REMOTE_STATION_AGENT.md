@@ -77,6 +77,10 @@ The tray starts at login and shows sanitized FLEX, KPA500, KAT500, route, and
 alarm details. Double-click the icon or choose **Show details**. Its menu can
 start, stop, or restart the `OM0RX Remote Station Agent` scheduled task, open
 the agent log, and quit only the tray. Stop and restart require confirmation.
+The installer also creates **OM0RX Remote Station Agent** in the Windows Start
+menu. Selecting it opens the existing tray's details window, or starts the tray
+and opens that window when it is not already running. This does not start a
+second agent instance.
 
 Choose **Settings** to manage the entire independent agent without editing
 JSON or using PowerShell:

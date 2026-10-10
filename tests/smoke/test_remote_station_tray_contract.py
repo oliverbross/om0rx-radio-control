@@ -8,6 +8,9 @@ TRAY = (ROOT / "scripts" / "remote_agent" / "run_remote_agent_tray.ps1").read_te
 INSTALLER = (
     ROOT / "scripts" / "remote_agent" / "install_remote_agent_tray_startup.ps1"
 ).read_text(encoding="utf-8")
+UNINSTALLER = (
+    ROOT / "scripts" / "remote_agent" / "uninstall_remote_agent_tray_startup.ps1"
+).read_text(encoding="utf-8")
 SETTINGS = (
     ROOT / "scripts" / "remote_agent" / "remote_agent_settings.ps1"
 ).read_text(encoding="utf-8")
@@ -70,6 +73,17 @@ def test_tray_installer_registers_an_interactive_login_task():
     assert "-LogonType Interactive" in INSTALLER
     assert "-STA -WindowStyle Hidden" in INSTALLER
     assert '-Python `"$Python`"' in INSTALLER
+
+
+def test_tray_installer_adds_a_start_menu_entry_that_opens_existing_details():
+    assert '[Environment]::GetFolderPath("Programs")' in INSTALLER
+    assert '"OM0RX Remote Station Agent.lnk"' in INSTALLER
+    assert "$shortcut.Save()" in INSTALLER
+    assert '-ShowDetails"' in INSTALLER
+    assert '"Local\\OM0RXRemoteStationTrayShow"' in TRAY
+    assert "if ($ShowDetails)" in TRAY
+    assert "$showEvent.Set()" in TRAY
+    assert '"OM0RX Remote Station Agent.lnk"' in UNINSTALLER
 
 
 def test_settings_gui_covers_connections_accessories_band_policy_and_commissioning():

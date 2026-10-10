@@ -1,7 +1,8 @@
 param(
     [string]$Config = "",
     [string]$Python = "python.exe",
-    [string]$AgentTaskName = "OM0RX Remote Station Agent"
+    [string]$AgentTaskName = "OM0RX Remote Station Agent",
+    [switch]$ShowDetails
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,8 +11,18 @@ Set-StrictMode -Version Latest
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 
+$showEvent = [System.Threading.EventWaitHandle]::new(
+    $false,
+    [System.Threading.EventResetMode]::AutoReset,
+    "Local\OM0RXRemoteStationTrayShow"
+)
 $mutex = [System.Threading.Mutex]::new($false, "Local\OM0RXRemoteStationTray")
 if (-not $mutex.WaitOne(0, $false)) {
+    if ($ShowDetails) {
+        $showEvent.Set() | Out-Null
+    }
+    $showEvent.Dispose()
+    $mutex.Dispose()
     exit 0
 }
 
@@ -450,18 +461,33 @@ $timer.Interval = 5000
 $timer.add_Tick({ Update-AgentStatus })
 $timer.Start()
 
+$showTimer = New-Object System.Windows.Forms.Timer
+$showTimer.Interval = 250
+$showTimer.add_Tick({
+    if ($showEvent.WaitOne(0)) {
+        Show-DetailsWindow
+    }
+})
+$showTimer.Start()
+
 try {
     Update-AgentStatus
     Show-StationWidget
+    if ($ShowDetails) {
+        Show-DetailsWindow
+    }
     [System.Windows.Forms.Application]::Run()
 }
 finally {
+    $showTimer.Stop()
+    $showTimer.Dispose()
     $timer.Stop()
     $timer.Dispose()
     $notify.Visible = $false
     $notify.Dispose()
     if ($script:customIcon) { $script:customIcon.Dispose() }
     $form.Dispose()
+    $showEvent.Dispose()
     $mutex.ReleaseMutex()
     $mutex.Dispose()
 }
