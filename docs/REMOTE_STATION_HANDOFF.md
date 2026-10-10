@@ -301,6 +301,28 @@ Do not delete the macOS evidence or safety boundary.
   GUI will load the complete new configuration model. No station action was
   invoked.
 
+## Windows transmit enablement — 2026-10-10
+
+- At the operator's explicit instruction, `station.commissioned` was changed
+  from `false` to `true`. The complete candidate configuration passed the real
+  agent validator before atomic replacement; the prior credential-bearing
+  configuration was retained only in the local AppData backup and was not
+  printed or committed.
+- The `OM0RX Remote Station Agent` task was deliberately restarted once so the
+  commissioning change and `codex/windows-agent-gui` runtime took effect.
+- Final authenticated readback at `2026-10-10T10:52:34Z`: commissioned `true`,
+  coordinator `safe_rx`, recovery not required, route `confirmed`, no issues,
+  zero alarms, FLEX bound on 20m CW with ANT1, MOX `false`, interlock `READY`,
+  KPA500 connected in STBY on 20m, and KAT500 connected on 20m ANT1.
+- The active 20m policy is barefoot: amplifier eligibility `false`, configured
+  active drive 65 W, and FLEX readback 65 W. Therefore KPA Operate is correctly
+  unavailable on this band, while the authenticated PTT/CW command path is
+  commissioned and available through the coordinator. Other bands continue to
+  use their configured PA eligibility and drive tables.
+- No PTT-on, TUNE, CWX, or RF transmission was issued as part of enablement.
+  Startup performed its designed receive/standby recovery and automatic route
+  synchronization before the final state was accepted.
+
 ## Handoff protocol
 
 After each bounded change:
