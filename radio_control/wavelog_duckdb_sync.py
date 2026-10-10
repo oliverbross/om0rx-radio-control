@@ -176,8 +176,12 @@ class WavelogDuckDBSync:
         finally:
             source.close()
 
-    def _reconcile_deleted_records(self, conn) -> int:
-        source_ids = self._fetch_source_ids()
+    def _reconcile_deleted_records(
+        self,
+        conn,
+        source_ids: Optional[set[int]] = None,
+    ) -> int:
+        source_ids = self._fetch_source_ids() if source_ids is None else source_ids
         cached_ids = {int(row[0]) for row in conn.execute("SELECT wavelog_id FROM qso_records").fetchall()}
         stale_ids = sorted(cached_ids - source_ids)
         for start in range(0, len(stale_ids), 500):
@@ -577,6 +581,7 @@ class WavelogDuckDBSync:
                 latest_modified = last_modified
                 latest_id = last_id or 0
                 initial_cursor_id = last_id or 0
+                initial_source_ids: set[int] = set()
                 batch_num = 0
 
                 if is_initial_sync:
@@ -612,6 +617,8 @@ class WavelogDuckDBSync:
 
                         record_modified = wavelog_record.get('last_modified')
                         record_id = wavelog_record.get('COL_PRIMARY_KEY')
+                        if is_initial_sync and record_id is not None:
+                            initial_source_ids.add(int(record_id))
                         if is_initial_sync and record_id and record_id > initial_cursor_id:
                             initial_cursor_id = record_id
                         if record_modified and (latest_modified is None or record_modified > latest_modified):
@@ -641,7 +648,10 @@ class WavelogDuckDBSync:
                     if len(wavelog_records) < batch_size:
                         break
 
-                deleted_count = self._reconcile_deleted_records(conn)
+                deleted_count = self._reconcile_deleted_records(
+                    conn,
+                    source_ids=initial_source_ids if is_initial_sync else None,
+                )
                 # Final commit
                 conn.commit()
 

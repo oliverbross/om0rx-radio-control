@@ -469,15 +469,15 @@ class DuckDBQSOStatusStore:
         return True
 
     def _ensure_loaded(self) -> bool:
+        now = time.monotonic()
+        if self._loaded_at is not None and now - self._loaded_at < self._cache_ttl:
+            return True
+
         if not self.available():
             if not self._unavailable_logged:
                 logger.warning("Wavelog database config is not available for QSO status cache")
                 self._unavailable_logged = True
             return False
-
-        now = time.monotonic()
-        if self._loaded_at is not None and now - self._loaded_at < self._cache_ttl:
-            return True
 
         # Spot classification is highly concurrent.  When the five-minute
         # cache expires, let one worker refresh it while every other worker
