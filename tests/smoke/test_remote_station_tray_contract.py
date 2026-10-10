@@ -11,11 +11,15 @@ INSTALLER = (
 SETTINGS = (
     ROOT / "scripts" / "remote_agent" / "remote_agent_settings.ps1"
 ).read_text(encoding="utf-8")
+WIDGET = (
+    ROOT / "scripts" / "remote_agent" / "remote_agent_widget.ps1"
+).read_text(encoding="utf-8")
 
 
 def test_tray_exposes_requested_process_controls_and_status_window():
     for label in (
         "Show details",
+        "Show station widget",
         "Settings...",
         "Start agent",
         "Stop agent...",
@@ -25,6 +29,13 @@ def test_tray_exposes_requested_process_controls_and_status_window():
         assert label in TRAY
     assert "OM0RX Remote Station Agent" in TRAY
     assert "Application]::ExitThread()" in TRAY
+    assert "Show-StationWidget" in TRAY
+
+
+def test_tray_launches_settings_and_widget_without_a_visible_powershell_console():
+    assert TRAY.count('"-WindowStyle", "Hidden"') >= 2
+    assert TRAY.count("-WindowStyle Hidden") >= 2
+    assert 'Start-Process -FilePath "powershell.exe"' in TRAY
 
 
 def test_tray_status_is_read_only_and_station_actions_use_the_command_endpoint():
@@ -89,3 +100,37 @@ def test_settings_gui_masks_credentials_validates_before_atomic_save_and_require
     assert 'confirmation -cne "COMMISSION"' in SETTINGS
     assert "does not key PTT" in SETTINGS
     assert "does not restart the agent" in SETTINGS
+
+
+def test_station_widget_covers_live_flex_kpa_and_kat_telemetry():
+    for value in (
+        "VFO A",
+        "VFO B",
+        "TX POWER",
+        "SWR",
+        "RF DRIVE",
+        "output_power_w",
+        "temperature_c",
+        "voltage",
+        "current",
+        "forward_adc",
+        "reflected_adc",
+        "KPA500",
+        "KAT500",
+    ):
+        assert value in WIDGET
+    assert "/api/v1/state" in WIDGET
+    assert "-Method Get" in WIDGET
+    assert "/api/v1/commands" not in WIDGET
+
+
+def test_station_widget_is_positionable_persistent_and_distinguishes_measured_from_set_power():
+    assert "SizableToolWindow" in WIDGET
+    assert "widget.json" in WIDGET
+    assert "Always on top" in WIDGET
+    assert "Reset position" in WIDGET
+    assert '"{0:0} W" -f [double]$kpaOutput' in WIDGET
+    assert '"~{0:0} W SET" -f [double]$drive' in WIDGET
+    assert "swr_live" in WIDGET
+    assert "LAST" in WIDGET
+    assert "Station widget smoke test passed" in WIDGET

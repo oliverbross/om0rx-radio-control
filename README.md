@@ -21,7 +21,9 @@ The independent remote-station tray includes its own complete Settings window
 for FLEX/KPA500/KAT500 connections, per-band antenna and RF policy, tuning
 limits, credentials, and commissioning. It also exposes guarded station
 Standby/Operate/Tune/Cancel controls, so normal operation does not require
-PowerShell or direct JSON editing.
+PowerShell or direct JSON editing. A movable always-on-top station widget shows
+FLEX VFO/frequency, live TX state, RF drive, KPA500 power/temperature/SWR, and
+KAT500 antenna/tuner telemetry without displaying a PowerShell console.
 
 ### Windows tray agent
 
