@@ -285,6 +285,18 @@ def test_radio_snapshot_is_stale_until_frequency_is_known(tmp_path):
     assert runtime.radio_snapshot["stale"] is False
 
 
+def test_radio_snapshot_retains_station_path_antenna_keys(tmp_path):
+    runtime = _runtime(tmp_path)
+    runtime._update_radio_snapshot(
+        {"freq": 14.074, "mode": "DIGU", "rx_ant": "ANT1", "tx_ant": "ANT1"}
+    )
+
+    assert runtime.radio_snapshot["rx_antenna"] == "ANT1"
+    assert runtime.radio_snapshot["tx_antenna"] == "ANT1"
+    assert runtime.radio_snapshot["rx_ant"] == "ANT1"
+    assert runtime.radio_snapshot["tx_ant"] == "ANT1"
+
+
 def test_split_uses_flex_slice_b_as_transmit_vfo(tmp_path):
     runtime = _runtime(tmp_path)
     result = run(

@@ -194,6 +194,11 @@ class RemoteStationRuntime:
             "tx_ant": "tx_antenna",
         }
         normalized = {mapping.get(key, key): value for key, value in levels.items()}
+        # Keep the driver's canonical antenna keys for the station-path safety
+        # evaluator while also publishing the descriptive API field names.
+        for driver_key, api_key in (("rx_ant", "rx_antenna"), ("tx_ant", "tx_antenna")):
+            if api_key in normalized:
+                normalized[driver_key] = normalized[api_key]
         normalized.setdefault("frequency", getattr(self.flex, "current_freq", None))
         normalized.setdefault("mode", getattr(self.flex, "current_mode", None))
         normalized.setdefault("drive", getattr(self.flex, "current_rfpower", None))
