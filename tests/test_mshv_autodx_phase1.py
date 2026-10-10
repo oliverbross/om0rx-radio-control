@@ -6,6 +6,7 @@ or backend-only settings before an expensive Windows/Qt build.
 """
 
 import os
+import re
 from pathlib import Path
 
 
@@ -195,6 +196,23 @@ def test_clean_patch_harness_replays_all_maintained_patches_before_attestation()
     us_state_guard = script.index("git -C $source apply (Join-Path $ProjectRoot 'docs\\mshv\\om0rx-us-state-dxcc-guard.patch')")
     attest = script.index("'assert_source.ps1'")
     assert base < phase1 < phase2 < quiet_qsy < native_policy < ui_persistence < ui_layout < performance < permanent_dedupe < compact_status < us_states < cluster_chase < us_state_guard < attest
+
+
+def test_project_check_replays_the_same_complete_patch_stack_as_prepare():
+    pattern = re.compile(r"(om0rx-[a-z0-9-]+\.patch)")
+    prepare = (ROOT / "scripts" / "mshv" / "prepare_mshv.ps1").read_text(
+        encoding="utf-8"
+    )
+    maintenance = (ROOT / "scripts" / "maintenance" / "check_project.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    expected = pattern.findall(prepare)
+    offline_check = maintenance.split('Invoke-CheckStep "MSHV offline safety checks"', 1)[1]
+    actual = pattern.findall(offline_check)
+
+    assert expected
+    assert actual == expected
 
 
 def test_native_timing_schedules_and_engaged_qso_guards_are_wired():

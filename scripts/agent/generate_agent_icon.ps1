@@ -64,34 +64,72 @@ function New-AgentBitmap {
     return $bmp
 }
 
-function Convert-BitmapToPngBytes {
-    param([System.Drawing.Bitmap]$Bitmap)
-    $stream = New-Object System.IO.MemoryStream
-    $Bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
-    $bytes = $stream.ToArray()
-    $stream.Dispose()
-    return $bytes
-}
-
 $preview = New-AgentBitmap -Size 256
 $preview.Save($PreviewPath, [System.Drawing.Imaging.ImageFormat]::Png)
 $preview.Dispose()
 
 $iconBitmap = New-AgentBitmap -Size 64
-$handle = $iconBitmap.GetHicon()
+$iconSize = 64
+$rowBytes = $iconSize * 4
+$maskRowBytes = [int](($iconSize + 31) / 32) * 4
+$pixelBytes = New-Object byte[] ($rowBytes * $iconSize)
+$rect = [System.Drawing.Rectangle]::new(0, 0, $iconSize, $iconSize)
+$bitmapData = $iconBitmap.LockBits(
+    $rect,
+    [System.Drawing.Imaging.ImageLockMode]::ReadOnly,
+    [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
 try {
-    $icon = [System.Drawing.Icon]::FromHandle($handle)
-    $fs = [System.IO.File]::Open($IconPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
-    try {
-        $icon.Save($fs)
-    }
-    finally {
-        $fs.Dispose()
-        $icon.Dispose()
+    for ($row = 0; $row -lt $iconSize; $row++) {
+        $source = [IntPtr]::Add($bitmapData.Scan0, $row * $bitmapData.Stride)
+        [Runtime.InteropServices.Marshal]::Copy($source, $pixelBytes, $row * $rowBytes, $rowBytes)
     }
 }
 finally {
+    $iconBitmap.UnlockBits($bitmapData)
     $iconBitmap.Dispose()
+}
+$resourceLength = 40 + $pixelBytes.Length + ($maskRowBytes * $iconSize)
+
+# Write a deterministic classic DIB-backed ICO. Icon.Save() serializes an HICON
+# allocated by Windows and changes opaque bytes between otherwise identical
+# builds, while the .NET resource compiler does not accept every PNG-backed ICO.
+$fs = [System.IO.File]::Open($IconPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
+$writer = New-Object System.IO.BinaryWriter $fs
+try {
+    $writer.Write([uint16]0)                 # reserved
+    $writer.Write([uint16]1)                 # ICO image type
+    $writer.Write([uint16]1)                 # image count
+    $writer.Write([byte]64)                  # width
+    $writer.Write([byte]64)                  # height
+    $writer.Write([byte]0)                   # palette size
+    $writer.Write([byte]0)                   # reserved
+    $writer.Write([uint16]1)                 # color planes
+    $writer.Write([uint16]32)                # bits per pixel
+    $writer.Write([uint32]$resourceLength)   # resource length
+    $writer.Write([uint32]22)                # resource offset
+
+    $writer.Write([uint32]40)                # BITMAPINFOHEADER size
+    $writer.Write([int32]$iconSize)          # width
+    $writer.Write([int32]($iconSize * 2))    # XOR + AND mask height
+    $writer.Write([uint16]1)                 # planes
+    $writer.Write([uint16]32)                # bits per pixel
+    $writer.Write([uint32]0)                 # BI_RGB
+    $writer.Write([uint32]$pixelBytes.Length)
+    $writer.Write([int32]0)                  # horizontal pixels/metre
+    $writer.Write([int32]0)                  # vertical pixels/metre
+    $writer.Write([uint32]0)                 # palette entries
+    $writer.Write([uint32]0)                 # important colours
+
+    # ICO DIB pixels are bottom-up BGRA rows. Alpha carries transparency; the
+    # legacy one-bit AND mask remains zero-filled for modern Windows.
+    for ($row = $iconSize - 1; $row -ge 0; $row--) {
+        $writer.Write($pixelBytes, $row * $rowBytes, $rowBytes)
+    }
+    $writer.Write((New-Object byte[] ($maskRowBytes * $iconSize)))
+}
+finally {
+    $writer.Dispose()
+    $fs.Dispose()
 }
 
 Write-Host "Generated $IconPath" -ForegroundColor Green

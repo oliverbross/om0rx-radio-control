@@ -64,6 +64,23 @@ def test_clean_build_separates_build_compatibility_and_band_control_patches() ->
     assert "data\\build\\wsjt-z-clean" in script
 
 
+def test_clean_build_verifies_source_content_instead_of_trusting_stale_marker() -> None:
+    script = BUILD_SCRIPT.read_text(encoding="utf-8")
+
+    witness = (
+        "git -C $sourceRoot apply --unidiff-zero --ignore-space-change "
+        "--reverse --check $patchPaths[-1]"
+    )
+    marker_check = script.index("$patchStateMatches =")
+    source_check = script.index(witness, marker_check)
+    apply_loop = script.index("foreach ($patchPath in $patchPaths)", source_check)
+    marker_write = script.index("Set-Content -LiteralPath $patchStatePath", apply_loop)
+
+    assert marker_check < source_check < apply_loop < marker_write
+    assert 'throw "Clean rebuild patch stack could not be verified after application."' in script
+    assert "--ignore-space-change --check $patchPath" in script
+
+
 def test_band_qsy_patch_has_correlated_request_outcomes() -> None:
     patch = (CLEAN_DOC_ROOT / "patches" / "0100-band-qsy-transaction-tracing.patch").read_text(encoding="utf-8")
 

@@ -213,10 +213,35 @@ print("no duplicate routes")
         $previousFixture = $env:OM0RX_MSHV_TEST_SOURCE_ROOT
         try {
             Invoke-NativeCommand git @("-C", $mshvSource, "worktree", "add", "--detach", $fixture, "HEAD")
+            # Replay the complete maintained patch stack.  The offline tests
+            # intentionally assert contracts introduced by the later layers,
+            # so validating only the first three patches produces a misleading
+            # partially-patched source tree and dozens of false failures.
             foreach ($patchName in @(
                 "om0rx-integration.patch",
                 "om0rx-autodx-phase1.patch",
-                "om0rx-wavelog-history-phase2.patch"
+                "om0rx-wavelog-history-phase2.patch",
+                "om0rx-autodx-quiet-qsy-fix.patch",
+                "om0rx-autodx-native-policy.patch",
+                "om0rx-ui-persistence.patch",
+                "om0rx-ui-layout-persistence.patch",
+                "om0rx-performance-decode-dxpedition.patch",
+                "om0rx-recent-qso-cooldown.patch",
+                "om0rx-permanent-slot-dedupe.patch",
+                "om0rx-compact-status-combinations.patch",
+                "om0rx-us-states-chase.patch",
+                "om0rx-cluster-chase-scheduler.patch",
+                "om0rx-us-state-dxcc-guard.patch",
+                "om0rx-composable-award-hunting.patch",
+                "om0rx-priority-patrol-ft4.patch",
+                "om0rx-repeat-final-exchange.patch",
+                "om0rx-band-markers-country-exclusions.patch",
+                "om0rx-exchange-only-reply-guard.patch",
+                "om0rx-manual-qso-lifecycle-ui.patch",
+                "om0rx-station-rf-panel.patch",
+                "om0rx-manual-target-lock.patch",
+                "om0rx-late-reply-qsy-guard.patch",
+                "om0rx-adaptive-retry-ignore.patch"
             )) {
                 $patchPath = Join-Path $ProjectRoot "docs\mshv\$patchName"
                 Invoke-NativeCommand git @("-C", $fixture, "apply", "--check", $patchPath)

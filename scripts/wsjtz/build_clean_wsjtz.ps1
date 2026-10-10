@@ -72,26 +72,34 @@ $actualPatchState = if (Test-Path -LiteralPath $patchStatePath) {
 $patchStateMatches = ($actualPatchState.Count -eq $expectedPatchState.Count) -and
     (-not (Compare-Object $actualPatchState $expectedPatchState -SyncWindow 0))
 
-if (-not $patchStateMatches) {
-    # If the final dependent patch reverses cleanly, the complete ordered stack is present.
-    git -C $sourceRoot apply --unidiff-zero --reverse --check $patchPaths[-1] 2>$null
-    $completeStackAlreadyApplied = $LASTEXITCODE -eq 0
-    if (-not $completeStackAlreadyApplied) {
-        foreach ($patchPath in $patchPaths) {
-            git -C $sourceRoot apply --unidiff-zero --reverse --check $patchPath 2>$null
-            $patchAlreadyApplied = $LASTEXITCODE -eq 0
-            if (-not $patchAlreadyApplied) {
-                git -C $sourceRoot apply --unidiff-zero --check $patchPath
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Clean rebuild patch does not apply in sequence: $patchPath"
-                }
-                git -C $sourceRoot apply --unidiff-zero $patchPath
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Unable to apply clean rebuild patch: $patchPath"
-                }
+# Never trust APPLIED-PATCHES.txt on its own.  A freshly materialized source
+# tree can share a work directory with a marker left by an earlier build.  In
+# that state the old marker is accurate text but the source is still pristine.
+# The final dependent patch is our inexpensive source-content witness.
+git -C $sourceRoot apply --unidiff-zero --ignore-space-change --reverse --check $patchPaths[-1] 2>$null
+$completeStackAlreadyApplied = $LASTEXITCODE -eq 0
+if (-not $completeStackAlreadyApplied) {
+    foreach ($patchPath in $patchPaths) {
+        git -C $sourceRoot apply --unidiff-zero --ignore-space-change --reverse --check $patchPath 2>$null
+        $patchAlreadyApplied = $LASTEXITCODE -eq 0
+        if (-not $patchAlreadyApplied) {
+            git -C $sourceRoot apply --unidiff-zero --ignore-space-change --check $patchPath
+            if ($LASTEXITCODE -ne 0) {
+                throw "Clean rebuild patch does not apply in sequence: $patchPath"
+            }
+            git -C $sourceRoot apply --unidiff-zero --ignore-space-change $patchPath
+            if ($LASTEXITCODE -ne 0) {
+                throw "Unable to apply clean rebuild patch: $patchPath"
             }
         }
     }
+}
+
+git -C $sourceRoot apply --unidiff-zero --ignore-space-change --reverse --check $patchPaths[-1] 2>$null
+if ($LASTEXITCODE -ne 0) {
+    throw "Clean rebuild patch stack could not be verified after application."
+}
+if (-not $patchStateMatches -or -not $completeStackAlreadyApplied) {
     Set-Content -LiteralPath $patchStatePath -Value $expectedPatchState -Encoding ASCII
 }
 

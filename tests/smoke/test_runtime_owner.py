@@ -429,6 +429,32 @@ def test_agent_recovery_accepts_absent_engine_when_backend_is_unreachable():
     assert "The legacy decode-status helper cannot key the radio" in source
 
 
+def test_agent_icon_generation_is_repeatable(tmp_path: Path):
+    script = ROOT / "scripts" / "agent" / "generate_agent_icon.ps1"
+    assets = tmp_path / "tools" / "Om0rxAgent" / "assets"
+    assets.mkdir(parents=True)
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-ProjectRoot",
+        str(tmp_path),
+    ]
+
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    first = (assets / "om0rx-agent.ico").read_bytes()
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    second = (assets / "om0rx-agent.ico").read_bytes()
+
+    assert first == second
+    assert first[:4] == b"\x00\x00\x01\x00"
+    assert int.from_bytes(first[14:18], "little") == len(first) - 22
+    assert int.from_bytes(first[22:26], "little") == 40
+
+
 def test_managed_owner_loss_revokes_station_authorization(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     import services.digital_engine as digital
 
