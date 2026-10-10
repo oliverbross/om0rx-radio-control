@@ -8,10 +8,10 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from radio_control.elecraft import build_station_path
 from remote_station.app import create_app
 from remote_station.config import AgentConfigError, default_config_document, load_agent_config
 from remote_station.runtime import RemoteCommandError, RemoteStationRuntime
-from radio_control.elecraft import build_station_path
 from services.station_alarms import build_station_alarms
 
 TOKEN = "test-token-that-is-at-least-thirty-two-characters"
@@ -162,6 +162,10 @@ class FakeFlex:
         self.calls.append(("send", command))
         return True
 
+    def add_spot(self, *arguments):
+        self.calls.append(("spot", arguments))
+        return True
+
     def get_slice_states(self):
         return [
             {
@@ -241,6 +245,84 @@ def test_remote_frequency_command_is_guarded_and_idempotent(tmp_path):
     assert first["state"]["revision"] == runtime.revision == 1
     assert runtime.coordinator.calls == ["remote-frequency-a"]
     assert runtime.flex.calls == [("send", "slice tune 0 14.080000")]
+
+
+def test_remote_spot_command_adds_receive_only_flex_marker(tmp_path):
+    runtime = _runtime(tmp_path)
+    result = run(
+        runtime.execute(
+            "rumlog-spot-0001",
+            "add_spot",
+            {
+                "frequency_hz": 14_074_000,
+                "callsign": "K1ABC",
+                "mode": "DIGU",
+                "source": "RUMlogNG Logbook",
+                "spotter": "OM0RX",
+                "comment": "DX",
+                "timestamp": 1_791_628_830,
+                "lifetime_seconds": 900,
+                "priority": 4,
+                "color": "#30D158",
+            },
+        )
+    )
+
+    assert result["result"] == {
+        "accepted": True,
+        "callsign": "K1ABC",
+        "frequency_hz": 14_074_000,
+    }
+    assert runtime.coordinator.calls == []
+    assert runtime.flex.calls == [
+        (
+            "spot",
+            (
+                14.074,
+                "K1ABC",
+                "DIGU",
+                "RUMlogNG Logbook",
+                "OM0RX",
+                "DX",
+                900,
+                4,
+                "#30D158",
+                1_791_628_830,
+            ),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        ("frequency_hz", 0, "spot-frequency-invalid"),
+        ("callsign", "BAD|CALL", "spot-text-invalid"),
+        ("priority", 6, "spot-priority-invalid"),
+        ("color", "blue", "spot-color-invalid"),
+    ],
+)
+def test_remote_spot_command_rejects_invalid_arguments(tmp_path, field, value, code):
+    runtime = _runtime(tmp_path)
+    arguments = {
+        "frequency_hz": 14_074_000,
+        "callsign": "K1ABC",
+        "mode": "DIGU",
+        "source": "RUMlogNG",
+        "spotter": "OM0RX",
+        "comment": "",
+        "timestamp": 1_791_628_830,
+        "lifetime_seconds": 900,
+        "priority": 4,
+        "color": "#30D158",
+    }
+    arguments[field] = value
+
+    with pytest.raises(RemoteCommandError) as error:
+        run(runtime.execute(f"invalid-{field}", "add_spot", arguments))
+
+    assert error.value.code == code
+    assert runtime.flex.calls == []
 
 
 def test_remote_radio_write_fails_closed_until_named_station_is_bound(tmp_path):

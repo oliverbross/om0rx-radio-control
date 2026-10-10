@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import logging
+import re
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -315,6 +316,7 @@ class RemoteStationRuntime:
                         "set_cw_speed",
                         "send_cw",
                         "clear_cw",
+                        "add_spot",
                         "station_standby",
                         "station_operate",
                         "station_tune",
@@ -413,6 +415,84 @@ class RemoteStationRuntime:
             )
         normalized = str(command or "").strip().lower()
         try:
+            if normalized == "add_spot":
+                frequency_hz = self._required_int(arguments, "frequency_hz")
+                if not 100_000 <= frequency_hz <= 60_000_000:
+                    raise RemoteCommandError(
+                        "spot-frequency-invalid",
+                        "Spot frequency must be between 100 kHz and 60 MHz",
+                        status_code=422,
+                    )
+
+                def text_argument(name: str, maximum: int, *, required: bool = False) -> str:
+                    value = arguments.get(name, "")
+                    if not isinstance(value, str):
+                        raise RemoteCommandError(
+                            "command-argument-invalid",
+                            f"{name} must be text",
+                            status_code=422,
+                        )
+                    value = value.strip()
+                    if (required and not value) or len(value) > maximum or any(
+                        ord(character) < 32 or ord(character) > 126 or character == "|"
+                        for character in value
+                    ):
+                        raise RemoteCommandError(
+                            "spot-text-invalid",
+                            f"{name} contains invalid spot text",
+                            status_code=422,
+                        )
+                    return value
+
+                callsign = text_argument("callsign", 32, required=True).upper()
+                if re.fullmatch(r"[A-Z0-9/.-]+", callsign) is None:
+                    raise RemoteCommandError(
+                        "spot-callsign-invalid", "Spot callsign is invalid", status_code=422
+                    )
+                mode = text_argument("mode", 16).upper()
+                source = text_argument("source", 32) or "RUMlogNG"
+                spotter = text_argument("spotter", 32).upper()
+                comment = text_argument("comment", 96)
+                timestamp = self._required_int(arguments, "timestamp")
+                lifetime = self._required_int(arguments, "lifetime_seconds")
+                priority = self._required_int(arguments, "priority")
+                color = text_argument("color", 7).upper()
+                if not 0 <= timestamp <= 4_102_444_800:
+                    raise RemoteCommandError(
+                        "spot-timestamp-invalid", "Spot timestamp is invalid", status_code=422
+                    )
+                if not 30 <= lifetime <= 86_400:
+                    raise RemoteCommandError(
+                        "spot-lifetime-invalid",
+                        "Spot lifetime must be between 30 and 86400 seconds",
+                        status_code=422,
+                    )
+                if not 1 <= priority <= 5:
+                    raise RemoteCommandError(
+                        "spot-priority-invalid", "Spot priority must be 1 through 5", status_code=422
+                    )
+                if re.fullmatch(r"#[0-9A-F]{6}", color) is None:
+                    raise RemoteCommandError(
+                        "spot-color-invalid", "Spot color must be #RRGGBB", status_code=422
+                    )
+                accepted = await asyncio.to_thread(
+                    self.flex.add_spot,
+                    frequency_hz / 1_000_000.0,
+                    callsign,
+                    mode,
+                    source,
+                    spotter,
+                    comment,
+                    lifetime,
+                    priority,
+                    color,
+                    timestamp,
+                )
+                if accepted is not True:
+                    raise RemoteCommandError(
+                        "spot-add-rejected", "FLEX rejected the panadapter spot", status_code=503
+                    )
+                return {"accepted": True, "callsign": callsign, "frequency_hz": frequency_hz}
             if normalized == "set_frequency_hz":
                 frequency_hz = self._required_int(arguments, "frequency_hz")
                 frequency_mhz = frequency_hz / 1_000_000.0
