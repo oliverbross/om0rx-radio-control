@@ -580,6 +580,17 @@ def test_snapshot_status_poll_enforces_antenna_policy_on_current_band():
     assert flex.current_tx_ant == "ANT2"
 
 
+def test_snapshot_poll_reuses_recent_flex_subscriptions():
+    flex = SnapshotFlex()
+    sock = RecordingScriptedSocket([TimeoutError()])
+    flex.sock = sock
+    flex.last_resubscribe_time = time.time()
+
+    flex.get_current_levels(timeout=0.01, apply_antenna_policy=False)
+
+    assert not any("sub slice all" in wire or "sub tx all" in wire for wire in sock.sent)
+
+
 def test_antenna_policy_falls_back_to_transmit_tx_antenna_command():
     flex = TxAntFallbackFlex()
     flex.current_rx_ant = "ANT2"

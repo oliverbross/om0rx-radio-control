@@ -11,7 +11,12 @@ from starlette.websockets import WebSocketDisconnect
 from radio_control.elecraft import build_station_path
 from remote_station.app import create_app
 from remote_station.config import AgentConfigError, default_config_document, load_agent_config
-from remote_station.runtime import RemoteCommandError, RemoteStationRuntime
+from remote_station.runtime import (
+    FLEX_POLL_IDLE_SECONDS,
+    FLEX_SNAPSHOT_WINDOW_SECONDS,
+    RemoteCommandError,
+    RemoteStationRuntime,
+)
 from services.station_alarms import build_station_alarms
 
 TOKEN = "test-token-that-is-at-least-thirty-two-characters"
@@ -341,6 +346,11 @@ def _runtime(tmp_path):
         "mox": False,
     }
     return runtime
+
+
+def test_remote_flex_poll_is_fast_enough_for_live_monitoring():
+    assert FLEX_SNAPSHOT_WINDOW_SECONDS <= 0.2
+    assert FLEX_POLL_IDLE_SECONDS <= 0.05
 
 
 def test_remote_frequency_command_is_guarded_and_idempotent(tmp_path):

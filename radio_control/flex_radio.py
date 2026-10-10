@@ -932,8 +932,14 @@ class FlexCtl:
             ok, slice_body = self._send_with_response("slice list")
             if ok and slice_body:
                 parse_values(slice_body)
-            send_no_wait("sub slice all")
-            send_no_wait("sub tx all")
+            # The connection already subscribes to these streams. Refresh the
+            # subscriptions only occasionally; the remote-agent live monitor
+            # polls quickly and must not generate subscription command noise.
+            now = _t.time()
+            if now - float(self.last_resubscribe_time or 0) > 60:
+                send_no_wait("sub slice all")
+                send_no_wait("sub tx all")
+                self.last_resubscribe_time = now
         except Exception as e:
             logging.warning(f"FlexCtl get_current_levels: send error: {e}")
 

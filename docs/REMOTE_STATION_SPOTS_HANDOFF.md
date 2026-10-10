@@ -40,6 +40,11 @@ coordinator while remaining authenticated and idempotent.
 Mac implementation and protocol detail are in OM0RX-xCat
 `docs/REMOTE_AGENT_SPOTS.md` on branch `codex/rumlog-flex-spots`.
 
+The live-state loop uses a 200 ms FLEX snapshot window and a 50 ms idle
+interval, while reusing existing subscriptions instead of resubscribing on
+every pass. This removes the previous approximately 1.55-second frequency
+widget lag without changing station policy or sending a transmit command.
+
 ## Remote configuration contract
 
 The same branch also exposes the station's non-secret public configuration to

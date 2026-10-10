@@ -23,6 +23,8 @@ from .config import AgentConfig
 
 logger = logging.getLogger(__name__)
 PROTOCOL_VERSION = 1
+FLEX_SNAPSHOT_WINDOW_SECONDS = 0.2
+FLEX_POLL_IDLE_SECONDS = 0.05
 
 
 class RemoteCommandError(RuntimeError):
@@ -127,7 +129,11 @@ class RemoteStationRuntime:
         while not self._stop_event.is_set():
             try:
                 levels = await asyncio.to_thread(
-                    partial(self.flex.get_current_levels, timeout=0.8, apply_antenna_policy=False)
+                    partial(
+                        self.flex.get_current_levels,
+                        timeout=FLEX_SNAPSHOT_WINDOW_SECONDS,
+                        apply_antenna_policy=False,
+                    )
                 )
                 if levels:
                     self._update_radio_snapshot(levels)
@@ -179,7 +185,9 @@ class RemoteStationRuntime:
                 except Exception as close_exc:  # noqa: BLE001 - poll loop will retry
                     logger.debug("FLEX cleanup after poll failure also failed: %s", close_exc)
             try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=0.75)
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=FLEX_POLL_IDLE_SECONDS
+                )
             except TimeoutError:
                 pass
 
