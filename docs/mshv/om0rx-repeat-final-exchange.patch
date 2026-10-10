@@ -1,0 +1,29 @@
+diff --git a/MSHV_2762/src/HvTxW/hvtxw.cpp b/MSHV_2762/src/HvTxW/hvtxw.cpp
+--- a/MSHV_2762/src/HvTxW/hvtxw.cpp
++++ b/MSHV_2762/src/HvTxW/hvtxw.cpp
+@@ -2466,7 +2466,12 @@ void HvTxW::SetTextForAutoSeq(QStringList list_in)
+                              rpt_inmsg.at(rpt_inmsg.count()-1)=='R')
+                     {//msg=3 RRR
+                         SetTxRaportToRB(4,true);
+-                        count_73_auto_seq = 1;//2.50 if (!f_cfm73)
++                        // RRR asks us to send the final exchange, but does not
++                        // prove that the other station decoded it.  Keep Auto
++                        // on (and the selected RR73/73 message repeating) until
++                        // that station answers with 73/RR73 or the watchdog
++                        // ends the attempt.
++                        count_73_auto_seq = 0;
+                     }
+                     else if ((!rpt_inmsg.isEmpty() && rpt_inmsg=="73") || rr73_inmsg=="RR73")
+                     {//msg=4 73 RR73
+@@ -5432,7 +5437,10 @@ void HvTxW::SetTextForAutoSeq(QStringList list_in)
+                              rpt_inmsg.at(rpt_inmsg.count()-1)=='R')
+                     {//msg=3 RRR
+                         SetTxRaportToRB(4,true);
+-                        count_73_auto_seq = 1;//importent no 73 only RRR no stop TX from SetTxCountAutoSeq()
++                        // Do not complete after the first final exchange.  A
++                        // repeated RRR means our RR73/73 was not copied, so
++                        // leave Auto armed until an actual 73/RR73 arrives.
++                        count_73_auto_seq = 0;
+                         if (isAddToLog(hisBaseCall_inmsg))//2.76.1       
+                         {
+                             //qDebug()<<"msg3 000= LOG UP --------- RRR R ---------->";

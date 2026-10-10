@@ -10,6 +10,7 @@ import _bootstrap  # noqa: F401
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = PROJECT_ROOT / "frontend"
 LAUNCH_WINDOWS = PROJECT_ROOT / "scripts" / "launch" / "launch_windows.py"
+START_ALL = PROJECT_ROOT / "start_all.ps1"
 APP_MAIN = FRONTEND / "js" / "app-main.js"
 INDEX = FRONTEND / "index.html"
 RADIO_CONTROLS = FRONTEND / "js" / "radio-controls.js"
@@ -314,6 +315,34 @@ def test_visual_map_native_window_launcher_contract():
     assert "def open_visual_map_window(self, url=None):" in launcher
     assert "self._visual_map_window" in launcher
     assert "def _resolve_visual_map_url(self, url=None):" in launcher
+
+
+def test_station_widget_native_window_contract():
+    launcher = LAUNCH_WINDOWS.read_text(encoding="utf-8")
+    station_launcher = (FRONTEND / "js" / "station-launcher.js").read_text(encoding="utf-8")
+
+    assert "STATION_WIDGET_WINDOW_CONFIG" in launcher
+    assert "station-widget.html" in launcher
+    assert "def open_station_widget(self, orientation=None, width=None, height=None):" in launcher
+    assert "self._station_widget_window" in launcher
+    assert "on_top=False" in launcher
+    assert "owner.pywebview?.api" in station_launcher
+    assert "open_station_widget" in station_launcher
+
+
+def test_desktop_launcher_is_visible_and_verified_before_startup_success():
+    startup = START_ALL.read_text(encoding="utf-8-sig")
+    launcher = LAUNCH_WINDOWS.read_text(encoding="utf-8")
+    function_start = startup.index("function Start-LauncherProcess")
+    function_end = startup.index("function Resolve-PortProcess", function_start)
+    launch_function = startup[function_start:function_end]
+
+    assert '"pythonw.exe"' in launch_function
+    assert "-WindowStyle Hidden" not in launch_function
+    assert "$process.MainWindowHandle -ne 0" in launch_function
+    assert "Launcher UI ready" in launch_function
+    assert "Start-Process $BackendUrl" in launch_function
+    assert "_keep_on_virtual_desktop" in launcher
 
 
 def test_rotor_compass_window_contract():

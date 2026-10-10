@@ -16,6 +16,7 @@ obj/
 /logs/
 /artifacts/
 /tmp/
+/.codex-tmp/
 *.log
 *.log.*
 
@@ -42,6 +43,7 @@ node_modules/
 # Project specific
 config-local.py
 config_local.py
+/settings/
 settings/local_secrets.json
 settings/local_secrets.json.*
 settings/local_settings.json
@@ -49,6 +51,8 @@ settings/local_settings.json.*
 settings/runtime_state.json
 settings/runtime_state.json.*
 settings/window_layout.json
+settings/station_widget.json
+settings/station_widget.tmp
 
 # Database files
 data/*

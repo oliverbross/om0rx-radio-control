@@ -1,0 +1,294 @@
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+index b897d98..6b47baa 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+@@ -462,6 +462,16 @@ void HvAutoDxSettings::createEligibilityGroup()
+     continents->addStretch();
+     layout->addLayout(continents);
+ 
++    layout->addWidget(new QLabel("Countries never called automatically (one rule per line):"));
++    m_excludedCountriesByBand = new QPlainTextEdit;
++    m_excludedCountriesByBand->setPlaceholderText(
++        "ALL: Japan\n30m: Japan\n20m: United States; Canada");
++    m_excludedCountriesByBand->setToolTip(
++        "Use ALL or a band name, followed by a colon. Separate country names with semicolons. "
++        "Matching ignores case, spaces and punctuation; USA and US match United States.");
++    m_excludedCountriesByBand->setMaximumHeight(90);
++    layout->addWidget(m_excludedCountriesByBand);
++
+     m_allowBandDxccOutsideContinent = new QCheckBox(
+         "Allow new DXCC band slots outside continent filter");
+     m_allowBandDxccOutsideContinent->setToolTip(
+@@ -1165,6 +1175,7 @@ AutoDxSettings HvAutoDxSettings::getSettings() const
+         settings.filterNewOnBand.insert(it.key(), it.value()->isChecked());
+     for (auto it = m_filterContinents.constBegin(); it != m_filterContinents.constEnd(); ++it)
+         if (it.value()->isChecked()) settings.enabledContinents << it.key();
++    settings.excludedCountriesByBand = m_excludedCountriesByBand->toPlainText().trimmed();
+     settings.allowBandDxccOutsideContinent =
+         m_allowBandDxccOutsideContinent->isChecked();
+     settings.lotwOnly = m_lotwOnly->isChecked();
+@@ -1329,6 +1340,8 @@ void HvAutoDxSettings::loadSettings(const QString& appPath)
+         .toString().toUpper().split(',', Qt::SkipEmptyParts);
+     for (auto it = m_filterContinents.begin(); it != m_filterContinents.end(); ++it)
+         it.value()->setChecked(enabledContinents.contains(it.key()));
++    m_excludedCountriesByBand->setPlainText(settings.value(
++        "Eligibility/ExcludedCountriesByBand", "").toString());
+     m_allowBandDxccOutsideContinent->setChecked(settings.value(
+         "Eligibility/AllowBandDxccOutsideContinent", true).toBool());
+     m_lotwOnly->setChecked(settings.value("Eligibility/FilterLotwOnly", false).toBool());
+@@ -1537,6 +1550,8 @@ void HvAutoDxSettings::saveSettings(const QString& appPath)
+     for (auto it = m_filterContinents.constBegin(); it != m_filterContinents.constEnd(); ++it)
+         if (it.value()->isChecked()) continents << it.key();
+     settings.setValue("Eligibility/FilterContinents", continents.join(','));
++    settings.setValue("Eligibility/ExcludedCountriesByBand",
++                      m_excludedCountriesByBand->toPlainText().trimmed());
+     settings.setValue("Eligibility/AllowBandDxccOutsideContinent",
+                       m_allowBandDxccOutsideContinent->isChecked());
+     settings.setValue("Eligibility/FilterLotwOnly", m_lotwOnly->isChecked());
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+index 139dae6..f08ef69 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+@@ -20,7 +20,8 @@
+ #include <QTableWidget>
+ #include <QTimeEdit>
+ #include <QMap>
+-#include <QComboBox>
++#include <QComboBox>
++#include <QPlainTextEdit>
+ 
+ // Forward declarations
+ class HvSpotCollector;
+@@ -111,6 +112,7 @@ struct AutoDxSettings {
+     QMap<QString, bool> filterNew;
+     QMap<QString, bool> filterNewOnBand;
+     QStringList enabledContinents;
++    QString excludedCountriesByBand;
+     bool allowBandDxccOutsideContinent;
+     bool lotwOnly;
+     bool preferNonEurope;
+@@ -296,6 +298,7 @@ private:
+     QMap<QString, QCheckBox*> m_filterNew;
+     QMap<QString, QCheckBox*> m_filterNewOnBand;
+     QMap<QString, QCheckBox*> m_filterContinents;
++    QPlainTextEdit *m_excludedCountriesByBand;
+     QCheckBox *m_allowBandDxccOutsideContinent;
+     QCheckBox *m_lotwOnly;
+     QCheckBox *m_preferNonEurope;
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+index daec9ec..608e651 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -504,6 +504,7 @@ void AutoDxerCore::loadRuntimeConfig(const QString &settingsPath)
+     m_targetScorer->setUSGridOnly(config.gridUsOnly);
+     m_targetScorer->setMinSNR(config.selection.minSignal);
+     m_targetScorer->setSelectionConfig(m_selectionConfig);
++    m_targetScorer->setExcludedCountriesByBand(config.excludedCountriesByBand);
+     m_awardHuntingConfig = config.awardHunting;
+     m_targetScorer->setAwardHuntingConfig(m_awardHuntingConfig);
+     m_awardActivationIndexValid = m_targetScorer->loadAwardActivationIndex(
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+index e4486bc..b508b15 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+@@ -4,6 +4,7 @@
+ #include <QSettings>
+ #include <QStringList>
+ #include <QSet>
++#include <QMap>
+ #include <QRegExp>
+ #include "autodxselectionpolicy.h"
+ #include "awardhuntingpolicy.h"
+@@ -130,6 +131,26 @@ struct AutoDxRuntimeConfig
+     QString campaignProfile;
+     bool outcomeLearningEnabled;
+     QString outcomeTelemetryFile;
++    QMap<int, QSet<QString> > excludedCountriesByBand;
++
++    static QString normalizedCountry(QString value)
++    {
++        value = value.trimmed().toUpper();
++        if (value == "USA" || value == "US" || value == "UNITED STATES OF AMERICA")
++            value = "UNITED STATES";
++        value.remove(QRegExp("[^A-Z0-9]"));
++        return value;
++    }
++
++    static int bandIndex(const QString &value)
++    {
++        const QString band = value.trimmed().toLower();
++        const QStringList names = QStringList() << "" << "" << "" << "160m" << "80m"
++            << "60m" << "40m" << "30m" << "20m" << "17m" << "15m" << "12m" << "10m";
++        if (band == "all" || band == "*") return -1;
++        const int index = names.indexOf(band);
++        return index >= 0 ? index : -2;
++    }
+ 
+     bool modeAllowed(const QString &mode) const
+     {
+@@ -326,6 +347,21 @@ struct AutoDxRuntimeConfig
+         c.selection.treat73AsCq = settings.value("Eligibility/Treat73AsCq", false).toBool();
+         c.selection.watchUnconfirmedDxcc = settings.value(
+             "Eligibility/WatchUnconfirmedDxcc", true).toBool();
++        c.excludedCountriesByBand.clear();
++        const QStringList countryRules = settings.value(
++            "Eligibility/ExcludedCountriesByBand", "").toString().split('\n', Qt::SkipEmptyParts);
++        for (const QString &rule : countryRules) {
++            const int colon = rule.indexOf(':');
++            if (colon <= 0) continue;
++            const int band = bandIndex(rule.left(colon));
++            if (band < -1 || band == 0 || band == 1 || band == 2 || band == 5 || band > 12)
++                continue;
++            const QStringList countries = rule.mid(colon + 1).split(';', Qt::SkipEmptyParts);
++            for (const QString &country : countries) {
++                const QString normalized = normalizedCountry(country);
++                if (!normalized.isEmpty()) c.excludedCountriesByBand[band].insert(normalized);
++            }
++        }
+         const int requestedWindow = settings.value("Attempt/CallWindowSeconds", 120).toInt();
+         c.selection.callWindowSeconds = requestedWindow >= 240 ? 240 : 120;
+         c.selection.maxConsecutiveWindows = qBound(1, settings.value(
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+index 465d106..0e91967 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+@@ -3,6 +3,7 @@
+  * May be used under the terms of the GNU General Public License (GPL)
+  */
+ #include "targetscorer.h"
++#include <QRegExp>
+ #include "autodxmessageparser.h"
+ #include "targeteligibility.h"
+ #include "dxcctracker.h"
+@@ -438,6 +439,15 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     if (entity.isEmpty()) entity = lookupDXCC(decode.callsign);
+     target.dxccEntity = entity;
+ 
++    QString normalizedEntity = entity.trimmed().toUpper();
++    normalizedEntity.remove(QRegExp("[^A-Z0-9]"));
++    const QSet<QString> excluded = m_excludedCountriesByBand.value(-1)
++        + m_excludedCountriesByBand.value(decode.bandIndex);
++    if (!normalizedEntity.isEmpty() && excluded.contains(normalizedEntity)) {
++        target.priorityReason = QString("Country excluded on this band: %1").arg(entity);
++        return target;
++    }
++
+     // Own country is ineligible only for the DXCC dimension. Band, grid and
+     // explicit calling-me eligibility remain independent.
+     const bool ownCountry = !m_myCountry.isEmpty() && entity == m_myCountry;
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.h b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+index a853a3b..a0090f2 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.h
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+@@ -181,6 +181,9 @@ public:
+     // Own-country filtering - never score own country as "New DXCC"
+     void setMyCountry(const QString &country) { m_myCountry = country; }
+     QString myCountry() const { return m_myCountry; }
++    void setExcludedCountriesByBand(const QMap<int, QSet<QString> > &rules) {
++        m_excludedCountriesByBand = rules;
++    }
+ 
+     // DXCC rarity scoring - public for ATNO chase mode and rarity-enhanced scarce mode
+     int getMostWantedRank(const QString &entity) const;
+@@ -204,6 +207,7 @@ private:
+     QSet<QString> m_pendingWavelogCalls;
+     bool m_usGridOnly;    // Only chase grids within US territory
+     QString m_myCountry;  // Own country to filter out
++    QMap<int, QSet<QString> > m_excludedCountriesByBand;
+     QString m_myCallsign;
+     QString m_currentMode;
+     int m_weightNewDXCC;
+diff --git a/MSHV_2762/src/HvDecodeList/decodelist.cpp b/MSHV_2762/src/HvDecodeList/decodelist.cpp
+index 933f97f..bec73bd 100644
+--- a/MSHV_2762/src/HvDecodeList/decodelist.cpp
++++ b/MSHV_2762/src/HvDecodeList/decodelist.cpp
+@@ -7,6 +7,7 @@
+ #include "../config_str_all.h"
+ #include "../HvAutoDxer/autodxmessageparser.h"
+ #include <QDebug>
++#include <QDateTime>
+ //#include <QtGui>
+ 
+ static QLineEdit* st_lineEdit_hv;
+@@ -2022,6 +2023,32 @@ void DecodeList::Clear_List()
+     if (s_list_ident == 1) emit EmitUdpDecClr();
+     CountMsgInPeriod(false);
+ }
++void DecodeList::InsertBandSeparator(QString band)
++{
++    const QString normalized = band.trimmed();
++    if (normalized.isEmpty()) return;
++
++    const QString label = QString("----------------  %1  |  %2 UTC  ----------------")
++        .arg(normalized, QDateTime::currentDateTimeUtc().toString("yyyy-MM-dd HH:mm:ss"));
++    QList<QStandardItem*> row;
++    const int columns = qMax(1, model.columnCount());
++    for (int column = 0; column < columns; ++column) {
++        QStandardItem *item = new QStandardItem(column == 0 ? label : QString());
++        item->setEditable(false);
++        item->setSelectable(false);
++        item->setBackground(QBrush(QColor(37, 76, 120)));
++        item->setForeground(QBrush(Qt::white));
++        QFont markerFont = item->font();
++        markerFont.setBold(true);
++        item->setFont(markerFont);
++        if (column == 0) item->setTextAlignment(Qt::AlignCenter);
++        row << item;
++    }
++    const int rowIndex = model.rowCount();
++    model.appendRow(row);
++    setFirstColumnSpanned(rowIndex, QModelIndex(), true);
++    scrollToBottom();
++}
+ void DecodeList::SetAutoDxQueuedTarget(QString callsign)
+ {
+     m_autoDxQueuedCall = callsign.trimmed().toUpper();
+diff --git a/MSHV_2762/src/HvDecodeList/decodelist.h b/MSHV_2762/src/HvDecodeList/decodelist.h
+index 4a48b14..b107bee 100644
+--- a/MSHV_2762/src/HvDecodeList/decodelist.h
++++ b/MSHV_2762/src/HvDecodeList/decodelist.h
+@@ -110,6 +110,7 @@ public slots:
+     void SetOtpVerif(QString,uint8_t);//2.76sf
+     void SetShowOtpRxMsg(bool f);//2.76sf
+     void SetAutoDxQueuedTarget(QString callsign);
++    void InsertBandSeparator(QString band);
+     
+ private slots:
+     void RefreshListTimer();
+diff --git a/MSHV_2762/src/main_ms.cpp b/MSHV_2762/src/main_ms.cpp
+index f4c31bc..6c72047 100644
+--- a/MSHV_2762/src/main_ms.cpp
++++ b/MSHV_2762/src/main_ms.cpp
+@@ -156,6 +156,7 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     m_autoDxerBandChangePending = false;
+     m_autoDxerRequestedBand = -1;
+     m_autoDxerBandChangeRequestId = 0;
++    m_lastDecodeBandMarker = -1;
+ 
+     //+ 100ms za da spre signala kam PA sigurno
+     stop_tx_befor_end = (370);//(370 + 100); 4096*1000/11025 stop tx 370ms bifor rx period tx buffer is 4096=370ms
+@@ -3017,6 +3018,12 @@ void Main_Ms::BandChanged(bool)
+             s_id_set_to_rig = 0;
+             W_band_bt_sw->SetActiveBt(i);
+ 
++            if (m_lastDecodeBandMarker != i) {
++                m_lastDecodeBandMarker = i;
++                TDecodeList1->InsertBandSeparator(temp_band);
++                TDecodeList2->InsertBandSeparator(temp_band);
++            }
++
+             // Notify Auto DXer of band change (only for HF bands 3-13)
+             if (m_autoDxerCore && i >= 3 && i <= 14
+                     && !(m_autoDxerBandChangePending
+diff --git a/MSHV_2762/src/main_ms.h b/MSHV_2762/src/main_ms.h
+index 0c77459..41f3a99 100644
+--- a/MSHV_2762/src/main_ms.h
++++ b/MSHV_2762/src/main_ms.h
+@@ -342,6 +342,7 @@ private:
+     bool m_autoDxerBandChangePending;
+     int m_autoDxerRequestedBand;
+     quint64 m_autoDxerBandChangeRequestId;
++    int m_lastDecodeBandMarker;
+ 
+     // DXCC Chaser components
+     HvDxccTracker *m_hvDxccTracker;

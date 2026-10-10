@@ -122,6 +122,33 @@ def test_wsjtx_parser_extracts_logged_adif_fields():
     assert payload["reportReceived"] == "-07"
 
 
+def test_wsjtx_type5_datetime_guards_every_truncated_offset():
+    payload = run_node_protocol_script(
+        """
+        import { WsjtxParser } from './bridge/wsjtx-parser.js';
+        const string = value => {
+          const text = Buffer.from(value); const field = Buffer.alloc(4 + text.length);
+          field.writeUInt32BE(text.length, 0); text.copy(field, 4); return field;
+        };
+        const header = Buffer.alloc(12);
+        header.writeUInt32BE(0xadbccbda, 0); header.writeUInt32BE(3, 4); header.writeUInt32BE(5, 8);
+        const date = Buffer.alloc(17);
+        date.writeBigInt64BE(2440588n, 0); date.writeUInt32BE(3600000, 8); date.writeUInt8(2, 12); date.writeInt32BE(3600, 13);
+        const frequency = Buffer.alloc(8); frequency.writeBigInt64BE(14074000n);
+        const full = Buffer.concat([header, string('MSHV-OM0RX-AUTO-DX'), date, string('EA1AA'), string('IN80'), frequency, string('FT8'), string('-10'), string('-07')]);
+        const datetimeStart = header.length + string('MSHV-OM0RX-AUTO-DX').length;
+        const parser = new WsjtxParser();
+        const truncated = Array.from({length: 17}, (_, length) => parser.parse(full.subarray(0, datetimeStart + length)));
+        const parsed = parser.parse(full);
+        console.log(JSON.stringify({truncated, parsed}));
+        """
+    )
+    assert all(item["type"] == "QSO_LOGGED" for item in payload["truncated"])
+    assert all("dxCall" not in item and "dateTime" not in item for item in payload["truncated"])
+    assert payload["parsed"]["dxCall"] == "EA1AA"
+    assert payload["parsed"]["dateTime"] == "1970-01-01T00:00:00.000Z"
+
+
 def test_wsjtx_parser_extracts_optional_om0rx_qso_state_from_status():
     payload = run_node_protocol_script(
         """
@@ -200,6 +227,9 @@ def test_wsjtx_bridge_server_exposes_command_timeline_contract():
     assert "wsjtxRecentDecodes" in bridge
     assert "recentDecodes: wsjtxRecentDecodes.slice(-50)" in bridge
     assert "commandCapabilities" in bridge
+    assert "const nativeOwnsControl = selectedDigitalProvider === 'mshv_auto_dx'" in bridge
+    assert "selectedDigitalProvider === 'mshv_auto_dx' && !['status', 'halt_tx'].includes(command)" in bridge
+    assert "selectedDigitalProvider === 'mshv_auto_dx' && !['status', 'halt_tx', 'clear', 'replay', 'reply']" not in bridge
     assert "start_target_qso" in bridge
     assert "lastCommand" in bridge
     assert "commandErrors" in bridge
@@ -207,9 +237,13 @@ def test_wsjtx_bridge_server_exposes_command_timeline_contract():
     assert "result.traceId = commandEntry.traceId" in bridge
     assert "timeline: wsjtxTimeline.slice(-25)" in bridge
     assert "scheduleLoggedQsoUpload" in bridge
-    assert "messageType === 'LOGGED_ADIF'" in bridge
-    assert "clearTimeout(pendingQsoLoggedUploadTimer)" in bridge
-    assert "}, 1500);" in bridge
+    assert "loggedQsoCoalescer.accept" in bridge
+    coalescer = (PROJECT_ROOT / "bridge" / "digital-provider.js").read_text(encoding="utf-8")
+    assert "type === 'LOGGED_ADIF'" in coalescer
+    assert "Type 5 is the only immediate completion receipt" in coalescer
+    assert "setTimeout" not in coalescer
+    assert "event_id: eventId" in bridge
+    assert "station_callsign: eventIdentity.station_callsign" in bridge
 
 
 def test_wsjtx_frontend_logged_adif_handler_is_display_only():
@@ -379,6 +413,85 @@ def test_wsjtx_bridge_logged_qso_upload_payload_prefers_adif_fields():
     assert payload["rst_received"] == "-07"
     assert payload["adif_text"].startswith("<call:5>EA1AA")
     assert payload["source"] == "wsjtx-bridge"
+
+
+def test_type5_and_type12_share_stable_station_client_completion_event_id():
+    payload = run_node_protocol_script(
+        """
+        process.env.OM0RX_BRIDGE_TEST_MODE = '1';
+        const bridge = await import('./bridge/sdc-bridge-server.js?shared-event-id');
+        const common = {
+          dxCall: 'EA1AA', stationCallsign: 'OM0RX', clientId: 'MSHV-OM0RX-AUTO-DX',
+          dialFrequency: 14074000, mode: 'FT8', timeOff: '2026-10-04T12:00:45.000Z'
+        };
+        const type5 = bridge.__buildLoggedQsoUploadForTest({...common, eventType:'QSO_LOGGED'});
+        const type12 = bridge.__buildLoggedQsoUploadForTest({
+          ...common, eventType:'LOGGED_ADIF', timeOn:'2026-10-04T12:00:00.000Z',
+          adifText:'<call:5>EA1AA <freq:6>14.074 <mode:3>FT8 <qso_date:8>20261004 <time_on:6>120000 <time_off:6>120045 <eor>'
+        });
+        const otherClient = bridge.__buildLoggedQsoUploadForTest({...common, clientId:'OTHER'});
+        console.log(JSON.stringify({type5, type12, otherClient}));
+        """
+    )
+    assert payload["type5"]["event_id"] == payload["type12"]["event_id"]
+    assert payload["type5"]["event_id"] != payload["otherClient"]["event_id"]
+    assert payload["type12"]["station_callsign"] == "OM0RX"
+    assert payload["type12"]["client_id"] == "MSHV-OM0RX-AUTO-DX"
+
+
+def test_bridge_retry_queue_is_atomic_and_surfaces_persistence_failure(tmp_path):
+    good = tmp_path / "pending.jsonl"
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("file", encoding="utf-8")
+    payload = run_node_protocol_script(
+        f"""
+        process.env.OM0RX_BRIDGE_TEST_MODE = '1';
+        process.env.OM0RX_BRIDGE_TEST_PERSIST = '1';
+        process.env.WSJTX_LOGGED_QSO_PENDING_PATH = {json.dumps(str(good))};
+        const bridge = await import('./bridge/sdc-bridge-server.js?durable-retry-good');
+        const qso = {{provider:'mshv_auto_dx', station_callsign:'OM0RX', client_id:'MSHV-OM0RX-AUTO-DX', event_id:'{'a' * 64}', call:'EA1AA', mode:'FT8', frequency_hz:14074000, time_on:'2026-10-04T12:00:00Z', time_off:'2026-10-04T12:00:45Z'}};
+        const queued = bridge.__enqueueLoggedQsoUploadForTest(qso, 'offline');
+        console.log(JSON.stringify({{queued, count:bridge.__loggedQsoQueueForTest().length}}));
+        """
+    )
+    assert payload == {"queued": True, "count": 1}
+    assert good.read_text(encoding="utf-8").strip()
+
+    failed = run_node_protocol_script(
+        f"""
+        process.env.OM0RX_BRIDGE_TEST_MODE = '1';
+        process.env.OM0RX_BRIDGE_TEST_PERSIST = '1';
+        process.env.WSJTX_LOGGED_QSO_PENDING_PATH = {json.dumps(str(blocker / 'pending.jsonl'))};
+        const bridge = await import('./bridge/sdc-bridge-server.js?durable-retry-fail');
+        const qso = {{provider:'mshv_auto_dx', station_callsign:'OM0RX', client_id:'MSHV-OM0RX-AUTO-DX', event_id:'{'b' * 64}', call:'EA1BB', mode:'FT8', frequency_hz:14074000, time_on:'2026-10-04T12:01:00Z', time_off:'2026-10-04T12:01:45Z'}};
+        const queued = bridge.__enqueueLoggedQsoUploadForTest(qso, 'offline');
+        console.log(JSON.stringify({{queued, count:bridge.__loggedQsoQueueForTest().length}}));
+        """
+    )
+    assert failed == {"queued": False, "count": 0}
+
+
+def test_bridge_corrupt_retry_queue_is_preserved_and_blocks_overwrite(tmp_path):
+    pending = tmp_path / "pending.jsonl"
+    original = '{"payload":{"call":"A1AA","event_id":"' + ("a" * 64) + '"}}\n{not-json}\n'
+    pending.write_text(original, encoding="utf-8")
+    payload = run_node_protocol_script(
+        f"""
+        process.env.OM0RX_BRIDGE_TEST_MODE = '1';
+        process.env.OM0RX_BRIDGE_TEST_PERSIST = '1';
+        process.env.WSJTX_LOGGED_QSO_PENDING_PATH = {json.dumps(str(pending))};
+        const bridge = await import('./bridge/sdc-bridge-server.js?durable-retry-corrupt');
+        const loaded = bridge.__loadLoggedQsoQueueForTest();
+        const qso = {{provider:'mshv_auto_dx', station_callsign:'OM0RX', client_id:'MSHV-OM0RX-AUTO-DX', event_id:'{'b' * 64}', call:'EA1BB', mode:'FT8', frequency_hz:14074000, time_on:'2026-10-04T12:01:00Z', time_off:'2026-10-04T12:01:45Z'}};
+        const queued = bridge.__enqueueLoggedQsoUploadForTest(qso, 'offline');
+        console.log(JSON.stringify({{loaded, queued, count:bridge.__loggedQsoQueueForTest().length}}));
+        """
+    )
+    assert payload["loaded"]["count"] == 0
+    assert payload["loaded"]["fault"].startswith("retry-queue-load-failed:")
+    assert payload["queued"] is False
+    assert payload["count"] == 0
+    assert pending.read_text(encoding="utf-8") == original
 
 
 def test_wsjtx_bridge_logged_qso_result_event_contract():

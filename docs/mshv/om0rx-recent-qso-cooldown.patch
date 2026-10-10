@@ -1,0 +1,167 @@
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+@@ -120,6 +120,7 @@ struct AutoDxSettings {
+     int callWindowSeconds;
+     int maxConsecutiveWindows;
+     int sameTargetRetrySeconds;
++    int recentQsoCooldownSeconds;
+     int minimumBandDwellSeconds;
+     int engagedCompletionGraceSeconds;
+     int atnoChaseType;
+@@ -299,6 +300,7 @@ private:
+     QComboBox *m_callWindowSeconds;
+     QSpinBox *m_maxConsecutiveWindows;
+     QSpinBox *m_sameTargetRetrySeconds;
++    QSpinBox *m_recentQsoCooldownSeconds;
+     QSpinBox *m_minimumBandDwellSeconds;
+     QSpinBox *m_engagedCompletionGraceSeconds;
+     QComboBox *m_atnoChaseType;
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+@@ -478,6 +478,11 @@ void HvAutoDxSettings::createEligibilityGroup()
+     m_sameTargetRetrySeconds = new QSpinBox;
+     m_sameTargetRetrySeconds->setRange(0, 86400);
+     m_sameTargetRetrySeconds->setSuffix(" sec");
++    m_recentQsoCooldownSeconds = new QSpinBox;
++    m_recentQsoCooldownSeconds->setRange(0, 86400);
++    m_recentQsoCooldownSeconds->setSuffix(" sec");
++    m_recentQsoCooldownSeconds->setToolTip(
++        "After a logged QSO, ignore automatic and directed-caller repeats from this callsign for this long");
+     m_minimumBandDwellSeconds = new QSpinBox;
+     m_minimumBandDwellSeconds->setRange(0, 7200);
+     m_minimumBandDwellSeconds->setSuffix(" sec");
+@@ -503,16 +508,18 @@ void HvAutoDxSettings::createEligibilityGroup()
+     attempts->addWidget(m_maxConsecutiveWindows, 1, 1);
+     attempts->addWidget(new QLabel("Same-target retry:"), 1, 2);
+     attempts->addWidget(m_sameTargetRetrySeconds, 1, 3);
+-    attempts->addWidget(new QLabel("Minimum band dwell:"), 2, 0);
+-    attempts->addWidget(m_minimumBandDwellSeconds, 2, 1);
+-    attempts->addWidget(new QLabel("Engaged completion grace:"), 2, 2);
+-    attempts->addWidget(m_engagedCompletionGraceSeconds, 2, 3);
+-    attempts->addWidget(new QLabel("Persistent chase:"), 3, 0);
+-    attempts->addWidget(m_atnoChaseType, 3, 1);
+-    attempts->addWidget(new QLabel("Scarce threshold:"), 3, 2);
+-    attempts->addWidget(m_scarceThreshold, 3, 3);
+-    attempts->addWidget(new QLabel("Non-Europe boost:"), 4, 0);
+-    attempts->addWidget(m_nonEuropeBoost, 4, 1);
++    attempts->addWidget(new QLabel("Recent-QSO cooldown:"), 2, 0);
++    attempts->addWidget(m_recentQsoCooldownSeconds, 2, 1);
++    attempts->addWidget(new QLabel("Minimum band dwell:"), 2, 2);
++    attempts->addWidget(m_minimumBandDwellSeconds, 2, 3);
++    attempts->addWidget(new QLabel("Engaged completion grace:"), 3, 0);
++    attempts->addWidget(m_engagedCompletionGraceSeconds, 3, 1);
++    attempts->addWidget(new QLabel("Persistent chase:"), 3, 2);
++    attempts->addWidget(m_atnoChaseType, 3, 3);
++    attempts->addWidget(new QLabel("Scarce threshold:"), 4, 0);
++    attempts->addWidget(m_scarceThreshold, 4, 1);
++    attempts->addWidget(new QLabel("Non-Europe boost:"), 4, 2);
++    attempts->addWidget(m_nonEuropeBoost, 4, 3);
+     layout->addLayout(attempts);
+ 
+     QLabel *note = new QLabel(
+@@ -936,6 +943,7 @@ AutoDxSettings HvAutoDxSettings::getSettings() const
+     settings.callWindowSeconds = m_callWindowSeconds->currentData().toInt();
+     settings.maxConsecutiveWindows = m_maxConsecutiveWindows->value();
+     settings.sameTargetRetrySeconds = m_sameTargetRetrySeconds->value();
++    settings.recentQsoCooldownSeconds = m_recentQsoCooldownSeconds->value();
+     settings.minimumBandDwellSeconds = m_minimumBandDwellSeconds->value();
+     settings.engagedCompletionGraceSeconds = m_engagedCompletionGraceSeconds->value();
+     settings.atnoChaseType = m_atnoChaseType->currentData().toInt();
+@@ -1099,6 +1107,7 @@ void HvAutoDxSettings::loadSettings(const QString& appPath)
+     m_callWindowSeconds->setCurrentIndex(index >= 0 ? index : 0);
+     m_maxConsecutiveWindows->setValue(settings.value("Attempt/MaxConsecutiveWindows", 1).toInt());
+     m_sameTargetRetrySeconds->setValue(settings.value("Attempt/SameTargetRetrySeconds", 120).toInt());
++    m_recentQsoCooldownSeconds->setValue(settings.value("Attempt/RecentQsoCooldownSeconds", 3600).toInt());
+     m_minimumBandDwellSeconds->setValue(settings.value("BandSwitching/MinimumDwellSeconds", 180).toInt());
+     m_engagedCompletionGraceSeconds->setValue(settings.value("Attempt/EngagedCompletionGraceSeconds", 60).toInt());
+     index = m_atnoChaseType->findData(settings.value("AutoDx/ATNOChaseType", 3).toInt());
+@@ -1278,6 +1287,7 @@ void HvAutoDxSettings::saveSettings(const QString& appPath)
+     settings.setValue("Attempt/CallWindowSeconds", m_callWindowSeconds->currentData().toInt());
+     settings.setValue("Attempt/MaxConsecutiveWindows", m_maxConsecutiveWindows->value());
+     settings.setValue("Attempt/SameTargetRetrySeconds", m_sameTargetRetrySeconds->value());
++    settings.setValue("Attempt/RecentQsoCooldownSeconds", m_recentQsoCooldownSeconds->value());
+     settings.setValue("BandSwitching/MinimumDwellSeconds", m_minimumBandDwellSeconds->value());
+     settings.setValue("Attempt/EngagedCompletionGraceSeconds", m_engagedCompletionGraceSeconds->value());
+     settings.setValue("AutoDx/ATNOChaseType", m_atnoChaseType->currentData().toInt());
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxselectionpolicy.h b/MSHV_2762/src/HvAutoDxer/autodxselectionpolicy.h
+--- a/MSHV_2762/src/HvAutoDxer/autodxselectionpolicy.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxselectionpolicy.h
+@@ -75,6 +75,7 @@ struct AutoDxSelectionConfig
+     int callWindowSeconds;
+     int maxConsecutiveWindows;
+     int sameTargetRetrySeconds;
++    int recentQsoCooldownSeconds;
+     int minimumBandDwellSeconds;
+ 
+     AutoDxSelectionConfig()
+@@ -86,6 +87,7 @@ struct AutoDxSelectionConfig
+           preferNonEurope(true), nonEuropeBoost(7500), selectionOrder("score"),
+           treat73AsCq(false), watchUnconfirmedDxcc(true), callWindowSeconds(120),
+           maxConsecutiveWindows(1), sameTargetRetrySeconds(120),
++          recentQsoCooldownSeconds(3600),
+           minimumBandDwellSeconds(180)
+     {
+         enabledContinents << "EU" << "AF" << "OC" << "AS" << "SA" << "NA" << "AN";
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+--- a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+@@ -198,6 +198,8 @@ struct AutoDxRuntimeConfig
+             "Attempt/MaxConsecutiveWindows", 1).toInt(), 20);
+         c.selection.sameTargetRetrySeconds = qBound(0, settings.value(
+             "Attempt/SameTargetRetrySeconds", 120).toInt(), 86400);
++        c.selection.recentQsoCooldownSeconds = qBound(0, settings.value(
++            "Attempt/RecentQsoCooldownSeconds", 3600).toInt(), 86400);
+         c.selection.minimumBandDwellSeconds = qBound(0, settings.value(
+             "BandSwitching/MinimumDwellSeconds", 180).toInt(), 7200);
+         c.dxpeditionBoost = qBound(0, settings.value(
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.h b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+@@ -473,7 +473,6 @@ private:
+     // Recently-worked blacklist - prevents re-calling stations immediately after QSO
+     QSet<QString> m_recentlyWorked;
+     QHash<QString, QDateTime> m_workedTimestamps;
+-    static const int WORKED_BLACKLIST_SECONDS = 300;  // 5 minute blacklist
+     QTimer *m_recentlyWorkedCleanupTimer;  // 24/7 stability: periodic cleanup
+     void cleanupRecentlyWorked();
+ 
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -515,6 +515,7 @@ void AutoDxerCore::loadRuntimeConfig(const QString &settingsPath)
+     configAudit["call_window_seconds"] = m_selectionConfig.callWindowSeconds;
+     configAudit["max_consecutive_windows"] = m_selectionConfig.maxConsecutiveWindows;
+     configAudit["same_target_retry_seconds"] = m_selectionConfig.sameTargetRetrySeconds;
++    configAudit["recent_qso_cooldown_seconds"] = m_selectionConfig.recentQsoCooldownSeconds;
+     configAudit["minimum_band_dwell_seconds"] = m_selectionConfig.minimumBandDwellSeconds;
+     configAudit["lotw_data_available"] = lotwDataAvailable;
+     configAudit["dxcc_confirmation_data_available"] = confirmationDataAvailable;
+@@ -790,6 +791,7 @@ QJsonObject AutoDxerCore::runtimeConfigStatus() const
+     timing["call_window_seconds"] = m_selectionConfig.callWindowSeconds;
+     timing["max_consecutive_windows"] = m_selectionConfig.maxConsecutiveWindows;
+     timing["same_target_retry_seconds"] = m_selectionConfig.sameTargetRetrySeconds;
++    timing["recent_qso_cooldown_seconds"] = m_selectionConfig.recentQsoCooldownSeconds;
+     timing["minimum_band_dwell_seconds"] = m_selectionConfig.minimumBandDwellSeconds;
+     result["automation_timing"] = timing;
+     QJsonObject schedules;
+@@ -2281,7 +2283,7 @@ void AutoDxerCore::considerCallingMePreemption(const CachedDecode &decode)
+                              .arg(caller.callsign));
+             QJsonObject fields;
+             fields["caller"] = caller.callsign;
+-            fields["blacklist_seconds"] = WORKED_BLACKLIST_SECONDS;
++            fields["blacklist_seconds"] = m_selectionConfig.recentQsoCooldownSeconds;
+             auditEvent("directed-caller-recently-worked", fields);
+             return;
+         }
+@@ -4110,7 +4112,8 @@ void AutoDxerCore::cleanupRecentlyWorked()
+     QMutableHashIterator<QString, QDateTime> it(m_workedTimestamps);
+     while (it.hasNext()) {
+         it.next();
+-        if (it.value().secsTo(now) > WORKED_BLACKLIST_SECONDS) {
++        if (m_selectionConfig.recentQsoCooldownSeconds <= 0
++                || it.value().secsTo(now) >= m_selectionConfig.recentQsoCooldownSeconds) {
+             m_recentlyWorked.remove(it.key());
+             it.remove();
+         }

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import json
 from pathlib import Path
+import threading
 from typing import Optional
 import time
 
@@ -18,6 +20,15 @@ from radio_control.postgres_store import should_use_postgres
 logger = logging.getLogger(__name__)
 
 CONFIRMED_VALUES = {"Y", "V", "YES", "TRUE", "1", "CONFIRMED"}
+US_STATES = frozenset(
+    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS "
+    "MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY".split()
+)
+US_STATE_DXCC = frozenset({6, 110, 291})  # Alaska, Hawaii, contiguous United States
+MSHV_BAND_INDEXES = {
+    "160m": 3, "80m": 4, "40m": 6, "30m": 7, "20m": 8,
+    "17m": 9, "15m": 10, "12m": 11, "10m": 12,
+}
 
 
 def _band_from_mhz(mhz: float) -> str:
@@ -58,6 +69,7 @@ class DuckDBQSOStatusStore:
         self._loaded_mtime: float | None = None
         self._loaded_at: float | None = None
         self._cache_ttl = 300
+        self._load_lock = threading.Lock()
         self.dxcc_worked: set[int] = set()
         self.dxcc_confirmed: set[int] = set()
         self.dxcc_band_worked: set[tuple[int, str]] = set()
@@ -73,6 +85,9 @@ class DuckDBQSOStatusStore:
         self.grid_worked: set[str] = set()
         self.grid_band_worked: set[tuple[str, str]] = set()
         self.grid_mode_worked: set[tuple[str, str]] = set()
+        self.us_state_by_call: dict[str, str] = {}
+        self.us_state_band_worked_calls: dict[tuple[str, str], set[str]] = {}
+        self.us_state_band_confirmed_calls: dict[tuple[str, str], set[str]] = {}
 
     def available(self) -> bool:
         if self._use_duckdb:
@@ -102,7 +117,99 @@ class DuckDBQSOStatusStore:
             "grid_worked_count": len(self.grid_worked),
             "grid_band_worked_count": len(self.grid_band_worked),
             "grid_mode_worked_count": len(self.grid_mode_worked),
+            "us_state_call_count": len(self.us_state_by_call),
+            "us_state_band_slot_count": len(self.us_state_band_worked_calls),
         }
+
+    def mshv_confirmation_index(self) -> list[str] | None:
+        """Return the confirmation facts consumed by the native MSHV UI.
+
+        The same cached Wavelog rows and LoTW/paper confirmation rule used by
+        the Spots classifier are the authority.  ``None`` deliberately means
+        unavailable; callers must retain the last good index rather than
+        publishing an empty file that would turn every confirmed QSO into W.
+        """
+        if not self._ensure_loaded():
+            return None
+        band_indexes = {
+            "160m": 3, "80m": 4, "60m": 5, "40m": 6, "30m": 7,
+            "20m": 8, "17m": 9, "15m": 10, "12m": 11, "10m": 12,
+            "6m": 14, "2m": 17,
+        }
+        lines = ["# OM0RX Wavelog confirmation index v1"]
+        lines.extend(f"DXCC|{dxcc}" for dxcc in sorted(self.dxcc_confirmed))
+        lines.extend(f"CALL|{call}" for call in sorted(self.call_confirmed))
+        lines.extend(
+            f"DXCC_BAND_MODE|{dxcc}|{band_indexes[band]}|{mode}"
+            for dxcc, band, mode in sorted(self.dxcc_bandmode_confirmed)
+            if band in band_indexes and mode in {"FT8", "FT4"}
+        )
+        lines.extend(
+            f"CALL_BAND_MODE|{call}|{band_indexes[band]}|{mode}"
+            for call, band, mode in sorted(self.call_bandmode_confirmed)
+            if band in band_indexes and mode in {"FT8", "FT4"}
+        )
+        return lines
+
+    def mshv_us_state_index(self) -> list[str] | None:
+        """Return the distinct-call state/band facts consumed by native MSHV."""
+        if not self._ensure_loaded():
+            return None
+        state_by_call = dict(self.us_state_by_call)
+        lotw_calls: set[str] = set()
+        cache_path = config.DATA_DIR / "qrz_profile_cache.json"
+        try:
+            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            cache = {}
+        if isinstance(cache, dict):
+            for raw_call, item in cache.items():
+                profile = item.get("profile", {}) if isinstance(item, dict) else {}
+                if not isinstance(profile, dict):
+                    continue
+                call = self._normalise_call(raw_call)
+                state = self._normalise_state(profile.get("state"))
+                country = str(profile.get("country") or "").strip().upper()
+                is_us_state_country = country in {
+                    "UNITED STATES", "UNITED STATES OF AMERICA", "USA", "ALASKA", "HAWAII",
+                }
+                if call and state and is_us_state_country:
+                    state_by_call[call] = state
+                    if self._confirmed_value(profile.get("lotw")):
+                        lotw_calls.add(call)
+        lines = ["# OM0RX Wavelog US state chase index v1"]
+        lines.extend(
+            f"CALL|{call}|{state}|{1 if call in lotw_calls else 0}|291"
+            for call, state in sorted(state_by_call.items())
+        )
+        for (state, band), calls in sorted(self.us_state_band_worked_calls.items()):
+            band_index = MSHV_BAND_INDEXES.get(band)
+            if band_index is None:
+                continue
+            confirmed = self.us_state_band_confirmed_calls.get((state, band), set())
+            lines.extend(
+                f"WORKED|{call}|{state}|{band_index}|{1 if call in confirmed else 0}|291"
+                for call in sorted(calls)
+            )
+        return lines
+
+    def mshv_lotw_members(self) -> list[str] | None:
+        """Return cached QRZ LoTW participants for native preference filters."""
+        if not self._ensure_loaded():
+            return None
+        try:
+            cache = json.loads((config.DATA_DIR / "qrz_profile_cache.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return []
+        calls: set[str] = set()
+        if isinstance(cache, dict):
+            for raw_call, item in cache.items():
+                profile = item.get("profile", {}) if isinstance(item, dict) else {}
+                if isinstance(profile, dict) and self._confirmed_value(profile.get("lotw")):
+                    call = self._normalise_call(raw_call)
+                    if call:
+                        calls.add(call)
+        return sorted(calls)
 
     def call_flags(
         self,
@@ -216,6 +323,11 @@ class DuckDBQSOStatusStore:
         )
         confirmed = self._row_confirmed(qso_data)
         qso_date = self._normalise_qso_date(qso_data)
+        qso_dxcc = self._coerce_dxcc(qso_data.get("dxcc") or qso_data.get("dxcc_id"))
+        state_value = (
+            self._normalise_state(qso_data.get("state"))
+            if qso_dxcc in US_STATE_DXCC else ""
+        )
 
         changed = False
         if call_value:
@@ -235,6 +347,19 @@ class DuckDBQSOStatusStore:
                 if qso_date > self.call_bandmode_latest_date.get(slot, ""):
                     self.call_bandmode_latest_date[slot] = qso_date
                     changed = True
+            if state_value:
+                if self.us_state_by_call.get(call_value) != state_value:
+                    self.us_state_by_call[call_value] = state_value
+                    changed = True
+                if band_value in MSHV_BAND_INDEXES and mode_value in {"FT8", "FT4"}:
+                    state_slot = (state_value, band_value)
+                    changed |= self._add(
+                        self.us_state_band_worked_calls.setdefault(state_slot, set()), call_value
+                    )
+                    if confirmed:
+                        changed |= self._add(
+                            self.us_state_band_confirmed_calls.setdefault(state_slot, set()), call_value
+                        )
 
         dxcc_value = self._coerce_dxcc(qso_data.get("dxcc") or qso_data.get("dxcc_id"))
         if dxcc_value is not None:
@@ -272,6 +397,11 @@ class DuckDBQSOStatusStore:
     @staticmethod
     def _normalise_call(callsign: str | None) -> str:
         return "".join(str(callsign or "").upper().split())
+
+    @staticmethod
+    def _normalise_state(state: object) -> str:
+        value = str(state or "").strip().upper()
+        return value if value in US_STATES else ""
 
     @staticmethod
     def _normalise_band(band: object) -> str:
@@ -349,7 +479,21 @@ class DuckDBQSOStatusStore:
         if self._loaded_at is not None and now - self._loaded_at < self._cache_ttl:
             return True
 
+        # Spot classification is highly concurrent.  When the five-minute
+        # cache expires, let one worker refresh it while every other worker
+        # keeps using the last complete snapshot.  Previously all workers
+        # could start the same database scan and hit the classifier's
+        # 750-millisecond timeout, leaving otherwise-known DXCCs as Unknown.
+        if not self._load_lock.acquire(blocking=False):
+            return self._loaded_at is not None
+
         try:
+            # Another worker may have completed the refresh between the first
+            # freshness check and acquiring the lock.
+            now = time.monotonic()
+            if self._loaded_at is not None and now - self._loaded_at < self._cache_ttl:
+                return True
+
             if should_use_postgres() and not self._use_duckdb:
                 with connect_postgres() as conn:
                     with conn.cursor() as cur:
@@ -357,7 +501,7 @@ class DuckDBQSOStatusStore:
                             """
                             SELECT call, dxcc, band, mode, submode,
                                    lotw_qsl_rcvd, eqsl_qsl_rcvd, qsl_rcvd,
-                                   gridsquare, time_on
+                                   gridsquare, time_on, state
                             FROM qso_records
                             WHERE NULLIF(call, '') IS NOT NULL
                                OR dxcc IS NOT NULL
@@ -376,6 +520,7 @@ class DuckDBQSOStatusStore:
                                 "qsl_rcvd": qsl_rcvd,
                                 "gridsquare": gridsquare,
                                 "time_on": time_on,
+                                "state": state,
                             }
                             for (
                                 call,
@@ -388,6 +533,7 @@ class DuckDBQSOStatusStore:
                                 qsl_rcvd,
                                 gridsquare,
                                 time_on,
+                                state,
                             ) in cur.fetchall()
                         ]
             elif self._use_duckdb:
@@ -410,6 +556,7 @@ class DuckDBQSOStatusStore:
                         if "qso_date" in columns
                         else "NULL AS time_on"
                     )
+                    state_expr = "state" if "state" in columns else "NULL AS state"
                     rows = [
                         {
                             "call": call,
@@ -422,12 +569,13 @@ class DuckDBQSOStatusStore:
                             "qsl_rcvd": qsl_rcvd,
                             "gridsquare": gridsquare,
                             "time_on": time_on,
+                            "state": state,
                         }
-                        for call, dxcc, band, mode, submode, lotw_qsl_rcvd, eqsl_qsl_rcvd, qsl_rcvd, gridsquare, time_on in conn.execute(
+                        for call, dxcc, band, mode, submode, lotw_qsl_rcvd, eqsl_qsl_rcvd, qsl_rcvd, gridsquare, time_on, state in conn.execute(
                             f"""
                             SELECT {call_expr}, dxcc, band, mode, submode,
                                    lotw_qsl_rcvd, {eqsl_expr}, {qsl_expr}, gridsquare,
-                                   {time_expr}
+                                   {time_expr}, {state_expr}
                             FROM qso_records
                             WHERE {call_where}
                                dxcc IS NOT NULL
@@ -463,7 +611,8 @@ class DuckDBQSOStatusStore:
                                    COL_EQSL_QSL_RCVD AS eqsl_qsl_rcvd,
                                    COL_QSL_RCVD AS qsl_rcvd,
                                    COL_GRIDSQUARE AS gridsquare,
-                                   COL_TIME_ON AS time_on
+                                   COL_TIME_ON AS time_on,
+                                   COL_STATE AS state
                             FROM TABLE_HRD_CONTACTS_V01
                             WHERE station_id = %s
                               AND (
@@ -493,6 +642,9 @@ class DuckDBQSOStatusStore:
             grid_worked: set[str] = set()
             grid_band_worked: set[tuple[str, str]] = set()
             grid_mode_worked: set[tuple[str, str]] = set()
+            us_state_by_call: dict[str, str] = {}
+            us_state_band_worked_calls: dict[tuple[str, str], set[str]] = {}
+            us_state_band_confirmed_calls: dict[tuple[str, str], set[str]] = {}
 
             for row in rows:
                 band_value = self._normalise_band(row.get("band"))
@@ -501,6 +653,11 @@ class DuckDBQSOStatusStore:
                 grid_value = self._normalise_grid(row.get("gridsquare"))
                 call_value = self._normalise_call(row.get("call"))
                 qso_date = self._normalise_qso_date(row)
+                row_dxcc = self._coerce_dxcc(row.get("dxcc"))
+                state_value = (
+                    self._normalise_state(row.get("state"))
+                    if row_dxcc in US_STATE_DXCC else ""
+                )
 
                 if call_value:
                     call_worked.add(call_value)
@@ -518,6 +675,13 @@ class DuckDBQSOStatusStore:
                         slot = (call_value, band_value, mode_value)
                         if qso_date > call_bandmode_latest_date.get(slot, ""):
                             call_bandmode_latest_date[slot] = qso_date
+                    if state_value:
+                        us_state_by_call[call_value] = state_value
+                        if band_value in MSHV_BAND_INDEXES and mode_value in {"FT8", "FT4"}:
+                            state_slot = (state_value, band_value)
+                            us_state_band_worked_calls.setdefault(state_slot, set()).add(call_value)
+                            if confirmed:
+                                us_state_band_confirmed_calls.setdefault(state_slot, set()).add(call_value)
 
                 if row.get("dxcc") is not None:
                     dxcc_int = int(row.get("dxcc"))
@@ -552,6 +716,9 @@ class DuckDBQSOStatusStore:
             self.grid_worked = grid_worked
             self.grid_band_worked = grid_band_worked
             self.grid_mode_worked = grid_mode_worked
+            self.us_state_by_call = us_state_by_call
+            self.us_state_band_worked_calls = us_state_band_worked_calls
+            self.us_state_band_confirmed_calls = us_state_band_confirmed_calls
             self._loaded_at = now
             self._loaded_mtime = now
             if should_use_postgres() and not self._use_duckdb:
@@ -581,3 +748,5 @@ class DuckDBQSOStatusStore:
                 logger.warning("QSO status DuckDB load failed: %s", exc)
                 self._unavailable_logged = True
             return False
+        finally:
+            self._load_lock.release()

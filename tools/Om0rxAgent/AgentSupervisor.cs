@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
@@ -9,7 +10,9 @@ public sealed class AgentSupervisor : IDisposable
 {
     private readonly AgentSettings _settings;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(10) };
-    private readonly HttpClient _actionHttp = new() { Timeout = TimeSpan.FromSeconds(30) };
+    // MSHV loads the canonical history before its first exact heartbeat. Keep
+    // this above the backend's bounded 45-second startup confirmation window.
+    private readonly HttpClient _actionHttp = new() { Timeout = TimeSpan.FromSeconds(120) };
     private readonly CancellationTokenSource _stop = new();
     private readonly SemaphoreSlim _actionLock = new(1, 1);
     private readonly object _sync = new();
@@ -36,6 +39,8 @@ public sealed class AgentSupervisor : IDisposable
     private bool _wsjtzNativeAutomationPending;
     private int _wsjtzNativeAutomationAttempts;
     private DateTimeOffset _nextWsjtzNativeAutomationAttempt = DateTimeOffset.MinValue;
+    private string _selectedDigitalEngine = "none";
+    private int _mshvHealthFailures;
 
     public event EventHandler<AgentSnapshot>? SnapshotChanged;
     public event EventHandler<string>? EventLogged;
@@ -83,6 +88,13 @@ public sealed class AgentSupervisor : IDisposable
             }
 
             await StartAllWithoutLockAsync();
+            if (!await WaitForBackendReadyAsync(TimeSpan.FromSeconds(120)))
+            {
+                throw new InvalidOperationException("Start All timed out waiting for the backend to become ready. Check om0rx-agent.log and start_all backend logs.");
+            }
+
+            await WaitForLauncherReadyAsync();
+            Log("Start All completed: backend and desktop UI are ready.");
         }
         finally
         {
@@ -99,13 +111,13 @@ public sealed class AgentSupervisor : IDisposable
             _startupOptionsApplied = false;
             Log("Stopping OM0RX runtime.");
             await HaltDigitalTxAsync();
+            if (!await StopDigitalEngineProcessesAsync()) throw new InvalidOperationException("Digital engine stop was not confirmed; runtime shutdown blocked.");
             await TryPostAsync("/api/shutdown");
             await Task.Delay(2500);
 
             await StopManagedRuntimeAsync("stop");
 
             await StopProjectProcessesAsync();
-            await StopDigitalEngineProcessesAsync();
             _runtimeProcess = null;
             _consecutiveFailures = 0;
         }
@@ -128,6 +140,7 @@ public sealed class AgentSupervisor : IDisposable
             Log("Restarting all OM0RX runtime processes and windows.");
 
             await HaltDigitalTxAsync();
+            if (!await StopDigitalEngineProcessesAsync()) throw new InvalidOperationException("Digital engine stop was not confirmed; runtime restart blocked.");
             var gracefulShutdown = await TryPostAsync("/api/shutdown");
             Log(gracefulShutdown
                 ? "Backend accepted the shutdown request."
@@ -136,7 +149,6 @@ public sealed class AgentSupervisor : IDisposable
             await StopManagedRuntimeAsync("restart");
 
             await StopProjectProcessesAsync();
-            await StopDigitalEngineProcessesAsync();
             _runtimeProcess = null;
             await Task.Delay(1500);
             await StartAllWithoutLockAsync();
@@ -168,11 +180,11 @@ public sealed class AgentSupervisor : IDisposable
             _repairInProgress = true;
             Log("Repair requested: clearing managed processes and starting fresh.");
             await HaltDigitalTxAsync();
+            if (!await StopDigitalEngineProcessesAsync()) throw new InvalidOperationException("Digital engine stop was not confirmed; runtime repair blocked.");
             await TryPostAsync("/api/shutdown");
             await Task.Delay(1500);
             await StopManagedRuntimeAsync("repair");
             await StopProjectProcessesAsync();
-            await StopDigitalEngineProcessesAsync();
             _runtimeProcess = null;
             await StartAllWithoutLockAsync();
             if (!await WaitForBackendReadyAsync(TimeSpan.FromSeconds(120)))
@@ -216,7 +228,16 @@ public sealed class AgentSupervisor : IDisposable
 
         if (_settings.StartServicesThisSession)
         {
-            await StartAllAsync();
+            try
+            {
+                await StartAllAsync();
+            }
+            catch (Exception ex)
+            {
+                // A failed startup must not terminate the monitor task. Keep
+                // probing so the status UI and Repair action remain usable.
+                Log($"Initial startup failed: {ex.Message}");
+            }
         }
 
         while (!_stop.IsCancellationRequested)
@@ -226,6 +247,7 @@ public sealed class AgentSupervisor : IDisposable
                 var snapshot = await ProbeAsync();
                 CurrentSnapshot = snapshot;
                 SnapshotChanged?.Invoke(this, snapshot);
+                await RefreshDigitalEngineAsync();
                 await MaybeWsjtzWatchdogAsync(snapshot);
                 await MaybeApplyStartupOptionsAsync(snapshot);
                 await MaybeApplyPendingWsjtzNativeAutomationAsync();
@@ -249,20 +271,39 @@ public sealed class AgentSupervisor : IDisposable
 
     private async Task<AgentSnapshot> ProbeAsync()
     {
-        var components = new List<ComponentProbe>();
-        var runtimeRunning = await IsRuntimeLikelyRunningAsync();
-        components.Add(new ComponentProbe(
-            "runtime",
-            "Supervisor",
-            runtimeRunning ? ComponentStatus.Ok : ComponentStatus.Off,
-            runtimeRunning ? "running" : "stopped",
-            "PowerShell lifecycle process for start_all.ps1"));
+        // These probes are independent. Running them serially made the Agent
+        // status window wait on Docker before it could publish backend/port
+        // health, even though all work already happens off the WinForms UI
+        // thread.
+        var ownerTask = ProbeRuntimeOwnerAsync();
+        var backendTask = ProbeBackendAsync();
+        var bridgeWsTask = ProbeRequiredPortAsync("bridge-ws", "Bridge WebSocket", _settings.BackendHost, 8091);
+        var bridgeCommandTask = ProbeRequiredPortAsync("bridge-command", "Bridge Command", _settings.BackendHost, 8092);
+        var sdcTask = ProbeOptionalDependencyPortAsync("sdc-tcp", "SDC TCP", _settings.BackendHost, 12166);
+        var dockerTask = ProbeDockerAsync();
+        var serviceHealthTask = ProbeBackendServiceHealthAsync();
 
-        components.Add(await ProbeBackendAsync());
-        components.Add(await ProbeRequiredPortAsync("bridge-ws", "Bridge WebSocket", _settings.BackendHost, 8091));
-        components.Add(await ProbeOptionalDependencyPortAsync("sdc-tcp", "SDC TCP", _settings.BackendHost, 12166));
-        components.Add(await ProbeDockerAsync());
-        components.AddRange(await ProbeBackendServiceHealthAsync());
+        await Task.WhenAll(
+            ownerTask,
+            backendTask,
+            bridgeWsTask,
+            bridgeCommandTask,
+            sdcTask,
+            dockerTask,
+            serviceHealthTask);
+
+        var ownerProbe = await ownerTask;
+        var runtimeRunning = ownerProbe.Status == ComponentStatus.Ok;
+        var components = new List<ComponentProbe>
+        {
+            ownerProbe,
+            await backendTask,
+            await bridgeWsTask,
+            await bridgeCommandTask,
+            await sdcTask,
+            await dockerTask,
+        };
+        components.AddRange(await serviceHealthTask);
         components.AddRange(ProbeWatchedProcesses());
 
         var errors = components.Count(c => c.Status == ComponentStatus.Error);
@@ -282,6 +323,159 @@ public sealed class AgentSupervisor : IDisposable
             _repairInProgress,
             summary);
     }
+
+    private async Task<ComponentProbe> ProbeRuntimeOwnerAsync()
+    {
+        var path = Path.Combine(_settings.ProjectRoot, "logs", "runtime_owner.json");
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return new ComponentProbe("runtime", "Runtime Owner", ComponentStatus.Error, "missing", "Atomic runtime owner manifest is absent");
+            }
+
+            using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(path, _stop.Token));
+            var root = doc.RootElement;
+            if (GetJsonInt32(root, "schema") != 1 || GetJsonString(root, "state", "") != "active")
+            {
+                return new ComponentProbe("runtime", "Runtime Owner", ComponentStatus.Error, "inactive", "Runtime owner manifest is not active schema 1");
+            }
+            if (!root.TryGetProperty("ports", out var ports)
+                || GetJsonInt32(ports, "backend") != _settings.BackendPort
+                || GetJsonInt32(ports, "bridge_ws") != 8091
+                || GetJsonInt32(ports, "bridge_command") != 8092)
+            {
+                return new ComponentProbe("runtime", "Runtime Owner", ComponentStatus.Error, "port mismatch", "Runtime owner port contract does not match backend/8091/8092");
+            }
+
+            foreach (var role in new[] { "supervisor", "backend", "bridge" })
+            {
+                if (!root.TryGetProperty(role, out var identity) || !RuntimeProcessIdentityMatches(identity))
+                {
+                    return new ComponentProbe("runtime", "Runtime Owner", ComponentStatus.Error, $"{role} mismatch", $"The {role} PID/path/creation identity is missing or stale");
+                }
+            }
+            if (!await RuntimePortsMatchOwnerAsync(root))
+            {
+                return new ComponentProbe("runtime", "Runtime Owner", ComponentStatus.Error, "listener mismatch", "Backend/8091/8092 listeners do not belong to the declared child identities");
+            }
+
+            var ownerId = GetJsonString(root, "owner_id", "");
+            if (string.IsNullOrWhiteSpace(ownerId))
+            {
+                return new ComponentProbe("runtime", "Runtime Owner", ComponentStatus.Error, "owner missing", "Runtime owner ID is empty");
+            }
+            return new ComponentProbe("runtime", "Runtime Owner", ComponentStatus.Ok, "owned", $"Owner {ownerId[..Math.Min(12, ownerId.Length)]}; backend + bridge identities match");
+        }
+        catch (Exception ex)
+        {
+            return new ComponentProbe("runtime", "Runtime Owner", ComponentStatus.Error, "invalid", ex.Message);
+        }
+    }
+
+    private static bool RuntimeProcessIdentityMatches(JsonElement identity)
+    {
+        var pid = GetJsonInt32(identity, "pid");
+        var declaredCreated = GetJsonInt64(identity, "creation_time_filetime");
+        var declaredPath = GetJsonString(identity, "executable_path", "");
+        if (pid is null || declaredCreated is null || string.IsNullOrWhiteSpace(declaredPath)) return false;
+        try
+        {
+            using var process = Process.GetProcessById(pid.Value);
+            var actualCreated = process.StartTime.ToUniversalTime().ToFileTimeUtc();
+            var actualPath = process.MainModule?.FileName;
+            return actualCreated == declaredCreated.Value
+                && !string.IsNullOrWhiteSpace(actualPath)
+                && string.Equals(Path.GetFullPath(actualPath), Path.GetFullPath(declaredPath), StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private Task<bool> RuntimePortsMatchOwnerAsync(JsonElement root)
+    {
+        if (!root.TryGetProperty("backend", out var backend) || !root.TryGetProperty("bridge", out var bridge)) return Task.FromResult(false);
+        var backendPid = GetJsonInt32(backend, "pid");
+        var bridgePid = GetJsonInt32(bridge, "pid");
+        if (backendPid is null || bridgePid is null) return Task.FromResult(false);
+
+        var expected = new Dictionary<int, int>
+        {
+            [_settings.BackendPort] = backendPid.Value,
+            [8091] = bridgePid.Value,
+            [8092] = bridgePid.Value,
+        };
+        var owners = GetTcp4ListenerOwners(expected.Keys);
+        if (owners is null) return Task.FromResult(false);
+
+        return Task.FromResult(expected.All(entry =>
+            owners.TryGetValue(entry.Key, out var actual) &&
+            actual.Count == 1 &&
+            actual.Contains(entry.Value)));
+    }
+
+    private static Dictionary<int, HashSet<int>>? GetTcp4ListenerOwners(IEnumerable<int> requestedPorts)
+    {
+        var requested = requestedPorts.ToHashSet();
+        var owners = requested.ToDictionary(port => port, _ => new HashSet<int>());
+        if (!OperatingSystem.IsWindows()) return null;
+
+        uint size = 0;
+        var result = GetExtendedTcpTable(IntPtr.Zero, ref size, false, 2, 3, 0);
+        if (result != 122 || size < sizeof(uint)) return null;
+
+        var buffer = Marshal.AllocHGlobal(checked((int)size));
+        try
+        {
+            result = GetExtendedTcpTable(buffer, ref size, false, 2, 3, 0);
+            if (result != 0) return null;
+
+            var count = Marshal.ReadInt32(buffer);
+            var rowSize = Marshal.SizeOf<MibTcpRowOwnerPid>();
+            for (var index = 0; index < count; index++)
+            {
+                var rowPointer = IntPtr.Add(buffer, sizeof(uint) + index * rowSize);
+                var row = Marshal.PtrToStructure<MibTcpRowOwnerPid>(rowPointer);
+                var port = (int)(((row.LocalPort & 0xff) << 8) | ((row.LocalPort & 0xff00) >> 8));
+                if (owners.TryGetValue(port, out var portOwners))
+                {
+                    portOwners.Add(checked((int)row.OwningPid));
+                }
+            }
+
+            return owners;
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MibTcpRowOwnerPid
+    {
+        public uint State;
+        public uint LocalAddress;
+        public uint LocalPort;
+        public uint RemoteAddress;
+        public uint RemotePort;
+        public uint OwningPid;
+    }
+
+    [DllImport("iphlpapi.dll")]
+    private static extern uint GetExtendedTcpTable(
+        IntPtr tcpTable,
+        ref uint size,
+        [MarshalAs(UnmanagedType.Bool)] bool order,
+        int ipVersion,
+        int tableClass,
+        uint reserved);
 
     private async Task<ComponentProbe> ProbeBackendAsync()
     {
@@ -455,7 +649,7 @@ public sealed class AgentSupervisor : IDisposable
             _desiredRunning &&
             (backend?.Status == ComponentStatus.Error ||
              bridge?.Status == ComponentStatus.Error ||
-             runtime?.Status == ComponentStatus.Off);
+             runtime?.Status == ComponentStatus.Error);
 
         if (!criticalFailure)
         {
@@ -501,8 +695,33 @@ public sealed class AgentSupervisor : IDisposable
 
     private async Task MaybeWsjtzWatchdogAsync(AgentSnapshot snapshot)
     {
+        if (_selectedDigitalEngine == "none")
+        {
+            _wsjtxStaleFailures = 0;
+            _autoCallStallFailures = 0;
+            _wsjtzUiHungFailures = 0;
+            _mshvHealthFailures = 0;
+            return;
+        }
+        if (_selectedDigitalEngine != "wsjtz")
+        {
+            await MaybeMshvWatchdogAsync();
+            return;
+        }
         if (!_desiredRunning || !_settings.StartWsjtzWithAgent || _repairInProgress)
         {
+            return;
+        }
+
+        // Once startup has completed, an absent WSJT-Z process is treated as
+        // an intentional operator stop. The watchdog repairs a running but
+        // stale or hung process; it must not relaunch an application the
+        // operator deliberately closed.
+        if (_startupOptionsApplied && !IsWsjtzProcessRunning())
+        {
+            _wsjtxStaleFailures = 0;
+            _autoCallStallFailures = 0;
+            _wsjtzUiHungFailures = 0;
             return;
         }
 
@@ -587,7 +806,7 @@ public sealed class AgentSupervisor : IDisposable
             _nextStartupOptionAttempt = DateTimeOffset.MinValue;
 
             Log("Restarting WSJT-Z only.");
-            await StopDigitalEngineProcessesAsync();
+            if (!await StopDigitalEngineProcessesAsync()) return;
             await Task.Delay(1500, _stop.Token);
 
             var launched = await LaunchWsjtzAsync();
@@ -866,6 +1085,7 @@ public sealed class AgentSupervisor : IDisposable
             {
                 var name = process.ProcessName;
                 if (name.Contains("wsjt", StringComparison.OrdinalIgnoreCase) ||
+                    name.StartsWith("mshv", StringComparison.OrdinalIgnoreCase) ||
                     name.Contains("jt9", StringComparison.OrdinalIgnoreCase))
                 {
                     return true;
@@ -912,6 +1132,13 @@ public sealed class AgentSupervisor : IDisposable
             return;
         }
 
+        if (_selectedDigitalEngine == "none")
+        {
+            _settings.EnableAutoCallOnStartup = false;
+            _startupOptionsApplied = true;
+            return;
+        }
+
         if (!_settings.StartWsjtzWithAgent && !_settings.EnableAutoCallOnStartup)
         {
             _startupOptionsApplied = true;
@@ -932,7 +1159,7 @@ public sealed class AgentSupervisor : IDisposable
             success &= await LaunchWsjtzAsync();
         }
 
-        if (_settings.EnableAutoCallOnStartup)
+        if (_selectedDigitalEngine == "wsjtz" && _settings.EnableAutoCallOnStartup)
         {
             success &= await EnableAutoCallAsync();
         }
@@ -945,6 +1172,85 @@ public sealed class AgentSupervisor : IDisposable
     }
 
     private async Task<bool> LaunchWsjtzAsync()
+    {
+        await RefreshDigitalEngineAsync();
+        if (_selectedDigitalEngine == "none")
+        {
+            Log("Digital engine startup skipped: provider is none.");
+            return true;
+        }
+        var start = await PostJsonAsync("/api/digital/start", JsonSerializer.Serialize(new { engine = _selectedDigitalEngine }));
+        Log($"{_selectedDigitalEngine} startup: {start.Detail}");
+        return start.Success;
+    }
+
+    private async Task RefreshDigitalEngineAsync()
+    {
+        try
+        {
+            using var response = await _http.GetAsync($"{_settings.BackendUrl}/api/digital/status", _stop.Token);
+            if (!response.IsSuccessStatusCode) return;
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(_stop.Token));
+            var selected = GetJsonString(doc.RootElement, "selected_engine", "");
+            if (selected is "none" or "wsjtz" or "mshv_auto_dx")
+            {
+                _selectedDigitalEngine = selected;
+                if (_settings.DigitalEngineProvider != selected)
+                {
+                    _settings.DigitalEngineProvider = selected;
+                    if (selected == "none")
+                    {
+                        _settings.StartWsjtzWithAgent = false;
+                        _settings.EnableAutoCallOnStartup = false;
+                    }
+                    _settings.Save();
+                }
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
+        {
+            // Preserve the last known selection through temporary outages.
+        }
+    }
+
+    private async Task MaybeMshvWatchdogAsync()
+    {
+        if (_selectedDigitalEngine == "none" || !_desiredRunning || !_settings.StartWsjtzWithAgent || _repairInProgress) return;
+        try
+        {
+            using var response = await _http.GetAsync($"{_settings.BackendUrl}/api/digital/status", _stop.Token);
+            if (!response.IsSuccessStatusCode) return;
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(_stop.Token));
+            var root = doc.RootElement;
+            // An operator stop is intentional. A running provider with degraded
+            // health can be restarted by the backend's safe lifecycle service.
+            var running = root.TryGetProperty("running", out var value) && value.ValueKind == JsonValueKind.True;
+            var health = root.TryGetProperty("health", out var healthValue) ? healthValue : default;
+            var state = GetJsonString(health, "status", "");
+            var bridge = await ReadWsjtxBridgeStatusAsync();
+            var stale = bridge is not null && WsjtxStaleReason(bridge) is not null;
+            _mshvHealthFailures = running && (state is "error" or "stale" || stale) ? _mshvHealthFailures + 1 : 0;
+            if (_mshvHealthFailures < Math.Max(2, _settings.FailureRestartThreshold) ||
+                DateTimeOffset.Now - _lastWsjtzRestartAttempt < TimeSpan.FromSeconds(Math.Max(60, _settings.RestartCooldownSeconds * 4))) return;
+            if (!await _actionLock.WaitAsync(0)) return;
+            try
+            {
+                _lastWsjtzRestartAttempt = DateTimeOffset.Now;
+                var result = await PostJsonAsync("/api/digital/restart", "{\"engine\":\"mshv_auto_dx\"}");
+                Log($"MSHV watchdog restart: {result.Detail}");
+                _mshvHealthFailures = 0;
+            }
+            finally { _actionLock.Release(); }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
+        {
+            // Backend health recovery is handled by the runtime watchdog.
+        }
+    }
+
+    // Legacy startup remains for older backends; new startup always routes through
+    // the provider service, which owns engine exclusion and TX release checks.
+    private async Task<bool> LaunchLegacyWsjtzAsync()
     {
         var existing = await ReadWsjtxBridgeStatusAsync();
         if (existing is not null &&
@@ -1035,6 +1341,13 @@ public sealed class AgentSupervisor : IDisposable
 
     private async Task<bool> EnableAutoCallAsync()
     {
+        await RefreshDigitalEngineAsync();
+        if (_selectedDigitalEngine != "wsjtz")
+        {
+            _wsjtzNativeAutomationPending = false;
+            Log("Selected provider does not use OM0RX Auto Call; setup skipped.");
+            return true;
+        }
         var limit = Math.Max(0, Math.Min(99, _settings.AutoCallLimit));
         var payload = $$"""
         {
@@ -1069,6 +1382,11 @@ public sealed class AgentSupervisor : IDisposable
 
     private async Task MaybeApplyPendingWsjtzNativeAutomationAsync()
     {
+        if (_selectedDigitalEngine != "wsjtz")
+        {
+            _wsjtzNativeAutomationPending = false;
+            return;
+        }
         if (!_wsjtzNativeAutomationPending ||
             !_desiredRunning ||
             !_settings.EnableAutoCallOnStartup ||
@@ -1182,7 +1500,7 @@ public sealed class AgentSupervisor : IDisposable
             if (!string.IsNullOrWhiteSpace(eventArgs.Data))
             {
                 Log($"Runtime: {eventArgs.Data}");
-                if (eventArgs.Data.Contains("Launcher process started", StringComparison.OrdinalIgnoreCase))
+                if (eventArgs.Data.Contains("Launcher UI ready", StringComparison.OrdinalIgnoreCase))
                 {
                     launcherStartedSignal.TrySetResult(true);
                 }
@@ -1249,32 +1567,15 @@ public sealed class AgentSupervisor : IDisposable
 
     private async Task EnsureRestartWindowsAsync()
     {
-        if (_settings.StartLauncher)
-        {
-            var signal = _launcherStartedSignal;
-            if (signal is null)
-            {
-                throw new InvalidOperationException("Desktop launcher tracking was not initialized.");
-            }
-
-            Log("Backend is ready; waiting for the desktop UI launcher.");
-            try
-            {
-                await signal.Task.WaitAsync(TimeSpan.FromSeconds(45), _stop.Token);
-            }
-            catch (TimeoutException)
-            {
-                throw new InvalidOperationException("Restart timed out waiting for the desktop UI launcher. Check start_all-launcher logs.");
-            }
-            Log("Desktop UI launcher started.");
-        }
+        await WaitForLauncherReadyAsync();
 
         var startupSuccess = true;
-        if (_settings.StartWsjtzWithAgent)
+        await RefreshDigitalEngineAsync();
+        if (_selectedDigitalEngine != "none" && _settings.StartWsjtzWithAgent)
         {
             startupSuccess &= await LaunchWsjtzAsync();
         }
-        if (_settings.EnableAutoCallOnStartup)
+        if (_selectedDigitalEngine == "wsjtz" && _settings.EnableAutoCallOnStartup)
         {
             startupSuccess &= await EnableAutoCallAsync();
         }
@@ -1331,6 +1632,12 @@ public sealed class AgentSupervisor : IDisposable
         var composePath = Path.Combine(_settings.ProjectRoot, _settings.DockerComposeFile);
         if (!File.Exists(composePath)) return;
 
+        if (!await EnsureDockerDaemonAsync())
+        {
+            Log("Docker compose start skipped because Docker Desktop did not become ready.");
+            return;
+        }
+
         var result = await RunProcessAsync("docker", new[] { "compose", "-f", composePath, "up", "-d" }, _settings.ProjectRoot, 30000);
         if (result.ExitCode == 0)
         {
@@ -1342,12 +1649,91 @@ public sealed class AgentSupervisor : IDisposable
         }
     }
 
+    private async Task WaitForLauncherReadyAsync()
+    {
+        if (!_settings.StartLauncher)
+        {
+            return;
+        }
+
+        var signal = _launcherStartedSignal;
+        if (signal is null)
+        {
+            throw new InvalidOperationException("Desktop launcher tracking was not initialized.");
+        }
+
+        Log("Backend is ready; waiting for a visible desktop UI.");
+        try
+        {
+            await signal.Task.WaitAsync(TimeSpan.FromSeconds(60), _stop.Token);
+        }
+        catch (TimeoutException)
+        {
+            throw new InvalidOperationException("Timed out waiting for a visible desktop UI. Check start_all-launcher logs.");
+        }
+        Log("Desktop UI is visible.");
+    }
+
+    private async Task<bool> EnsureDockerDaemonAsync()
+    {
+        var version = await RunProcessAsync("docker", new[] { "version", "--format", "{{.Server.Version}}" }, _settings.ProjectRoot, 5000);
+        if (version.ExitCode == 0) return true;
+
+        var desktopPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "Docker",
+            "Docker",
+            "Docker Desktop.exe");
+        if (!File.Exists(desktopPath))
+        {
+            Log("Docker daemon is unavailable and Docker Desktop is not installed in the standard location.");
+            return false;
+        }
+
+        try
+        {
+            if (Process.GetProcessesByName("Docker Desktop").Length == 0)
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = desktopPath,
+                    UseShellExecute = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                });
+                Log("Docker daemon was unavailable; Docker Desktop launch requested.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"Could not launch Docker Desktop: {ex.Message}");
+            return false;
+        }
+
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(60);
+        while (!_stop.IsCancellationRequested && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(2000, _stop.Token);
+            version = await RunProcessAsync("docker", new[] { "version", "--format", "{{.Server.Version}}" }, _settings.ProjectRoot, 5000);
+            if (version.ExitCode == 0)
+            {
+                Log($"Docker Desktop is ready ({version.Output.Trim()}).");
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private async Task<bool> TryPostAsync(string path)
     {
         try
         {
             using var response = await _http.PostAsync($"{_settings.BackendUrl}{path}", null, _stop.Token);
-            return response.IsSuccessStatusCode;
+            if (!response.IsSuccessStatusCode) return false;
+            var body = await response.Content.ReadAsStringAsync(_stop.Token);
+            if (string.IsNullOrWhiteSpace(body)) return true;
+            using var doc = JsonDocument.Parse(body);
+            return !doc.RootElement.TryGetProperty("success", out var success) || success.ValueKind != JsonValueKind.False;
         }
         catch
         {
@@ -1357,7 +1743,7 @@ public sealed class AgentSupervisor : IDisposable
 
     private async Task HaltDigitalTxAsync()
     {
-        var wsjtzHalted = await TryPostAsync("/api/wsjtx/halt-tx");
+        var wsjtzHalted = await TryPostAsync("/api/digital/halt-tx");
         var builtinHalted = await TryPostAsync("/api/ft8/tx/halt");
         Log($"Pre-stop TX halt requested (WSJT-Z: {wsjtzHalted}, built-in digital: {builtinHalted}).");
         await Task.Delay(750);
@@ -1367,19 +1753,32 @@ public sealed class AgentSupervisor : IDisposable
     {
         if (_runtimeProcess is { HasExited: false }) return true;
 
-        var ids = await GetProjectProcessIdsAsync();
-        if (ids.Count > 0)
-        {
-            return true;
-        }
-
-        // A healthy backend may outlive its PowerShell parent briefly. Treat it
-        // as an existing runtime so agent startup never races a second
-        // start_all.ps1 instance onto the same ports.
+        // Never start a competing supervisor while a live atomic owner
+        // manifest exists. Exact listener verification is intentionally left
+        // to the monitor: Get-NetTCPConnection can take several seconds during
+        // Windows login and a timeout must not trigger destructive cleanup of
+        // an otherwise healthy runtime.
+        var path = Path.Combine(_settings.ProjectRoot, "logs", "runtime_owner.json");
         try
         {
-            using var response = await _http.GetAsync($"{_settings.BackendUrl}/api/health", _stop.Token);
-            return response.IsSuccessStatusCode;
+            if (!File.Exists(path)) return false;
+            using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(path, _stop.Token));
+            var root = doc.RootElement;
+            if (GetJsonInt32(root, "schema") != 1 || GetJsonString(root, "state", "") != "active") return false;
+            if (!root.TryGetProperty("ports", out var ports)
+                || GetJsonInt32(ports, "backend") != _settings.BackendPort
+                || GetJsonInt32(ports, "bridge_ws") != 8091
+                || GetJsonInt32(ports, "bridge_command") != 8092)
+            {
+                return false;
+            }
+
+            foreach (var role in new[] { "supervisor", "backend", "bridge" })
+            {
+                if (!root.TryGetProperty(role, out var identity) || !RuntimeProcessIdentityMatches(identity)) return false;
+            }
+
+            return !string.IsNullOrWhiteSpace(GetJsonString(root, "owner_id", ""));
         }
         catch
         {
@@ -1409,7 +1808,53 @@ public sealed class AgentSupervisor : IDisposable
         }
     }
 
-    private async Task StopDigitalEngineProcessesAsync()
+    private async Task<bool> StopDigitalEngineProcessesAsync()
+    {
+        // A successful provider stop includes TX-off verification. Never bypass
+        // a provider refusal by force-killing its process.
+        if (await TryPostAsync("/api/digital/stop")) return true;
+
+        // During a complete backend/runtime crash there is no API left to
+        // acknowledge the stop.  That must not deadlock automatic recovery
+        // when Windows independently proves that no digital engine process is
+        // alive.  Fail closed if enumeration itself fails or finds an engine.
+        var engineProcessIds = await TryGetDigitalEngineProcessIdsAsync();
+        if (engineProcessIds is { Count: 0 })
+        {
+            Log("Digital stop API unavailable, but no MSHV/WSJT engine process exists; recovery may continue.");
+            return true;
+        }
+
+        var detail = engineProcessIds is null
+            ? "process enumeration failed"
+            : $"engine process IDs still present: {string.Join(',', engineProcessIds)}";
+        Log($"Digital engine stop not confirmed ({detail}); process cleanup skipped.");
+        return false;
+    }
+
+    private async Task<IReadOnlyList<int>?> TryGetDigitalEngineProcessIdsAsync()
+    {
+        var script = DigitalEngineProcessScript(stop: false);
+        var result = await RunProcessAsync(
+            "powershell.exe",
+            new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script },
+            _settings.ProjectRoot,
+            10000);
+        if (result.ExitCode != 0)
+        {
+            Log($"Digital engine process enumeration warning: {FirstLine(result.Error, result.Output, "unknown error")}");
+            return null;
+        }
+
+        return result.Output
+            .Split(new[] { '\r', '\n', ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(value => int.TryParse(value, out var pid) ? pid : 0)
+            .Where(pid => pid > 0 && pid != Environment.ProcessId)
+            .Distinct()
+            .ToList();
+    }
+
+    private async Task StopLegacyDigitalEngineProcessesAsync()
     {
         var script = DigitalEngineStopScript();
         var result = await RunProcessAsync("powershell.exe", new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script }, _settings.ProjectRoot, 15000);
@@ -1439,14 +1884,26 @@ public sealed class AgentSupervisor : IDisposable
 
     private string DigitalEngineStopScript()
     {
+        return DigitalEngineProcessScript(stop: true);
+    }
+
+    private string DigitalEngineProcessScript(bool stop)
+    {
         var root = PsQuote(_settings.ProjectRoot);
+        var action = stop
+            ? "foreach ($id in $ids) { Stop-Tree ([int]$id) }; $ids -join ','"
+            : "$ids -join ','";
+        // The legacy decode-status helper cannot key the radio. It may survive
+        // a backend crash, so include it in explicit cleanup but never let it
+        // masquerade as a live transmitter during the fail-closed recovery
+        // check.
+        var helperPattern = stop ? "'scripts\\wsjtz\\om0rx_decode_status_server.py'," : "";
         return "$rootPath = " + root + "; " +
-               "$patterns = @('scripts\\wsjtz\\om0rx_decode_status_server.py','data\\build\\wsjt-z-om0rx','data\\build\\wsjtx-improved-om0rx','--rig-name OM0RX-WSJT-Z','--rig-name OM0RX-AUTO','WSJT-X - OM0RX-WSJT-Z','WSJT-X - OM0RX-AUTO'); " +
+               "$patterns = @(" + helperPattern + "'data\\build\\wsjt-z-om0rx','data\\build\\wsjtx-improved-om0rx','data\\build\\mshv-auto-dx\\runtime\\MSHV_OM0RX.exe','--rig-name OM0RX-WSJT-Z','--rig-name OM0RX-AUTO','WSJT-X - OM0RX-WSJT-Z','WSJT-X - OM0RX-AUTO'); " +
                "$matches = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $cmd = $_.CommandLine; $cmd -and $_.ProcessId -ne $PID -and (($cmd -like \"*$rootPath*\") -or ($cmd -like '*OM0RX*')) -and ($patterns | Where-Object { $cmd -like \"*$_*\" }) }); " +
                "$ids = @($matches | Select-Object -ExpandProperty ProcessId -Unique); " +
                "function Stop-Tree([int]$processId) { @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object ParentProcessId -eq $processId) | ForEach-Object { Stop-Tree ([int]$_.ProcessId) }; Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }; " +
-               "foreach ($id in $ids) { Stop-Tree ([int]$id) }; " +
-               "$ids -join ','";
+               action;
     }
 
     private static string WsjtzNativeAutomationScript()
@@ -1559,7 +2016,7 @@ Set-Checkbox -Window $window -Name 'CQ only' -Checked $true
 
     private static string GetJsonString(JsonElement element, string property, string fallback)
     {
-        return element.TryGetProperty(property, out var value) && value.ValueKind != JsonValueKind.Null
+        return element.ValueKind == JsonValueKind.Object && element.TryGetProperty(property, out var value) && value.ValueKind != JsonValueKind.Null
             ? value.ToString()
             : fallback;
     }

@@ -20,7 +20,12 @@ from backend.core import (
 
 # === Service Imports ===
 from services.database import get_db_connection as init_db_connection
-from services.radio import register_radio_endpoints, set_radio_instance
+from services.radio import (
+    configure_station_route_handler,
+    configure_station_tx_guard,
+    register_radio_endpoints,
+    set_radio_instance,
+)
 from services.websocket import register_websocket_endpoint, broadcast_status, broadcast_spots
 from services.background_tasks import (
     configure_background_tasks,
@@ -43,6 +48,8 @@ from backend.api.cluster import router as cluster_router
 from backend.api.solar import router as solar_router
 from backend.api.wavelog_log import router as wavelog_log_router
 from backend.api.ft8 import router as ft8_router
+from backend.api.elecraft import router as elecraft_router
+from backend.api.station import router as station_router
 from backend.api.static_files import setup_static_files
 from activity_intelligence.api import router as activity_intelligence_router
 from activity_intelligence.services import get_activity_intelligence_service
@@ -114,6 +121,8 @@ def register_all_services():
     app.include_router(solar_router)
     app.include_router(wavelog_log_router)
     app.include_router(ft8_router)
+    app.include_router(elecraft_router)
+    app.include_router(station_router)
     app.include_router(activity_intelligence_router)
     
     # Register rotor router and set service instance
@@ -282,10 +291,15 @@ async def initialize_services():
     context.adif_handler = ADIFHandler()
     sync_runtime_state()
 
-    # Initialize services
-    init_database()
-    init_flex_radio()
-    init_cty_resolver()  # Initialize before QSO logging
+    # These independent startup probes are all blocking (database connect,
+    # radio TCP connect, and CTY file parsing). Running them serially delayed
+    # the first HTTP response by the sum of their timeouts.
+    await asyncio.gather(
+        asyncio.to_thread(init_database),
+        asyncio.to_thread(init_flex_radio),
+        asyncio.to_thread(init_cty_resolver),
+    )
+    sync_runtime_state()
     
     await init_classifier()  # Async
     # Initialize QSO logging service with clients and the hot worked/needed cache.
@@ -325,6 +339,47 @@ async def initialize_services():
     from services.rotator import get_rotator_service, init_rotator_service
     await init_rotator_service()
 
+    # Initialize KPA500/KAT500 before radio polling begins so the first
+    # authoritative Flex snapshot can immediately select their band/frequency.
+    from radio_control.elecraft import get_elecraft_manager
+    from radio_control.station_telemetry_store import StationTelemetryStore
+    from services.elecraft_station import StationCoordinator
+    from services.station_training_jobs import TrainingJobManager
+
+    context.elecraft = get_elecraft_manager()
+    context.station_telemetry = StationTelemetryStore()
+    _, schema_result = await asyncio.gather(
+        context.elecraft.start(),
+        asyncio.to_thread(context.station_telemetry.ensure_schema),
+    )
+    if not schema_result.persisted:
+        logging.warning("Station telemetry is degraded: %s", schema_result.reason)
+    context.station_coordinator = StationCoordinator(
+        context.elecraft,
+        lambda: context.flex,
+        lambda: context.radio_snapshot,
+        telemetry=context.station_telemetry,
+        recovery_required=True,
+    )
+    context.station_training_manager = TrainingJobManager(context.station_coordinator)
+    try:
+        await context.station_coordinator.recover_safe_state()
+        logging.info("✅ Station startup recovery confirmed FLEX RX and KPA500 standby")
+    except Exception as exc:
+        logging.critical("Station controls locked: startup safe state is unconfirmed: %s", exc)
+    configure_station_tx_guard(
+        context.station_coordinator.execute_raw_flex_tx
+    )
+    configure_station_route_handler(
+        context.station_coordinator.execute_flex_route_change
+    )
+    context.station_telemetry_task = asyncio.create_task(
+        context.station_coordinator.telemetry_loop(),
+        name="station_telemetry",
+    )
+    if context.background_task_service:
+        context.background_task_service.tasks.append(context.station_telemetry_task)
+
     # Set up WSJT-X service dependencies (including adif_handler for local ADIF backup)
     wsjtx_service = get_wsjtx_service()
     wsjtx_service.set_dependencies(
@@ -335,6 +390,15 @@ async def initialize_services():
         context.adif_handler,
         getattr(context.classifier, "qso_status_store", None) if context.classifier else None,
     )
+
+    # A service restart must never replay a persisted target or re-arm TX.
+    # This runs before the automation/background loops are created; the
+    # operator must explicitly enable automation again for the current session.
+    from services.digital_engine import get_digital_engine_service
+    startup_disarm = get_digital_engine_service().disarm_planner(
+        "backend-startup-disarmed"
+    )
+    logging.info("Digital planner startup safety latch: %s", startup_disarm)
 
     sync_runtime_state()
 
@@ -357,12 +421,35 @@ async def cleanup_services():
         except Exception as e:
             logging.error(f"❌ Error closing Wavelog session: {e}")
 
+    if context.station_training_manager:
+        try:
+            await context.station_training_manager.stop()
+            logging.info("✅ Station training manager stopped")
+        except Exception as e:
+            logging.error(f"❌ Error stopping station training manager: {e}")
+
+    if context.station_coordinator:
+        try:
+            await context.station_coordinator.stop()
+            logging.info("✅ Station coordinator stopped")
+        except Exception as e:
+            logging.error(f"❌ Error stopping station coordinator: {e}")
+
     if context.flex:
         try:
             context.flex.close()
             logging.info("✅ FlexRadio connection closed")
         except Exception as e:
             logging.error(f"❌ Error closing FlexRadio: {e}")
+    configure_station_tx_guard(None)
+    configure_station_route_handler(None)
+
+    if context.elecraft:
+        try:
+            await context.elecraft.stop()
+            logging.info("✅ Elecraft connections closed")
+        except Exception as e:
+            logging.error(f"❌ Error closing Elecraft connections: {e}")
 
 
 # === Application Lifespan ===
@@ -370,10 +457,18 @@ async def cleanup_services():
 @asynccontextmanager
 async def lifespan(_app):
     """Application startup/shutdown lifecycle."""
-    await initialize_services()
+    digital_service = None
     try:
+        await initialize_services()
+        from services.digital_engine import get_digital_engine_service
+
+        digital_service = get_digital_engine_service()
+        digital_service.ensure_watchdog()
         yield
     finally:
+        if digital_service and digital_service.watchdog_task:
+            digital_service.watchdog_task.cancel()
+            await asyncio.gather(digital_service.watchdog_task, return_exceptions=True)
         await cleanup_services()
 
 

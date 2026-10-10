@@ -1,0 +1,288 @@
+diff --git a/MSHV_2762/MSHV_WIN64.pro b/MSHV_2762/MSHV_WIN64.pro
+index e2aba26..a6ab592 100644
+--- a/MSHV_2762/MSHV_WIN64.pro
++++ b/MSHV_2762/MSHV_WIN64.pro
+@@ -1,6 +1,6 @@
+-QT += widgets axcontainer network websockets sql
+-QT -= axcontainer
+-DEFINES += NO_OMNIRIG
++QT += widgets axcontainer network websockets sql
++QT -= axcontainer
++DEFINES += NO_OMNIRIG
+ QMAKE_CXXFLAGS += -std=gnu++11 -pedantic-errors
+ CONFIG += release warn_on exceptions_off
+ DESTDIR = bin
+@@ -115,10 +115,10 @@ HEADERS = src/main_ms.h \
+  src/HvAutoDxer/autodxerpanel.h \
+  src/HvAutoDxer/twiliosmsnotifier.h \
+  src/HvAutoDxer/decodecache.h \
+- src/HvAutoDxer/dxcctracker.h \
+- src/HvAutoDxer/autodxhistoryconditional.h \
+- src/HvAutoDxer/autodxmessageparser.h \
+- src/HvAutoDxer/targetscorer.h \
++ src/HvAutoDxer/dxcctracker.h \
++ src/HvAutoDxer/autodxhistoryconditional.h \
++ src/HvAutoDxer/autodxmessageparser.h \
++ src/HvAutoDxer/targetscorer.h \
+  src/HvAutoDxer/spotaggregator.h \
+  src/HvAutoDxer/bandmanager.h \
+  src/HvAutoDxer/dxclusterclient.h \
+@@ -259,7 +259,7 @@ RESOURCES += src/main_ms.qrc \
+ LIBS = src/Hv_Lib_DirectX90c/win64/libdsound.a src/Hv_lib_fftw/win/libfftw3v3310_gcc730_64bit.a -lsetupapi
+ RC_FILE = src/ms_ico_win.rc
+ TEMPLATE = app
+-TRANSLATIONS += src/HvTranslations/mshv_bg.ts \
++TRANSLATIONS += src/HvTranslations/mshv_bg.ts \
+  src/HvTranslations/mshv_ru.ts \
+  src/HvTranslations/mshv_zh.ts \
+  src/HvTranslations/mshv_zhhk.ts \
+@@ -273,12 +273,12 @@ TRANSLATIONS += src/HvTranslations/mshv_bg.ts \
+  src/HvTranslations/mshv_frfr.ts \
+  src/HvTranslations/mshv_nbno.ts \
+  src/HvTranslations/mshv_itit.ts \
+- src/HvTranslations/mshv_cscz.ts
+-
+-# FlexRadio uses the native network CAT driver; ActiveQt is not required.
+-DEFINES += NO_OMNIRIG
+-HEADERS -= src/HvRigControl/HvRigCat/omnirig/omnirig.h src/HvRigControl/HvRigCat/omnirig/omnirighv.h
+-SOURCES -= src/HvRigControl/HvRigCat/omnirig/omnirig.cpp src/HvRigControl/HvRigCat/omnirig/omnirighv.cpp
+-HEADERS += src/om0rxstationgate.h
+-HEADERS += src/HvAutoBand/hvspotcollector.h src/HvAutoBand/hvrbntelnet.h src/HvAutoBand/hvpskreporter.h src/HvAutoBand/hvbandscorer.h src/HvAutoBand/hvbandswitcher.h src/HvAutoBand/hvdecodetracker.h src/HvAutoBand/hvslotfinder.h src/HvReliability/hvwatchdog.h src/HvReliability/hvlogger.h src/HvTxW/HvQsoPriority/hvqsopriority.h src/HvTxW/HvOpMode/hvopmode.h src/HvAutoDxSettings/hvautodxsettings.h src/HvAutoDxSettings/hvautodxstatuspanel.h
+-SOURCES += src/HvAutoBand/hvspotcollector.cpp src/HvAutoBand/hvrbntelnet.cpp src/HvAutoBand/hvpskreporter.cpp src/HvAutoBand/hvbandscorer.cpp src/HvAutoBand/hvbandswitcher.cpp src/HvAutoBand/hvdecodetracker.cpp src/HvAutoBand/hvslotfinder.cpp src/HvReliability/hvwatchdog.cpp src/HvReliability/hvlogger.cpp src/HvTxW/HvQsoPriority/hvqsopriority.cpp src/HvTxW/HvOpMode/hvopmode.cpp src/HvAutoDxSettings/hvautodxsettings.cpp src/HvAutoDxSettings/hvautodxstatuspanel.cpp
++ src/HvTranslations/mshv_cscz.ts
++
++# FlexRadio uses the native network CAT driver; ActiveQt is not required.
++DEFINES += NO_OMNIRIG
++HEADERS -= src/HvRigControl/HvRigCat/omnirig/omnirig.h src/HvRigControl/HvRigCat/omnirig/omnirighv.h
++SOURCES -= src/HvRigControl/HvRigCat/omnirig/omnirig.cpp src/HvRigControl/HvRigCat/omnirig/omnirighv.cpp
++HEADERS += src/om0rxstationgate.h
++HEADERS += src/HvAutoBand/hvspotcollector.h src/HvAutoBand/hvrbntelnet.h src/HvAutoBand/hvpskreporter.h src/HvAutoBand/hvbandscorer.h src/HvAutoBand/hvbandswitcher.h src/HvAutoBand/hvdecodetracker.h src/HvAutoBand/hvslotfinder.h src/HvReliability/hvwatchdog.h src/HvReliability/hvlogger.h src/HvTxW/HvQsoPriority/hvqsopriority.h src/HvTxW/HvOpMode/hvopmode.h src/HvAutoDxSettings/hvautodxsettings.h src/HvAutoDxSettings/hvautodxstatuspanel.h
++SOURCES += src/HvAutoBand/hvspotcollector.cpp src/HvAutoBand/hvrbntelnet.cpp src/HvAutoBand/hvpskreporter.cpp src/HvAutoBand/hvbandscorer.cpp src/HvAutoBand/hvbandswitcher.cpp src/HvAutoBand/hvdecodetracker.cpp src/HvAutoBand/hvslotfinder.cpp src/HvReliability/hvwatchdog.cpp src/HvReliability/hvlogger.cpp src/HvTxW/HvQsoPriority/hvqsopriority.cpp src/HvTxW/HvOpMode/hvopmode.cpp src/HvAutoDxSettings/hvautodxsettings.cpp src/HvAutoDxSettings/hvautodxstatuspanel.cpp
+diff --git a/MSHV_2762/src/HvDecodeList/decodelist.cpp b/MSHV_2762/src/HvDecodeList/decodelist.cpp
+index 6f39423..f06656a 100644
+--- a/MSHV_2762/src/HvDecodeList/decodelist.cpp
++++ b/MSHV_2762/src/HvDecodeList/decodelist.cpp
+@@ -223,6 +223,7 @@ DecodeList::DecodeList(int ident,bool f,QWidget *parent)
+     //setSelectionBehavior(QAbstractItemView::SelectRows);
+ 
+     setSelectionBehavior(QAbstractItemView::SelectRows);
++    setSelectionMode(QAbstractItemView::SingleSelection);
+     //setSelectionMode(QAbstractItemView::ExtendedSelection);
+ 
+     //setItemDelegate(new MyDelegate(this));
+@@ -2127,11 +2128,10 @@ void DecodeList::drawRow(QPainter *painter, const QStyleOptionViewItem & option,
+     if (selectionModel()->isSelected(index)) //(index == selectedIndexes()[0])//selectedIndexes()[0]
+     {
+         opt.font.setBold(true);
+-        opt.palette.setColor(QPalette::Highlight, model.itemFromIndex(index)->background().color());
+-
+-        QColor cc = QColor(0,0,0);
+-        if (dsty) cc = QColor(255,255,255);
+-        opt.palette.setColor(QPalette::HighlightedText,cc);
++        opt.palette.setColor(QPalette::Highlight,
++                             dsty ? QColor(45,95,145) : QColor(180,215,250));
++        opt.palette.setColor(QPalette::HighlightedText,
++                             dsty ? QColor(255,255,255) : QColor(0,0,0));
+ 
+         //8QString ss = model.data(model.index(index.row(),msg_column,QModelIndex()),Qt::DisplayRole).toString();
+         //QToolTip::showText(QCursor::pos(),THvCty->FindCountry(ss));
+@@ -2328,13 +2328,20 @@ void DecodeList::mouseDoubleClickEvent(QMouseEvent * event)
+ 	const QModelIndex index = indexAt(event->pos());
+     if (event->button() == Qt::LeftButton && index.isValid()
+             && (s_mode==11 || s_mode==13 || allq65)) {
++        selectionModel()->setCurrentIndex(index,
++                QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+         QStandardItem *message = model.item(index.row(), FT_MESSAGE_COLUMN);
+         if (message) {
++            const QString displayedMessage = message->text().trimmed();
+             const QStringList rawDecode = message->data(RAW_DECODE_ROLE).toStringList();
+-            const QString call = message->data(CALLSIGN_ROLE).toString();
+-            if (!rawDecode.isEmpty() && !call.isEmpty()) {
+-                emit RequestAutoDxTarget(rawDecode);
++            if (!displayedMessage.isEmpty()) {
++                // Follow MSHV's normal operator-selection path first.  It fills the
++                // target, generates the exchange and enables the native sequence.
++                ItemSelectedText(displayedMessage, FT_MESSAGE_COLUMN, index.row());
++                // Also inform Auto DX so its queue/status remains synchronized.
++                if (!rawDecode.isEmpty()) emit RequestAutoDxTarget(rawDecode);
+                 event->accept();
++                viewport()->update();
+                 return;
+             }
+         }
+diff --git a/MSHV_2762/src/HvTxW/hvtxw.cpp b/MSHV_2762/src/HvTxW/hvtxw.cpp
+index ed9592a..d1b29ef 100644
+--- a/MSHV_2762/src/HvTxW/hvtxw.cpp
++++ b/MSHV_2762/src/HvTxW/hvtxw.cpp
+@@ -136,20 +136,34 @@ HvTxIn::HvTxIn(int ident,bool f,QWidget * parent)
+     b_tx->setFixedWidth(32);
+     b_tx->setFixedHeight(21);//2.15 from 20 to 21
+     connect(b_tx, SIGNAL(clicked(bool)), this, SLOT(b_released()));
++    stage_txt = new QLabel();
++    stage_txt->setAlignment(Qt::AlignCenter);
++    stage_txt->setFixedWidth(76);
++    stage_txt->setToolTip(tr("QSO exchange stage"));
++    if (dsty) stage_txt->setStyleSheet("QLabel{color:rgb(205,220,240);font-weight:bold;}");
++    else stage_txt->setStyleSheet("QLabel{color:rgb(30,70,110);font-weight:bold;}");
+     QHBoxLayout *H_h = new QHBoxLayout(this);
+     H_h->setContentsMargins ( 2, 0, 1, 0);
+     H_h->setSpacing(4);//2.15 from 4 to
+-    H_h->addWidget(line_txt);
++    H_h->addWidget(stage_txt);
++    H_h->addWidget(line_txt,1);
+     H_h->addWidget(rb_tx);
+     H_h->addWidget(b_tx);
+     setLayout(H_h);
++    setMinimumHeight(23);
++    setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Fixed);
+ }
+ HvTxIn::~HvTxIn()
+ {}
++void HvTxIn::SetStageName(const QString &name)
++{
++    stage_txt->setText(name);
++}
+ void HvTxIn::SetFont(QFont f)
+ {
+     rb_tx->setFont(f);
+     line_txt->setFont(f);
++    stage_txt->setFont(f);
+     QFontMetrics fm(f);//2.15
+ #if QT_VERSION >= QT_VERSION_CHECK(5, 11, 0)//2.56
+     int fwdd = fm.horizontalAdvance("TX8")+8;
+@@ -481,6 +495,12 @@ HvTxW::HvTxW(QString inst,QString path,int lid,bool f,int x,int y,QWidget * pare
+     {
+         HvTxIn *TempHvTxIn = new HvTxIn(i,dsty);
+         TempHvTxIn->b_tx->setText("Tx"+QString("%1").arg(i+1));
++        const QStringList lifecycleStages = QStringList()
++                << tr("CALL/GRID") << tr("REPORT") << tr("R+REPORT")
++                << tr("RR73/RRR") << tr("73") << tr("CQ") << tr("CQ QRG");
++        TempHvTxIn->SetStageName(lifecycleStages.at(i));
++        TempHvTxIn->rb_tx->setToolTip(tr("Select this QSO message stage"));
++        TempHvTxIn->b_tx->setToolTip(tr("Transmit or repeat this QSO message now"));
+         V_l->addWidget(TempHvTxIn);
+ 
+         if (i==count_tx_widget-2)
+@@ -495,8 +515,6 @@ HvTxW::HvTxW(QString inst,QString path,int lid,bool f,int x,int y,QWidget * pare
+ 
+     MultiAnswerMod = new MultiAnswerModW(dsty);
+     MultiAnswerMod->setHidden(true);//by default
+-    V_l->addWidget(MultiAnswerMod);
+-    V_l->setAlignment(MultiAnswerMod, Qt::AlignBottom);
+     connect(MultiAnswerMod,SIGNAL(MamEmitMessage(QString,bool,bool,bool)),this,SLOT(SetEmitMessage(QString,bool,bool,bool)));
+     connect(MultiAnswerMod,SIGNAL(EmitMAMCalls(QStringList)), this, SIGNAL(EmitMAMCalls(QStringList)));
+     connect(MultiAnswerMod,SIGNAL(EmitHisCalls(QStringList)), this, SLOT(SetHisCalls(QStringList)));//2.71
+@@ -508,18 +526,64 @@ HvTxW::HvTxW(QString inst,QString path,int lid,bool f,int x,int y,QWidget * pare
+     connect(MultiAnswerMod,SIGNAL(EmitMAFirstTX(bool)),this,SLOT(SetMAFirstTX(bool)));//2.71
+     connect(MultiAnswerMod,SIGNAL(EmitSFMATxAll(QString)),this,SIGNAL(EmitSFMATxAll(QString)));//2.76sf
+ 
++    QLabel *l_qso_lifecycle = new QLabel(tr("GENERATED QSO MESSAGES"));
++    l_qso_lifecycle->setAlignment(Qt::AlignCenter);
++    l_qso_lifecycle->setFixedHeight(19);
++    l_qso_lifecycle->setToolTip(tr("The selected radio button is NEXT; a Tx button sends that row NOW"));
++    if (dsty) l_qso_lifecycle->setStyleSheet("QLabel{color:rgb(210,225,245);font-weight:bold;}");
++    else l_qso_lifecycle->setStyleSheet("QLabel{color:rgb(20,55,95);font-weight:bold;}");
++    QHBoxLayout *H_qso_lifecycle_columns = new QHBoxLayout();
++    H_qso_lifecycle_columns->setContentsMargins(2,0,1,0);
++    H_qso_lifecycle_columns->setSpacing(4);
++    QLabel *l_qso_stage = new QLabel(tr("STAGE"));
++    l_qso_stage->setAlignment(Qt::AlignCenter);
++    l_qso_stage->setFixedWidth(76);
++    QLabel *l_qso_message = new QLabel(tr("MESSAGE"));
++    l_qso_message->setAlignment(Qt::AlignCenter);
++    QLabel *l_qso_next = new QLabel(tr("NEXT"));
++    l_qso_next->setAlignment(Qt::AlignCenter);
++    l_qso_next->setFixedWidth(36);
++    QLabel *l_qso_now = new QLabel(tr("NOW"));
++    l_qso_now->setAlignment(Qt::AlignCenter);
++    l_qso_now->setFixedWidth(40);
++    const QString lifecycleHeaderStyle = dsty
++            ? "QLabel{color:rgb(180,205,230);font-size:8pt;}"
++            : "QLabel{color:rgb(55,85,115);font-size:8pt;}";
++    l_qso_stage->setStyleSheet(lifecycleHeaderStyle);
++    l_qso_message->setStyleSheet(lifecycleHeaderStyle);
++    l_qso_next->setStyleSheet(lifecycleHeaderStyle);
++    l_qso_now->setStyleSheet(lifecycleHeaderStyle);
++    H_qso_lifecycle_columns->addWidget(l_qso_stage);
++    H_qso_lifecycle_columns->addWidget(l_qso_message,1);
++    H_qso_lifecycle_columns->addWidget(l_qso_next);
++    H_qso_lifecycle_columns->addWidget(l_qso_now);
++    QVBoxLayout *V_qso_lifecycle = new QVBoxLayout();
++    V_qso_lifecycle->setContentsMargins(2,1,2,1);
++    V_qso_lifecycle->setSpacing(1);
++    V_qso_lifecycle->addWidget(l_qso_lifecycle);
++    V_qso_lifecycle->addLayout(H_qso_lifecycle_columns);
++    V_qso_lifecycle->addLayout(V_l);
++    QFrame *Box_qso_lifecycle = new QFrame();
++    Box_qso_lifecycle->setFrameShape(QFrame::StyledPanel);
++    Box_qso_lifecycle->setLayout(V_qso_lifecycle);
++    Box_qso_lifecycle->setMinimumWidth(430);
++    Box_qso_lifecycle->setMinimumHeight(205);
++    Box_qso_lifecycle->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Preferred);
++
+     QHBoxLayout *H_tx = new QHBoxLayout();
+     H_tx->setContentsMargins ( 0, 0, 0, 0);
+     H_tx->setSpacing(0);
+     H_tx->addLayout(V_rx_1);
+-    H_tx->addLayout(V_l);
++    H_tx->addWidget(Box_qso_lifecycle,2);
++    H_tx->addWidget(MultiAnswerMod,1);
+     H_tx->addLayout(V_tx_1);
+     //H_tx->setAlignment(Qt::AlignHCenter);
+ 
+     //QFrame *Box_in_tx = new QFrame();
+     Box_in_tx = new QFrame();
+-    Box_in_tx->setMaximumWidth(440);//1.81 400    <- towa i towa po gore praviat idealniq slu4ai v1.11->line_txt->setMaximumWidth(300);
+-    Box_in_tx->setMinimumWidth(263);//2.15 263 - 264
++    Box_in_tx->setMaximumWidth(QWIDGETSIZE_MAX);
++    Box_in_tx->setMinimumWidth(680);
++    Box_in_tx->setMinimumHeight(215);
+     //Box_in_tx->setMaximumHeight(160);
+     //Box_in_tx->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Preferred);
+     Box_in_tx->setFrameShape(QFrame::WinPanel);
+@@ -1054,6 +1118,10 @@ HvTxW::HvTxW(QString inst,QString path,int lid,bool f,int x,int y,QWidget * pare
+     Box_dt->setFrameShadow(Box_in_tx->frameShadow());
+     Box_dt->setLayout(V_dt);
+     Box_dt->setContentsMargins(3,2,3,3);
++    Box_dt->setMaximumWidth(480);
++    Box_dt->setSizePolicy(QSizePolicy::Preferred,QSizePolicy::Preferred);
++
++    Box_in_tx->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Preferred);
+ 
+     //TX watchdog reset 2.49 stop
+     //connect(this, SIGNAL(EmitMessageS(QString,bool,bool)), this, SLOT(ResetTxWatchdog(QString,bool,bool)));
+@@ -1065,9 +1133,10 @@ HvTxW::HvTxW(QString inst,QString path,int lid,bool f,int x,int y,QWidget * pare
+     //H_l->addWidget(status_frame);
+     H_l->addWidget(Box_dt);
+     //H_l->setAlignment(Box_dt,Qt::AlignRight);
++    H_l->addWidget(Box_in_tx,1);
+     H_l->addWidget(Box_in_tx_b);
+     //H_l->setAlignment(Box_in_tx_b,Qt::AlignRight);
+-    H_l->addWidget(Box_in_tx);
++    // Box_in_tx contains the queue and the dedicated lifecycle column.
+     //H_l->setAlignment(Box_in_tx,Qt::AlignLeft);
+     //H_l->setAlignment(Qt::AlignCenter);
+ 
+@@ -3733,7 +3802,7 @@ void HvTxW::RefreshMultiAnswerModAndASeq()
+     if ((s_mode==11 || s_mode==13 || allq65) && f_multi_answer_mod)
+     {
+         AutoSeqLab->SetAutoSeqMode(s_mode,false);
+-        SetTxTextsHiden(true);
++        SetTxTextsHiden(false);
+         MultiAnswerMod->setHidden(false);
+         MultiAnswerMod->GetCurrentMsg();
+     }
+diff --git a/MSHV_2762/src/HvTxW/hvtxw.h b/MSHV_2762/src/HvTxW/hvtxw.h
+index 76636f2..de02f68 100644
+--- a/MSHV_2762/src/HvTxW/hvtxw.h
++++ b/MSHV_2762/src/HvTxW/hvtxw.h
+@@ -83,7 +83,9 @@ public:
+     HvLeWithSpace *line_txt;
+     QRadioButton *rb_tx;
+     QPushButton *b_tx;
++    QLabel *stage_txt;
+     int s_ident;
++    void SetStageName(const QString &name);
+     void SetReadOnly(bool);
+     void SetEnabledRbBtTx(bool f);
+     void SetEnabledBtTx(bool f);

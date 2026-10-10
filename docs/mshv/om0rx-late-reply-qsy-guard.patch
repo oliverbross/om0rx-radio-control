@@ -1,0 +1,317 @@
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+index be3fce1..25f8524 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -142,6 +142,7 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     , m_autoOffReconcileTimer(nullptr)
+     , m_postQsoGuardTimer(nullptr)
+     , m_postQsoGuardBand(-1)
++    , m_lateReplyGuardTimer(nullptr)
+     , m_autoModeOn(false)
+     , m_reconcilingAutoOff(false)
+     , m_historyTimer(nullptr)
+@@ -295,6 +296,15 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     connect(m_postQsoGuardTimer, &QTimer::timeout,
+             this, &AutoDxerCore::finishPostQsoGuard);
+ 
++    // After an unanswered attempt, stay on frequency in receive-only mode for
++    // a full minute measured from the actual final transmission.  A late
++    // reply re-engages the native exchange; only expiry releases the target
++    // and permits a mode or band change.
++    m_lateReplyGuardTimer = new QTimer(this);
++    m_lateReplyGuardTimer->setSingleShot(true);
++    connect(m_lateReplyGuardTimer, &QTimer::timeout,
++            this, &AutoDxerCore::finishLateReplyGuard);
++
+     // Wavelog is the sole worked-history authority. Historical novelty is
+     // fail-closed until OM0RX confirms an attested snapshot and acknowledged
+     // deltas. This background poll is independent of the PTT permit path.
+@@ -427,6 +437,7 @@ void AutoDxerCore::setEnabled(bool enabled)
+         m_fullHuntingDetourActive = false;
+         if (m_postQsoGuardTimer) m_postQsoGuardTimer->stop();
+         m_postQsoGuardCallsign.clear();
++        clearLateReplyGuard();
+         m_patrolBandChangePending = false;
+         m_priorityPatrolCheckedBands.clear();
+         m_priorityPatrolOpenBands.clear();
+@@ -1461,6 +1472,13 @@ QJsonObject AutoDxerCore::autoDxStatus() const
+     postQsoGuard["remaining_seconds"] = postQsoGuardActive()
+         ? (m_postQsoGuardTimer->remainingTime() + 999) / 1000 : 0;
+     fullHunting["post_qso_guard"] = postQsoGuard;
++    QJsonObject lateReplyGuard;
++    lateReplyGuard["active"] = lateReplyGuardActive();
++    lateReplyGuard["call"] = m_lateReplyGuardCallsign;
++    lateReplyGuard["remaining_seconds"] = lateReplyGuardActive()
++        ? (m_lateReplyGuardTimer->remainingTime() + 999) / 1000 : 0;
++    lateReplyGuard["receive_only"] = lateReplyGuardActive();
++    fullHunting["late_reply_guard"] = lateReplyGuard;
+     result["full_hunting"] = fullHunting;
+     result["pending_verification"] = pendingVerification;
+     return result;
+@@ -2216,6 +2234,7 @@ void AutoDxerCore::cancelCurrentCallByOperator()
+     m_postQsoGuardCallsign.clear();
+     m_postQsoGuardBand = -1;
+     m_postQsoGuardMode.clear();
++    clearLateReplyGuard();
+     if (m_autoOffReconcileTimer) m_autoOffReconcileTimer->stop();
+     m_autoOffPendingCallsign.clear();
+ 
+@@ -2327,6 +2346,19 @@ void AutoDxerCore::onLocalDecode(QStringList decodeData)
+                     const bool newlyEngaged = !m_targetRespondedToUs;
+                     m_targetRespondedToUs = true;
+                     m_lastTargetProgressUtc = QDateTime::currentDateTimeUtc();
++                    if (lateReplyGuardActive()
++                            && callsignsMatch(m_lateReplyGuardCallsign,
++                                              m_currentTarget.callsign)) {
++                        const QString lateCall = m_lateReplyGuardCallsign;
++                        clearLateReplyGuard();
++                        emit requestEnableAuto();
++                        QJsonObject lateFields;
++                        lateFields["call"] = lateCall;
++                        lateFields["message"] = originalMsg.left(40);
++                        auditEvent("late-reply-received", lateFields);
++                        emit debugMessage(QString("LATE-REPLY: %1 answered during receive guard; resuming exchange")
++                                          .arg(lateCall));
++                    }
+                     emit debugMessage(QString("QSO-PROGRESS: %1 replied to us; renewable completion lease=%2s")
+                                      .arg(m_currentTarget.callsign)
+                                      .arg(m_engagedCompletionGraceSeconds));
+@@ -2556,6 +2588,11 @@ void AutoDxerCore::onDecodeComplete(bool busy, int decState)
+                     : (m_currentTarget.isCallingMe
+                         ? QString("direct caller hard budget after %1 seconds").arg(m_normalCallSeconds)
+                         : QString("hard attempt budget after %1 seconds").arg(attemptLimitSeconds));
++                // Stop calling at the budget boundary, but do not interpret
++                // silence as an immediate license to QSY. The receive-only
++                // guard is measured from the actual last native TX so a reply
++                // from that final call still reaches this exchange.
++                if (!m_targetRespondedToUs && startLateReplyGuard(reason)) return;
+                 terminalClearCurrentTarget(reason, true);
+                 return;
+             }
+@@ -3403,6 +3440,8 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+         // exchange is already in progress. A later directed decode for the
+         // selected caller sets m_targetRespondedToUs in onLocalDecode().
+         m_targetRespondedToUs = false;
++        clearLateReplyGuard();
++        m_lastLocalTransmissionUtc = QDateTime();
+         m_lastTargetProgressUtc = QDateTime();
+         m_lastMissedCycleCheck = QDateTime();
+         m_scarceTargetMode = false;
+@@ -3613,7 +3652,8 @@ void AutoDxerCore::checkTimeout()
+             || m_currentTarget.isValid() || m_targetRespondedToUs
+             || !m_pendingCrossBandCallsign.isEmpty()
+             || !m_pendingNonStdCallsign.isEmpty() || m_waitingForSlotAnalysis
+-            || m_bandChangePending || postQsoGuardActive()) {
++            || m_bandChangePending || postQsoGuardActive()
++            || lateReplyGuardActive()) {
+         return;
+     }
+ 
+@@ -3674,6 +3714,15 @@ void AutoDxerCore::checkTimeout()
+ 
+ void AutoDxerCore::switchBand(bool emptyPeriodOverride)
+ {
++    if (lateReplyGuardActive()) {
++        QJsonObject fields;
++        fields["reason"] = "late-reply-receive-guard";
++        fields["call"] = m_lateReplyGuardCallsign;
++        fields["remaining_ms"] = m_lateReplyGuardTimer
++            ? m_lateReplyGuardTimer->remainingTime() : 0;
++        auditEvent("qsy-deferred", fields);
++        return;
++    }
+     // Defense in depth: no direct patrol caller may bypass the final-exchange
+     // receive guard, including empty-band and closed-schedule overrides.
+     if (postQsoGuardActive()) {
+@@ -3753,7 +3802,7 @@ bool AutoDxerCore::advanceFullHuntingVisit()
+             || m_currentTarget.isValid() || m_targetRespondedToUs
+             || catTransitionPending() || !m_pendingCrossBandCallsign.isEmpty()
+             || !m_pendingNonStdCallsign.isEmpty() || m_waitingForSlotAnalysis
+-            || postQsoGuardActive())
++            || postQsoGuardActive() || lateReplyGuardActive())
+         return false;
+ 
+     m_fullHuntingVisitedModes.insert(m_currentMode);
+@@ -3792,6 +3841,72 @@ bool AutoDxerCore::postQsoGuardActive() const
+     return m_postQsoGuardTimer && m_postQsoGuardTimer->isActive();
+ }
+ 
++bool AutoDxerCore::lateReplyGuardActive() const
++{
++    return m_lateReplyGuardTimer && m_lateReplyGuardTimer->isActive();
++}
++
++bool AutoDxerCore::startLateReplyGuard(const QString &reason)
++{
++    if (!m_currentTarget.isValid() || m_targetRespondedToUs
++            || !m_lastLocalTransmissionUtc.isValid()) return false;
++
++    const qint64 elapsedMs = qMax<qint64>(0,
++        m_lastLocalTransmissionUtc.msecsTo(QDateTime::currentDateTimeUtc()));
++    if (elapsedMs >= LATE_REPLY_GUARD_MS) return false;
++
++    const bool newlyStarted = !lateReplyGuardActive();
++    m_lateReplyGuardCallsign = m_currentTarget.callsign;
++    m_lateReplyTerminalReason = reason;
++    emit requestDisableAuto();
++    if (m_autoOffReconcileTimer) m_autoOffReconcileTimer->stop();
++    m_autoOffPendingCallsign.clear();
++    m_lateReplyGuardTimer->start(
++        static_cast<int>(LATE_REPLY_GUARD_MS - elapsedMs));
++
++    if (newlyStarted) {
++        QJsonObject fields;
++        fields["call"] = m_lateReplyGuardCallsign;
++        fields["elapsed_since_tx_ms"] = static_cast<double>(elapsedMs);
++        fields["remaining_ms"] = m_lateReplyGuardTimer->remainingTime();
++        fields["receive_only"] = true;
++        auditEvent("late-reply-guard-started", fields);
++        emit debugMessage(QString("LATE-REPLY-GUARD: listening for %1 for %2 seconds after final TX")
++                          .arg(m_lateReplyGuardCallsign)
++                          .arg((m_lateReplyGuardTimer->remainingTime() + 999) / 1000));
++    }
++    return true;
++}
++
++void AutoDxerCore::clearLateReplyGuard()
++{
++    if (m_lateReplyGuardTimer) m_lateReplyGuardTimer->stop();
++    m_lateReplyGuardCallsign.clear();
++    m_lateReplyTerminalReason.clear();
++}
++
++void AutoDxerCore::finishLateReplyGuard()
++{
++    const QString callsign = m_lateReplyGuardCallsign;
++    const QString reason = m_lateReplyTerminalReason;
++    clearLateReplyGuard();
++
++    if (!m_enabled || m_state != WaitingForQSO
++            || !m_currentTarget.isValid()
++            || !callsignsMatch(callsign, m_currentTarget.callsign)
++            || m_targetRespondedToUs) return;
++
++    QJsonObject fields;
++    fields["call"] = callsign;
++    fields["guard_ms"] = LATE_REPLY_GUARD_MS;
++    auditEvent("late-reply-guard-complete", fields);
++    emit debugMessage(QString("LATE-REPLY-GUARD: no reply from %1 after final 60-second receive window")
++                      .arg(callsign));
++    terminalClearCurrentTarget(
++        reason.isEmpty() ? QString("late reply receive guard expired") : reason,
++        true);
++}
++
+ void AutoDxerCore::suspendFullHuntingForDetour()
+ {
+     if (!m_fullHuntingEnabled || m_fullHuntingDetourActive) return;
+@@ -4109,6 +4224,7 @@ void AutoDxerCore::abandonCurrentTarget(const QString &reason)
+         fields["retry_seconds"] = retrySeconds;
+         auditEvent("target-stop", fields);
+     }
++    clearLateReplyGuard();
+     emit requestDisableAuto();
+     if (m_queueWidget) m_queueWidget->clearBothLists();
+     m_currentTarget.clear();
+@@ -4158,6 +4274,7 @@ void AutoDxerCore::terminalClearCurrentTarget(const QString &reason, bool schedu
+         fields["retry_scheduled"] = scheduleRetry;
+         auditEvent("target-terminal", fields);
+     }
++    clearLateReplyGuard();
+     emit requestDisableAuto();
+     if (m_queueWidget) m_queueWidget->clearBothLists();
+     if (m_autoOffReconcileTimer) m_autoOffReconcileTimer->stop();
+@@ -4481,6 +4598,26 @@ void AutoDxerCore::onAutoModeChanged(bool isOn)
+     if (m_autoOffReconcileTimer) m_autoOffReconcileTimer->start();
+ }
+ 
++void AutoDxerCore::onLocalTransmission(const QString &message)
++{
++    if (!m_enabled || m_state != WaitingForQSO || !m_currentTarget.isValid()) return;
++    m_lastLocalTransmissionUtc = QDateTime::currentDateTimeUtc();
++
++    // A transmission that was already committed when AUTO was disabled can
++    // cross the timeout edge. Always give that real final TX a complete
++    // 60-second receive window.
++    if (lateReplyGuardActive()
++            && callsignsMatch(m_lateReplyGuardCallsign,
++                              m_currentTarget.callsign)) {
++        m_lateReplyGuardTimer->start(LATE_REPLY_GUARD_MS);
++        QJsonObject fields;
++        fields["call"] = m_currentTarget.callsign;
++        fields["message"] = message.left(40);
++        fields["guard_ms"] = LATE_REPLY_GUARD_MS;
++        auditEvent("late-reply-guard-reanchored", fields);
++    }
++}
++
+ void AutoDxerCore::reconcileSustainedAutoOff()
+ {
+     // AUTO-on is the authoritative protection for a live native exchange.
+@@ -4491,6 +4628,11 @@ void AutoDxerCore::reconcileSustainedAutoOff()
+     if (m_autoOffReconcileTimer) m_autoOffReconcileTimer->stop();
+     const QString pendingCallsign = m_autoOffPendingCallsign;
+     m_autoOffPendingCallsign.clear();
++    if (lateReplyGuardActive()) {
++        emit debugMessage(QString("LATE-REPLY-GUARD: retaining %1 in receive-only mode")
++                          .arg(m_lateReplyGuardCallsign));
++        return;
++    }
+     if (postQsoGuardActive()) {
+         emit debugMessage(QString("POST-QSO-GUARD: retaining %1 after terminal AUTO-off")
+                           .arg(m_postQsoGuardCallsign));
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.h b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+index c4f6fa5..ca82648 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+@@ -180,6 +180,7 @@ public slots:
+                                       quint64 requestId, bool observedAtDestination);
+     void onWordsChanged(QStringList words, int cq, int type);
+     void onAutoModeChanged(bool isOn);  // TX confirmation feedback from HvTxW
++    void onLocalTransmission(const QString &message);  // Actual native TX start
+     void on2ClickAutoOnChanged(bool enabled);  // Critical setting for TX triggering
+     // Live QSO sync from MSHV's log - keeps AutoDxer DXCC tracker in sync
+     void onMSHVQsoLogged(QStringList qsoData);
+@@ -192,6 +193,7 @@ private slots:
+     void processListeningState();
+     void checkTimeout();
+     void finishPostQsoGuard();
++    void finishLateReplyGuard();
+     // DXCC tracker signal handlers - increment statistics counters
+     void onNewDxccWorked(const QString &entity, int bandIndex);
+     void onNewSlotWorked(const QString &entity, int bandIndex);
+@@ -219,6 +221,9 @@ private:
+     void suspendFullHuntingForDetour();
+     bool resumeFullHuntingAfterDetour();
+     bool postQsoGuardActive() const;
++    bool lateReplyGuardActive() const;
++    bool startLateReplyGuard(const QString &reason);
++    void clearLateReplyGuard();
+     int nextPatrolBand() const;
+     QSet<int> openPatrolBands() const;
+     bool priorityPatrolComplete() const;
+@@ -429,6 +434,11 @@ private:
+     QString m_postQsoGuardCallsign;
+     int m_postQsoGuardBand;
+     QString m_postQsoGuardMode;
++    QTimer *m_lateReplyGuardTimer;
++    QString m_lateReplyGuardCallsign;
++    QString m_lateReplyTerminalReason;
++    QDateTime m_lastLocalTransmissionUtc;
++    static const int LATE_REPLY_GUARD_MS = 60000;
+     bool m_autoModeOn;
+     bool m_reconcilingAutoOff;
+     QString m_autoOffPendingCallsign;
+diff --git a/MSHV_2762/src/main_ms.cpp b/MSHV_2762/src/main_ms.cpp
+index 771802c..ac5cbbf 100644
+--- a/MSHV_2762/src/main_ms.cpp
++++ b/MSHV_2762/src/main_ms.cpp
+@@ -3725,6 +3725,8 @@ void Main_Ms::SetTxMsgLabTx(QString str)
+ void Main_Ms::SetTxMsgAllTxt(QString str,double tx_freq)
+ {
+     QDateTime utc_t = getDateTime();
++    if (tx_freq != -10.0 && m_autoDxerCore)
++        m_autoDxerCore->onLocalTransmission(str);
+     QString freq_g = THvTxW->GetFreqGlobal();
+     freq_g = freq_g.mid(0,freq_g.size()-3);//to khz
+ 

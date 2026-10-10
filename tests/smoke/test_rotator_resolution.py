@@ -1,6 +1,7 @@
 """Smoke tests for rotator bearing resolution and command safety."""
 
 import asyncio
+import logging
 
 import _bootstrap  # noqa: F401
 
@@ -13,6 +14,7 @@ from radio_control.rotor_math import (
 )
 from services.rotator import RotatorService
 from services.rotator_resolution import resolve_rotor_target
+from services.wsjtx import WSJTXService
 
 
 def test_maidenhead_validation_rejects_impossible_grids():
@@ -160,3 +162,98 @@ def test_auto_goto_moves_only_when_resolution_is_auto_allowed():
     finally:
         for key, value in original.items():
             setattr(config, key, value)
+
+
+class FakeAutoRotorService:
+    def __init__(self, result):
+        self.result = result
+        self.requests = []
+
+    async def rotor_auto_goto(self, request):
+        self.requests.append(request)
+        return dict(self.result)
+
+
+def test_wsjtx_auto_rotate_classifies_band_policy_skip_without_error(monkeypatch, caplog):
+    monkeypatch.setattr(config, "ROTOR_AUTO_ENABLED", True)
+    rotor = FakeAutoRotorService({
+        "ok": False,
+        "bearing": 238.9,
+        "band": "40m",
+        "band_enabled": False,
+        "auto_allowed": False,
+        "message": "Rotor not enabled for band 40m",
+        "source": "request_grid",
+        "confidence": "high",
+    })
+    service = WSJTXService()
+    service.rotor_service = rotor
+
+    with caplog.at_level(logging.INFO, logger="services.wsjtx"):
+        result = asyncio.run(service.auto_rotate({
+            "call": "PT7SF",
+            "grid": "HI02",
+            "frequency_hz": 7_074_000,
+        }))
+
+    assert result["success"] is False
+    assert result["skipped"] is True
+    assert result["policy"] == "band-disabled"
+    assert len(rotor.requests) == 1
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert "Rotator auto skipped by policy" in caplog.text
+
+
+def test_wsjtx_auto_rotate_classifies_auto_disallowed_without_error(monkeypatch, caplog):
+    monkeypatch.setattr(config, "ROTOR_AUTO_ENABLED", True)
+    rotor = FakeAutoRotorService({
+        "ok": False,
+        "bearing": 238.9,
+        "band": "12m",
+        "band_enabled": True,
+        "auto_allowed": False,
+        "message": "Resolved approximate target; showing bearing only",
+        "source": "cty_grid",
+        "confidence": "low",
+    })
+    service = WSJTXService()
+    service.rotor_service = rotor
+
+    with caplog.at_level(logging.INFO, logger="services.wsjtx"):
+        result = asyncio.run(service.auto_rotate({
+            "call": "PT7SF",
+            "grid": "HI02",
+            "frequency_hz": 24_915_000,
+        }))
+
+    assert result["success"] is False
+    assert result["skipped"] is True
+    assert result["policy"] == "auto-disallowed"
+    assert len(rotor.requests) == 1
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+
+def test_wsjtx_auto_rotate_keeps_hardware_failure_as_error(monkeypatch, caplog):
+    monkeypatch.setattr(config, "ROTOR_AUTO_ENABLED", True)
+    rotor = FakeAutoRotorService({
+        "ok": False,
+        "bearing": 238.9,
+        "band": "12m",
+        "band_enabled": True,
+        "auto_allowed": True,
+        "message": "Rotor command failed: timeout",
+    })
+    service = WSJTXService()
+    service.rotor_service = rotor
+
+    with caplog.at_level(logging.INFO, logger="services.wsjtx"):
+        result = asyncio.run(service.auto_rotate({
+            "call": "PT7SF",
+            "grid": "HI02",
+            "frequency_hz": 24_915_000,
+        }))
+
+    assert result["success"] is False
+    assert "skipped" not in result
+    assert any(record.levelno >= logging.ERROR for record in caplog.records)
+    assert "Rotator command failed: PT7SF" in caplog.text

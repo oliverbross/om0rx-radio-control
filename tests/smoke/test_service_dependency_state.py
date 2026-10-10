@@ -6,8 +6,10 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import _bootstrap  # noqa: F401
+import pytest
 
 from services import background_tasks, radio
+import services.digital_engine as digital_engine
 from services.digital_automation import DigitalAutomationController
 
 
@@ -17,6 +19,14 @@ async def noop_status(_payload):
 
 async def noop_spots(_spots):
     return None
+
+
+@pytest.fixture(autouse=True)
+def explicit_wsjtz_provider_for_legacy_planner_tests(tmp_path, monkeypatch):
+    """Do not let the operator's live engine selection leak into smoke tests."""
+    state_path = tmp_path / "digital_engine.json"
+    monkeypatch.setattr(digital_engine, "STATE_PATH", state_path)
+    digital_engine.atomic_write_json(state_path, {"provider": "wsjtz"})
 
 
 def test_radio_control_dependency_state():
@@ -32,6 +42,60 @@ def test_radio_control_dependency_state():
     finally:
         radio.radio_control_state.flex = original_flex
         radio.radio_control_state.broadcast_func = original_broadcast
+
+
+def test_sync_and_async_radio_io_share_one_thread_lock():
+    events = []
+
+    async def exercise():
+        result = await radio.run_radio_io(lambda: events.append("async") or "ok")
+        assert result == "ok"
+
+    assert radio.run_radio_io_sync(lambda: events.append("sync") or 1) == 1
+    asyncio.run(exercise())
+    assert events == ["sync", "async"]
+
+
+def test_cancelled_radio_io_waiter_never_executes_later():
+    calls = []
+
+    async def exercise():
+        radio._radio_io_lock.acquire()
+        try:
+            task = asyncio.create_task(
+                radio.run_radio_io(lambda: calls.append("late-tx-on") or True)
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            radio._radio_io_lock.release()
+        # Give the executor worker enough time to acquire the released lock and
+        # observe the cancellation marker before it could run the operation.
+        await asyncio.sleep(0.1)
+
+    asyncio.run(exercise())
+    assert calls == []
+
+
+def test_radio_io_admission_timeout_never_executes_later():
+    calls = []
+
+    async def exercise():
+        radio._radio_io_lock.acquire()
+        try:
+            with pytest.raises(TimeoutError):
+                await radio.run_radio_io(
+                    lambda: calls.append("late-command") or True,
+                    timeout=0.05,
+                )
+        finally:
+            radio._radio_io_lock.release()
+        await asyncio.sleep(0.1)
+
+    asyncio.run(exercise())
+    assert calls == []
 
 
 def test_background_task_dependency_state():

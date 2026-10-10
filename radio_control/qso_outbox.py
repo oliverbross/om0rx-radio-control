@@ -33,7 +33,8 @@ class QSOOutbox:
         """Append one failed Wavelog upload to the outbox."""
         try:
             client = WavelogClient()
-            record = client.build_adif_string(qso_data)
+            record = str(qso_data.get("adif_text") or "").strip() or client.build_adif_string(qso_data)
+            record = self._add_identity_fields(record, qso_data)
             if reason:
                 record = self._add_app_note(record, f"Wavelog upload queued: {reason}")
             return self.enqueue_adif(record)
@@ -54,9 +55,9 @@ class QSOOutbox:
                 if normalized in existing:
                     logger.info("QSO already exists in Wavelog outbox; skipping duplicate")
                     return True
-                identity = self._loose_identity(normalized)
-                if identity and identity in {self._loose_identity(record) for record in existing_records}:
-                    logger.info("QSO already exists in Wavelog outbox by call/date/band/mode; skipping duplicate")
+                identity = self._exact_identity(normalized)
+                if identity and identity in {self._exact_identity(record) for record in existing_records}:
+                    logger.info("QSO already exists in Wavelog outbox by exact event/QSO identity; skipping duplicate")
                     return True
 
                 self._ensure_file_unlocked()
@@ -115,6 +116,10 @@ class QSOOutbox:
             for record in records[:max_records]:
                 attempted += 1
                 result = await client.submit_adif_string(record)
+                if not result.get("success"):
+                    readback = await asyncio.to_thread(self._exact_readback_result, record)
+                    if readback.get("identity_verified"):
+                        result = {**result, **readback, "duplicate": True}
                 resolved = bool(result.get("success")) or self._is_duplicate_upload_result(result)
                 if not resolved:
                     failures.append(result.get("message") or result.get("error") or "Unknown error")
@@ -123,8 +128,20 @@ class QSOOutbox:
                     uploaded += 1
                 else:
                     duplicates += 1
+                try:
+                    self._acknowledge_mshv_history(record)
+                    # Promote the exact QSO (including portable-reference
+                    # fields) into durable local read state before deleting
+                    # the only offline replay record.  A callback failure is
+                    # retryable through Wavelog's verified-duplicate path.
+                    self._notify_resolved(record, on_resolved_record)
+                except Exception as exc:
+                    # Keep the outbox record. A later duplicate response is a
+                    # safe retry, while dropping it here could lose the only
+                    # transition from pending to Wavelog-authoritative history.
+                    failures.append(f"MSHV history acknowledgement failed (including local cache): {exc}")
+                    break
                 self._remove_record(record)
-                self._notify_resolved(record, on_resolved_record)
             remaining_count = self.count()
             return {
                 "success": not failures,
@@ -200,32 +217,120 @@ class QSOOutbox:
         return fields
 
     @classmethod
-    def _loose_identity(cls, adif_record: str) -> str:
+    def _exact_identity(cls, adif_record: str) -> str:
         fields = cls._adif_fields(adif_record)
+        event_id = fields.get("app_om0rx_event_id", "").lower()
+        provider = fields.get("app_om0rx_provider", "").lower()
+        station = (fields.get("app_om0rx_station") or fields.get("station_callsign") or "").upper()
+        client = fields.get("app_om0rx_client_id", "")
+        if event_id and provider:
+            return "event|" + "|".join((provider, station, client, event_id))
         call = fields.get("call", "").upper()
         qso_date = fields.get("qso_date", "")
-        band = fields.get("band", "").lower()
+        time_on = fields.get("time_on", "")
+        time_off = fields.get("time_off", "")
+        frequency = fields.get("freq", "")
         mode = (fields.get("submode") or fields.get("mode") or "").upper()
-        if not call or not qso_date or not band or not mode:
+        if not call or not qso_date or not time_on or not frequency or not mode:
             return ""
-        return "|".join((call, qso_date, band, mode))
+        return "qso|" + "|".join((station, call, qso_date, time_on, time_off, frequency, mode))
 
     @staticmethod
     def _is_duplicate_upload_result(result: Dict[str, Any]) -> bool:
-        text = " ".join(
-            str(result.get(key) or "")
-            for key in ("message", "error")
-        ).lower()
-        return "duplicate" in text
+        # Never infer authority from free-form server text. A duplicate is
+        # resolved only after the Wavelog client has returned a structured
+        # duplicate outcome and verified the exact record identity/readback.
+        return result.get("duplicate") is True and result.get("identity_verified") is True
+
+    @classmethod
+    def _exact_readback_result(cls, adif_record: str) -> Dict[str, Any]:
+        """Verify a failed/duplicate upload using the canonical Wavelog row."""
+        from datetime import datetime, timezone
+        from services.wavelog_log import get_wavelog_log_service
+
+        fields = cls._adif_fields(adif_record)
+        provider = fields.get("app_om0rx_provider", "").lower()
+        event_id = fields.get("app_om0rx_event_id", "").lower()
+        station = (fields.get("app_om0rx_station") or fields.get("station_callsign") or "").upper()
+        client_id = fields.get("app_om0rx_client_id", "")
+        if provider == "mshv_auto_dx" and (
+            not re.fullmatch(r"[0-9a-f]{64}", event_id)
+            or station != "OM0RX"
+            or not client_id
+        ):
+            return {"identity_verified": False, "reason": "exact-readback-correlation-incomplete"}
+        date = "".join(c for c in fields.get("qso_date", "") if c.isdigit())[:8]
+        on = "".join(c for c in (fields.get("time_on") or fields.get("app_om0rx_time_on") or "") if c.isdigit())
+        off = "".join(c for c in (fields.get("time_off") or fields.get("app_om0rx_time_off") or "") if c.isdigit())
+        if len(date) != 8 or len(on) != 6 or len(off) != 6:
+            return {"identity_verified": False, "reason": "exact-readback-identity-invalid"}
+        try:
+            expected_on = datetime.strptime(date + on, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+            expected_off = datetime.strptime(date + off, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+            frequency_hz = int(round(float(fields.get("app_om0rx_frequency_hz") or float(fields.get("freq", 0)) * 1_000_000)))
+        except (TypeError, ValueError):
+            return {"identity_verified": False, "reason": "exact-readback-identity-invalid"}
+        if not fields.get("call") or not (fields.get("submode") or fields.get("mode")) or frequency_hz <= 0:
+            return {"identity_verified": False, "reason": "exact-readback-identity-invalid"}
+        identity = {
+            "provider": provider, "event_id": event_id,
+            "station_callsign": station, "client_id": client_id,
+            "call": fields.get("call", "").upper(),
+            "mode": (fields.get("submode") or fields.get("mode") or "").upper(),
+            "frequency_hz": frequency_hz,
+            "time_on_utc": expected_on, "time_off_utc": expected_off,
+        }
+        verified = get_wavelog_log_service().find_exact_qso(
+            identity, station_id=int(getattr(config, "WAVELOG_STATION_ID", 1)),
+        )
+        if not verified.get("verified"):
+            return {"identity_verified": False, "reason": verified.get("reason")}
+        return {
+            "identity_verified": True,
+            "readback_verified": True,
+            "readback_identity_exact": True,
+            "readback_wavelog_id": verified["matches"][0].get("id"),
+        }
 
     @staticmethod
     def _notify_resolved(adif_record: str, callback: Optional[Callable[[str], None]]) -> None:
         if callback is None:
             return
-        try:
-            callback(adif_record)
-        except Exception as exc:
-            logger.debug("Wavelog outbox resolved-record callback failed: %s", exc, exc_info=True)
+        callback(adif_record)
+
+    @staticmethod
+    def _acknowledge_mshv_history(adif_record: str) -> None:
+        # Import lazily so the standalone outbox stays lightweight. Records
+        # without a matching MSHV pending delta must be reconstructed from the
+        # embedded identity before acknowledgement.  Otherwise the outbox row
+        # remains the only durable authority boundary and must not be removed.
+        from services.digital_logging import acknowledge_outbox_resolution
+        result = acknowledge_outbox_resolution(adif_record)
+        delta = result.get("history_delta") if isinstance(result, dict) else None
+        fields = QSOOutbox._adif_fields(adif_record)
+        is_mshv = fields.get("app_om0rx_provider", "").lower() == "mshv_auto_dx"
+        if is_mshv and (not isinstance(delta, dict) or not delta.get("recorded")):
+            reason = delta.get("reason") if isinstance(delta, dict) else None
+            raise RuntimeError(reason or "MSHV history delta was not acknowledged")
+
+    @staticmethod
+    def _add_identity_fields(adif_record: str, qso_data: Dict[str, Any]) -> str:
+        """Embed replay/correlation identity that Wavelog is not required to store."""
+        values = {
+            "APP_OM0RX_PROVIDER": qso_data.get("provider"),
+            "APP_OM0RX_STATION": qso_data.get("station_callsign"),
+            "APP_OM0RX_CLIENT_ID": qso_data.get("client_id"),
+            "APP_OM0RX_EVENT_ID": qso_data.get("event_id"),
+            "APP_OM0RX_TIME_ON": qso_data.get("time_on"),
+            "APP_OM0RX_TIME_OFF": qso_data.get("time_off"),
+            "APP_OM0RX_FREQUENCY_HZ": qso_data.get("frequency_hz"),
+        }
+        record = re.sub(r"<eor>\s*$", "", (adif_record or "").strip(), flags=re.IGNORECASE)
+        for name, raw in values.items():
+            value = str(raw or "").strip()
+            if value:
+                record += f"<{name}:{len(value)}>{value}"
+        return record + "<eor>"
 
     @staticmethod
     def _add_app_note(adif_record: str, note: str) -> str:

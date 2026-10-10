@@ -11,6 +11,7 @@ import threading
 import time
 import os
 import json
+import ctypes
 from pathlib import Path
 
 # Try to import webview, with fallback instructions
@@ -76,6 +77,13 @@ ROTOR_COMPASS_WINDOW_CONFIG = {
     "width": 720,
     "height": 760,
 }
+STATION_WIDGET_WINDOW_CONFIG = {
+    "key": "station_widget",
+    "title": "OM0RX Station Path",
+    "url": f"{BASE_URL}/station-widget.html",
+    "width": 1120,
+    "height": 250,
+}
 
 
 class WindowLayoutStore:
@@ -118,6 +126,8 @@ class WindowLayoutStore:
         if y is not None:
             restored["y"] = y
 
+        restored = self._keep_on_virtual_desktop(restored, defaults)
+
         if restored:
             print(f"↔️ Restoring window layout for {key}: {restored}")
         return restored
@@ -126,14 +136,18 @@ class WindowLayoutStore:
         if not REMEMBER_WINDOW_LAYOUT or not window:
             return
 
-        def save_now():
+        def save_now(*_args):
             self.save_window(key, window)
+
+        def save_before_close(*_args):
+            self.save_window(key, window, throttle=False)
 
         window.events.moved += save_now
         window.events.resized += save_now
         window.events.restored += save_now
         window.events.maximized += save_now
-        window.events.closed += save_now
+        if hasattr(window.events, "closing"):
+            window.events.closing += save_before_close
 
     def save_window(self, key, window, throttle=True):
         if not REMEMBER_WINDOW_LAYOUT or not window:
@@ -145,11 +159,14 @@ class WindowLayoutStore:
         self._last_save_at[key] = now
 
         try:
+            values = (window.x, window.y, window.width, window.height)
+            if any(value is None for value in values):
+                return
             geometry = {
-                "x": int(window.x),
-                "y": int(window.y),
-                "width": int(window.width),
-                "height": int(window.height),
+                "x": int(values[0]),
+                "y": int(values[1]),
+                "width": int(values[2]),
+                "height": int(values[3]),
                 "maximized": bool(getattr(window, "state", "") == "maximized"),
                 "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             }
@@ -178,6 +195,32 @@ class WindowLayoutStore:
         if low <= parsed <= high:
             return parsed
         return None
+
+    @staticmethod
+    def _keep_on_virtual_desktop(geometry, defaults):
+        """Clamp saved bounds after a monitor is removed or rearranged."""
+        if os.name != "nt" or "x" not in geometry or "y" not in geometry:
+            return geometry
+
+        try:
+            user32 = ctypes.windll.user32
+            virtual_x = int(user32.GetSystemMetrics(76))
+            virtual_y = int(user32.GetSystemMetrics(77))
+            virtual_width = int(user32.GetSystemMetrics(78))
+            virtual_height = int(user32.GetSystemMetrics(79))
+            if virtual_width <= 0 or virtual_height <= 0:
+                return geometry
+
+            width = int(geometry.get("width", defaults["width"]))
+            height = int(geometry.get("height", defaults["height"]))
+            max_x = virtual_x + max(0, virtual_width - min(width, virtual_width))
+            max_y = virtual_y + max(0, virtual_height - min(height, virtual_height))
+            geometry["x"] = min(max(int(geometry["x"]), virtual_x), max_x)
+            geometry["y"] = min(max(int(geometry["y"]), virtual_y), max_y)
+        except Exception as exc:
+            print(f"⚠️ Could not validate saved window layout: {exc}")
+
+        return geometry
 
 
 LAYOUT_STORE = WindowLayoutStore(WINDOW_LAYOUT_PATH)
@@ -208,7 +251,60 @@ class DesktopApi:
         self._visual_map_window = None
         self._spots_window = None
         self._rotor_compass_window = None
+        self._station_widget_window = None
         self._lock = threading.Lock()
+
+    def _clear_station_widget(self, window=None):
+        """Forget a widget after its native window has been closed."""
+        with self._lock:
+            if window is None or self._station_widget_window is window:
+                self._station_widget_window = None
+
+    def open_station_widget(self, orientation=None, width=None, height=None):
+        """Open or focus the chromeless, normal-z-order station widget."""
+        with self._lock:
+            try:
+                if self._station_widget_window:
+                    if self._station_widget_window.events.closed.is_set():
+                        self._station_widget_window = None
+                if self._station_widget_window:
+                    try:
+                        self._station_widget_window.restore()
+                        self._station_widget_window.show()
+                        self._station_widget_window.evaluate_js("window.focus && window.focus();")
+                        return {"success": True, "reused": True, "native": True}
+                    except Exception:
+                        self._station_widget_window = None
+
+                resolved_orientation = orientation if orientation in {"horizontal", "vertical"} else "horizontal"
+                default_width = 430 if resolved_orientation == "vertical" else 1120
+                default_height = 690 if resolved_orientation == "vertical" else 250
+                try:
+                    resolved_width = max(300, min(1800, int(width)))
+                    resolved_height = max(180, min(1100, int(height)))
+                except (TypeError, ValueError):
+                    resolved_width = default_width
+                    resolved_height = default_height
+
+                widget_window = create_managed_window(
+                    STATION_WIDGET_WINDOW_CONFIG,
+                    width=resolved_width,
+                    height=resolved_height,
+                    resizable=True,
+                    on_top=False,
+                    focus=True,
+                    js_api=self,
+                )
+                self._station_widget_window = widget_window
+                widget_window.events.closed += self._clear_station_widget
+                print(
+                    f"✅ Created window: {STATION_WIDGET_WINDOW_CONFIG['title']} -> "
+                    f"{STATION_WIDGET_WINDOW_CONFIG['url']}"
+                )
+                return {"success": True, "reused": False, "native": True}
+            except Exception as exc:
+                print(f"❌ Failed to create station widget window: {exc}")
+                return {"success": False, "error": str(exc)}
 
     def open_digital_window(self):
         """Open or focus the native Digital window without using browser tabs."""

@@ -26,6 +26,7 @@ from radio_control.spot_aggregation import upsert_live_spot
 from radio_control.local_heard import correlate_local_heard
 from radio_control.spots_logger import log_spot
 from radio_control.spot_classification import classify_call_status, classify_dxcc_status
+from services.radio import run_radio_io
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,10 @@ async def poll_radio_status():
     max_failures = 5
     last_active_status_query = 0.0
     last_authoritative_status_broadcast = 0.0
+    last_radio_observation = 0.0
+    follower_error_key = ""
+    follower_error_count = 0
+    follower_error_last_log = 0.0
     
     while True:
         try:
@@ -193,11 +198,18 @@ async def poll_radio_status():
                 # Check socket health - reconnect if needed
                 if not flex.sock:
                     logger.warning("⚠️  Radio socket lost - reconnecting...")
-                    await asyncio.to_thread(flex.connect)
+                    await run_radio_io(flex.connect)
                     consecutive_failures += 1
+                    context.radio_snapshot = {
+                        **getattr(context, "radio_snapshot", {}),
+                        "connected": bool(flex.sock),
+                        "known": False,
+                        "stale": True,
+                        "observed_at": None,
+                    }
                 else:
                     # Read status updates from radio
-                    success = await asyncio.to_thread(flex.refresh_radio_state)
+                    success = await run_radio_io(flex.refresh_radio_state)
                     if not success:
                         consecutive_failures += 1
                     else:
@@ -219,11 +231,12 @@ async def poll_radio_status():
                     recent_command = now - float(getattr(flex, "last_command_time", 0) or 0) < 2.5
                     if success and needs_snapshot and not recent_command and now - last_active_status_query > 5.0:
                         snapshot_started = wall_time.time()
-                        levels = await asyncio.to_thread(flex.get_current_levels, 0.6)
+                        levels = await run_radio_io(lambda: flex.get_current_levels(0.6))
                         last_active_status_query = now
                         if float(getattr(flex, "last_command_time", 0) or 0) > snapshot_started:
                             levels = {}
                         if levels:
+                            last_radio_observation = now
                             if "freq" in levels:
                                 status_update.setdefault("freq", levels["freq"])
                             if "mode" in levels:
@@ -278,11 +291,32 @@ async def poll_radio_status():
                         await service.broadcast_status(status_update)
                         flex.last_state_changed = {}
 
+                    last_radio_observation = max(
+                        last_radio_observation,
+                        float(getattr(flex, "last_radio_message_time", 0) or 0),
+                    )
+                    observation_age = (
+                        now - last_radio_observation if last_radio_observation else None
+                    )
+                    radio_stale = bool(
+                        not flex.sock
+                        or observation_age is None
+                        or observation_age > 8.0
+                    )
                     context.radio_snapshot = {
                         "connected": bool(flex.sock),
-                        "known": bool(flex.sock and flex.current_freq is not None),
-                        "stale": not bool(flex.sock),
-                        "observed_at": datetime.now(timezone.utc).isoformat(),
+                        "known": bool(
+                            flex.sock and flex.current_freq is not None and not radio_stale
+                        ),
+                        "stale": radio_stale,
+                        "observed_at": (
+                            datetime.fromtimestamp(
+                                last_radio_observation,
+                                tz=timezone.utc,
+                            ).isoformat()
+                            if last_radio_observation
+                            else None
+                        ),
                         "frequency": flex.current_freq,
                         "mode": flex.current_mode,
                         "filter_lo": flex.current_filter_lo,
@@ -293,8 +327,56 @@ async def poll_radio_status():
                         "mic_level": flex.current_miclevel,
                         "mox": flex.current_mox,
                         "interlock_state": flex.current_interlock_state,
+                        "rx_ant": flex.current_rx_ant,
+                        "tx_ant": flex.current_tx_ant,
                         "vox_enabled": flex.current_vox_enable,
                     }
+
+                    # Keep the amplifier on the Flex band and feed the tuner
+                    # its exact frequency for immediate memory recall. This
+                    # also catches SmartSDR/WSJT-Z changes made outside this UI.
+                    elecraft = getattr(context, "elecraft", None)
+                    if elecraft and flex.current_freq is not None:
+                        if hasattr(elecraft, "observe_radio_tx_state"):
+                            elecraft.observe_radio_tx_state(
+                                flex.current_mox,
+                                flex.current_interlock_state,
+                            )
+                        await elecraft.sync_radio_state(flex.current_freq, flex.current_mode)
+                        coordinator = getattr(context, "station_coordinator", None)
+                        if coordinator:
+                            try:
+                                followed = await coordinator.follow_observed_radio_route(
+                                    flex.current_freq
+                                )
+                                if followed or follower_error_count:
+                                    follower_error_key = ""
+                                    follower_error_count = 0
+                            except Exception as exc:
+                                # A rejected accessory route must remain visible,
+                                # but it must not make a healthy FLEX poll look
+                                # disconnected or suppress later radio updates.
+                                current_key = f"{type(exc).__name__}:{exc}"
+                                if current_key != follower_error_key:
+                                    follower_error_key = current_key
+                                    follower_error_count = 0
+                                follower_error_count += 1
+                                monotonic_now = wall_time.monotonic()
+                                # One transient snapshot/serial race is normal.
+                                # Surface persistent failures, then coalesce an
+                                # unchanged warning for one minute. This changes
+                                # logging only; the coordinator remains the sole
+                                # route authority and every native QSY/PTT gate is
+                                # untouched.
+                                if follower_error_count >= 3 and (
+                                    monotonic_now - follower_error_last_log >= 60.0
+                                ):
+                                    logger.warning(
+                                        "Station Profile follower still could not apply the observed FLEX route after %d attempts: %s",
+                                        follower_error_count,
+                                        exc,
+                                    )
+                                    follower_error_last_log = monotonic_now
                     
                     # Force reconnect if too many consecutive failures
                     if consecutive_failures > max_failures:
@@ -315,10 +397,10 @@ async def poll_radio_status():
                     "stale": True,
                 }
 
-            # SmartSDR sends subscribed state changes asynchronously. Polling
-            # the socket once per second is enough to drain pending messages
-            # without creating noisy radio/client activity.
-            await asyncio.sleep(1.0)
+            # SmartSDR sends subscribed state changes asynchronously. Drain
+            # them promptly because a cross-band QSY may also require the
+            # KAT500 to change antenna connectors before the next transmission.
+            await asyncio.sleep(0.2)
         except Exception as e:
             logger.error(f"Poll error: {e}")
             consecutive_failures += 1

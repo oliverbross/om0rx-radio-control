@@ -1,5 +1,7 @@
 import inspect
 
+import pytest
+
 from radio_control import config
 from radio_control import postgres_store
 from radio_control.postgres_store import get_postgres_dsn, get_postgres_dsn_from_values, should_use_postgres
@@ -52,6 +54,63 @@ def test_postgres_explicit_form_dsn_wins_over_split_fields():
     )
 
     assert dsn == "host=db dbname=radio user=om0rx"
+
+
+def test_postgres_connect_uses_bounded_timeout(monkeypatch):
+    captured = {}
+
+    class FakeConnection:
+        def close(self):
+            captured["closed"] = True
+
+    class FakePsycopg:
+        @staticmethod
+        def connect(dsn, **kwargs):
+            captured["dsn"] = dsn
+            captured.update(kwargs)
+            return FakeConnection()
+
+    monkeypatch.setattr(postgres_store, "get_postgres_dsn", lambda: "host=localhost dbname=radio")
+    monkeypatch.setattr(postgres_store, "require_psycopg", lambda: FakePsycopg)
+    monkeypatch.setattr(config, "POSTGRES_CONNECT_TIMEOUT_SECONDS", 4)
+
+    with postgres_store.connect():
+        pass
+
+    assert captured == {
+        "dsn": "host=localhost dbname=radio",
+        "connect_timeout": 4,
+        "closed": True,
+    }
+
+
+def test_postgres_connection_failure_opens_retry_circuit(monkeypatch):
+    attempts = 0
+
+    class FakePsycopg:
+        @staticmethod
+        def connect(_dsn, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            raise OSError("database offline")
+
+    postgres_store.reset_connection_backoff()
+    monkeypatch.setattr(postgres_store, "get_postgres_dsn", lambda: "host=offline dbname=radio")
+    monkeypatch.setattr(postgres_store, "require_psycopg", lambda: FakePsycopg)
+    monkeypatch.setattr(config, "POSTGRES_CONNECT_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(config, "POSTGRES_RETRY_COOLDOWN_SECONDS", 30)
+
+    try:
+        with pytest.raises(OSError, match="database offline"):
+            with postgres_store.connect():
+                pass
+        with pytest.raises(ConnectionError, match="temporarily unavailable"):
+            with postgres_store.connect():
+                pass
+    finally:
+        postgres_store.reset_connection_backoff()
+
+    assert attempts == 1
 
 
 def test_postgres_schema_includes_digital_target_queue():

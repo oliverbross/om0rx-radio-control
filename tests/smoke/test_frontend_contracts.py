@@ -270,7 +270,63 @@ def test_wsjtx_prepare_request_accepts_frontend_and_api_field_names():
     assert api_shape.auto_call_start_only is False
 
 
-def test_safe_frontend_read_contracts(tmp_path):
+def test_safe_frontend_read_contracts(tmp_path, monkeypatch):
+    """Validate response shapes without opening live audio, engine, or spot stores."""
+    import backend.api.ft8 as ft8_api
+    import backend.api.spots as spots_api
+    import services.ft8_service as ft8_service_module
+    import services.wsjtx as wsjtx_module
+
+    class FakeController:
+        def set_status_sources(self, **_kwargs):
+            return None
+
+        def status(self):
+            return {"settings": {}, "targets": [], "last_decision": {}}
+
+    class FakeFt8Service:
+        automation_controller = FakeController()
+
+        def get_stats(self):
+            return {"enabled": False, "mode": "FT8"}
+
+        def get_decoded_messages(self, _limit):
+            return []
+
+        def get_active_qsos(self):
+            return []
+
+        def get_waterfall_data(self):
+            return []
+
+    class FakeWsjtxService:
+        def get_health(self):
+            return {
+                "success": True, "enabled": False, "status": "stopped", "bridge": {},
+                "processes": {}, "engine": {}, "decode_fresh": False, "last_decode": None,
+                "checks": {}, "validation": {}, "timeline": [],
+            }
+
+        def get_launch_logs(self, rig_name, lines):
+            return {"success": True, "rig_name": rig_name, "lines": lines, "logs": []}
+
+    fake_ft8 = FakeFt8Service()
+    monkeypatch.setattr(ft8_api, "get_ft8_service", lambda: fake_ft8)
+    monkeypatch.setattr(ft8_service_module, "get_ft8_service", lambda: fake_ft8)
+    monkeypatch.setattr(ft8_api, "get_sounddevice", lambda: None)
+    monkeypatch.setattr(ft8_api, "get_soundcard", lambda: None)
+    monkeypatch.setattr(ft8_api, "sounddevice_unavailable_reason", lambda: "disabled in contract test")
+    monkeypatch.setattr(ft8_api, "soundcard_unavailable_reason", lambda: "disabled in contract test")
+    monkeypatch.setattr(wsjtx_module, "get_wsjtx_service", lambda: FakeWsjtxService())
+
+    async def fake_spots_db_call(method_name, *_args, **_kwargs):
+        if method_name == "get_spot_count":
+            return 0
+        if method_name == "get_source_stats":
+            return {"ok": True, "all_time": {}, "windows": []}
+        return []
+
+    monkeypatch.setattr(spots_api, "_spots_db_call", fake_spots_db_call)
     install_temp_activity_service(tmp_path)
     solar_api._solar_cache["timestamp"] = time.time()
     solar_api._solar_cache["data"] = {
@@ -687,12 +743,16 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "testWsjtxPrepareCommand" in config_modal
     assert "sendWsjtxAutoCqTest" in config_modal
     assert "sendWsjtxAutoAnswerTest" in config_modal
-    assert "launchPatchedWsjtxEngine" in controls_template
+    assert "launchDigitalEngine('wsjtz')" in controls_template
+    assert "launchDigitalEngine('mshv_auto_dx')" in controls_template
     assert "WSJT-X" in controls_template
-    assert "launchPatchedWsjtxEngine" in controls_section
+    assert "launchDigitalEngine('wsjtz')" in controls_section
+    assert "launchDigitalEngine('mshv_auto_dx')" in controls_section
     assert "WSJT-X" in controls_section
-    assert "launchPatchedWsjtxEngine" in compact_controls
+    assert "launchDigitalEngine('wsjtz')" in compact_controls
+    assert "launchDigitalEngine('mshv_auto_dx')" in compact_controls
     assert "wsjtx-launch-button" in compact_controls
+    assert "mshv-launch-button" in compact_controls
     assert "ft8WsjtxPersistenceLabel()" in ft8_template
     assert "ft8WsjtxPersistenceTitle()" in ft8_template
     assert "ft8-planner-db-badge" in ft8_template
@@ -718,8 +778,58 @@ def test_wsjtx_target_action_frontend_static_contracts():
     assert "20260604-wsjtx-launch-outbox-2" in index
     assert "20260604-wsjtx-launch-outbox-2" in visual_map
     loader = (root / "frontend" / "templates-loader.js").read_text(encoding="utf-8")
-    assert "Promise.allSettled" in loader
+    assert "loadTemplates(templateSchedule)" in loader
+    assert "templateFetchConcurrency = 6" in loader
+    assert "templateFetchTimeoutMs = 8000" in loader
+    assert "window.om0rxTemplateReady = readiness" in loader
+    assert "cache: 'default'" in loader
     assert "templates/modal-ft8.html" in loader
+
+
+def test_mshv_award_hunting_frontend_contract_is_additive_and_persisted():
+    root = Path(__file__).resolve().parents[2]
+    template = (root / "frontend" / "templates" / "modal-config.html").read_text(encoding="utf-8")
+    config_modal = (root / "frontend" / "js" / "config-modal.js").read_text(encoding="utf-8")
+
+    groups = (
+        "award_hunting",
+        "reference_hunting",
+        "propagation_adaptation",
+        "pileup_strategy",
+        "directed_callers",
+        "campaign",
+        "outcome_learning",
+    )
+    for group in groups:
+        assert f"mshvAutoDxSettings.{group}" in template
+        assert f"{group}: JSON.parse(JSON.stringify(settings.{group}))" in config_modal
+
+    for reference in ("pota_enabled", "sota_enabled", "wwff_enabled"):
+        assert f"reference_hunting.{reference}" in template
+    for award_weight in (
+        "new_dxcc_weight",
+        "new_dxcc_band_weight",
+        "unconfirmed_dxcc_weight",
+        "new_continent_weight",
+        "new_cq_zone_weight",
+        "new_itu_zone_weight",
+        "new_grid_weight",
+    ):
+        assert f"award_hunting.{award_weight}" in template
+
+    assert "enabling one campaign never disables another" in template
+    assert '@input="queueMshvAutoDxSave"' in template
+    assert "fetch('/api/digital/mshv-settings'" in config_modal
+    assert "MSHV hunting settings applied and saved" in config_modal
+    assert "'dxcc-challenge': [175, 75, 100, 75, 75]" in config_modal
+    assert "'five-band-dxcc': [200, 50, 75, 50, 50]" in config_modal
+    assert "'worked-all-states': [75, 200, 75, 75, 50]" in config_modal
+    assert "references: [75, 50, 50, 50, 200]" in config_modal
+    assert "applyMshvCampaignProfile" in template
+    assert "markMshvCampaignCustom" in template
+    assert "newest 2 MiB" in template
+    assert "+75 per completed outcome" in template
+    assert "never overrides duplicate or safety rules" in template
 
 
 if __name__ == "__main__":

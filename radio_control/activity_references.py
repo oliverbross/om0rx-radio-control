@@ -37,6 +37,15 @@ _WWBOTA_RE = re.compile(r"\bB/[A-Z0-9]{1,4}-\d{4}\b", re.I)
 _POTA_RE = re.compile(r"\b[A-Z0-9]{1,4}-\d{4,5}(?:@[A-Z0-9-]{4,6})?\b", re.I)
 _ARLHS_RE = re.compile(r"\b[A-Z]{2,4}-\d{3}\b", re.I)
 
+_EXACT_REFERENCE_PATTERNS = {
+    "POTA": re.compile(r"^[A-Z0-9]{1,4}-\d{4,5}(?:@[A-Z0-9-]{4,6})?$", re.I),
+    "SOTA": re.compile(r"^[A-Z0-9]{1,3}/[A-Z0-9]{1,3}-\d{3}$", re.I),
+    "IOTA": re.compile(r"^(?:AF|AN|AS|EU|NA|OC|SA)-\d{3}$", re.I),
+    "WWFF": re.compile(r"^[A-Z0-9]{1,4}FF-\d{3,5}$", re.I),
+    "WWBOTA": re.compile(r"^B/[A-Z0-9]{1,4}-\d{4}$", re.I),
+    "ARLHS": re.compile(r"^[A-Z]{2,4}-\d{3}$", re.I),
+}
+
 
 def canonical_reference_program(value: Any) -> str:
     text = str(value or "").strip().upper().replace("-ACTIVE", "_ACTIVE")
@@ -44,6 +53,24 @@ def canonical_reference_program(value: Any) -> str:
         if text.endswith(suffix):
             text = text[: -len(suffix)]
     return REFERENCE_PROGRAM_ALIASES.get(text, text)
+
+
+def normalize_activity_reference(program: Any, reference: Any) -> tuple[str, str]:
+    """Return one exact program/reference identity or an empty pair.
+
+    Program context is mandatory for broad hyphenated references.  This keeps
+    prefixes such as IOTA ``EU-123`` and generic callsign/comment fragments
+    from being reinterpreted as POTA references.
+    """
+    program_text = canonical_reference_program(program)
+    reference_text = str(reference or "").strip().upper().strip(".,;:()[]{}")
+    pattern = _EXACT_REFERENCE_PATTERNS.get(program_text)
+    if pattern is None or not pattern.fullmatch(reference_text):
+        return "", ""
+    # A POTA spot may append @grid metadata.  The award identity is the park.
+    if program_text == "POTA":
+        reference_text = reference_text.split("@", 1)[0]
+    return program_text, reference_text
 
 
 def _reference_item(
@@ -57,6 +84,10 @@ def _reference_item(
     reference_text = str(reference or "").strip().upper().strip(".,;:()[]{}")
     if not program_text or not reference_text:
         return None
+    if program_text in _EXACT_REFERENCE_PATTERNS:
+        program_text, reference_text = normalize_activity_reference(program_text, reference_text)
+        if not program_text:
+            return None
     item = {"type": program_text, "reference_id": reference_text}
     if status not in (None, ""):
         item["status"] = str(status).strip().lower()
@@ -106,6 +137,13 @@ def extract_activity_references(payload: Mapping[str, Any]) -> list[dict[str, st
         value = next((payload.get(key) for key in keys if payload.get(key) not in (None, "")), None)
         for reference in _iter_values(value):
             item = _reference_item(program, reference)
+            if item:
+                items.append(item)
+
+    sig_program = canonical_reference_program(payload.get("sig"))
+    if sig_program in HUNTER_PROGRAMS:
+        for reference in _iter_values(payload.get("sig_info")):
+            item = _reference_item(sig_program, reference)
             if item:
                 items.append(item)
 

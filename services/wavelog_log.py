@@ -5,7 +5,7 @@ Provides fast, direct access to Wavelog database for displaying QSO log
 
 import logging
 from typing import List, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
 import pymysql
 from pymysql.cursors import DictCursor
 from radio_control import config
@@ -304,6 +304,77 @@ class WavelogLogService:
         except Exception as e:
             logger.error(f"Error searching for callsign {callsign}: {e}")
             raise
+        finally:
+            if conn:
+                conn.close()
+
+    def find_exact_qso(self, identity: Dict, station_id: int = 1) -> Dict:
+        """Read back one canonical QSO by its full station/event identity.
+
+        This intentionally does not use callsign variants or broad time
+        windows.  A missing or ambiguous result is not a duplicate proof.
+        """
+        conn = None
+        try:
+            call = str(identity.get("call") or identity.get("callsign") or "").strip().upper()
+            mode = str(identity.get("mode") or "").strip().upper()
+            expected_on = identity.get("time_on_utc")
+            expected_off = identity.get("time_off_utc")
+            frequency_hz = int(round(float(identity.get("frequency_hz") or 0)))
+            if not call or not mode or not expected_on or not frequency_hz:
+                return {"verified": False, "reason": "exact-identity-incomplete", "matches": []}
+            start = expected_on - timedelta(seconds=2)
+            end = expected_on + timedelta(seconds=2)
+            conn = self._get_connection()
+            query = """
+                SELECT COL_PRIMARY_KEY AS id, COL_TIME_ON AS time_on,
+                       COL_TIME_OFF AS time_off, COL_CALL AS callsign,
+                       COL_FREQ AS frequency_hz, COL_BAND AS band,
+                       COL_MODE AS mode, COL_SUBMODE AS submode, station_id
+                       , COL_STATION_CALLSIGN AS station_callsign
+                FROM TABLE_HRD_CONTACTS_V01
+                WHERE station_id = %s AND UPPER(COL_CALL) = %s
+                  AND COL_TIME_ON BETWEEN %s AND %s
+                ORDER BY COL_PRIMARY_KEY
+                LIMIT 4
+            """
+            with conn.cursor() as cursor:
+                cursor.execute(query, (int(station_id), call, start.replace(tzinfo=None), end.replace(tzinfo=None)))
+                rows = cursor.fetchall()
+            matches = []
+            for row in rows:
+                expected_station = str(identity.get("station_callsign") or "").upper()
+                if expected_station and str(row.get("station_callsign") or "").upper() != expected_station:
+                    continue
+                actual_mode = str(row.get("submode") or row.get("mode") or "").upper()
+                if actual_mode != mode and not ({actual_mode, mode} <= {"MFSK", "FT8"}) and not ({actual_mode, mode} <= {"MFSK", "FT4"}):
+                    continue
+                actual_frequency_value = float(row.get("frequency_hz") or 0)
+                # Wavelog deployments commonly store COL_FREQ in MHz, while
+                # some mirrors expose Hz. Normalize both before the exact
+                # 50-Hz identity comparison.
+                if abs(actual_frequency_value) < 1000:
+                    actual_frequency_value *= 1_000_000
+                actual_frequency = int(round(actual_frequency_value))
+                if abs(actual_frequency - frequency_hz) > 50:
+                    continue
+                if expected_off is not None:
+                    actual_off = row.get("time_off")
+                    if actual_off is None:
+                        continue
+                    if getattr(actual_off, "tzinfo", None) is None:
+                        actual_off = actual_off.replace(tzinfo=expected_off.tzinfo)
+                    if abs((actual_off - expected_off).total_seconds()) > 2:
+                        continue
+                matches.append(row)
+            return {
+                "verified": len(matches) == 1,
+                "reason": "exact-match" if len(matches) == 1 else ("exact-match-ambiguous" if matches else "exact-match-missing"),
+                "matches": matches,
+            }
+        except Exception as exc:
+            logger.warning("Exact Wavelog QSO readback failed: %s", exc)
+            return {"verified": False, "reason": f"exact-readback-error:{type(exc).__name__}", "matches": []}
         finally:
             if conn:
                 conn.close()

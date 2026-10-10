@@ -9,7 +9,7 @@ import logging
 import re
 import json
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import UTC, datetime
 from radio_control import config
 from radio_control.utils import generate_callsign_variants
 from radio_control.wavelog_db import get_wavelog_db
@@ -21,6 +21,32 @@ logger = logging.getLogger(__name__)
 CACHE_DIR = config.DATA_DIR
 ADIF_CACHE_FILE = CACHE_DIR / 'wavelog_adif.cache'
 ADIF_CACHE_META_FILE = CACHE_DIR / 'wavelog_adif.meta'
+
+
+def _qso_timestamp(date_value: Any, time_value: Any) -> Optional[datetime]:
+    """Parse an ADIF clock or a bridge ISO timestamp without losing its date."""
+    text = str(time_value or '').strip()
+    if not text:
+        return None
+
+    # The WSJT bridge publishes TIME_ON/TIME_OFF as ISO-8601 values, while
+    # other callers use ADIF HHMM[SS]. Accept both forms explicitly.
+    if 'T' in text:
+        try:
+            return datetime.fromisoformat(text.replace('Z', '+00:00'))
+        except ValueError:
+            return None
+
+    date_digits = ''.join(character for character in str(date_value or '') if character.isdigit())
+    time_digits = ''.join(character for character in text if character.isdigit())
+    if len(date_digits) != 8 or len(time_digits) not in (4, 6):
+        return None
+    if len(time_digits) == 4:
+        time_digits += '00'
+    try:
+        return datetime.strptime(date_digits + time_digits, '%Y%m%d%H%M%S')
+    except ValueError:
+        return None
 
 
 class WavelogClient:
@@ -214,29 +240,32 @@ class WavelogClient:
         qth = (qso_data.get('qth') or '').strip()
         notes = (qso_data.get('notes') or '').strip()
         
-        # Parse datetime - use provided date/time if available
+        # Preserve distinct start/end times. The bridge supplies ISO-8601
+        # values, while manual callers commonly supply ADIF date + HHMMSS.
         date_str = (qso_data.get('date') or '').strip()
+        time_on_str = str(qso_data.get('time_on') or '').strip()
         time_off_str = (qso_data.get('time_off') or '').strip()
-        
-        if date_str and time_off_str:
-            try:
-                # Combine date and time
-                datetime_str = f"{date_str}T{time_off_str}"
-                dt = datetime.fromisoformat(datetime_str)
-            except Exception as e:
-                logger.warning(f"Invalid date/time format: {date_str}/{time_off_str}, using current time. Error: {e}")
-                dt = datetime.utcnow()
-        elif qso_data.get('date_time'):
-            try:
-                dt = datetime.fromisoformat(qso_data['date_time'].replace('Z', '+00:00'))
-            except Exception as e:
-                logger.warning(f"Invalid date_time format: {qso_data['date_time']}, using current time. Error: {e}")
-                dt = datetime.utcnow()
-        else:
-            dt = datetime.utcnow()
-        
-        qso_date = dt.strftime('%Y%m%d')
-        time_on = dt.strftime('%H%M%S')
+        fallback_timestamp = _qso_timestamp(None, qso_data.get('date_time'))
+        time_on_timestamp = (
+            _qso_timestamp(date_str, time_on_str)
+            or fallback_timestamp
+            or _qso_timestamp(date_str, time_off_str)
+        )
+        if time_on_timestamp is None:
+            if date_str or time_on_str or time_off_str or qso_data.get('date_time'):
+                logger.warning(
+                    "Invalid QSO date/time values (%s, %s, %s); using current time",
+                    date_str,
+                    time_on_str,
+                    time_off_str,
+                )
+            time_on_timestamp = datetime.now(UTC)
+        time_off_timestamp = _qso_timestamp(date_str, time_off_str) or time_on_timestamp
+
+        qso_date = time_on_timestamp.strftime('%Y%m%d')
+        qso_date_off = time_off_timestamp.strftime('%Y%m%d')
+        time_on = time_on_timestamp.strftime('%H%M%S')
+        time_off = time_off_timestamp.strftime('%H%M%S')
         
         # Start building ADIF string
         adif_parts = []
@@ -247,7 +276,8 @@ class WavelogClient:
         adif_parts.append(f"<freq:{len(str(frequency))}>{frequency}")
         adif_parts.append(f"<qso_date:8>{qso_date}")
         adif_parts.append(f"<time_on:6>{time_on}")
-        adif_parts.append(f"<time_off:6>{time_on}")  # Same as time_on
+        adif_parts.append(f"<qso_date_off:8>{qso_date_off}")
+        adif_parts.append(f"<time_off:6>{time_off}")
         adif_parts.append(f"<rst_sent:{len(str(rst_sent))}>{rst_sent}")
         adif_parts.append(f"<rst_rcvd:{len(str(rst_received))}>{rst_received}")
         
@@ -471,6 +501,27 @@ class WavelogClient:
             result = await self.submit_adif_string(adif_string)
             if result.get('success'):
                 logger.info(f"✅ QSO logged to Wavelog: {qso_data['callsign']} on {qso_data.get('frequency')} MHz")
+                try:
+                    from services.mshv_history import record_successful_wavelog_upload
+                    result = {
+                        **result,
+                        "mshv_history_delta": record_successful_wavelog_upload(
+                            qso_data, result, adif_text=adif_string,
+                        ),
+                    }
+                except Exception as exc:
+                    logger.error(
+                        "Successful Wavelog upload was not published to MSHV history: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    result = {
+                        **result,
+                        "mshv_history_delta": {
+                            "recorded": False,
+                            "reason": f"history-publish-failed:{type(exc).__name__}",
+                        },
+                    }
             return result
                         
         except asyncio.TimeoutError:

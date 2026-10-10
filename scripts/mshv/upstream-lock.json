@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/kd9taw/mshv-auto-dx-chaser.git",
+  "commit": "d960ae22de78940c6be9d95bd4817d233d02ee39",
+  "base_version": "2.76.2",
+  "provider": "mshv_auto_dx",
+  "executable": "MSHV_OM0RX.exe",
+  "license": "GPL-3.0-or-later"
+}

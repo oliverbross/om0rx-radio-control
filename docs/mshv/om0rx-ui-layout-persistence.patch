@@ -1,0 +1,257 @@
+diff --git a/MSHV_2762/src/main_ms.cpp b/MSHV_2762/src/main_ms.cpp
+index 3bca6d0..a57bb6a 100644
+--- a/MSHV_2762/src/main_ms.cpp
++++ b/MSHV_2762/src/main_ms.cpp
+@@ -10,6 +10,7 @@
+  
+ #include <QScreen>
+ #include <QGuiApplication>
++#include <QSaveFile>
+ #include <QTimer>
+ #include <QWindow>
+ #include <QDesktopWidget>
+@@ -144,6 +145,7 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     //s_sh_opt = false;
+     block_save = true;
+     restore_window_maximized = false;
++    closing_application = false;
+     global_start_moni = false;
+     f_auto_on = false;
+     f_once0s = true;
+@@ -680,12 +682,16 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     sh_wf->setShortcut(QKeySequence(tr(ShKey[lid][32][0],ShKey[lid][32][1])));
+     sh_wf->setCheckable(true);
+     sh_wf->setChecked(true);
+-    QAction *sh_tx= new QAction(QString(ShKey[lid][33][1]+"\t"+ShKey[lid][33][0]),this);
++    sh_tx = new QAction(QString(ShKey[lid][33][1]+"\t"+ShKey[lid][33][0]),this);
+     sh_tx->setShortcut(QKeySequence(tr(ShKey[lid][33][0],ShKey[lid][33][1])));
+     sh_tx->setCheckable(true);
+     sh_tx->setChecked(true);
+     Option_m->addAction(sh_wf);
+     Option_m->addAction(sh_tx);
++    dxcc_chaser_m = new QAction(tr("DXCC Chaser Window"), this);
++    dxcc_chaser_m->setCheckable(true);
++    dxcc_chaser_m->setChecked(true);
++    Option_m->addAction(dxcc_chaser_m);
+ 
+     Start_astro_m = new QAction(tr("View Astronomical Data"),this);
+     Start_astro_m->setCheckable(true);
+@@ -968,6 +974,8 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     m_dxccChaserWindow = new HvDxccChaserWindow(m_hvDxccTracker, this);
+     m_dxccChaserWindow->setWindowFlags(Qt::Window);  // Separate floating window
+     m_dxccChaserWindow->setAttribute(Qt::WA_QuitOnClose, false);  // Don't quit app when closed
++    m_dxccChaserWindow->installEventFilter(this);
++    connect(dxcc_chaser_m, SIGNAL(toggled(bool)), this, SLOT(SetShowHideDxccChaser(bool)));
+ 
+     // Connect spot aggregator for real-time spot overlay
+     if (m_autoDxerCore && m_autoDxerCore->spotAggregator()) {
+@@ -984,8 +992,6 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+                 m_autoDxerPanel, &AutoDxerPanel::onDebugMessage);
+     }
+ 
+-    // Show the DXCC Chaser window
+-    m_dxccChaserWindow->show();
+     // ===== End DXCC Chaser Integration =====
+ 
+     //connect(THvTxW, SIGNAL(EmitRemoteStation(QString,QString,int,QString,int,int)),
+@@ -1994,6 +2000,7 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     f_is_moved_to_prev_desk_pos = false;
+     
+     Read_Settings(App_Path+"/settings/ms_settings");
++    SetShowHideDxccChaser(dxcc_chaser_m->isChecked());
+     
+     //2.76sf for remove
+ 	//if(g_ub_m_k3) THvTxW->setVisibleSf(true);
+@@ -2049,7 +2056,7 @@ QRect Main_Ms::CurrentNormalWindowGeometry() const
+         result = geometry();
+     return result;
+ }
+-QRect Main_Ms::ValidatedWindowGeometry(const QRect &savedGeometry) const
++QRect Main_Ms::ValidatedWindowGeometry(const QRect &savedGeometry, const QSize &minimumSize) const
+ {
+     const QList<QScreen *> screens = QGuiApplication::screens();
+     if (screens.isEmpty()) return savedGeometry;
+@@ -2069,8 +2076,8 @@ QRect Main_Ms::ValidatedWindowGeometry(const QRect &savedGeometry) const
+     if (!targetScreen) targetScreen = screens.first();
+ 
+     const QRect available = targetScreen->availableGeometry();
+-    const int boundedWidth = qMin(qMax(savedGeometry.width(), minimumWidth()), available.width());
+-    const int boundedHeight = qMin(qMax(savedGeometry.height(), minimumHeight()), available.height());
++    const int boundedWidth = qMin(qMax(savedGeometry.width(), qMax(1, minimumSize.width())), available.width());
++    const int boundedHeight = qMin(qMax(savedGeometry.height(), qMax(1, minimumSize.height())), available.height());
+     const int boundedX = qBound(available.left(), savedGeometry.x(), available.right() - boundedWidth + 1);
+     const int boundedY = qBound(available.top(), savedGeometry.y(), available.bottom() - boundedHeight + 1);
+     return QRect(boundedX, boundedY, boundedWidth, boundedHeight);
+@@ -2095,6 +2102,17 @@ void Main_Ms::changeEvent(QEvent *event)
+     QWidget::changeEvent(event);
+     if (event->type() == QEvent::WindowStateChange) ScheduleWindowStateSave();
+ }
++bool Main_Ms::eventFilter(QObject *watched, QEvent *event)
++{
++    if (watched == m_dxccChaserWindow)
++    {
++        if (event->type() == QEvent::Move || event->type() == QEvent::Resize)
++            ScheduleWindowStateSave();
++        else if (event->type() == QEvent::Close && !closing_application)
++            dxcc_chaser_m->setChecked(false);
++    }
++    return QWidget::eventFilter(watched, event);
++}
+ void Main_Ms::StyleChanged(bool)
+ {
+     QString slang = tr("To change the Style, you need to MANUALLY RESTART MSHV");
+@@ -2174,6 +2192,13 @@ void Main_Ms::SetShowHideTx(bool f)
+     else THvTxW->setHidden(true);
+     TDecodeList1->HideShowWfTxRefreshList();
+     TDecodeList2->HideShowWfTxRefreshList();
++    SaveSettings();
++}
++void Main_Ms::SetShowHideDxccChaser(bool f)
++{
++    if (!m_dxccChaserWindow) return;
++    m_dxccChaserWindow->setVisible(f);
++    SaveSettings();
+ }
+ void Main_Ms::SetFlatDisplay_VD(bool f)
+ {
+@@ -4409,7 +4434,7 @@ void Main_Ms::SetQActionCb(QString s, bool idp, QAction *ac)//idp priority of pr
+ }
+ void Main_Ms::Read_Settings(QString path)
+ {
+-    const int c_st_id = 111;//92  89
++    const int c_st_id = 114;//92  89
+     //dopalva se tuk v kraia
+     QString st_id[c_st_id]=
+         {
+@@ -4436,7 +4461,8 @@ void Main_Ms::Read_Settings(QString path)
+             "def_filter_list4","def_filter_list5","def_adle_vdsp","def_areset_qso","def_1_dec_sig_q65",
+             "def_auto_clr_avg_afdec","def_dec_aft_eme_delay","def_max_drift","def_use_queue_cont","def_filter_list6",
+             "use_aseq_max_dist","def_mod_bt_sw","def_show_lcols","vd_bw_lines_draw","def_band_bt_sw",
+-            "def_main_window_geometry","def_main_window_maximized","def_show_waterfall"
++            "def_main_window_geometry","def_main_window_maximized","def_show_waterfall",
++            "def_show_transmit_panel","def_dxcc_chaser_geometry","def_show_dxcc_chaser"
+         };
+ 
+     QString st_res[c_st_id];
+@@ -4654,7 +4680,7 @@ void Main_Ms::Read_Settings(QString path)
+             const int y_pos1 = list_xy.at(1).toInt(&yOk);
+             if (xOk && yOk)
+             {
+-                setGeometry(ValidatedWindowGeometry(QRect(x_pos1, y_pos1, width(), height())));
++                setGeometry(ValidatedWindowGeometry(QRect(x_pos1, y_pos1, width(), height()), minimumSize()));
+                 f_is_moved_to_prev_desk_pos = true;
+                 if (!st_res[79].isEmpty()) THvHelpMs->SetPosXY(st_res[79]);
+                 if (!st_res[80].isEmpty()) THvTxW->SetAstroWPos(st_res[80]);
+@@ -4881,13 +4907,31 @@ void Main_Ms::Read_Settings(QString path)
+             const int savedHeight = geometryParts.at(3).toInt(&heightOk);
+             if (xOk && yOk && widthOk && heightOk && savedWidth > 0 && savedHeight > 0)
+             {
+-                setGeometry(ValidatedWindowGeometry(QRect(savedX, savedY, savedWidth, savedHeight)));
++                setGeometry(ValidatedWindowGeometry(QRect(savedX, savedY, savedWidth, savedHeight), minimumSize()));
+                 f_is_moved_to_prev_desk_pos = true;
+             }
+         }
+     }
+     if (!st_res[109].isEmpty()) restore_window_maximized = (st_res[109].toInt() != 0);
+     if (!st_res[110].isEmpty()) sh_wf->setChecked(st_res[110].toInt() != 0);
++    if (!st_res[111].isEmpty()) sh_tx->setChecked(st_res[111].toInt() != 0);
++    if (!st_res[112].isEmpty())
++    {
++        const QStringList geometryParts = st_res[112].split("#");
++        if (geometryParts.count() == 4)
++        {
++            bool xOk = false, yOk = false, widthOk = false, heightOk = false;
++            const int savedX = geometryParts.at(0).toInt(&xOk);
++            const int savedY = geometryParts.at(1).toInt(&yOk);
++            const int savedWidth = geometryParts.at(2).toInt(&widthOk);
++            const int savedHeight = geometryParts.at(3).toInt(&heightOk);
++            if (xOk && yOk && widthOk && heightOk && savedWidth > 0 && savedHeight > 0)
++                m_dxccChaserWindow->setGeometry(ValidatedWindowGeometry(
++                    QRect(savedX, savedY, savedWidth, savedHeight),
++                    m_dxccChaserWindow->minimumSize()));
++        }
++    }
++    if (!st_res[113].isEmpty()) dxcc_chaser_m->setChecked(st_res[113].toInt() != 0);
+ 
+     THvTxW->SetBlockEmitFreqToRig(false);
+ 
+@@ -4900,7 +4944,7 @@ void Main_Ms::SaveSettings()
+ }
+ void Main_Ms::Save_Settings(QString path)
+ {
+-    QFile file(path);
++    QSaveFile file(path);
+     if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+         return;
+     QTextStream out(&file);
+@@ -5094,8 +5138,15 @@ void Main_Ms::Save_Settings(QString path)
+         << normalWindowGeometry.width() << "#" << normalWindowGeometry.height() << "\n";
+     out << "def_main_window_maximized=" << QString("%1").arg(isMaximized()) << "\n";
+     out << "def_show_waterfall=" << QString("%1").arg(sh_wf->isChecked()) << "\n";
++    out << "def_show_transmit_panel=" << QString("%1").arg(sh_tx->isChecked()) << "\n";
++    const QRect dxccChaserGeometry = m_dxccChaserWindow->geometry();
++    out << "def_dxcc_chaser_geometry="
++        << dxccChaserGeometry.x() << "#" << dxccChaserGeometry.y() << "#"
++        << dxccChaserGeometry.width() << "#" << dxccChaserGeometry.height() << "\n";
++    out << "def_show_dxcc_chaser=" << QString("%1").arg(dxcc_chaser_m->isChecked()) << "\n";
+ 							   
+-    file.close(); 
++    out.flush();
++    if (!file.commit()) return;
+ }
+ void Main_Ms::SetBS1Text(QString s)
+ {
+diff --git a/MSHV_2762/src/main_ms.h b/MSHV_2762/src/main_ms.h
+index 702a0ca..6185af6 100644
+--- a/MSHV_2762/src/main_ms.h
++++ b/MSHV_2762/src/main_ms.h
+@@ -144,6 +144,7 @@ private slots:
+     void SetAdleDisplay_VD(bool);
+     void SetShowHideWf(bool);
+     void SetShowHideTx(bool);
++    void SetShowHideDxccChaser(bool);
+     void LangChanged(bool);
+     void StyleChanged(bool);
+     void ModBtSwClicked(int);
+@@ -197,7 +198,7 @@ private:
+     HvSMeter_H *THvSMeter_H;
+     MsPlayerHV *TMsPlayerHV;
+     void Save_Settings(QString path);
+-    QRect ValidatedWindowGeometry(const QRect &savedGeometry) const;
++    QRect ValidatedWindowGeometry(const QRect &savedGeometry, const QSize &minimumSize) const;
+     QRect CurrentNormalWindowGeometry() const;
+     void ScheduleWindowStateSave();
+     bool isFindId(QString id,QString line,QString &res);
+@@ -373,6 +374,8 @@ private:
+     QAction *Multi_answer_mod_std;
+     QAction *Mon_start_m;
+     QAction *sh_wf;
++    QAction *sh_tx;
++    QAction *dxcc_chaser_m;
+ 
+     QAction *ac_Cfm73;
+ 	void RefreshCbCfm73();
+@@ -390,6 +393,7 @@ private:
+     QAction *vd_bw_lines_draw[3];
+     bool block_save;
+     bool restore_window_maximized;
++    bool closing_application;
+     QTimer *window_state_save_timer;
+     int f_once_pt_15_to_30;
+     bool f_rx_only_fi_se;
+@@ -435,6 +439,7 @@ protected:
+     void moveEvent(QMoveEvent *event);
+     void resizeEvent(QResizeEvent *event);
+     void changeEvent(QEvent *event);
++    bool eventFilter(QObject *watched, QEvent *event);
+     //void mouseMoveEvent(QMouseEvent *event);
+     //void paintEvent(QPaintEvent *);
+ 
+@@ -442,6 +447,7 @@ protected:
+     { 
+         // Persist while the native window still has a valid normalGeometry().
+         SaveSettings();
++        closing_application = true;
+         if (THvHelpSkMs->isVisible()) THvHelpSkMs->close();
+         if (THvHelpMs->isVisible()) THvHelpMs->close();
+         THvTxW->CloseAllWidget();

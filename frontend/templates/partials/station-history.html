@@ -1,0 +1,53 @@
+<section id="station-history-panel" class="station-history-panel" data-state="loading" aria-labelledby="station-history-title">
+    <header class="station-history-header">
+        <div>
+            <span class="station-history-eyebrow">Read-only persisted telemetry</span>
+            <h2 id="station-history-title">Station history</h2>
+        </div>
+        <div class="station-history-filters" aria-label="History display options">
+            <label>
+                <span>Metric</span>
+                <select data-history-role="metric">
+                    <option value="kpa.output_power_w">KPA output</option>
+                    <option value="kpa.swr">KPA SWR</option>
+                    <option value="kpa.temperature_c">KPA temperature</option>
+                    <option value="kat.swr">KAT SWR</option>
+                </select>
+            </label>
+            <label>
+                <span>Window</span>
+                <select data-history-role="window">
+                    <option value="900">15 min</option>
+                    <option value="3600" selected>1 hour</option>
+                    <option value="21600">6 hours</option>
+                    <option value="86400">24 hours</option>
+                </select>
+            </label>
+            <span class="station-history-state state-loading" data-history-role="state" aria-live="polite">Loading</span>
+        </div>
+    </header>
+
+    <div class="station-history-layout">
+        <div class="station-history-chart-wrap">
+            <svg class="station-history-chart" data-history-role="chart" viewBox="0 0 760 160" role="img" aria-label="Station telemetry history chart"></svg>
+            <p class="station-history-empty" data-history-role="empty" hidden>No samples in this time window.</p>
+            <div class="station-history-legend" aria-hidden="true">
+                <span><i class="legend-series"></i><b data-history-role="series-label">KPA output</b></span>
+                <span><i class="legend-event"></i>Event</span>
+                <span><i class="legend-tune"></i>Tune</span>
+            </div>
+        </div>
+
+        <aside class="station-history-recent" aria-labelledby="station-history-recent-title">
+            <div class="station-history-recent-head">
+                <h3 id="station-history-recent-title">Recent activity</h3>
+                <span data-history-role="updated">Waiting</span>
+            </div>
+            <ol data-history-role="recent" aria-live="polite">
+                <li class="station-history-placeholder">Loading events and tune results…</li>
+            </ol>
+        </aside>
+    </div>
+
+    <p class="station-history-message" data-history-role="message" role="status">Loading persisted station history…</p>
+</section>

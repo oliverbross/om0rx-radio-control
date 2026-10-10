@@ -697,7 +697,6 @@ class FT8Service:
             logger.info("Digital automation loop cancelled")
 
     async def _automation_tick(self):
-        settings = self.automation_controller.settings
         # Spot/DXCC hunting is executed by WSJT-Z through the always-on bridge
         # planner. The built-in TX engine must not arm from spot-hunt settings.
         if not self.auto_call_enabled:
@@ -807,7 +806,8 @@ class FT8Service:
         if frequency <= 0:
             return True
 
-        from services.radio import get_radio_instance
+        from fastapi import HTTPException
+        from services.radio import execute_station_route_change, get_radio_instance
 
         flex = get_radio_instance()
         if not flex:
@@ -834,9 +834,17 @@ class FT8Service:
             self.automation_prepare_block_reason = "dial-frequency-owner-blocked"
             return False
 
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: flex.set_mode("DIGU"))
-        tuned = await loop.run_in_executor(None, lambda: flex.tune_mhz(frequency))
+        def apply_digital_route() -> bool:
+            return bool(flex.set_mode("DIGU") and flex.tune_mhz(frequency))
+
+        try:
+            tuned = await execute_station_route_change(
+                "built-in-digital-frequency",
+                apply_digital_route,
+                allow_digital_owner=True,
+            )
+        except HTTPException:
+            tuned = False
         if tuned:
             self.automation_status = f"radio tuned {frequency:.6f} MHz for {target.call}"
         else:
@@ -2015,6 +2023,9 @@ class FT8Service:
             self.watchdog_cycles["FT4"] = max(0, min(30, int(watchdog_ft4)))
         if auto_cq is not None:
             self.auto_cq_enabled = bool(auto_cq)
+        if auto_call or auto_cq:
+            from services.digital_engine import require_om0rx_planner
+            require_om0rx_planner()
         if auto_call is not None:
             self.auto_call_enabled = bool(auto_call)
         if cq_only is not None:

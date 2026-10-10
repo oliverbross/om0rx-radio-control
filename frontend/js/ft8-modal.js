@@ -706,6 +706,7 @@ const ft8ModalMixin = {
         },
 
         async ft8ApplyExternalSpot(spot) {
+            if (this.ft8RejectOm0rxTxAction('spot-driven digital control')) return;
             let mode = String(spot.mode || '').toUpperCase();
             if (!this.ft8IsDigitalMode(mode)) {
                 return;
@@ -826,6 +827,7 @@ const ft8ModalMixin = {
         },
 
         async ft8TuneRadioFrequency(frequency, mode = this.ft8.mode) {
+            if (this.ft8RejectOm0rxTxAction('radio tuning')) return;
             const target = Number(frequency || 0);
             if (!Number.isFinite(target) || target <= 0) {
                 return;
@@ -850,6 +852,7 @@ const ft8ModalMixin = {
         },
 
         ft8RegisterSpotTarget(message) {
+            if (this.ft8Om0rxTxBlocked()) return;
             const call = String(message?.callsign || '').toUpperCase();
             if (!call || !this.ft8.automation.spotHuntEnabled) {
                 return;
@@ -975,6 +978,7 @@ const ft8ModalMixin = {
         },
 
         async ft8RunScheduledAutomation() {
+            if ((window.om0rxDigitalEngine || 'none') !== 'wsjtz') return;
             this.ft8PruneAutoIgnoreList();
             this.ft8PruneAutoCallBackoff();
             if (!this.ft8.automation.enabled || !this.ft8.automation.bandHopping) {
@@ -1850,6 +1854,7 @@ const ft8ModalMixin = {
         },
 
         async ft8ModeChanged() {
+            if (this.ft8RejectOm0rxTxAction('mode control')) return;
             console.log('FT8 mode changed to:', this.ft8.mode);
             this.ft8.mode = String(this.ft8.mode || 'FT8').toUpperCase();
             this.ft8.bandwidth = this.ft8.mode === 'FT8' ? 50 : 100;
@@ -1971,11 +1976,13 @@ const ft8ModalMixin = {
         },
 
         async ft8BandChanged() {
+            if (this.ft8RejectOm0rxTxAction('band control')) return;
             this.ft8SyncFrequencyFromBand();
             await this.ft8TuneSelectedBand();
         },
 
         async ft8TuneSelectedBand() {
+            if (this.ft8RejectOm0rxTxAction('radio tuning')) return;
             const frequency = this.ft8GetBandFrequency(this.ft8.selectedBand, this.ft8.mode);
             if (!frequency) {
                 this.ft8.errorMessage = `${this.ft8.mode} frequency is not configured for ${this.ft8.selectedBand}`;
@@ -1996,6 +2003,7 @@ const ft8ModalMixin = {
         },
 
         ft8MaybeUpdateFreeTxOffset(reason = '') {
+            if (this.ft8RejectOm0rxTxAction('TX offset control')) return;
             if (!this.ft8.wsjtz.freeFrequency.enabled) {
                 return;
             }
@@ -2041,6 +2049,21 @@ const ft8ModalMixin = {
                 specialActivity: this.ft8SpecialActivityPayload(),
                 ...extra
             };
+        },
+
+        ft8Om0rxTxBlocked() {
+            return (window.om0rxDigitalEngine || 'none') !== 'wsjtz' || this.digitalEngineBlocksOm0rx === true;
+        },
+
+        ft8RejectOm0rxTxAction(action = 'TX control') {
+            if (!this.ft8Om0rxTxBlocked()) return false;
+            this.ft8.autoCQ = false;
+            this.ft8.autoCall = false;
+            this.ft8.automation.enabled = false;
+            this.ft8.automation.spotHuntEnabled = false;
+            const owner = window.om0rxDigitalEngine === 'mshv_auto_dx' ? 'MSHV' : 'the disabled digital-engine state';
+            this.ft8.errorMessage = `${action} is blocked by ${owner}. Emergency Halt TX remains available here.`;
+            return true;
         },
 
         ft8GenerateMessages() {
@@ -2141,7 +2164,9 @@ const ft8ModalMixin = {
 
         async ft8ClearQsoTarget(options = {}) {
             const haltTx = options.haltTx !== false;
-            if (haltTx && this.ft8.engine.transmit && (this.ft8.txEnabled || this.ft8.activeTxMessage)) {
+            if (haltTx && this.ft8Om0rxTxBlocked()) {
+                await this.ft8HaltTx();
+            } else if (haltTx && this.ft8.engine.transmit && (this.ft8.txEnabled || this.ft8.activeTxMessage)) {
                 const response = await fetch('/api/ft8/tx/clear-qso', { method: 'POST' });
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok) {
@@ -2164,6 +2189,7 @@ const ft8ModalMixin = {
 
         async ft8EnableTx() {
             try {
+                if (this.ft8RejectOm0rxTxAction('Enable TX')) return;
                 if (!this.ft8.connected) {
                     await this.ft8StartService();
                     if (!this.ft8.connected) {
@@ -2213,15 +2239,17 @@ const ft8ModalMixin = {
 
         async ft8HaltTx() {
             try {
-                const response = await fetch('/api/ft8/tx/halt', { method: 'POST' });
+                const response = await fetch('/api/digital/halt-tx', { method: 'POST' });
+                const payload = await response.json().catch(() => ({}));
                 if (!response.ok) {
-                    const payload = await response.json().catch(() => ({}));
                     throw new Error(payload.detail || payload.error || `HTTP ${response.status}`);
                 }
                 this.ft8.txEnabled = false;
                 this.ft8.autoCQ = false;
                 this.ft8.autoCall = false;
-                this.ft8.radioSyncMessage = 'TX halted';
+                this.ft8.radioSyncMessage = payload.idle_confirmed
+                    ? 'Emergency halt accepted; RF idle freshly confirmed'
+                    : 'Emergency halt accepted; RF idle confirmation pending';
                 await this.ft8PollStatus();
             } catch (error) {
                 this.ft8.errorMessage = `Halt TX failed: ${error.message}`;
@@ -2230,6 +2258,7 @@ const ft8ModalMixin = {
 
         async ft8ExtendWatchdog() {
             try {
+                if (this.ft8RejectOm0rxTxAction('Watchdog control')) return;
                 const response = await fetch('/api/ft8/tx/watchdog/extend', { method: 'POST' });
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok) {
@@ -2250,6 +2279,9 @@ const ft8ModalMixin = {
         },
 
         async ft8StopTransmitOnly() {
+            if (this.ft8Om0rxTxBlocked()) {
+                return this.ft8HaltTx();
+            }
             if (!this.ft8.engine.transmit) {
                 return;
             }
@@ -2271,6 +2303,7 @@ const ft8ModalMixin = {
         },
 
         async ft8SyncBackendAutomationSettings() {
+            if ((window.om0rxDigitalEngine || 'none') !== 'wsjtz') return;
             try {
                 const response = await fetch('/api/ft8/automation/settings', {
                     method: 'POST',
@@ -2290,6 +2323,10 @@ const ft8ModalMixin = {
         },
 
         async ft8PrepareNextWsjtxTarget(options = {}) {
+            if ((window.om0rxDigitalEngine || 'none') !== 'wsjtz') {
+                this.ft8.errorMessage = 'MSHV internal Auto DX owns target selection.';
+                return;
+            }
             this.ft8.wsjtxAutomation.preparing = true;
             this.ft8.wsjtxAutomation.lastError = '';
             try {
@@ -2421,6 +2458,7 @@ const ft8ModalMixin = {
         },
 
         async ft8ArmAutomationTx() {
+            if (this.ft8RejectOm0rxTxAction('Automation TX')) return;
             if (!this.ft8.connected) {
                 await this.ft8StartService();
             }
@@ -2447,6 +2485,7 @@ const ft8ModalMixin = {
 
         async ft8TuneTone() {
             try {
+                if (this.ft8RejectOm0rxTxAction('Tune')) return;
                 const response = await fetch('/api/ft8/tx/tune', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -3425,6 +3464,7 @@ const ft8ModalMixin = {
         async ft8EngageQso(message) {
             try {
                 await this.ft8SelectMessage(message);
+                if (this.ft8RejectOm0rxTxAction('QSO engage')) return;
                 if (!this.ft8.selectedCall) {
                     this.ft8.errorMessage = 'Decoded row does not contain a workable callsign';
                     return;
@@ -3452,6 +3492,9 @@ const ft8ModalMixin = {
         },
 
         async ft8EngageBackendTarget(message, options = {}) {
+            if (this.ft8RejectOm0rxTxAction('QSO target control')) {
+                throw new Error('MSHV owns QSO target control');
+            }
             const target = this.ft8DigitalPayloadFromMessage(message);
             const payload = {
                 source: options.source || 'manual_double_click',
@@ -3511,6 +3554,7 @@ const ft8ModalMixin = {
         },
 
         async ft8QueueSelectedTxMessage(id, options = {}) {
+            if (this.ft8RejectOm0rxTxAction('Manual TX')) return false;
             this.ft8.selectedTxMessage = id;
             this.ft8GenerateMessages();
             const selected = this.ft8.txMessages.find(tx => tx.id === id);
@@ -3563,6 +3607,7 @@ const ft8ModalMixin = {
         },
 
         async ft8AutoCallChanged() {
+            if (this.ft8RejectOm0rxTxAction('Auto Call')) return;
             if (!this.ft8.autoCall) {
                 this.ft8.automation.enabled = false;
                 await this.ft8SyncBackendAutomationSettings();
@@ -3744,7 +3789,7 @@ const ft8ModalMixin = {
         },
 
         async ft8SubmitAutomationTarget(message) {
-            if (!message) {
+            if (!message || this.ft8Om0rxTxBlocked()) {
                 return null;
             }
             const payload = {
@@ -3802,7 +3847,7 @@ const ft8ModalMixin = {
         },
 
         async ft8MaybeAutoCall(message) {
-            if (!this.ft8.autoCall || !this.ft8.connected || !this.ft8.engine.transmit) {
+            if (this.ft8Om0rxTxBlocked() || !this.ft8.autoCall || !this.ft8.connected || !this.ft8.engine.transmit) {
                 return false;
             }
             if (Number(this.ft8.automation.autoCallRemaining || 0) <= 0) {

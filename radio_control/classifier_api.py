@@ -5,7 +5,7 @@ Classifier API - QSO classification using Wavelog API and local QSO status.
 import logging
 import asyncio
 from typing import Tuple, Optional, Dict, Any
-from datetime import datetime
+from datetime import UTC, datetime
 from radio_control.wavelog_api import WavelogClient
 from radio_control.qso_status_store import DuckDBQSOStatusStore
 from radio_control.spot_classification import (
@@ -60,7 +60,7 @@ class ClassifierAPI:
         """Check if cache entry is still valid"""
         if cache_key not in self.cache_timestamps:
             return False
-        elapsed = (datetime.utcnow() - self.cache_timestamps[cache_key]).total_seconds()
+        elapsed = (datetime.now(UTC) - self.cache_timestamps[cache_key]).total_seconds()
         return elapsed < self.cache_ttl
     
     def _get_cached(self, callsign: str) -> Optional[Dict[str, Any]]:
@@ -86,7 +86,7 @@ class ClassifierAPI:
             logger.debug(f"LRU evicted cache entry for {oldest_callsign}")
         
         self.lookup_cache[callsign] = data
-        self.cache_timestamps[callsign] = datetime.utcnow()
+        self.cache_timestamps[callsign] = datetime.now(UTC)
 
     async def _lookup(self, callsign: str, band: Optional[str] = None,
                       mode: Optional[str] = None) -> Dict[str, Any]:

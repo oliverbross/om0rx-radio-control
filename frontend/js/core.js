@@ -39,6 +39,9 @@ const coreData = {
         apf_enabled: false,
         rx2_enabled: false,
         split_enabled: false,
+        rx_ant: null,
+        tx_ant: null,
+        interlock_state: null,
     },
     
     // TX state

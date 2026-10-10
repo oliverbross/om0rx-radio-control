@@ -1,7 +1,16 @@
 /** Required template manifest loader. Vue mounts only after a complete UI exists. */
 (function () {
     'use strict';
-    const templateCacheKey = '20260718-spots-workspace-4';
+    const templateCacheKey = '20261010-webui-perf-1';
+    const templateFetchTimeoutMs = 8000;
+    const templateFetchConcurrency = 6;
+    let settleReadiness;
+    const readiness = {
+        state: 'loading',
+        result: null,
+        promise: new Promise(resolve => { settleReadiness = resolve; }),
+    };
+    window.om0rxTemplateReady = readiness;
     const templateSchedule = [
         ['templates/controls-row1.html', 'controls-section', 'Controls Row 1'],
         ['templates/controls-row2.html', 'controls-section', 'Controls Row 2'],
@@ -24,9 +33,9 @@
         let lastError;
         for (let attempt = 1; attempt <= attempts; attempt += 1) {
             const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 8000);
+            const timer = setTimeout(() => controller.abort(), templateFetchTimeoutMs);
             try {
-                const response = await fetch(`${path}?v=${templateCacheKey}`, { signal: controller.signal, cache: 'no-store' });
+                const response = await fetch(`${path}?v=${templateCacheKey}`, { signal: controller.signal, cache: 'default' });
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const body = (await response.text()).trim();
                 if (!body) throw new Error('empty response');
@@ -39,6 +48,38 @@
             }
         }
         throw new Error(`${path}: ${lastError?.message || 'load failed'}`);
+    }
+
+    async function loadTemplates(entries) {
+        // WebView2 limits concurrent HTTP/1.1 requests. Starting the entire
+        // manifest at once also makes queued fetches consume their timeout
+        // before the browser gives them a connection. Keep a small worker
+        // pool so every request gets a fair chance to reach the local server.
+        const results = new Array(entries.length);
+        let nextIndex = 0;
+
+        async function worker() {
+            while (nextIndex < entries.length) {
+                const index = nextIndex;
+                nextIndex += 1;
+                const entry = entries[index];
+                try {
+                    results[index] = {
+                        status: 'fulfilled',
+                        value: {
+                            ...entry,
+                            html: await resolveTemplateIncludes(await fetchText(entry.file)),
+                        },
+                    };
+                } catch (reason) {
+                    results[index] = { status: 'rejected', reason };
+                }
+            }
+        }
+
+        const workerCount = Math.min(templateFetchConcurrency, entries.length);
+        await Promise.all(Array.from({ length: workerCount }, () => worker()));
+        return results;
     }
 
     async function resolveTemplateIncludes(html, depth = 0) {
@@ -58,6 +99,8 @@
 
     function renderFatal(failures) {
         const shell = document.getElementById('app') || document.body;
+        document.getElementById('app-loading')?.remove();
+        shell.removeAttribute?.('v-cloak');
         const panel = document.createElement('section');
         panel.id = 'template-load-error';
         panel.setAttribute('role', 'alert');
@@ -71,14 +114,14 @@
         retry.addEventListener('click', () => window.location.reload());
         panel.append(title, details, retry);
         shell.replaceChildren(panel);
+        readiness.state = 'failed';
+        readiness.result = { ok: false, failures };
+        settleReadiness(readiness.result);
         document.dispatchEvent(new CustomEvent('templates-failed', { detail: { failures } }));
     }
 
     async function loadManifest() {
-        const results = await Promise.allSettled(templateSchedule.map(async entry => ({
-            ...entry,
-            html: await resolveTemplateIncludes(await fetchText(entry.file)),
-        })));
+        const results = await loadTemplates(templateSchedule);
         const failures = results
             .map((result, index) => result.status === 'rejected' ? templateSchedule[index].file : null)
             .filter(Boolean);
@@ -93,6 +136,9 @@
             .map(result => result.value)
             .sort((a, b) => a.order - b.order)
             .forEach(entry => document.getElementById(entry.target).insertAdjacentHTML('beforeend', entry.html));
+        readiness.state = 'loaded';
+        readiness.result = { ok: true };
+        settleReadiness(readiness.result);
         document.dispatchEvent(new CustomEvent('templates-loaded'));
     }
 

@@ -31,11 +31,32 @@
                 <div class="app-header-utilities">
                 <span class="status-indicator" :class="connected ? 'status-connected' : 'status-disconnected'"></span>
                 <button
-                    @click="launchPatchedWsjtxEngine"
-                    :disabled="wsjtxLaunchLoading || wsjtxPreflightLoading"
+                    id="station-management-launcher"
+                    type="button"
+                    title="Open Station Management in a separate window">
+                    Station
+                </button>
+                <button
+                    id="station-widget-launcher"
+                    type="button"
+                    title="Open the live FLEX, KPA500, KAT500 and antenna path widget">
+                    Path
+                </button>
+                <button
+                    @click="launchDigitalEngine('wsjtz')"
+                    :disabled="digitalEngineBusy || wsjtxLaunchLoading || wsjtxPreflightLoading"
+                    class="digital-engine-launch-button wsjtx-launch-button"
                     title="Launch OM0RX WSJT-Z WSJT-X-compatible engine"
-                    style="padding: 4px 8px; font-size: 12px; background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">
+                    style="padding: 4px 8px; font-size: 12px; background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%); color: white; border: none; border-radius: 4px; font-weight: 600;">
                     WSJT-Z
+                </button>
+                <button
+                    @click="launchDigitalEngine('mshv_auto_dx')"
+                    :disabled="digitalEngineBusy || wsjtxLaunchLoading || wsjtxPreflightLoading"
+                    class="digital-engine-launch-button mshv-launch-button"
+                    title="Launch MSHV Auto DX Chaser"
+                    style="padding: 4px 8px; font-size: 12px; color: white; border-radius: 4px; font-weight: 600;">
+                    MSHV
                 </button>
                 <button 
                     @click="showSyncModal = true"

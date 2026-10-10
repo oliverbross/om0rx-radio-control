@@ -1,3 +1,6 @@
+import asyncio
+import asyncio
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -7,9 +10,10 @@ from radio_control.qso_outbox import QSOOutbox
 
 
 class FakeWavelogClient:
-    def __init__(self, fail_first=False, duplicate_first=False):
+    def __init__(self, fail_first=False, duplicate_first=False, unverified_duplicate_first=False):
         self.fail_first = fail_first
         self.duplicate_first = duplicate_first
+        self.unverified_duplicate_first = unverified_duplicate_first
         self.submitted = []
 
     async def submit_adif_string(self, adif_string):
@@ -18,10 +22,11 @@ class FakeWavelogClient:
             return {"success": False, "message": "offline"}
         if self.duplicate_first and len(self.submitted) == 1:
             return {
-                "success": False,
-                "message": "Wavelog API error: 400",
-                "error": "Date/Time: 2026-05-26 04:50:00 Callsign: OM0RX Band: 20m Duplicate for OM0RX",
+                "success": False, "duplicate": True, "identity_verified": True,
+                "identity": {"call": "OM0RX", "band": "20m", "mode": "FT8"},
             }
+        if self.unverified_duplicate_first and len(self.submitted) == 1:
+            return {"success": False, "error": "Duplicate for OM0RX"}
         return {"success": True, "message": "ok"}
 
 
@@ -55,7 +60,7 @@ def test_qso_outbox_enqueue_deduplicates_and_replays():
         assert outbox.count() == 0
 
 
-def test_qso_outbox_deduplicates_same_contact_from_multiple_log_paths():
+def test_qso_outbox_preserves_legitimate_repeat_contact_45_seconds_later():
     with TemporaryDirectory() as temp_dir:
         outbox = QSOOutbox(Path(temp_dir) / "wavelog_outbox.adif")
         first = (
@@ -72,9 +77,78 @@ def test_qso_outbox_deduplicates_same_contact_from_multiple_log_paths():
         assert outbox.enqueue_adif(second)
 
         records = outbox.records()
-        assert len(records) == 1
+        assert len(records) == 2
         assert "<call:5>M6OTU" in records[0]
         assert "<time_on:6>104245" in records[0]
+        assert "<time_on:6>104330" in records[1]
+
+
+def test_qso_outbox_embeds_full_bridge_replay_identity():
+    with TemporaryDirectory() as temp_dir:
+        outbox = QSOOutbox(Path(temp_dir) / "wavelog_outbox.adif")
+        qso = sample_qso()
+        qso.update({
+            "provider": "mshv_auto_dx", "station_callsign": "OM0RX",
+            "client_id": "MSHV-OM0RX-AUTO-DX", "event_id": "a" * 64,
+            "time_on": "104245", "time_off": "104330", "frequency_hz": 24915000,
+        })
+        assert outbox.enqueue(qso, reason="offline")
+        record = outbox.records()[0].lower()
+        for field in (
+            "app_om0rx_provider", "app_om0rx_station", "app_om0rx_client_id",
+            "app_om0rx_event_id", "app_om0rx_time_on", "app_om0rx_time_off",
+            "app_om0rx_frequency_hz",
+        ):
+            assert f"<{field}:" in record
+
+
+def test_successful_replay_reconstructs_missing_mshv_pending_before_removal(tmp_path, monkeypatch):
+    from services import mshv_history
+
+    monkeypatch.setattr(mshv_history, "DELTA_PATH", tmp_path / "deltas.json")
+    outbox = QSOOutbox(tmp_path / "outbox.adif")
+    adif = (
+        "<station_callsign:5>OM0RX <call:5>EA1AA <band:3>20m <freq:6>14.074 "
+        "<mode:3>FT8 <qso_date:8>20261004 <time_on:6>120000 <time_off:6>120045 <eor>"
+    )
+    qso = {
+        **sample_qso(), "adif_text": adif, "provider": "mshv_auto_dx",
+        "station_callsign": "OM0RX", "client_id": "MSHV-OM0RX-AUTO-DX",
+        "event_id": "a" * 64, "time_on": "120000", "time_off": "120045",
+        "frequency_hz": 14074000,
+    }
+    assert outbox.enqueue(qso, reason="offline")
+
+    result = asyncio.run(outbox.replay(FakeWavelogClient()))
+
+    assert result["success"] is True
+    assert result["remaining"] == 0
+    journal = json.loads((tmp_path / "deltas.json").read_text(encoding="utf-8"))
+    assert journal["pending"] == {}
+    assert len(journal["records"]) == 1
+
+
+def test_successful_upload_with_malformed_mshv_identity_retains_outbox(tmp_path, monkeypatch):
+    from services import mshv_history
+
+    monkeypatch.setattr(mshv_history, "DELTA_PATH", tmp_path / "deltas.json")
+    outbox = QSOOutbox(tmp_path / "outbox.adif")
+    adif = (
+        "<station_callsign:5>OM0RX <call:5>EA1AA <band:3>20m <freq:6>14.074 "
+        "<mode:3>FT8 <qso_date:8>20261004 <time_on:6>120000 <time_off:6>120045 <eor>"
+    )
+    qso = {
+        **sample_qso(), "adif_text": adif, "provider": "mshv_auto_dx",
+        "station_callsign": "OM0RX", "client_id": "MSHV-OM0RX-AUTO-DX",
+        "event_id": "legacy-event", "time_on": "120000", "time_off": "120045",
+        "frequency_hz": 14074000,
+    }
+    assert outbox.enqueue(qso, reason="offline")
+    result = asyncio.run(outbox.replay(FakeWavelogClient()))
+    assert result["success"] is False
+    assert result["remaining"] == 1
+    assert "reconstruction-identity-incomplete" in result["failures"][0]
+    assert not (tmp_path / "deltas.json").exists()
 
 
 def test_qso_outbox_keeps_remaining_records_after_failure():
@@ -106,6 +180,17 @@ def test_qso_outbox_treats_wavelog_duplicate_as_resolved():
         assert outbox.count() == 0
 
 
+def test_qso_outbox_does_not_trust_duplicate_substring_without_identity_readback():
+    with TemporaryDirectory() as temp_dir:
+        outbox = QSOOutbox(Path(temp_dir) / "wavelog_outbox.adif")
+        assert outbox.enqueue(sample_qso(), reason="offline")
+        import asyncio
+        result = asyncio.run(outbox.replay(FakeWavelogClient(unverified_duplicate_first=True)))
+        assert result["success"] is False
+        assert result["duplicates"] == 0
+        assert result["remaining"] == 1
+
+
 def test_qso_outbox_notifies_when_record_resolves():
     with TemporaryDirectory() as temp_dir:
         outbox = QSOOutbox(Path(temp_dir) / "wavelog_outbox.adif")
@@ -122,6 +207,21 @@ def test_qso_outbox_notifies_when_record_resolves():
         assert result["uploaded"] == 1
         assert len(resolved) == 1
         assert "<call:5>OM0RX" in resolved[0]
+
+
+def test_qso_outbox_keeps_record_when_history_acknowledgement_fails(monkeypatch):
+    with TemporaryDirectory() as temp_dir:
+        outbox = QSOOutbox(Path(temp_dir) / "wavelog_outbox.adif")
+        assert outbox.enqueue(sample_qso(), reason="offline")
+        monkeypatch.setattr(
+            outbox, "_acknowledge_mshv_history",
+            lambda _record: (_ for _ in ()).throw(RuntimeError("history journal unavailable")),
+        )
+        import asyncio
+        result = asyncio.run(outbox.replay(FakeWavelogClient()))
+        assert result["success"] is False
+        assert result["remaining"] == 1
+        assert "history acknowledgement failed" in result["failures"][0].lower()
 
 
 if __name__ == "__main__":

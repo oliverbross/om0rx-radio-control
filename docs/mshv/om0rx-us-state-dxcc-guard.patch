@@ -1,0 +1,31 @@
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+index eee251d..56f5088 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+@@ -213,17 +213,22 @@ bool TargetScorer::loadUsStateIndex(const QString &path)
+         const QString line = QString::fromUtf8(file.readLine()).trimmed();
+         if (line.isEmpty() || line.startsWith('#')) continue;
+         const QStringList fields = line.split('|');
+-        if (fields.size() >= 4 && fields.at(0) == "CALL") {
++        if (fields.size() >= 5 && fields.at(0) == "CALL") {
+             const QString call = baseCallsign(fields.at(1));
+             const QString state = fields.at(2).trimmed().toUpper();
+-            if (!call.isEmpty() && state.size() == 2) stateByCall.insert(call, state);
++            const int dxcc = fields.at(4).toInt();
++            const bool isUsStateDxcc = dxcc == 6 || dxcc == 110 || dxcc == 291;
++            if (!call.isEmpty() && state.size() == 2 && isUsStateDxcc)
++                stateByCall.insert(call, state);
+             if (fields.at(3).toInt() != 0) lotwCalls.insert(call);
+-        } else if (fields.size() >= 5 && fields.at(0) == "WORKED") {
++        } else if (fields.size() >= 6 && fields.at(0) == "WORKED") {
+             const QString call = baseCallsign(fields.at(1));
+             const QString state = fields.at(2).trimmed().toUpper();
+             const int band = fields.at(3).toInt();
++            const int dxcc = fields.at(5).toInt();
++            const bool isUsStateDxcc = dxcc == 6 || dxcc == 110 || dxcc == 291;
+             const QString key = state + "@" + QString::number(band);
+-            if (!call.isEmpty() && state.size() == 2 && band > 0) {
++            if (!call.isEmpty() && state.size() == 2 && band > 0 && isUsStateDxcc) {
+                 worked[key].insert(call);
+                 if (fields.at(4).toInt() != 0) confirmed[key].insert(call);
+             }

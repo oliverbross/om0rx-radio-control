@@ -87,17 +87,17 @@ class WsjtxParser {
   }
 
   readString(buffer, offset) {
-    if (offset + 4 > buffer.length) return { str: '', offset };
+    if (offset + 4 > buffer.length) return { str: '', offset, complete: false };
     
     const len = buffer.readUInt32BE(offset);
     offset += 4;
     
-    if (offset + len > buffer.length) return { str: '', offset };
+    if (offset + len > buffer.length) return { str: '', offset, complete: false };
     
     const str = buffer.toString('utf8', offset, offset + len);
     offset += len;
     
-    return { str, offset };
+    return { str, offset, complete: true };
   }
 
   readUInt64(buffer, offset) {
@@ -114,6 +114,7 @@ class WsjtxParser {
       let result = this.readString(buffer, offset);
       msg.id = result.str;
       offset = result.offset;
+      if (!result.complete) return msg;
 
       // 2. Dial Frequency (quint64 - Hz)
       if (offset + 8 <= buffer.length) {
@@ -252,50 +253,53 @@ class WsjtxParser {
       let result = this.readString(buffer, offset);
       msg.id = result.str;
       offset = result.offset;
+      if (!result.complete) return msg;
 
       // 2. Date & Time Off - QDateTime (complex: need to skip)
       // QDateTime has: QDate (qint64) + QTime (quint32) + timespec (quint8) + optional offset
       // For now, we'll skip by looking for the pattern - just advance past it
-      if (offset + 8 <= buffer.length) {
-        offset += 8; // QDate as qint64
+      if (offset + 13 > buffer.length) return msg;
+      const julianDay = Number(buffer.readBigInt64BE(offset));
+      const milliseconds = buffer.readUInt32BE(offset + 8);
+      const spec = buffer.readUInt8(offset + 12);
+      if (spec === 2 && offset + 17 > buffer.length) return msg;
+      const zoneSeconds = spec === 2 ? buffer.readInt32BE(offset + 13) : 0;
+      // UTC and fixed-offset QDateTime; local/timezone values are left unset
+      // instead of inventing a UTC time that would defeat durable dedupe.
+      if ((spec === 1 || spec === 2) && julianDay > 0 && milliseconds < 86400000) {
+        msg.dateTime = new Date((julianDay - 2440588) * 86400000 + milliseconds - zoneSeconds * 1000).toISOString();
+        msg.timeOff = msg.dateTime;
       }
-      if (offset + 4 <= buffer.length) {
-        offset += 4; // QTime as quint32
-      }
-      if (offset < buffer.length) {
-        const timespec = buffer[offset];
-        offset++; // timespec as quint8
-        // If timespec==2, there's an offset (qint32)
-        if (timespec === 2 && offset + 4 <= buffer.length) {
-          offset += 4; // offset as qint32
-        }
-      }
+      offset += spec === 2 ? 17 : 13;
 
       // 3. DX call - utf8
       result = this.readString(buffer, offset);
       msg.dxCall = result.str;
       offset = result.offset;
+      if (!result.complete) return msg;
 
       // 4. DX grid - utf8
       result = this.readString(buffer, offset);
       msg.dxGrid = result.str;
       offset = result.offset;
+      if (!result.complete) return msg;
 
       // 5. Tx frequency (Hz) - quint64
-      if (offset + 8 <= buffer.length) {
-        msg.dialFrequency = Number(buffer.readBigInt64BE(offset));
-        offset += 8;
-      }
+      if (offset + 8 > buffer.length) return msg;
+      msg.dialFrequency = Number(buffer.readBigInt64BE(offset));
+      offset += 8;
 
       // 6. Mode - utf8
       result = this.readString(buffer, offset);
       msg.mode = result.str;
       offset = result.offset;
+      if (!result.complete) return msg;
 
       // 7. Report sent - utf8
       result = this.readString(buffer, offset);
       msg.reportSent = result.str;
       offset = result.offset;
+      if (!result.complete) return msg;
 
       // 8. Report received - utf8
       result = this.readString(buffer, offset);
@@ -336,6 +340,7 @@ class WsjtxParser {
     msg.dxCall = fields.call || msg.dxCall || '';
     msg.dxGrid = fields.gridsquare || msg.dxGrid || '';
     msg.mode = fields.mode || msg.mode || '';
+    if (fields.submode) msg.mode = fields.submode;
     msg.reportSent = fields.rst_sent || msg.reportSent || '';
     msg.reportReceived = fields.rst_rcvd || msg.reportReceived || '';
     if (fields.freq) {
@@ -343,6 +348,31 @@ class WsjtxParser {
       if (Number.isFinite(mhz)) {
         msg.dialFrequency = Math.round(mhz * 1_000_000);
       }
+    }
+    if (fields.qso_date && fields.time_on) {
+      const date = String(fields.qso_date).replace(/\D/g, '').slice(0, 8);
+      const clock = String(fields.time_on).replace(/\D/g, '').padEnd(6, '0').slice(0, 6);
+      if (date.length === 8 && clock.length === 6) {
+        const iso = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${clock.slice(0, 2)}:${clock.slice(2, 4)}:${clock.slice(4, 6)}Z`;
+        const parsed = new Date(iso);
+        if (!Number.isNaN(parsed.getTime())) {
+          msg.dateTime = parsed.toISOString();
+          msg.timeOn = msg.dateTime;
+        }
+      }
+    }
+    if (fields.qso_date_off && fields.time_off) {
+      const date = String(fields.qso_date_off).replace(/\D/g, '').slice(0, 8);
+      const clock = String(fields.time_off).replace(/\D/g, '').padEnd(6, '0').slice(0, 6);
+      if (date.length === 8 && clock.length === 6) {
+        const parsed = new Date(`${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${clock.slice(0, 2)}:${clock.slice(2, 4)}:${clock.slice(4, 6)}Z`);
+        if (!Number.isNaN(parsed.getTime())) msg.timeOff = parsed.toISOString();
+      }
+    } else if (fields.time_off && fields.qso_date) {
+      const date = String(fields.qso_date).replace(/\D/g, '').slice(0, 8);
+      const clock = String(fields.time_off).replace(/\D/g, '').padEnd(6, '0').slice(0, 6);
+      const parsed = new Date(`${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${clock.slice(0, 2)}:${clock.slice(2, 4)}:${clock.slice(4, 6)}Z`);
+      if (!Number.isNaN(parsed.getTime())) msg.timeOff = parsed.toISOString();
     }
   }
 

@@ -1,0 +1,398 @@
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+index 93ebde9..0e18488 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+@@ -450,8 +450,15 @@ void HvAutoDxSettings::createEligibilityGroup()
+         continents->addWidget(check);
+         m_filterContinents.insert(code, check);
+     }
+-    continents->addStretch();
+-    layout->addLayout(continents);
++    continents->addStretch();
++    layout->addLayout(continents);
++
++    m_allowBandDxccOutsideContinent = new QCheckBox(
++        "Allow new DXCC band slots outside continent filter");
++    m_allowBandDxccOutsideContinent->setToolTip(
++        "When enabled, a DXCC entity never worked on the current band remains eligible "
++        "even if its continent is disabled. Exact call/band/mode duplicates stay blocked.");
++    layout->addWidget(m_allowBandDxccOutsideContinent);
+ 
+     QGridLayout *flags = new QGridLayout;
+     m_preferNonEurope = new QCheckBox("Prefer non-Europe targets");
+@@ -932,8 +939,10 @@ AutoDxSettings HvAutoDxSettings::getSettings() const
+         settings.filterNew.insert(it.key(), it.value()->isChecked());
+     for (auto it = m_filterNewOnBand.constBegin(); it != m_filterNewOnBand.constEnd(); ++it)
+         settings.filterNewOnBand.insert(it.key(), it.value()->isChecked());
+-    for (auto it = m_filterContinents.constBegin(); it != m_filterContinents.constEnd(); ++it)
+-        if (it.value()->isChecked()) settings.enabledContinents << it.key();
++    for (auto it = m_filterContinents.constBegin(); it != m_filterContinents.constEnd(); ++it)
++        if (it.value()->isChecked()) settings.enabledContinents << it.key();
++    settings.allowBandDxccOutsideContinent =
++        m_allowBandDxccOutsideContinent->isChecked();
+     settings.lotwOnly = m_lotwOnly->isChecked();
+     settings.preferNonEurope = m_preferNonEurope->isChecked();
+     settings.treat73AsCq = m_treat73AsCq->isChecked();
+@@ -1094,8 +1103,10 @@ void HvAutoDxSettings::loadSettings(const QString& appPath)
+     const QStringList enabledContinents = settings.value(
+         "Eligibility/FilterContinents", "EU,AF,OC,AS,SA,NA,AN")
+         .toString().toUpper().split(',', Qt::SkipEmptyParts);
+-    for (auto it = m_filterContinents.begin(); it != m_filterContinents.end(); ++it)
+-        it.value()->setChecked(enabledContinents.contains(it.key()));
++    for (auto it = m_filterContinents.begin(); it != m_filterContinents.end(); ++it)
++        it.value()->setChecked(enabledContinents.contains(it.key()));
++    m_allowBandDxccOutsideContinent->setChecked(settings.value(
++        "Eligibility/AllowBandDxccOutsideContinent", true).toBool());
+     m_lotwOnly->setChecked(settings.value("Eligibility/FilterLotwOnly", false).toBool());
+     m_preferNonEurope->setChecked(settings.value("TargetPriority/PreferNonEurope", true).toBool());
+     m_treat73AsCq->setChecked(settings.value("Eligibility/Treat73AsCq", false).toBool());
+@@ -1277,7 +1288,9 @@ void HvAutoDxSettings::saveSettings(const QString& appPath)
+     QStringList continents;
+     for (auto it = m_filterContinents.constBegin(); it != m_filterContinents.constEnd(); ++it)
+         if (it.value()->isChecked()) continents << it.key();
+-    settings.setValue("Eligibility/FilterContinents", continents.join(','));
++    settings.setValue("Eligibility/FilterContinents", continents.join(','));
++    settings.setValue("Eligibility/AllowBandDxccOutsideContinent",
++                      m_allowBandDxccOutsideContinent->isChecked());
+     settings.setValue("Eligibility/FilterLotwOnly", m_lotwOnly->isChecked());
+     settings.setValue("Eligibility/Treat73AsCq", m_treat73AsCq->isChecked());
+     settings.setValue("Eligibility/WatchUnconfirmedDxcc", m_watchUnconfirmedDxcc->isChecked());
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+index 39b38e8..5ad6a71 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+@@ -110,7 +110,8 @@ struct AutoDxSettings {
+     bool filterMatrixEnabled;
+     QMap<QString, bool> filterNew;
+     QMap<QString, bool> filterNewOnBand;
+-    QStringList enabledContinents;
++    QStringList enabledContinents;
++    bool allowBandDxccOutsideContinent;
+     bool lotwOnly;
+     bool preferNonEurope;
+     bool treat73AsCq;
+@@ -290,7 +291,8 @@ private:
+     QCheckBox *m_filterMatrixEnabled;
+     QMap<QString, QCheckBox*> m_filterNew;
+     QMap<QString, QCheckBox*> m_filterNewOnBand;
+-    QMap<QString, QCheckBox*> m_filterContinents;
++    QMap<QString, QCheckBox*> m_filterContinents;
++    QCheckBox *m_allowBandDxccOutsideContinent;
+     QCheckBox *m_lotwOnly;
+     QCheckBox *m_preferNonEurope;
+     QCheckBox *m_treat73AsCq;
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+index 65c7688..ddecfc5 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -745,6 +745,8 @@ QJsonObject AutoDxerCore::runtimeConfigStatus() const
+     eligibility["filter_band_grid"] = m_selectionConfig.filterBandGrid;
+     eligibility["filter_band_cq_zone"] = m_selectionConfig.filterBandCqZone;
+     eligibility["filter_band_itu_zone"] = m_selectionConfig.filterBandItuZone;
++    eligibility["allow_band_dxcc_outside_continent"] =
++        m_selectionConfig.allowBandDxccOutsideContinent;
+     eligibility["lotw_only"] = m_selectionConfig.lotwOnly;
+     eligibility["treat_73_as_cq"] = m_selectionConfig.treat73AsCq;
+     eligibility["watch_unconfirmed_dxcc"] = m_selectionConfig.watchUnconfirmedDxcc;
+@@ -1324,7 +1326,7 @@ bool AutoDxerCore::isPendingWavelogCall(const QString &callsign) const
+ 
+ bool AutoDxerCore::historicalActionAllowed(const QString &callsign, bool isCallingMe) const
+ {
+-    if (isCallingMe) return true;
++    Q_UNUSED(isCallingMe);
+     if (isPendingWavelogCall(callsign)) return false;
+     return m_historicalNoveltyAllowed;
+ }
+@@ -1607,11 +1609,9 @@ void AutoDxerCore::requestManualTarget(QStringList decodeData)
+         return;
+     }
+     cleanupRecentlyWorked();
+-    for (const QString &workedCall : m_recentlyWorked) {
+-        if (callsignsMatch(workedCall, callsign)) {
+-            emit manualTargetStatus(callsign, false, "Recently worked");
+-            return;
+-        }
++    if (isRecentlyWorkedSlot(callsign, m_currentBandIndex, m_currentMode)) {
++        emit manualTargetStatus(callsign, false, "Already logged on this band/mode");
++        return;
+     }
+     if (m_currentTarget.isValid() && callsignsMatch(m_currentTarget.callsign, callsign)) {
+         emit manualTargetStatus(callsign, true, "Already active");
+@@ -2270,23 +2270,31 @@ void AutoDxerCore::considerCallingMePreemption(const CachedDecode &decode)
+             || decode.bandIndex != m_currentBandIndex) return;
+ 
+     const ScoredTarget caller = m_targetScorer->scoreTarget(decode);
+-    if (!caller.isCallingMe || caller.callsign.isEmpty()) return;
++    if (!caller.isCallingMe || caller.callsign.isEmpty() || caller.priority <= 0) {
++        if (caller.isCallingMe && !caller.callsign.isEmpty()
++                && !caller.priorityReason.isEmpty()) {
++            noteSkipped("directed-caller-blocked:" + caller.callsign);
++            emit debugMessage(QString("CALLING-ME-BLOCKED: %1 (%2)")
++                              .arg(caller.callsign, caller.priorityReason));
++        }
++        return;
++    }
+ 
+     // A terminal 73/RR73 decode can arrive immediately after MSHV has logged
+     // the QSO.  It is still a directed message, but it is not a new caller.
+     // Reject the whole recently-worked interval before it can recreate queue
+     // ownership and call the just-logged station again.
+     cleanupRecentlyWorked();
+-    for (const QString &workedCall : m_recentlyWorked) {
+-        if (callsignsMatch(caller.callsign, workedCall)) {
+-            emit debugMessage(QString("CALLING-ME-RECENTLY-WORKED: Ignoring trailing/repeat decode from %1")
+-                             .arg(caller.callsign));
+-            QJsonObject fields;
+-            fields["caller"] = caller.callsign;
+-            fields["blacklist_seconds"] = m_selectionConfig.recentQsoCooldownSeconds;
+-            auditEvent("directed-caller-recently-worked", fields);
+-            return;
+-        }
++    if (isRecentlyWorkedSlot(caller.callsign, caller.bandIndex, m_currentMode)) {
++        emit debugMessage(QString("CALLING-ME-RECENTLY-WORKED-SLOT: Ignoring trailing/repeat decode from %1 on %2/%3")
++                         .arg(caller.callsign, bandName(caller.bandIndex), m_currentMode));
++        QJsonObject fields;
++        fields["caller"] = caller.callsign;
++        fields["band"] = bandName(caller.bandIndex);
++        fields["mode"] = m_currentMode;
++        fields["blacklist_seconds"] = m_selectionConfig.recentQsoCooldownSeconds;
++        auditEvent("directed-caller-recently-worked-slot", fields);
++        return;
+     }
+ 
+     m_lastDirectedCaller = caller.callsign;
+@@ -2451,6 +2459,14 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+         emit debugMessage(QString("QUEUE-BLOCKED: %1 historical authority unavailable").arg(target.callsign));
+         return;
+     }
++    if (!m_dxccTracker
++            || !m_dxccTracker->eligibilityFacts(
++                   target.callsign, target.grid, target.bandIndex).bandCall) {
++        noteSkipped("worked-call-band-mode:" + target.callsign);
++        emit debugMessage(QString("QUEUE-BLOCKED: %1 already worked on %2/%3")
++                          .arg(target.callsign, bandName(target.bandIndex), m_currentMode));
++        return;
++    }
+     const QString retryKey = extractBaseCallsign(target.callsign).toUpper();
+     if (newAttempt && m_targetRetryAfter.contains(retryKey)
+             && QDateTime::currentDateTimeUtc() < m_targetRetryAfter.value(retryKey)) {
+@@ -2519,17 +2535,13 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+     int existingRow = m_queueWidget->getQueueList()->FindCallOrBaseCallRow(target.callsign);
+     if (existingRow >= 0) return;
+ 
+-    // Check if this call was recently worked (5 minute blacklist)
+-    // Use portable callsign matching to handle cases like 6W/DB1RUL vs DB1RUL
++    // Bridge the short interval before Wavelog acknowledgement using the same
++    // exact call/band/mode identity as the permanent tracker rule.
+     cleanupRecentlyWorked();  // Clean expired entries first
+-    if (!target.isCallingMe) {
+-        for (const QString &workedCall : m_recentlyWorked) {
+-            if (callsignsMatch(target.callsign, workedCall)) {
+-                emit debugMessage(QString("RECENTLY-WORKED: %1 matches worked %2 - skipping (5 min blacklist)")
+-                                 .arg(target.callsign).arg(workedCall));
+-                return;
+-            }
+-        }
++    if (isRecentlyWorkedSlot(target.callsign, target.bandIndex, m_currentMode)) {
++        emit debugMessage(QString("RECENTLY-WORKED-SLOT: %1 already logged on %2/%3")
++                         .arg(target.callsign, bandName(target.bandIndex), m_currentMode));
++        return;
+     }
+ 
+     // Check if target is on non-standard dial frequency and request QSY if needed
+@@ -3400,6 +3412,8 @@ void AutoDxerCore::onMSHVQsoLogged(QStringList qsoData)
+     QString callsign = qsoData.value(1).toUpper();
+     QString grid = qsoData.value(2).toUpper();
+     QString freqStr = qsoData.value(3);
++    QString mode = qsoData.value(4, m_currentMode).trimmed().toUpper();
++    if (mode.isEmpty()) mode = m_currentMode;
+ 
+     if (callsign.isEmpty()) return;
+ 
+@@ -3429,9 +3443,11 @@ void AutoDxerCore::onMSHVQsoLogged(QStringList qsoData)
+     // acknowledgement; the history poll applies the delta only after the
+     // canonical Wavelog write or verified duplicate is authoritative.
+ 
+-    // Add to recently-worked blacklist to prevent immediate re-selection
+-    m_recentlyWorked.insert(callsign);
+-    m_workedTimestamps[callsign] = QDateTime::currentDateTime();
++    // Exact-slot negative guard until the Wavelog acknowledgement delta is
++    // applied. It intentionally does not block another band or mode.
++    const QString slotKey = workedSlotKey(callsign, bandIndex, mode);
++    m_recentlyWorked.insert(slotKey);
++    m_workedTimestamps[slotKey] = QDateTime::currentDateTime();
+ 
+     // Remove from decode cache so it won't appear as a target
+     if (m_decodeCache) {
+@@ -4121,6 +4137,20 @@ void AutoDxerCore::cleanupRecentlyWorked()
+ 
+ }
+ 
++QString AutoDxerCore::workedSlotKey(const QString &callsign, int bandIndex,
++                                    const QString &mode) const
++{
++    return extractBaseCallsign(callsign).trimmed().toUpper()
++        + "|" + QString::number(bandIndex)
++        + "|" + mode.trimmed().toUpper();
++}
++
++bool AutoDxerCore::isRecentlyWorkedSlot(const QString &callsign, int bandIndex,
++                                        const QString &mode) const
++{
++    return m_recentlyWorked.contains(workedSlotKey(callsign, bandIndex, mode));
++}
++
+ // ============================================================================
+ // TX Slot Finder - Automatic TX Frequency Selection After Band Change
+ // ============================================================================
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.h b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+index 8cdcee1..8f9589b 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+@@ -470,11 +470,16 @@ private:
+     bool m_waitingForSlotAnalysis;             // True when target is waiting for slot analysis
+     ScoredTarget m_manualTarget;                // User-requested target, deferred across active QSO
+ 
+-    // Recently-worked blacklist - prevents re-calling stations immediately after QSO
++    // Short-lived exact-slot guard while a logged QSO is being acknowledged
++    // by Wavelog. Durable duplicate suppression comes from worked.db.
+     QSet<QString> m_recentlyWorked;
+     QHash<QString, QDateTime> m_workedTimestamps;
+     QTimer *m_recentlyWorkedCleanupTimer;  // 24/7 stability: periodic cleanup
+     void cleanupRecentlyWorked();
++    QString workedSlotKey(const QString &callsign, int bandIndex,
++                          const QString &mode) const;
++    bool isRecentlyWorkedSlot(const QString &callsign, int bandIndex,
++                              const QString &mode) const;
+ 
+ };
+ 
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+index 01003ea..7647110 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+@@ -180,6 +180,8 @@ struct AutoDxRuntimeConfig
+             const QString normalized = continent.trimmed();
+             if (validContinents.contains(normalized)) c.selection.enabledContinents.insert(normalized);
+         }
++        c.selection.allowBandDxccOutsideContinent = settings.value(
++            "Eligibility/AllowBandDxccOutsideContinent", true).toBool();
+         c.selection.lotwOnly = settings.value("Eligibility/FilterLotwOnly", false).toBool();
+         c.selection.minSignal = qBound(-30, settings.value(
+             "Eligibility/MinSignal", c.minSnr).toInt(), 0);
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxselectionpolicy.h b/MSHV_2762/src/HvAutoDxer/autodxselectionpolicy.h
+index 03cb82b..130849b 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxselectionpolicy.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxselectionpolicy.h
+@@ -65,6 +65,7 @@ struct AutoDxSelectionConfig
+     bool filterBandCqZone;
+     bool filterBandItuZone;
+     QSet<QString> enabledContinents;
++    bool allowBandDxccOutsideContinent;
+     bool lotwOnly;
+     int minSignal;
+     bool preferNonEurope;
+@@ -83,7 +84,8 @@ struct AutoDxSelectionConfig
+           filterNewContinent(false), filterNewGrid(true), filterNewCqZone(false),
+           filterNewItuZone(false), filterBandCall(true), filterBandDxcc(false),
+           filterBandContinent(false), filterBandGrid(true), filterBandCqZone(false),
+-          filterBandItuZone(false), lotwOnly(false), minSignal(-20),
++          filterBandItuZone(false), allowBandDxccOutsideContinent(true),
++          lotwOnly(false), minSignal(-20),
+           preferNonEurope(true), nonEuropeBoost(7500), selectionOrder("score"),
+           treat73AsCq(false), watchUnconfirmedDxcc(true), callWindowSeconds(120),
+           maxConsecutiveWindows(1), sameTargetRetrySeconds(120),
+@@ -113,16 +115,24 @@ struct AutoDxSelectionConfig
+         }
+         if (f.snr < minSignal) r.blockers << "minimum-signal";
+         const QString continent = f.continent.trimmed().toUpper();
+-        if (!continent.isEmpty() && !enabledContinents.contains(continent))
++        const bool bandDxccContinentOverride = allowBandDxccOutsideContinent
++            && f.bandDxcc;
++        if (!continent.isEmpty() && !enabledContinents.contains(continent)
++                && !bandDxccContinentOverride)
+             r.blockers << "continent-disabled";
+-        else if (enabledContinents.size() < 7 && continent.isEmpty())
++        else if (enabledContinents.size() < 7 && continent.isEmpty()
++                 && !bandDxccContinentOverride)
+             r.blockers << "continent-unknown";
+         // LoTW-only is authoritative only when membership data exists.  An
+         // absent data set cannot silently reject the whole decode stream.
+         if (lotwOnly && f.lotwKnown && !f.lotwMember) r.blockers << "lotw-only";
+         if (!r.blockers.isEmpty()) return r;
+ 
+-        if (!filterMatrixEnabled) {
++        if (bandDxccContinentOverride) {
++            r.eligible = true;
++            r.targetClass = "band-dxcc";
++            r.reasons << "band-dxcc" << "continent-filter-override";
++        } else if (!filterMatrixEnabled) {
+             r.eligible = f.newDxcc || f.bandDxcc || f.newGrid || f.directedCaller;
+             r.targetClass = f.newDxcc ? "new-dxcc"
+                           : f.bandDxcc ? "band-dxcc"
+diff --git a/MSHV_2762/src/HvAutoDxer/dxcctracker.cpp b/MSHV_2762/src/HvAutoDxer/dxcctracker.cpp
+index 885acbe..e4831a5 100644
+--- a/MSHV_2762/src/HvAutoDxer/dxcctracker.cpp
++++ b/MSHV_2762/src/HvAutoDxer/dxcctracker.cpp
+@@ -126,11 +126,16 @@ AutoDxEligibilityFacts DxccTracker::eligibilityFacts(const QString &callsign,
+ {
+     AutoDxEligibilityFacts facts;
+     if (!m_hvDxccTracker) return facts;
++    const QString mode = m_hvDxccTracker->getCurrentMode().trimmed().toUpper();
++    // Callsign duplicate eligibility is independent of DXCC resolution.  A
++    // valid Wavelog call/band/mode record must remain authoritative even when
++    // the country database cannot resolve a portable or special-event call.
++    facts.newCall = !m_hvDxccTracker->isCallWorkedAllTime(callsign);
++    facts.bandCall = !m_hvDxccTracker->isCallWorked(
++        callsign, bandIndex, mode.isEmpty() ? QStringLiteral("FT8") : mode);
+     DxccEntity entity;
+     if (!m_hvDxccTracker->lookupDxcc(callsign, entity)) return facts;
+     facts.continent = entity.continent.toUpper();
+-    facts.newCall = !m_hvDxccTracker->isCallWorkedAllTime(callsign);
+-    facts.bandCall = !m_hvDxccTracker->isCallWorked(callsign, bandIndex, "FT8");
+     facts.newDxcc = !m_hvDxccTracker->isDxccWorkedAllTime(entity.entityNumber);
+     facts.bandDxcc = !m_hvDxccTracker->isDxccWorked(entity.entityNumber, bandIndex);
+     facts.newContinent = !m_hvDxccTracker->isContinentWorkedAllTime(entity.continent);
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+index 9b22b27..943e8a1 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+@@ -306,10 +306,26 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+         && callsignsMatch(parsedMessage.destination, m_myCallsign)
+         && callsignsMatch(parsedMessage.transmitter, decode.callsign);
+ 
++    // Wavelog is authoritative for permanent duplicate suppression.  No
++    // selection class (including a directed caller, a manual target, a new
++    // grid, or a DXpedition) may repeat a callsign on the same band and mode.
++    // The tracker uses the live MSHV mode, so another band or mode remains
++    // independently eligible.
++    if (!m_historicalNoveltyAllowed || !m_tracker) {
++        target.priorityReason = "Wavelog history unavailable";
++        return target;
++    }
++    AutoDxEligibilityFacts facts = m_tracker->eligibilityFacts(
++        decode.callsign, decode.grid, decode.bandIndex);
++    if (!facts.bandCall) {
++        target.priorityReason = "Call already worked on this band/mode";
++        return target;
++    }
++
+     // A completed QSO waiting in the Wavelog outbox is not authoritative
+     // worked history yet, but it is negative-only evidence: never select the
+     // same call again while acknowledgement is pending.
+-    if (!target.isCallingMe && isPendingWavelogCall(decode.callsign)) {
++    if (isPendingWavelogCall(decode.callsign)) {
+         target.priorityReason = "Wavelog acknowledgement pending";
+         return target;
+     }
+@@ -336,10 +352,6 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     // Resolve the Wavelog-backed novelty dimensions once per candidate.  The
+     // previous path queried DXCC, band slot and grid individually, then did
+     // the same work again through eligibilityFacts().
+-    AutoDxEligibilityFacts facts = m_historicalNoveltyAllowed && m_tracker
+-        ? m_tracker->eligibilityFacts(decode.callsign, decode.grid, decode.bandIndex)
+-        : AutoDxEligibilityFacts();
+-
+     // Calculate priority based on needs
+     QStringList reasons;
+     if (target.isCallingMe && m_weightCallingMe > 0) {

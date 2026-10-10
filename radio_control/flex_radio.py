@@ -83,10 +83,16 @@ class FlexCtl:
         self.last_radio_message_time = 0
         self.last_command_time = 0
         self.last_tx_active_time = 0
+        self.last_tx_state_time = 0
         # SmartSDR is a byte stream: one recv() may contain several records or
         # only part of one. Keep framing state across polls and command replies.
         self._receive_buffer = b""
         self._pending_lines = []
+        # Transmit settings are scoped to the active SmartSDR GUI client on
+        # MultiFlex radios.  An unbound TCP client can receive an OK response
+        # for ``transmit set`` while its GUI-visible RF power remains unchanged.
+        self.bound_gui_client_id = None
+        self._gui_binding_confirmed = False
         logging.info(f"FlexCtl initialized for {host}:{port} slice {slice_id}")
 
     def _queue_received(self, chunk: bytes) -> None:
@@ -228,6 +234,19 @@ class FlexCtl:
         desired_rx = desired["rx"]
         desired_tx = desired["tx"]
 
+        needs_rx = self.current_rx_ant != desired_rx
+        needs_tx = self.current_tx_ant != desired_tx
+        cache_key = (round(float(freq), 3), desired["band"], desired_rx, desired_tx)
+        # No antenna write is needed, so TX state is irrelevant. This is a
+        # common path while a fresh interlock update is briefly delayed; do not
+        # turn a no-op policy check into a failed station-route transaction.
+        if (
+            not needs_rx
+            and not needs_tx
+            and self._last_antenna_policy == cache_key
+        ):
+            return True
+
         if self._tx_active_recently():
             self._pending_antenna_policy_freq = float(freq)
             logging.info(
@@ -238,12 +257,6 @@ class FlexCtl:
                 desired_tx,
             )
             return False
-
-        needs_rx = self.current_rx_ant != desired_rx
-        needs_tx = self.current_tx_ant != desired_tx
-        cache_key = (round(float(freq), 3), desired["band"], desired_rx, desired_tx)
-        if not needs_rx and not needs_tx and self._last_antenna_policy == cache_key:
-            return True
 
         logging.info(
             "FlexCtl antenna policy: %.6f MHz %s -> rx=%s tx=%s (%s, current rx=%s tx=%s)",
@@ -294,10 +307,23 @@ class FlexCtl:
                 except Exception as e:
                     logging.warning(f"FlexCtl greeting read error: {e}")
                 
+                # Discover and bind to the active SmartSDR GUI context before
+                # reading or changing transmitter settings.  ``client station``
+                # is GUI-only and returns 5000002C for this non-GUI client.
+                self._send("sub client all")
+                if self.bound_gui_client_id:
+                    self._gui_binding_confirmed = self._send(
+                        f"client bind client_id={self.bound_gui_client_id}"
+                    )
+                if not self._gui_binding_confirmed:
+                    logging.warning(
+                        "FlexCtl could not bind to an active SmartSDR GUI client; "
+                        "transmit-setting writes will remain inhibited"
+                    )
+
                 # Identify and subscribe. "sub transmit all" returns
                 # 500000A3 on this station and is not needed for TX/interlock
                 # updates, which arrive through "sub tx all".
-                self._send("client station=OM0RX")
                 self._send("sub slice all")
                 self._send("sub radio all")
                 self._send("sub tx all")
@@ -337,9 +363,230 @@ class FlexCtl:
                 except Exception:
                     pass
                 self.sock = None
+                self._gui_binding_confirmed = False
+
+    def connect_tx_state_probe(
+        self,
+        timeout: float = 1.5,
+        *,
+        requested_at: float | None = None,
+    ) -> bool:
+        """Open a minimal read-only TX/interlock subscription.
+
+        A normal :meth:`connect` subscribes to slice, radio, and TX streams and
+        waits for several command responses.  Station safety checks only need
+        the TX/interlock stream.  Reusing the full connection path for every
+        proof created a burst of unnecessary SmartSDR clients and could exceed
+        the coordinator's timeout between consecutive training points.
+
+        This probe sends only ``sub tx all`` and succeeds only after both the
+        command acknowledgement and an interlock/transmit status newer than
+        ``requested_at`` have been observed.  It never sends a radio mutation.
+        """
+        with self._io_lock:
+            started = time.monotonic()
+            requested_at = float(requested_at or time.time())
+            budget = max(0.25, min(3.0, float(timeout)))
+            deadline = started + budget
+            acknowledged = False
+            try:
+                self.sock = self._socket_mod.create_connection(
+                    (self.host, self.port),
+                    timeout=budget,
+                )
+                self.sock.settimeout(min(0.20, budget))
+                self._receive_buffer = b""
+                self._pending_lines.clear()
+
+                # The greeting is informational.  Parse it if immediately
+                # available, but do not spend the proof budget waiting for it.
+                try:
+                    greeting = self.sock.recv(512)
+                    self._queue_received(greeting)
+                except socket.timeout:
+                    pass
+
+                self.seq += 1
+                sequence = self.seq
+                response_prefix = f"R{sequence}|"
+                self.sock.sendall(f"C{sequence}|sub tx all\r".encode("ascii"))
+
+                while time.monotonic() < deadline:
+                    while self._pending_lines:
+                        line = self._pending_lines.pop(0)
+                        self._record_basic_status_from_line(line)
+                        if line.startswith(response_prefix):
+                            parts = line.split("|", 2)
+                            response_code = parts[1] if len(parts) >= 2 else ""
+                            if response_code not in {"00000000", "0"}:
+                                logging.warning(
+                                    "FlexCtl TX proof subscription rejected: %s",
+                                    response_code or "missing response code",
+                                )
+                                return False
+                            acknowledged = True
+                    if acknowledged and self.last_tx_state_time >= requested_at:
+                        return True
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self.sock.settimeout(min(0.20, remaining))
+                    try:
+                        chunk = self.sock.recv(4096)
+                    except socket.timeout:
+                        continue
+                    if not chunk:
+                        break
+                    self._queue_received(chunk)
+                return False
+            except Exception as exc:
+                logging.warning("FlexCtl minimal TX proof failed: %s", exc)
+                return False
+            finally:
+                logging.info(
+                    "FlexCtl TX proof completed confirmed=%s interlock=%s mox=%s duration_ms=%d",
+                    bool(acknowledged and self.last_tx_state_time >= requested_at),
+                    self.current_interlock_state,
+                    self.current_mox,
+                    round((time.monotonic() - started) * 1000),
+                )
+
+    def refresh_tx_state_probe(
+        self,
+        timeout: float = 1.5,
+        *,
+        expect_transmitting: bool | None = None,
+    ) -> dict:
+        """Refresh TX state on an existing subscribed socket without reconnecting.
+
+        A lightweight ``sub tx all`` acknowledgement is used as an ordered
+        barrier on the existing TCP stream.  All interlock transitions queued
+        before that acknowledgement are parsed, and the call may wait for the
+        requested receive/transmit state.  No radio mutation is sent.
+        """
+        with self._io_lock:
+            requested_at = time.time()
+            started = time.monotonic()
+            budget = max(0.25, min(3.0, float(timeout)))
+            deadline = started + budget
+            acknowledged = False
+            if self.sock is None:
+                return {
+                    "confirmed": False,
+                    "connected": False,
+                    "requested_at": requested_at,
+                    "observed_at": float(self.last_tx_state_time or 0),
+                    "mox": self.current_mox,
+                    "interlock_state": self.current_interlock_state,
+                }
+
+            old_timeout = self.sock.gettimeout()
+            try:
+                self.seq += 1
+                sequence = self.seq
+                response_prefix = f"R{sequence}|"
+                self.sock.sendall(f"C{sequence}|sub tx all\r".encode("ascii"))
+
+                while time.monotonic() < deadline:
+                    while self._pending_lines:
+                        line = self._pending_lines.pop(0)
+                        self._record_basic_status_from_line(line)
+                        if line.startswith(response_prefix):
+                            parts = line.split("|", 2)
+                            code = parts[1] if len(parts) >= 2 else ""
+                            if code not in {"00000000", "0"}:
+                                logging.warning(
+                                    "FlexCtl persistent TX monitor refresh rejected: %s",
+                                    code or "missing response code",
+                                )
+                                return {
+                                    "confirmed": False,
+                                    "connected": True,
+                                    "requested_at": requested_at,
+                                    "observed_at": float(self.last_tx_state_time or 0),
+                                    "mox": self.current_mox,
+                                    "interlock_state": self.current_interlock_state,
+                                }
+                            acknowledged = True
+
+                    interlock = str(self.current_interlock_state or "").upper()
+                    transmitting = bool(
+                        self.current_mox is True or interlock == "TRANSMITTING"
+                    )
+                    state_known = bool(self.last_tx_state_time)
+                    expected = (
+                        True
+                        if expect_transmitting is None
+                        else transmitting is expect_transmitting
+                    )
+                    if acknowledged and state_known and expected:
+                        proof_at = time.time()
+                        logging.info(
+                            "FlexCtl persistent TX monitor proof confirmed interlock=%s "
+                            "mox=%s expected_tx=%s duration_ms=%d",
+                            self.current_interlock_state,
+                            self.current_mox,
+                            expect_transmitting,
+                            round((time.monotonic() - started) * 1000),
+                        )
+                        return {
+                            "confirmed": True,
+                            "connected": True,
+                            "requested_at": requested_at,
+                            "observed_at": float(self.last_tx_state_time or 0),
+                            "proof_at": proof_at,
+                            "mox": self.current_mox,
+                            "interlock_state": self.current_interlock_state,
+                        }
+
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self.sock.settimeout(min(0.20, remaining))
+                    try:
+                        chunk = self.sock.recv(4096)
+                    except socket.timeout:
+                        continue
+                    if not chunk:
+                        self.close()
+                        break
+                    self._queue_received(chunk)
+            except Exception as exc:
+                logging.warning("FlexCtl persistent TX monitor refresh failed: %s", exc)
+                self.close()
+            finally:
+                if self.sock is not None and old_timeout is not None:
+                    try:
+                        self.sock.settimeout(old_timeout)
+                    except Exception:
+                        pass
+
+            logging.warning(
+                "FlexCtl persistent TX monitor proof unconfirmed ack=%s interlock=%s "
+                "mox=%s expected_tx=%s duration_ms=%d",
+                acknowledged,
+                self.current_interlock_state,
+                self.current_mox,
+                expect_transmitting,
+                round((time.monotonic() - started) * 1000),
+            )
+            return {
+                "confirmed": False,
+                "connected": self.sock is not None,
+                "requested_at": requested_at,
+                "observed_at": float(self.last_tx_state_time or 0),
+                "mox": self.current_mox,
+                "interlock_state": self.current_interlock_state,
+            }
 
     def _record_basic_status_from_line(self, line: str) -> None:
         """Update cached state from async status lines that arrive while sending commands."""
+        if "|client " in line and " connected " in line:
+            client_id = re.search(r"\bclient_id=([^\s]+)", line)
+            program = re.search(r"\bprogram=([^\s]+)", line)
+            if client_id and program and program.group(1).lower().startswith("smartsdr"):
+                self.bound_gui_client_id = client_id.group(1)
+
         if "|slice" in line and f"slice {self.slice_id} " in line:
             self._record_antenna_values(line)
 
@@ -364,6 +611,7 @@ class FlexCtl:
         if "|interlock " in line:
             m_state = re.search(r"\bstate=([A-Z_]+)", line)
             if m_state:
+                self.last_tx_state_time = time.time()
                 self.current_interlock_state = m_state.group(1)
                 if self.current_interlock_state == "TRANSMITTING":
                     self.current_mox = True
@@ -376,6 +624,7 @@ class FlexCtl:
 
             m_mox = re.search(r"\bmox=([01])", line)
             if m_mox:
+                self.last_tx_state_time = time.time()
                 self.current_mox = bool(int(m_mox.group(1)))
                 if self.current_mox:
                     self.last_tx_active_time = time.time()
@@ -452,7 +701,7 @@ class FlexCtl:
                 except Exception:
                     pass
 
-    def get_current_levels(self, timeout: float = 1.5):
+    def get_current_levels(self, timeout: float = 1.5, *, apply_antenna_policy: bool = True):
         """
         Query radio for current state and return dict with:
         - audio_level: volume 0-100
@@ -465,7 +714,8 @@ class FlexCtl:
         """
         self._io_lock.acquire()
         old_timeout = None
-        import time as _t, re as _re
+        import re as _re
+        import time as _t
         end = _t.time() + float(timeout)
         buf = b""
         levels = {}
@@ -550,7 +800,13 @@ class FlexCtl:
                     if levels["mox"]:
                         self.last_tx_active_time = time.time()
 
-                m_rf = _re.search(r"\brfpower=(\d+)", text)
+                # ``sub tx all`` also returns one ``transmit band`` row per
+                # saved band.  Those are persistence records, not live drive.
+                m_rf = (
+                    None
+                    if "|transmit band " in text
+                    else _re.search(r"\brfpower=(\d+)", text)
+                )
                 if m_rf:
                     levels["rfpower"] = int(m_rf.group(1))
 
@@ -620,6 +876,12 @@ class FlexCtl:
                     
                     if not line:
                         continue
+
+                    # Any complete SmartSDR status/response received by this
+                    # explicit snapshot is a fresh radio observation.  The
+                    # background coordinator uses this timestamp to decide
+                    # whether station actions may trust the FLEX route.
+                    self.last_radio_message_time = _t.time()
                     
                     logging.debug(f"FlexCtl STATUS: {line}")
                     
@@ -739,7 +1001,11 @@ class FlexCtl:
                             logging.debug(f"  Parsed interlock_state={levels['interlock_state']}")
 
                         # rfpower
-                        m_rf = _re.search(r"\brfpower=(\d+)", line)
+                        m_rf = (
+                            None
+                            if "|transmit band " in line
+                            else _re.search(r"\brfpower=(\d+)", line)
+                        )
                         if m_rf:
                             levels["rfpower"] = int(m_rf.group(1))
                             logging.debug(f"  Parsed rfpower={levels['rfpower']}")
@@ -817,8 +1083,19 @@ class FlexCtl:
             self.current_mox = levels["mox"]
         if "interlock_state" in levels:
             self.current_interlock_state = levels["interlock_state"]
-        if self.current_freq is not None:
-            self.enforce_antenna_policy(self.current_freq, reason="snapshot poll")
+        if apply_antenna_policy and self.current_freq is not None:
+            # During an externally-owned (MSHV) cross-band transition the
+            # station interlock may prepare the target antenna before CAT has
+            # moved the slice.  A background snapshot of the old frequency
+            # must not immediately undo that preparation.
+            policy_freq = self.current_freq
+            pending_until = float(getattr(self, "pending_external_frequency_until", 0) or 0)
+            if pending_until > time.time():
+                policy_freq = float(getattr(self, "pending_external_frequency", policy_freq))
+            else:
+                self.pending_external_frequency = None
+                self.pending_external_frequency_until = 0
+            self.enforce_antenna_policy(policy_freq, reason="snapshot poll")
         
         logging.info(f"FlexCtl current state: {levels}")
         try:
@@ -830,9 +1107,41 @@ class FlexCtl:
             self._io_lock.release()
         return levels
 
+    def get_fresh_tx_state(self, timeout: float = 1.5):
+        """Require TX state from an independent, newly subscribed TCP client.
+
+        Re-subscribing an already subscribed socket does not always replay its
+        current state.  A short-lived independent client has no cache and its
+        initial TX subscription produces an authoritative interlock status.
+        The probe never sends tune, MOX-on, PTT, or antenna commands.
+        """
+        requested_at = time.time()
+        probe = self._new_tx_state_probe()
+        try:
+            connected = probe.connect_tx_state_probe(
+                timeout,
+                requested_at=requested_at,
+            )
+            observed_at = float(probe.last_tx_state_time or 0)
+            return {
+                "confirmed": bool(connected and observed_at >= requested_at),
+                "requested_at": requested_at,
+                "observed_at": observed_at,
+                "mox": probe.current_mox,
+                "interlock_state": probe.current_interlock_state,
+            }
+        finally:
+            probe.close()
+
+    def _new_tx_state_probe(self):
+        return FlexCtl(self.host, self.port, self.slice_id)
+
     # --- Basic operations ---
     
     def set_mode(self, mode: str) -> bool:
+        from services.digital_engine import backend_radio_control_allowed
+        if not backend_radio_control_allowed():
+            return False
         """Set demodulation mode (USB, LSB, CW, AM, FM, DIGU, DIGL, etc)."""
         mode_upper = (mode or '').upper()
         logging.info(f"FlexCtl set_mode: {mode_upper}")
@@ -846,6 +1155,9 @@ class FlexCtl:
         return ok
 
     def tune_mhz(self, mhz: float) -> bool:
+        from services.digital_engine import backend_radio_control_allowed
+        if not backend_radio_control_allowed():
+            return False
         """Tune slice to frequency in MHz."""
         try:
             f = float(mhz)
@@ -860,6 +1172,9 @@ class FlexCtl:
         return ok
 
     def set_band(self, band: str) -> bool:
+        from services.digital_engine import backend_radio_control_allowed
+        if not backend_radio_control_allowed():
+            return False
         """Tune to default frequency for band (160m-6m)."""
         mhz = self.DEFAULT_BAND_FREQS.get((band or '').lower())
         if mhz is None:
@@ -936,14 +1251,35 @@ class FlexCtl:
 
     def _set_tx_slice(self) -> bool:
         """Mark this slice as TX slice."""
-        self._send(f"slice set {self.slice_id} tx=1")
-        return True
+        return self._send(f"slice set {self.slice_id} tx=1")
+
+    def _ensure_gui_binding(self, *, force: bool = False) -> bool:
+        """Bind transmitter controls to the active SmartSDR GUI context.
+
+        SmartSDR may invalidate a non-GUI client's binding when another client
+        (notably MSHV) reconnects.  Transmitter writes therefore use ``force``
+        so an earlier successful bind is never treated as permanent.
+        """
+        if not force and self._gui_binding_confirmed and self.bound_gui_client_id:
+            return True
+        if force:
+            self._gui_binding_confirmed = False
+        if not self._send("sub client all") or not self.bound_gui_client_id:
+            return False
+        self._gui_binding_confirmed = self._send(
+            f"client bind client_id={self.bound_gui_client_id}"
+        )
+        return self._gui_binding_confirmed
 
     def set_rf_power(self, pct: int) -> bool:
         """Set RF power 1-100. API uses 'rfpower'."""
         pct = max(1, min(100, int(pct)))
         logging.info(f"FlexCtl set_rf_power: {pct}")
-        self._set_tx_slice()
+        # Explicitly bind the transmitter to this slice before changing drive.
+        # A successful command response only confirms that SmartSDR accepted
+        # the write; subscribed radio state remains the readback authority.
+        if not self._ensure_gui_binding(force=True) or not self._set_tx_slice():
+            return False
         return self._send(f"transmit set rfpower={pct}")
 
     def set_tune_power(self, pct: int) -> bool:
@@ -961,11 +1297,17 @@ class FlexCtl:
         return self._send(f"transmit set miclevel={pct}")
 
     def set_tune(self, on: bool) -> bool:
+        from services.digital_engine import backend_radio_control_allowed
+        if on and not backend_radio_control_allowed():
+            return False
         """Toggle TUNE mode. API command is 'transmit tune on' or 'transmit tune off'."""
         logging.info(f"FlexCtl set_tune: {'ON' if on else 'OFF'}")
         return self._send(f"transmit tune {'on' if on else 'off'}")
 
     def set_mox(self, on: bool) -> bool:
+        from services.digital_engine import backend_radio_control_allowed
+        if on and not backend_radio_control_allowed():
+            return False
         """Toggle MOX (manual transmit)."""
         logging.info(f"FlexCtl set_mox: {'ON' if on else 'OFF'}")
         self._set_tx_slice()
@@ -1068,9 +1410,15 @@ class FlexCtl:
         try:
             import re as _re
             import time as _time
-            # Set short timeout for non-blocking reads
+            # Keep this drain bounded. SmartSDR meter/status traffic can be
+            # continuous; waiting for a quiet socket would otherwise hold the
+            # process-wide main Flex I/O lock indefinitely and starve safety
+            # operations queued behind it.
             old_timeout = self.sock.gettimeout()
-            self.sock.settimeout(0.2)  # 200ms timeout (was 100ms, too short)
+            drain_started = _time.monotonic()
+            drain_deadline = drain_started + 0.15
+            max_messages = 256
+            self.sock.settimeout(0.05)
             logging.debug(f"🔍 REFRESH STARTING: Connected to {self.host}:{self.port}, slice_id={self.slice_id}")
             
             # Re-subscribe only occasionally. Doing this every poll creates
@@ -1089,11 +1437,13 @@ class FlexCtl:
             messages_read = 0
             state_changed = {}  # Track what changed
             
-            while True:
+            while messages_read < max_messages and _time.monotonic() < drain_deadline:
                 try:
                     if self._pending_lines:
                         resp = self._pending_lines.pop(0)
                     else:
+                        remaining = max(0.001, drain_deadline - _time.monotonic())
+                        self.sock.settimeout(min(0.05, remaining))
                         chunk = self.sock.recv(4096)
                         if not chunk:
                             logging.warning("FlexCtl socket closed by SmartSDR")
@@ -1257,6 +1607,7 @@ class FlexCtl:
 
                         m_state = _re.search(r"\bstate=([A-Z_]+)", resp)
                         if m_state:
+                            self.last_tx_state_time = _time.time()
                             new_state = m_state.group(1)
                             if self.current_interlock_state is None or new_state != self.current_interlock_state:
                                 state_changed['interlock_state'] = new_state
@@ -1286,6 +1637,7 @@ class FlexCtl:
                         # MOX state (transmit on/off)
                         m_mox = _re.search(r"\bmox=([01])", resp)
                         if m_mox:
+                            self.last_tx_state_time = _time.time()
                             new_mox = bool(int(m_mox.group(1)))
                             if self.current_mox is None or new_mox != self.current_mox:
                                 if self.current_mox is not None:
@@ -1303,7 +1655,11 @@ class FlexCtl:
                     # Parse transmit/interlock updates for mic/drive/tune power changes
                     if "|transmit " in resp or "|interlock " in resp:
                         # rfpower (Drive) - map to 'drive' for frontend
-                        m_rf = _re.search(r"\brfpower=(\d+)", resp)
+                        m_rf = (
+                            None
+                            if "|transmit band " in resp
+                            else _re.search(r"\brfpower=(\d+)", resp)
+                        )
                         if m_rf:
                             new_rfpower = int(m_rf.group(1))
                             if self.current_rfpower is None or new_rfpower != self.current_rfpower:
@@ -1386,7 +1742,16 @@ class FlexCtl:
             # Return state_changed dict for UI updates
             self.last_state_changed = state_changed
             
-            logging.debug(f"FlexCtl refresh: Read {messages_read} message(s), changes: {list(state_changed.keys())}")
+            budget_exhausted = bool(
+                messages_read >= max_messages or _time.monotonic() >= drain_deadline
+            )
+            logging.debug(
+                "FlexCtl refresh: read=%d duration_ms=%d budget_exhausted=%s changes=%s",
+                messages_read,
+                round((_time.monotonic() - drain_started) * 1000),
+                budget_exhausted,
+                list(state_changed.keys()),
+            )
             return True
             
         except Exception as e:

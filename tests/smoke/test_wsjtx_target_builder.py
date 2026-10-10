@@ -314,7 +314,7 @@ def test_wsjtx_logged_adif_duplicate_is_ignored(monkeypatch, tmp_path):
     assert qso_status.records[-1]["callsign"] == "EA1AA"
 
 
-def test_wsjtx_logged_adif_duplicate_with_shifted_time_and_reports_is_ignored(monkeypatch, tmp_path):
+def test_wsjtx_logged_adif_distinct_contact_with_shifted_time_is_preserved(monkeypatch, tmp_path):
     import services.qso_logging as qlog
 
     service = WSJTXService()
@@ -350,9 +350,9 @@ def test_wsjtx_logged_adif_duplicate_with_shifted_time_and_reports_is_ignored(mo
 
     assert first["success"] is True
     assert second["success"] is True
-    assert second["duplicate"] is True
-    assert len(wavelog.qso_calls) == 1
-    assert len(backup.records) == 1
+    assert second.get("duplicate") is not True
+    assert len(wavelog.qso_calls) == 2
+    assert len(backup.records) == 2
 
 
 def test_wsjtx_adif_and_backend_completion_race_logs_once(monkeypatch, tmp_path):
@@ -411,7 +411,7 @@ def test_wsjtx_adif_and_backend_completion_race_logs_once(monkeypatch, tmp_path)
                 rst_sent="-10",
                 rst_received="-07",
                 gridsquare="IO84",
-                date_time="2026-06-05T10:43:00+00:00",
+                date_time="2026-06-05T10:42:16+00:00",
             )),
         )
 
@@ -463,7 +463,7 @@ def test_wsjtx_mfsk_submode_ft4_and_backend_ft4_log_once(monkeypatch, tmp_path):
         rst_sent="-03",
         rst_received="-12",
         gridsquare="JN75",
-        date_time="2026-06-05T22:51:00+00:00",
+        date_time="2026-06-05T22:50:00+00:00",
     )))
 
     assert first["success"] is True
@@ -473,7 +473,7 @@ def test_wsjtx_mfsk_submode_ft4_and_backend_ft4_log_once(monkeypatch, tmp_path):
     assert len(wsjtx_backup.records) + len(backend_backup.records) == 1
 
 
-def test_wsjtx_logged_adif_skips_when_recent_wavelog_row_exists(monkeypatch, tmp_path):
+def test_wsjtx_logged_adif_does_not_collapse_nearby_wavelog_row(monkeypatch, tmp_path):
     import services.qso_logging as qlog
 
     service = WSJTXService()
@@ -512,12 +512,12 @@ def test_wsjtx_logged_adif_skips_when_recent_wavelog_row_exists(monkeypatch, tmp
     }))
 
     assert result["success"] is True
-    assert result["duplicate"] is True
-    assert wavelog.adif_calls == []
-    assert backup.records == []
+    assert result.get("duplicate") is not True
+    assert len(wavelog.qso_calls) == 1
+    assert len(backup.records) == 1
 
 
-def test_wsjtx_structured_ft4_skips_recent_mfsk_wavelog_row(monkeypatch, tmp_path):
+def test_wsjtx_structured_ft4_does_not_collapse_nearby_mfsk_wavelog_row(monkeypatch, tmp_path):
     import services.qso_logging as qlog
 
     service = WSJTXService()
@@ -556,9 +556,9 @@ def test_wsjtx_structured_ft4_skips_recent_mfsk_wavelog_row(monkeypatch, tmp_pat
     }))
 
     assert result["success"] is True
-    assert result["duplicate"] is True
-    assert wavelog.qso_calls == []
-    assert backup.records == []
+    assert result.get("duplicate") is not True
+    assert len(wavelog.qso_calls) == 1
+    assert len(backup.records) == 1
 
 
 def test_wsjtx_log_qso_without_adif_uses_structured_wavelog_payload(monkeypatch, tmp_path):
@@ -587,11 +587,17 @@ def test_wsjtx_log_qso_without_adif_uses_structured_wavelog_payload(monkeypatch,
     assert backup.records[0]["gridsquare"] == "IN80"
 
 
-def test_wsjtx_duplicate_log_response_still_updates_status_cache():
+def test_wsjtx_duplicate_log_response_still_updates_status_cache(monkeypatch, tmp_path):
+    import services.qso_logging as qlog
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "dedupe.json")
+    monkeypatch.setattr(qlog, "_pending_dedupe_claims", {})
     class DuplicateWavelog(_FakeAdifWavelog):
         async def submit_adif_string(self, adif_text):
             self.adif_calls.append(adif_text)
-            return {"success": False, "message": "Duplicate QSO"}
+            return {
+                "success": False, "message": "Duplicate QSO",
+                "duplicate": True, "identity_verified": True,
+            }
 
     service = WSJTXService()
     wavelog = DuplicateWavelog()

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OM0RX Station Management</title>
+    <link rel="stylesheet" href="station-shell.css?v=20261004-station-undocked-2">
+    <link rel="stylesheet" href="station-path.css?v=20261010-fast-flex-1">
+    <link rel="stylesheet" href="station-history.css?v=20261004-station-history-1">
+    <link rel="stylesheet" href="station-workflow.css?v=20261004-station-workflow-2">
+    <link rel="stylesheet" href="station-training-preview.css?v=20261004-atu-mixed-plan-2">
+    <link rel="stylesheet" href="station-configuration.css?v=20261010-digital-band-drive-1">
+    <link rel="stylesheet" href="station-commissioning.css?v=20261004-commissioning-readiness-2">
+    <link rel="stylesheet" href="station-readability.css?v=20261010-large-display-1">
+</head>
+<body>
+    <header class="station-shell-header">
+        <div>
+            <span class="station-shell-eyebrow">OM0RX Radio Control</span>
+            <h1>Station Management</h1>
+        </div>
+        <div class="station-shell-actions">
+            <button
+                class="station-shell-return"
+                id="station-widget-launcher"
+                type="button"
+                title="Open the compact live station path widget">
+                Open path widget
+            </button>
+            <button
+                class="station-shell-return"
+                type="button"
+                data-station-navigation="return"
+                title="Focus the original Radio Control window and close this popup">
+                Close &amp; return to Radio Control
+            </button>
+        </div>
+    </header>
+    <main id="station-management-panels" class="station-management-panels" aria-live="polite">
+        <p class="station-shell-loading">Loading station panels…</p>
+    </main>
+
+    <script src="js/station-navigation.js?v=20261004-station-undocked-2"></script>
+    <script src="js/station-launcher.js?v=20261010-widget-reopen-17"></script>
+    <script src="js/station-shell.js?v=20261010-fast-flex-1"></script>
+    <script src="js/station-path.js?v=20261010-fast-flex-1"></script>
+    <script src="js/station-history.js?v=20261004-station-history-1"></script>
+    <script src="js/station-workflow.js?v=20261004-station-workflow-2"></script>
+    <script src="js/station-training-preview.js?v=20261004-atu-resilience-3"></script>
+    <script src="js/station-configuration.js?v=20261010-digital-band-drive-1"></script>
+    <script src="js/station-commissioning.js?v=20261004-commissioning-readiness-1"></script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 FT8/FT4 API Endpoints
 """
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Optional
 import logging
@@ -21,7 +21,13 @@ from services.soundcard_loader import get_soundcard, soundcard_unavailable_reaso
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/ft8", tags=["ft8"])
+def require_ft8_mutation_owner(request: Request):
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        from services.digital_engine import require_om0rx_planner
+        require_om0rx_planner()
+
+
+router = APIRouter(prefix="/api/ft8", tags=["ft8"], dependencies=[Depends(require_ft8_mutation_owner)])
 
 # Historical route namespace: these endpoints now power the built-in DIGITAL
 # client. They are mode-aware through FT8Service/normalise_decode_mode and are
@@ -620,6 +626,8 @@ async def get_automation_status():
 @router.post("/automation/settings")
 async def update_automation_settings(request: AutomationSettingsRequest):
     """Update backend Digital automation controller settings."""
+    from services.digital_engine import require_om0rx_planner
+    require_om0rx_planner()
     service = get_ft8_service()
     service.automation_controller.apply_operator_settings(request.operatorSettings)
     return {"status": "updated", "automation": service.automation_controller.status()}
@@ -628,6 +636,8 @@ async def update_automation_settings(request: AutomationSettingsRequest):
 @router.post("/automation/reference-hunter")
 async def update_reference_hunter_settings(request: ReferenceHunterSettingsRequest):
     """Arm/disarm reference hunting and persist the Filters snapshot."""
+    from services.digital_engine import require_om0rx_planner
+    require_om0rx_planner()
     service = get_ft8_service()
     automation_update = {
         "referenceHunterEnabled": request.enabled,

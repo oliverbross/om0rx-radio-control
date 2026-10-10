@@ -81,6 +81,21 @@ window.RadioControlConfig = {
                     '10m': 'ANT1',
                 },
             },
+            KPA500_ENABLED: false,
+            KPA500_PORT: 'COM6',
+            KPA500_BAUDRATE: 38400,
+            DIGITAL_KPA_POLICY: 'operate',
+            KAT500_ENABLED: false,
+            KAT500_PORT: 'COM11',
+            KAT500_BAUDRATE: 38400,
+            ELECRAFT_FOLLOW_RADIO: true,
+            KAT500_ANTENNA_POLICY: {
+                '160m': 2, '80m': 2, '60m': 2, '40m': 2, '30m': 2,
+                '20m': 1, '17m': 1, '15m': 1, '12m': 1, '10m': 1, '6m': 1,
+            },
+            KAT500_ANTENNA_NAMES: {
+                '1': 'KAT ANT1', '2': 'KAT ANT2', '3': 'KAT ANT3',
+            },
             RBL_COMMAND_PROFILE: 'dxspider',
             RBL_COMMAND_PROFILES: {},
             ACTIVITY_INTELLIGENCE: {
@@ -131,6 +146,17 @@ window.RadioControlConfig = {
         },
 
         showConfigModal: false,
+        digitalEngineStatus: null,
+        digitalEngineChoice: 'none',
+        digitalEngineBusy: false,
+        digitalEngineMessage: '',
+        mshvAutoDxSettings: null,
+        mshvAutoDxBusy: false,
+        mshvAutoDxMessage: '',
+        mshvAutoDxDirty: false,
+        mshvAutoDxSaveTimer: null,
+        mshvAutoDxRevision: 0,
+        mshvAutoDxSavedRevision: 0,
         configDialogVisible: false,
         activeConfigTab: 'database',
         configMessage: null,
@@ -146,13 +172,19 @@ window.RadioControlConfig = {
         wsjtxLaunchLogsLoading: false,
         wsjtxHealthMessage: null,
         wsjtxTimelineFilter: '',
+        elecraftStatus: null,
+        elecraftStatusLoading: false,
+        elecraftActionLoading: false,
+        elecraftStatusTimer: null,
         configTabs: [
             { id: 'database', name: 'Database' },
             { id: 'station', name: 'Station & Cluster' },
             { id: 'flex', name: 'Flex & UDP' },
+            { id: 'elecraft', name: 'Elecraft' },
             { id: 'rotor', name: 'Rotor' },
             { id: 'winkeyer', name: 'WinKeyer' },
-            { id: 'wsjtx', name: 'WSJT-X' },
+            { id: 'wsjtx', name: 'Digital engines' },
+            { id: 'mshv', name: 'MSHV hunting' },
             { id: 'cty', name: 'CTY / Paths' },
             { id: 'logging', name: 'Logging' },
             { id: 'activity', name: 'Activity Intel' },
@@ -168,6 +200,20 @@ window.RadioControlConfig = {
     },
 
     computed: {
+        mshvOwnsDigitalPlanner() {
+            // Historical template name: both MSHV ownership and the disabled
+            // provider must keep every OM0RX/WSJT-Z TX control inert.
+            return (this.digitalEngineStatus?.selected_engine || 'none') !== 'wsjtz';
+        },
+        digitalEngineDisabled() {
+            return this.digitalEngineStatus?.selected_engine === 'none';
+        },
+        digitalEngineBlocksOm0rx() {
+            return (this.digitalEngineStatus?.selected_engine || 'none') !== 'wsjtz';
+        },
+        wsjtzOwnsDigitalPlanner() {
+            return this.digitalEngineStatus?.selected_engine === 'wsjtz';
+        },
         rotorEnabled() {
             return this.configData.ROTOR_ENABLED === true;
         },
@@ -190,6 +236,357 @@ window.RadioControlConfig = {
     },
 
     methods: {
+        normalizeMshvAwardSettings(settings = {}) {
+            return {
+                ...settings,
+                award_hunting: {
+                    enabled: true,
+                    stack_scores: true,
+                    new_dxcc_weight: 10000,
+                    new_dxcc_band_weight: 1000,
+                    unconfirmed_dxcc_weight: 8500,
+                    new_continent_weight: 2500,
+                    new_cq_zone_weight: 2200,
+                    new_itu_zone_weight: 2000,
+                    new_grid_weight: 500,
+                    ...(settings.award_hunting || {}),
+                },
+                reference_hunting: {
+                    enabled: true,
+                    pota_enabled: true,
+                    sota_enabled: true,
+                    wwff_enabled: true,
+                    new_reference_weight: 2500,
+                    new_reference_band_weight: 1000,
+                    new_reference_band_mode_weight: 500,
+                    pota_weight: 1800,
+                    sota_weight: 1800,
+                    wwff_weight: 1400,
+                    max_activation_age_seconds: 900,
+                    require_local_decode: true,
+                    ...(settings.reference_hunting || {}),
+                },
+                propagation_adaptation: {
+                    enabled: true,
+                    window_seconds: 900,
+                    unique_decode_weight: 20,
+                    distant_decode_weight: 40,
+                    successful_qso_weight: 250,
+                    max_band_boost: 1500,
+                    ...(settings.propagation_adaptation || {}),
+                },
+                pileup_strategy: {
+                    enabled: true,
+                    audio_offsets_hz: [0, -120, 120, -240, 240],
+                    rotate_after_attempts: 2,
+                    revisit_delay_seconds: 120,
+                    ...(settings.pileup_strategy || {}),
+                },
+                directed_callers: {
+                    enabled: true,
+                    inbox_size: 8,
+                    max_age_seconds: 90,
+                    ...(settings.directed_callers || {}),
+                },
+                campaign: {
+                    profile: 'balanced',
+                    dxcc_weight_percent: 100,
+                    state_weight_percent: 100,
+                    zone_weight_percent: 100,
+                    grid_weight_percent: 100,
+                    reference_weight_percent: 100,
+                    ...(settings.campaign || {}),
+                },
+                outcome_learning: {
+                    enabled: true,
+                    telemetry_file: 'logs/autodx-outcomes.jsonl',
+                    ...(settings.outcome_learning || {}),
+                },
+            };
+        },
+
+        mshvAudioOffsetsText() {
+            return (this.mshvAutoDxSettings?.pileup_strategy?.audio_offsets_hz || []).join(', ');
+        },
+
+        applyMshvCampaignProfile(profile) {
+            const campaign = this.mshvAutoDxSettings?.campaign;
+            if (!campaign) return;
+            const profiles = {
+                balanced: [100, 100, 100, 100, 100],
+                'dxcc-challenge': [175, 75, 100, 75, 75],
+                'five-band-dxcc': [200, 50, 75, 50, 50],
+                'worked-all-states': [75, 200, 75, 75, 50],
+                waz: [75, 50, 200, 50, 50],
+                'itu-zones': [75, 50, 200, 50, 50],
+                grids: [75, 50, 50, 200, 50],
+                references: [75, 50, 50, 50, 200],
+            };
+            campaign.profile = String(profile || 'custom');
+            const values = profiles[campaign.profile];
+            if (values) {
+                [
+                    campaign.dxcc_weight_percent,
+                    campaign.state_weight_percent,
+                    campaign.zone_weight_percent,
+                    campaign.grid_weight_percent,
+                    campaign.reference_weight_percent,
+                ] = values;
+            }
+            this.queueMshvAutoDxSave();
+        },
+
+        markMshvCampaignCustom() {
+            if (this.mshvAutoDxSettings?.campaign) {
+                this.mshvAutoDxSettings.campaign.profile = 'custom';
+            }
+        },
+
+        updateMshvAudioOffsets(value) {
+            if (!this.mshvAutoDxSettings?.pileup_strategy) return false;
+            const tokens = String(value || '').split(',').map(item => item.trim()).filter(Boolean);
+            const offsets = tokens.map(Number);
+            if (!offsets.length || offsets.length > 16 || offsets.some(item => !Number.isInteger(item) || item < -2400 || item > 2400)) {
+                this.mshvAutoDxMessage = 'Enter 1–16 whole-number audio offsets from −2400 to 2400 Hz.';
+                return false;
+            }
+            this.mshvAutoDxSettings.pileup_strategy.audio_offsets_hz = [...new Set(offsets)];
+            this.mshvAutoDxMessage = '';
+            return true;
+        },
+
+        queueMshvAutoDxSave() {
+            this.mshvAutoDxDirty = true;
+            this.mshvAutoDxRevision += 1;
+            this.scheduleMshvAutoDxSave();
+        },
+
+        scheduleMshvAutoDxSave() {
+            if (this.mshvAutoDxSaveTimer) clearTimeout(this.mshvAutoDxSaveTimer);
+            this.mshvAutoDxSaveTimer = setTimeout(() => {
+                this.mshvAutoDxSaveTimer = null;
+                this.saveMshvAutoDxSettings();
+            }, 450);
+        },
+
+        mshvEffectiveAutoDxText(settings = this.mshvAutoDxSettings) {
+            if (!settings?.effective) return 'engine stopped';
+            if (typeof settings.effective.effective_enabled !== 'boolean') return 'unknown';
+            return settings.effective.effective_enabled ? 'on' : 'off';
+        },
+
+        mshvRuntimeParityText(settings = this.mshvAutoDxSettings) {
+            const parity = settings?.runtime_parity;
+            if (!parity || !['match', 'drift'].includes(parity.status)) return 'unknown';
+            if (parity.status === 'match') return 'matched';
+            return `drift: ${(parity.drift || []).join(', ') || 'unspecified'}`;
+        },
+
+        mshvAutoDxStatus() {
+            return this.digitalEngineStatus?.autodx_status || {};
+        },
+
+        mshvTargetText() {
+            const status = this.mshvAutoDxStatus();
+            const target = status.target;
+            if (!target) return 'none';
+            if (typeof target === 'string') return target;
+            const band = status.active_schedule?.band || (target.band_index != null ? `band ${target.band_index}` : '');
+            return [target.call, band, target.grid].filter(Boolean).join(' · ') || 'none';
+        },
+
+        mshvTimeText(value) {
+            if (value == null || value === '') return '—';
+            if (typeof value === 'number') return `${Math.max(0, Math.round(value))} s`;
+            const parsed = new Date(value);
+            return Number.isNaN(parsed.valueOf()) ? String(value) : parsed.toLocaleTimeString();
+        },
+
+        async loadDigitalEngineStatus() {
+            try {
+                const response = await fetch('/api/digital/status');
+                const status = await response.json();
+                if (!response.ok) throw new Error(status.detail || 'Engine status unavailable');
+                this.digitalEngineStatus = status;
+                this.digitalEngineChoice = status.selected_engine || status.provider || 'none';
+                window.om0rxDigitalEngine = this.digitalEngineChoice;
+                window.dispatchEvent(new CustomEvent('digital-engine-status', { detail: status }));
+                if (this.configDialogVisible && ['wsjtx', 'mshv'].includes(this.activeConfigTab) && this.digitalEngineChoice === 'mshv_auto_dx') {
+                    await this.loadMshvAutoDxSettings();
+                }
+                return status;
+            } catch (error) {
+                this.digitalEngineMessage = error.message;
+                return null;
+            }
+        },
+
+        async launchDigitalEngine(engine) {
+            const provider = String(engine || '').trim();
+            if (!['wsjtz', 'mshv_auto_dx'].includes(provider)) {
+                this.digitalEngineMessage = 'Unknown digital engine.';
+                return null;
+            }
+            this.digitalEngineChoice = provider;
+            return this.digitalEngineAction('start', provider);
+        },
+
+        async digitalEngineAction(action, engine = this.digitalEngineChoice) {
+            this.digitalEngineBusy = true;
+            this.digitalEngineMessage = '';
+            try {
+                const response = await fetch(`/api/digital/${action}`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ engine }),
+                });
+                const result = await response.json();
+                if (!response.ok || result.success === false) {
+                    throw new Error(result.message || result.detail || result.error || `Engine ${action} failed`);
+                }
+                if (action === 'halt-tx' || action === 'halt') {
+                    const accepted = result.command_accepted ? 'halt command accepted' : 'no halt command accepted';
+                    const confirmed = result.idle_confirmed ? 'RF idle freshly confirmed' : 'RF idle confirmation pending';
+                    this.digitalEngineMessage = `${accepted}; ${confirmed}.`;
+                } else {
+                    this.digitalEngineMessage = result.startup?.starting
+                        ? 'Engine process accepted and is still starting; TX remains unavailable until heartbeat/readiness is confirmed.'
+                        : (result.message || `Engine ${action} completed.`);
+                }
+                await this.loadDigitalEngineStatus();
+            } catch (error) {
+                this.digitalEngineMessage = error.message;
+                await this.loadDigitalEngineStatus();
+            } finally {
+                this.digitalEngineBusy = false;
+            }
+        },
+
+        digitalEngineHealthText(key) {
+            const value = this.digitalEngineStatus?.health?.[key];
+            if (value == null) return 'not reported';
+            if (typeof value === 'object') return value.detail || value.status || value.state || 'not reported';
+            return String(value);
+        },
+
+        async loadMshvAutoDxSettings(force = false) {
+            if (this.mshvAutoDxDirty && !force) return this.mshvAutoDxSettings;
+            this.mshvAutoDxBusy = true;
+            this.mshvAutoDxMessage = '';
+            try {
+                const response = await fetch('/api/digital/mshv-settings');
+                const result = await response.json();
+                if (!response.ok || result.success === false) {
+                    throw new Error(result.detail || result.error || 'MSHV Auto DX settings unavailable');
+                }
+                this.mshvAutoDxSettings = this.normalizeMshvAwardSettings(result);
+                this.mshvAutoDxDirty = false;
+                this.mshvAutoDxRevision = 0;
+                this.mshvAutoDxSavedRevision = 0;
+                return result;
+            } catch (error) {
+                this.mshvAutoDxMessage = error.message;
+                return null;
+            } finally {
+                this.mshvAutoDxBusy = false;
+            }
+        },
+
+        async saveMshvAutoDxSettings() {
+            if (!this.mshvAutoDxSettings) return;
+            if (this.mshvAutoDxBusy) {
+                this.scheduleMshvAutoDxSave();
+                return;
+            }
+            if (this.mshvAutoDxSaveTimer) {
+                clearTimeout(this.mshvAutoDxSaveTimer);
+                this.mshvAutoDxSaveTimer = null;
+            }
+            this.mshvAutoDxBusy = true;
+            this.mshvAutoDxMessage = '';
+            const savingRevision = this.mshvAutoDxRevision;
+            try {
+                const settings = this.mshvAutoDxSettings;
+                const { normal_call_seconds: _derivedAttemptBudget, ...writableAutomationTiming } = settings.automation_timing || {};
+                const response = await fetch('/api/digital/mshv-settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        enabled: settings.desired?.enabled === true,
+                        callsign: settings.callsign,
+                        grid: settings.grid,
+                        min_snr: settings.min_snr,
+                        grid_chase_us_only: settings.grid_chase_us_only,
+                        band_switching_enabled: settings.band_switching_enabled,
+                        automation_timing: writableAutomationTiming,
+                        band_schedules: JSON.parse(JSON.stringify(settings.band_schedules)),
+                        enabled_bands: [...settings.enabled_bands],
+                        auto_dx_modes: [...settings.auto_dx_modes],
+                        atno_chase_type: settings.atno_chase_type,
+                        scarce_threshold: settings.scarce_threshold,
+                        filter_matrix_enabled: settings.filter_matrix_enabled,
+                        filter_new: { ...(settings.filter_new || {}) },
+                        filter_new_on_band: { ...(settings.filter_new_on_band || {}) },
+                        filter_continents: [...(settings.filter_continents || [])],
+                        allow_band_dxcc_outside_continent: settings.allow_band_dxcc_outside_continent !== false,
+                        filter_lotw_only: settings.filter_lotw_only,
+                        treat_73_as_cq: settings.treat_73_as_cq,
+                        watch_unconfirmed_dxcc: settings.watch_unconfirmed_dxcc,
+                        selection_order: settings.selection_order || 'score',
+                        call_window_seconds: settings.call_window_seconds,
+                        max_consecutive_windows: settings.max_consecutive_windows,
+                        same_target_revisit_delay_seconds: settings.same_target_revisit_delay_seconds,
+                        recent_qso_cooldown_seconds: settings.recent_qso_cooldown_seconds,
+                        min_band_dwell_seconds: settings.min_band_dwell_seconds,
+                        engaged_completion_grace_seconds: settings.engaged_completion_grace_seconds,
+                        spot_sources: JSON.parse(JSON.stringify(settings.spot_sources)),
+                        target_priority: { ...settings.target_priority },
+                        us_states: JSON.parse(JSON.stringify(settings.us_states || {
+                            enabled: true, minimum_worked: 3, require_confirmation: true,
+                            prefer_lotw: true, missing_confirmation_weight: 8500,
+                            under_quota_weight: 7000, bands: [3, 4, 6, 7, 8, 9, 10, 11, 12],
+                        })),
+                        dxpedition: JSON.parse(JSON.stringify(settings.dxpedition || {})),
+                        cluster_chase: JSON.parse(JSON.stringify(settings.cluster_chase || {})),
+                        award_hunting: JSON.parse(JSON.stringify(settings.award_hunting)),
+                        reference_hunting: JSON.parse(JSON.stringify(settings.reference_hunting)),
+                        propagation_adaptation: JSON.parse(JSON.stringify(settings.propagation_adaptation)),
+                        pileup_strategy: JSON.parse(JSON.stringify(settings.pileup_strategy)),
+                        directed_callers: JSON.parse(JSON.stringify(settings.directed_callers)),
+                        campaign: JSON.parse(JSON.stringify(settings.campaign)),
+                        outcome_learning: JSON.parse(JSON.stringify(settings.outcome_learning)),
+                    }),
+                });
+                const result = await response.json();
+                if (!response.ok || result.success === false) {
+                    throw new Error(result.detail || result.error || 'MSHV Auto DX settings were not saved');
+                }
+                this.mshvAutoDxSavedRevision = savingRevision;
+                if (this.mshvAutoDxRevision === savingRevision) {
+                    this.mshvAutoDxSettings = this.normalizeMshvAwardSettings(result);
+                    this.mshvAutoDxDirty = false;
+                    this.mshvAutoDxMessage = result.message || 'MSHV hunting settings applied and saved.';
+                }
+            } catch (error) {
+                this.mshvAutoDxMessage = error.message;
+            } finally {
+                this.mshvAutoDxBusy = false;
+                if (this.mshvAutoDxRevision > savingRevision) this.scheduleMshvAutoDxSave();
+            }
+        },
+
+        addMshvDxClusterServer() {
+            if (!this.mshvAutoDxSettings?.spot_sources?.dx_cluster) return;
+            this.mshvAutoDxSettings.spot_sources.dx_cluster.servers.push({
+                name: 'DX Cluster', host: 'localhost', port: 7300, enabled: false,
+            });
+            this.queueMshvAutoDxSave();
+        },
+
+        removeMshvDxClusterServer(index) {
+            if (!this.mshvAutoDxSettings?.spot_sources?.dx_cluster) return;
+            this.mshvAutoDxSettings.spot_sources.dx_cluster.servers.splice(index, 1);
+            this.queueMshvAutoDxSave();
+        },
         async showConfigDialog(initialTab = 'database') {
             console.log('Opening configuration dialog...');
             this.configMessage = null;
@@ -217,6 +614,12 @@ window.RadioControlConfig = {
             this.activeConfigTab = initialTab || this.activeConfigTab || 'database';
             if (this.activeConfigTab === 'wsjtx') {
                 this.loadWsjtxHealth();
+            } else if (this.activeConfigTab === 'mshv') {
+                this.digitalEngineChoice = 'mshv_auto_dx';
+                this.loadDigitalEngineStatus();
+                this.loadMshvAutoDxSettings(true);
+            } else if (this.activeConfigTab === 'elecraft') {
+                this.startElecraftPolling();
             }
         },
 
@@ -225,6 +628,7 @@ window.RadioControlConfig = {
             this.showConfigModal = false;
             this.configDialogVisible = false;
             this.configMessage = null;
+            this.stopElecraftPolling();
         },
 
         async saveConfiguration() {
@@ -258,6 +662,9 @@ window.RadioControlConfig = {
 
                     this.syncWinKeyerConfigFromSettings();
                     this.syncActivityIntelligenceConfigFromSettings();
+                    if (this.activeConfigTab === 'elecraft') {
+                        await this.loadElecraftStatus();
+                    }
 
                     setTimeout(() => {
                         if (this.showConfigModal) {
@@ -320,8 +727,74 @@ window.RadioControlConfig = {
 
         selectConfigTab(tabId) {
             this.activeConfigTab = tabId;
+            this.stopElecraftPolling();
             if (tabId === 'wsjtx') {
                 this.loadWsjtxHealth();
+            } else if (tabId === 'mshv') {
+                this.digitalEngineChoice = 'mshv_auto_dx';
+                this.loadDigitalEngineStatus();
+                this.loadMshvAutoDxSettings(true);
+            } else if (tabId === 'elecraft') {
+                this.startElecraftPolling();
+            }
+        },
+
+        startElecraftPolling() {
+            this.stopElecraftPolling();
+            this.loadElecraftStatus();
+            this.elecraftStatusTimer = setInterval(() => {
+                if (this.configDialogVisible && this.activeConfigTab === 'elecraft') {
+                    this.loadElecraftStatus(false);
+                }
+            }, 2500);
+        },
+
+        stopElecraftPolling() {
+            if (this.elecraftStatusTimer) {
+                clearInterval(this.elecraftStatusTimer);
+                this.elecraftStatusTimer = null;
+            }
+        },
+
+        async loadElecraftStatus(showLoading = true, refreshHardware = showLoading) {
+            if (showLoading) this.elecraftStatusLoading = true;
+            try {
+                const response = await fetch(`/api/elecraft/status?refresh=${refreshHardware ? 'true' : 'false'}`);
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.detail || data.message || 'Status request failed');
+                }
+                this.elecraftStatus = data.status;
+            } catch (error) {
+                this.elecraftStatus = {
+                    ...(this.elecraftStatus || {}),
+                    error: error.message,
+                };
+            } finally {
+                if (showLoading) this.elecraftStatusLoading = false;
+            }
+        },
+
+        async elecraftAction(path, body = null) {
+            this.elecraftActionLoading = true;
+            this.configMessage = null;
+            try {
+                const options = { method: 'POST', headers: {} };
+                if (body !== null) {
+                    options.headers['Content-Type'] = 'application/json';
+                    options.body = JSON.stringify(body);
+                }
+                const response = await fetch(`/api/elecraft/${path}`, options);
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.detail || data.message || 'Elecraft command failed');
+                }
+                if (data.status) this.elecraftStatus = data.status;
+                await this.loadElecraftStatus(false);
+            } catch (error) {
+                this.configMessage = { type: 'error', text: error.message };
+            } finally {
+                this.elecraftActionLoading = false;
             }
         },
 
@@ -755,6 +1228,8 @@ window.RadioControlConfig = {
         },
 
         async loadWsjtxHealth(options = {}) {
+            await this.loadDigitalEngineStatus();
+            if (this.mshvOwnsDigitalPlanner) return;
             this.wsjtxHealthLoading = true;
             if (!options.preserveMessage) {
                 this.wsjtxHealthMessage = null;

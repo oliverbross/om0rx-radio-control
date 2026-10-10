@@ -1,0 +1,216 @@
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+index 5f9a058..be3fce1 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -24,6 +24,7 @@
+ #include <QUrl>
+ #include <QUuid>
+ #include <algorithm>
++#include <climits>
+ 
+ // Helper: Check if callsign is rare DX (DXpedition) that should use dial frequency directly
+ // For these stations, the spotted frequency IS the dial frequency, not an RF frequency
+@@ -2114,15 +2115,6 @@ void AutoDxerCore::requestManualTarget(QStringList decodeData)
+         emit manualTargetStatus(callsign, false, "Auto DX is unavailable for this row");
+         return;
+     }
+-    if (!historicalActionAllowed(callsign, false)) {
+-        emit manualTargetStatus(callsign, false, "Wavelog history gate blocked the target");
+-        return;
+-    }
+-    cleanupRecentlyWorked();
+-    if (isRecentlyWorkedSlot(callsign, m_currentBandIndex, m_currentMode)) {
+-        emit manualTargetStatus(callsign, false, "Already logged on this band/mode");
+-        return;
+-    }
+     if (m_currentTarget.isValid() && callsignsMatch(m_currentTarget.callsign, callsign)) {
+         emit manualTargetStatus(callsign, true, "Already active");
+         return;
+@@ -2140,16 +2132,44 @@ void AutoDxerCore::requestManualTarget(QStringList decodeData)
+         }
+     }
+     if (!found) {
+-        emit manualTargetStatus(callsign, false, "Local decode is no longer fresh");
+-        return;
+-    }
+-
+-    const ScoredTarget target = m_targetScorer->scoreTarget(decode);
+-    if (target.priority <= 0) {
+-        emit manualTargetStatus(callsign, false,
+-            target.priorityReason.isEmpty() ? "Duplicate/history eligibility gate" : target.priorityReason);
+-        return;
+-    }
++        // A visible row is direct operator evidence even when it has just aged
++        // out of the automation cache. Refresh that one local row so the
++        // queue safety check can still prove it was decoded locally.
++        decode.callsign = callsign;
++        decode.grid = grid;
++        decode.dxccEntity = m_cty ? m_cty->FindCountry(callsign, false) : QString();
++        decode.originalMessage = decodeData.value(4, "");
++        decode.bandIndex = m_currentBandIndex;
++        decode.audioFrequency = freq;
++        decode.dialFrequencyHz = m_currentDialFrequencyHz;
++        decode.snr = snr;
++        decode.timestamp = QDateTime::currentDateTimeUtc();
++        decode.firstSeen = decode.timestamp;
++        decode.decodeCount = 1;
++        decode.isCQ = isCQ;
++        decode.isLocalDecode = true;
++        m_decodeCache->addDecode(callsign, grid, decode.dxccEntity,
++            decode.originalMessage, m_currentBandIndex, freq,
++            m_currentDialFrequencyHz, snr, isCQ);
++    }
++    ScoredTarget target = m_targetScorer->scoreTarget(decode);
++    // Double-click is an explicit operator command, not an Auto DX award
++    // recommendation. It overrides duplicate/history/filter scoring while
++    // retaining local-decode and same-band safety proofs.
++    target.callsign = decode.callsign;
++    target.grid = decode.grid;
++    target.dxccEntity = decode.dxccEntity;
++    target.originalMessage = decode.originalMessage;
++    target.bandIndex = m_currentBandIndex;
++    target.audioFrequency = decode.audioFrequency;
++    target.dialFrequencyHz = decode.dialFrequencyHz;
++    target.snr = decode.snr;
++    target.decodedAt = decode.timestamp;
++    target.isLocalDecode = true;
++    target.decodeCount = qMax(1, decode.decodeCount);
++    target.priority = INT_MAX;
++    target.priorityReason = "Operator double-click override";
++    target.eligibilityClass = "manual-operator";
+     m_operatorTargetHold = false;
+     m_manualTarget = target;
+     if (m_state == WaitingForQSO && m_currentTarget.isValid()
+@@ -2616,7 +2636,8 @@ void AutoDxerCore::evaluateTargets()
+     // decode-complete path reaches evaluateTargets() before the timeout timer,
+     // so without this guard a fresh same-band candidate can repeatedly win
+     // that race and starve later configured bands.
+-    if (m_fullHuntingEnabled && m_state == Listening
++    if (m_fullHuntingEnabled && m_manualTarget.callsign.isEmpty()
++            && m_state == Listening
+             && !m_currentTarget.isValid() && !m_targetRespondedToUs
+             && !postQsoGuardActive() && m_fullHuntingVisitTimer.isValid()
+             && fullHuntingVisitElapsedMs()
+@@ -2799,7 +2820,7 @@ void AutoDxerCore::evaluateTargets()
+     if (!m_manualTarget.callsign.isEmpty()) {
+         for (const CachedDecode &decode : localStations) {
+             if (callsignsMatch(decode.callsign, m_manualTarget.callsign)) {
+-                best = m_targetScorer->scoreTarget(decode);
++                best = m_manualTarget;
+                 break;
+             }
+         }
+@@ -2904,7 +2925,8 @@ void AutoDxerCore::evaluateTargets()
+                 return;
+             }
+         }
+-        if (!historicalActionAllowed(best.callsign, best.isCallingMe)) {
++        if (!selectedByManualRequest
++                && !historicalActionAllowed(best.callsign, best.isCallingMe)) {
+             emit debugMessage("SELECT-BLOCKED: Wavelog authority/pending guard for " + best.callsign);
+             return;
+         }
+@@ -2912,7 +2934,7 @@ void AutoDxerCore::evaluateTargets()
+         // The final guard in feedToQueue() remains as defense in depth for
+         // direct callers and other paths that bypass evaluateTargets().
+         const QString retryKey = extractBaseCallsign(best.callsign).toUpper();
+-        if (m_targetRetryAfter.contains(retryKey)
++        if (!selectedByManualRequest && m_targetRetryAfter.contains(retryKey)
+                 && QDateTime::currentDateTimeUtc() < m_targetRetryAfter.value(retryKey)) {
+             QJsonObject fields;
+             fields["call"] = best.callsign;
+@@ -3191,11 +3213,12 @@ bool AutoDxerCore::resumeSuspendedTarget(const QString &reason)
+ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+                                bool admittedReinsert)
+ {
++    const bool operatorSelected = target.eligibilityClass == "manual-operator";
+     if (catTransitionPending()) {
+         noteSkipped("cat-band-change-in-flight:" + target.callsign);
+         return;
+     }
+-    if (newAttempt && !target.isCallingMe && m_bandManager
++    if (!operatorSelected && newAttempt && !target.isCallingMe && m_bandManager
+             && !m_bandManager->isBandOpenNow(m_currentBandIndex)) {
+         noteSkipped("band-schedule-closed:" + target.callsign);
+         emit debugMessage(QString("QUEUE-BLOCKED: %1 band schedule closed")
+@@ -3206,21 +3229,22 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+         resetQuietBandTimer();
+         return;
+     }
+-    if (!historicalActionAllowed(target.callsign, target.isCallingMe)) {
++    if (!operatorSelected
++            && !historicalActionAllowed(target.callsign, target.isCallingMe)) {
+         noteSkipped("historical-authority-unavailable:" + target.callsign);
+         emit debugMessage(QString("QUEUE-BLOCKED: %1 historical authority unavailable").arg(target.callsign));
+         return;
+     }
+-    if (!m_dxccTracker
++    if (!operatorSelected && (!m_dxccTracker
+             || !m_dxccTracker->eligibilityFacts(
+-                   target.callsign, target.grid, target.bandIndex).bandCall) {
++                   target.callsign, target.grid, target.bandIndex).bandCall)) {
+         noteSkipped("worked-call-band-mode:" + target.callsign);
+         emit debugMessage(QString("QUEUE-BLOCKED: %1 already worked on %2/%3")
+                           .arg(target.callsign, bandName(target.bandIndex), m_currentMode));
+         return;
+     }
+     const QString retryKey = extractBaseCallsign(target.callsign).toUpper();
+-    if (newAttempt && m_targetRetryAfter.contains(retryKey)
++    if (!operatorSelected && newAttempt && m_targetRetryAfter.contains(retryKey)
+             && QDateTime::currentDateTimeUtc() < m_targetRetryAfter.value(retryKey)) {
+         QJsonObject fields;
+         fields["call"] = target.callsign;
+@@ -3290,7 +3314,8 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+     // Bridge the short interval before Wavelog acknowledgement using the same
+     // exact call/band/mode identity as the permanent tracker rule.
+     cleanupRecentlyWorked();  // Clean expired entries first
+-    if (isRecentlyWorkedSlot(target.callsign, target.bandIndex, m_currentMode)) {
++    if (!operatorSelected
++            && isRecentlyWorkedSlot(target.callsign, target.bandIndex, m_currentMode)) {
+         emit debugMessage(QString("RECENTLY-WORKED-SLOT: %1 already logged on %2/%3")
+                          .arg(target.callsign, bandName(target.bandIndex), m_currentMode));
+         return;
+@@ -3584,6 +3609,7 @@ void AutoDxerCore::checkTimeout()
+     // selection is in progress.
+     if (!m_enabled || (!m_bandSwitchingEnabled && !m_fullHuntingEnabled)
+             || m_state != Listening
++            || !m_manualTarget.callsign.isEmpty()
+             || m_currentTarget.isValid() || m_targetRespondedToUs
+             || !m_pendingCrossBandCallsign.isEmpty()
+             || !m_pendingNonStdCallsign.isEmpty() || m_waitingForSlotAnalysis
+@@ -4777,6 +4803,7 @@ void AutoDxerCore::checkCrossBandAlerts()
+     // on only after the exchange has completed.
+     const bool qsoProtected = m_state == WaitingForQSO || m_targetRespondedToUs;
+     if (!m_enabled || postQsoGuardActive()
++            || !m_manualTarget.callsign.isEmpty()
+             || !m_pendingCrossBandCallsign.isEmpty()
+             || !m_pendingNonStdCallsign.isEmpty() || m_waitingForSlotAnalysis
+             || catTransitionPending()) {
+@@ -5449,7 +5476,9 @@ void AutoDxerCore::onSlotAnalysisReady(SlotAnalysis analysis)
+         return;
+     }
+ 
+-    if (m_waitingForSlotAnalysis && m_bandManager
++    const bool pendingManual = m_pendingSlotAnalysisTarget.eligibilityClass
++        == "manual-operator";
++    if (m_waitingForSlotAnalysis && !pendingManual && m_bandManager
+             && !m_bandManager->isBandOpenNow(m_currentBandIndex)) {
+         emit debugMessage("SLOT-ANALYSIS: Band schedule closed; deferred target cancelled");
+         m_waitingForSlotAnalysis = false;
+@@ -5460,14 +5489,14 @@ void AutoDxerCore::onSlotAnalysisReady(SlotAnalysis analysis)
+         return;
+     }
+ 
+-    if (m_waitingForSlotAnalysis && !m_historicalNoveltyAllowed &&
++    if (m_waitingForSlotAnalysis && !pendingManual && !m_historicalNoveltyAllowed &&
+         !m_pendingSlotAnalysisTarget.isCallingMe) {
+         emit debugMessage("SLOT-ANALYSIS: Historical authority revoked; deferred target cancelled");
+         m_waitingForSlotAnalysis = false;
+         m_pendingSlotAnalysisTarget = ScoredTarget();
+         return;
+     }
+-    if (m_waitingForSlotAnalysis
++    if (m_waitingForSlotAnalysis && !pendingManual
+             && !historicalActionAllowed(m_pendingSlotAnalysisTarget.callsign,
+                                         m_pendingSlotAnalysisTarget.isCallingMe)) {
+         emit debugMessage("SLOT-ANALYSIS: Pending Wavelog QSO; deferred target cancelled");

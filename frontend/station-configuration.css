@@ -1,0 +1,279 @@
+.station-configuration-panel {
+    margin: 0 0 6px;
+    padding: 9px 10px;
+    border: 1px solid #3b4654;
+    border-left: 3px solid #14b8a6;
+    border-radius: 7px;
+    background: #22272d;
+    color: #cbd5e1;
+}
+
+.station-configuration-panel header,
+.station-configuration-body,
+.station-configuration-actions {
+    display: flex;
+    align-items: center;
+}
+
+.station-configuration-panel header {
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.station-configuration-eyebrow {
+    display: block;
+    color: #5eead4;
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+}
+
+.station-configuration-panel h2 {
+    margin: 1px 0 0;
+    color: #f8fafc;
+    font-size: 13px;
+}
+
+.station-configuration-setup {
+    margin-top: 9px;
+    padding-top: 8px;
+    border-top: 1px solid #39434e;
+}
+
+.station-configuration-help {
+    margin: 0 0 9px;
+    color: #a5b4c5;
+    font-size: 9px;
+    line-height: 1.45;
+}
+
+.station-configuration-device-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.station-configuration-device-grid fieldset {
+    display: flex;
+    min-width: 0;
+    margin: 0;
+    padding: 8px;
+    flex-direction: column;
+    gap: 7px;
+    border: 1px solid #3b4a5b;
+    border-radius: 5px;
+    background: #1a2027;
+}
+
+.station-configuration-device-grid legend {
+    padding: 0 4px;
+    color: #7dd3fc;
+    font-size: 10px;
+    font-weight: 800;
+}
+
+.station-configuration-setup label {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+    color: #aebdcd;
+    font-size: 8px;
+    font-weight: 700;
+}
+
+.station-configuration-setup input[type="text"],
+.station-configuration-setup input[type="number"],
+.station-configuration-setup select {
+    width: 100%;
+    min-width: 0;
+    height: 27px;
+    padding: 4px 6px;
+    border: 1px solid #475569;
+    border-radius: 4px;
+    background: #111827;
+    color: #f1f5f9;
+    font: inherit;
+    font-size: 9px;
+}
+
+.station-configuration-setup input:focus,
+.station-configuration-setup select:focus {
+    outline: 1px solid #38bdf8;
+    border-color: #38bdf8;
+}
+
+.station-config-check {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center;
+    gap: 6px !important;
+    cursor: pointer;
+}
+
+.station-config-check input { margin: 0; }
+
+.station-config-field-grid,
+.station-config-safety-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 92px;
+    gap: 6px;
+}
+
+.station-config-safety-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+.station-config-routing-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 9px 0 5px;
+}
+
+.station-config-routing-heading strong {
+    display: block;
+    color: #f1f5f9;
+    font-size: 10px;
+}
+
+.station-config-routing-heading span {
+    color: #8291a3;
+    font-size: 8px;
+}
+
+.station-config-routing-wrap { overflow-x: auto; }
+
+.station-config-routing-table {
+    width: 100%;
+    min-width: 900px;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 8px;
+}
+
+.station-config-routing-table th,
+.station-config-routing-table td {
+    padding: 4px 5px;
+    border: 1px solid #334155;
+    text-align: left;
+}
+
+.station-config-routing-table th { color: #cbd5e1; background: #1b222a; }
+.station-config-routing-table td { background: #171d24; }
+.station-config-routing-table select,
+.station-config-routing-table input[type="number"] { height: 24px; padding: 2px 4px; }
+.station-config-routing-table .station-config-check { justify-content: center; }
+
+.station-configuration-savebar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.station-configuration-savebar button,
+.station-configuration-actions button {
+    padding: 6px 9px;
+    border: 1px solid #0f766e;
+    border-radius: 4px;
+    background: #0f766e;
+    color: #ecfeff;
+    cursor: pointer;
+    font-size: 9px;
+    font-weight: 800;
+}
+
+.station-configuration-savebar button.secondary { background: #273444; border-color: #475569; }
+.station-configuration-savebar button:disabled { opacity: .55; cursor: not-allowed; }
+
+.station-configuration-savebar span {
+    color: #94a3b8;
+    font-size: 9px;
+}
+
+.station-configuration-savebar span[data-state="success"] { color: #86efac; }
+.station-configuration-savebar span[data-state="error"] { color: #fca5a5; }
+
+.station-configuration-snapshot {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid #39434e;
+}
+
+.station-configuration-snapshot summary {
+    color: #8bded5;
+    cursor: pointer;
+    font-size: 9px;
+    font-weight: 800;
+}
+
+.station-configuration-badge {
+    border: 1px solid #0f766e;
+    border-radius: 999px;
+    padding: 2px 7px;
+    color: #5eead4;
+    font-size: 8px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.station-configuration-body {
+    justify-content: space-between;
+    gap: 14px;
+    margin-top: 7px;
+}
+
+.station-configuration-body p,
+.station-configuration-result {
+    margin: 0;
+    color: #94a3b8;
+    font-size: 9px;
+    line-height: 1.45;
+}
+
+.station-configuration-actions {
+    flex: 0 0 auto;
+    gap: 5px;
+}
+
+.station-configuration-actions button { background: #134e4a; color: #ccfbf1; }
+
+.station-configuration-actions button:disabled { opacity: .55; cursor: not-allowed; }
+.station-configuration-actions button:not(:disabled):hover { background: #115e59; }
+
+.station-configuration-result {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid #39434e;
+}
+
+.station-configuration-result[data-state="error"] { color: #fca5a5; }
+.station-configuration-result[data-state="changes"] { color: #fde68a; }
+.station-configuration-result[data-state="clean"] { color: #86efac; }
+
+.station-configuration-changes {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px 14px;
+    margin: 5px 0 0;
+    padding-left: 18px;
+    color: #cbd5e1;
+    font-size: 8px;
+}
+
+@media (max-width: 760px) {
+    .station-configuration-device-grid { grid-template-columns: 1fr; }
+    .station-config-routing-heading { align-items: flex-start; flex-direction: column; }
+    .station-config-routing-table { min-width: 900px; }
+    .station-configuration-savebar { align-items: flex-start; flex-wrap: wrap; }
+    .station-configuration-savebar span { flex: 1 0 100%; }
+    .station-configuration-body { align-items: flex-start; flex-direction: column; }
+    .station-configuration-actions { width: 100%; }
+    .station-configuration-actions button { flex: 1; }
+    .station-configuration-changes { grid-template-columns: 1fr; }
+}
+
+@media (min-width: 761px) and (max-width: 1200px) {
+    .station-configuration-device-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

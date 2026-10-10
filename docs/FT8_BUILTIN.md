@@ -93,6 +93,13 @@ On this workstation, WSJT-X is configured with:
 - Audio input: `DAX Audio RX 1 (FlexRadio Systems DAX Audio)`, mono
 - Audio output: `DAX Audio TX (FlexRadio Systems DAX TX)`, mono
 
+On Windows with Python 3.14 or newer, the built-in service skips the optional
+`sounddevice`/PortAudio import probe by default because affected PortAudio
+builds can terminate the probe process during interpreter shutdown. The safe
+`soundcard` fallback remains available. Set `FT8_ENABLE_SOUNDDEVICE_PROBE=1`
+only for an explicitly supervised compatibility test; the existing
+`FT8_DISABLE_SOUNDDEVICE=1` override continues to disable it on every runtime.
+
 The first local RX fixture was captured from sounddevice index `74`, matching that WSJT-X input through Windows DirectSound:
 
 ```powershell

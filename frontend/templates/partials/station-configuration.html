@@ -1,0 +1,145 @@
+<section id="station-configuration-panel" class="station-configuration-panel" aria-labelledby="station-configuration-title">
+    <header>
+        <div>
+            <span class="station-configuration-eyebrow">Guarded live settings</span>
+            <h2 id="station-configuration-title">Elecraft setup &amp; station routing</h2>
+        </div>
+        <span class="station-configuration-badge">KPA standby enforced on route changes</span>
+    </header>
+
+    <form class="station-configuration-setup" data-station-configuration="setup-form">
+        <p class="station-configuration-help">
+            These are OM0RX integration settings. Saving connection or route changes first verifies receive state and
+            requests KPA500 standby; it never enables commissioning or starts a tune/transmission.
+        </p>
+
+        <div class="station-configuration-device-grid">
+            <fieldset>
+                <legend>KPA500 amplifier</legend>
+                <label class="station-config-check">
+                    <input type="checkbox" data-station-config-field="KPA500_ENABLED">
+                    Enable KPA500 monitoring
+                </label>
+                <div class="station-config-field-grid">
+                    <label>Serial port
+                        <input type="text" autocomplete="off" spellcheck="false" data-station-config-field="KPA500_PORT" placeholder="COM17">
+                    </label>
+                    <label>Baud rate
+                        <select data-station-config-field="KPA500_BAUDRATE">
+                            <option value="4800">4800</option>
+                            <option value="9600">9600</option>
+                            <option value="19200">19200</option>
+                            <option value="38400">38400</option>
+                        </select>
+                    </label>
+                </div>
+                <label>Digital-mode amplifier master
+                    <select data-station-config-field="DIGITAL_KPA_POLICY">
+                        <option value="standby">Force standby on every band</option>
+                        <option value="operate">Use per-band digital settings</option>
+                    </select>
+                </label>
+            </fieldset>
+
+            <fieldset>
+                <legend>KAT500 tuner</legend>
+                <label class="station-config-check">
+                    <input type="checkbox" data-station-config-field="KAT500_ENABLED">
+                    Enable KAT500 monitoring
+                </label>
+                <div class="station-config-field-grid">
+                    <label>Serial port
+                        <input type="text" autocomplete="off" spellcheck="false" data-station-config-field="KAT500_PORT" placeholder="COM15">
+                    </label>
+                    <label>Baud rate
+                        <select data-station-config-field="KAT500_BAUDRATE">
+                            <option value="4800">4800</option>
+                            <option value="9600">9600</option>
+                            <option value="19200">19200</option>
+                            <option value="38400">38400</option>
+                        </select>
+                    </label>
+                </div>
+                <label class="station-config-check">
+                    <input type="checkbox" data-station-config-field="ELECRAFT_FOLLOW_RADIO">
+                    Follow FLEX frequency and band automatically
+                </label>
+            </fieldset>
+
+            <fieldset>
+                <legend>KAT500 physical outputs</legend>
+                <label>ANT1 name
+                    <input type="text" autocomplete="off" data-station-config-antenna-name="1" placeholder="e.g. Hexbeam">
+                </label>
+                <label>ANT2 name
+                    <input type="text" autocomplete="off" data-station-config-antenna-name="2" placeholder="e.g. 40/80 m dipole">
+                </label>
+                <label>ANT3 name
+                    <input type="text" autocomplete="off" data-station-config-antenna-name="3" placeholder="e.g. Dummy load">
+                </label>
+            </fieldset>
+
+            <fieldset>
+                <legend>Tune safety envelope</legend>
+                <div class="station-config-safety-grid">
+                    <label>Tune power (W)
+                        <input type="number" min="15" max="30" step="1" data-station-config-field="STATION_TUNE_POWER_W">
+                    </label>
+                    <label>Target SWR
+                        <input type="number" min="1" max="3" step="0.1" data-station-config-field="STATION_TUNE_TARGET_SWR">
+                    </label>
+                    <label>Abort SWR
+                        <input type="number" min="1.5" max="5" step="0.1" data-station-config-field="STATION_TUNE_ABORT_SWR">
+                    </label>
+                    <label>Timeout (s)
+                        <input type="number" min="5" max="60" step="1" data-station-config-field="STATION_TUNE_TIMEOUT_SECONDS">
+                    </label>
+                </div>
+            </fieldset>
+        </div>
+
+        <div class="station-config-routing-heading">
+            <div>
+                <strong>Band routing matrix</strong>
+                <span>FLEX/KAT route plus independent standard and digital-mode PA eligibility and drive</span>
+            </div>
+            <label class="station-config-check">
+                <input type="checkbox" data-station-config-flex-enabled>
+                Enforce FLEX antenna policy
+            </label>
+        </div>
+        <div class="station-config-routing-wrap">
+            <table class="station-config-routing-table">
+                <thead>
+                    <tr><th>Band</th><th>FLEX TX</th><th>KAT output</th><th>Standard PA</th><th>PA drive (W)</th><th>Barefoot drive (W)</th><th>Digital PA</th><th>Digital PA drive (W)</th></tr>
+                </thead>
+                <tbody data-station-configuration="band-rows"></tbody>
+            </table>
+        </div>
+
+        <div class="station-configuration-savebar">
+            <button type="submit" data-station-configuration="save-settings">Save guarded settings</button>
+            <button type="button" class="secondary" data-station-configuration="reload-settings">Reload</button>
+            <span data-station-configuration="settings-result" role="status">Loading the active station configuration…</span>
+        </div>
+    </form>
+
+    <details class="station-configuration-snapshot">
+        <summary>Configuration backup and comparison</summary>
+        <div class="station-configuration-body">
+            <p>
+                Export supported station settings and cached device identity, or inspect a saved snapshot for changes.
+                Secrets, commissioning, firmware, live relay state, and EEPROM data are excluded.
+            </p>
+            <div class="station-configuration-actions">
+                <button type="button" data-station-configuration="download">Download snapshot</button>
+                <button type="button" data-station-configuration="choose">Preview saved snapshot</button>
+                <input type="file" accept="application/json,.json" data-station-configuration="file" hidden>
+            </div>
+        </div>
+        <div class="station-configuration-result" data-station-configuration="result" role="status">
+            No snapshot loaded. Preview never changes the running station.
+        </div>
+        <ul class="station-configuration-changes" data-station-configuration="changes" aria-label="Configuration changes"></ul>
+    </details>
+</section>

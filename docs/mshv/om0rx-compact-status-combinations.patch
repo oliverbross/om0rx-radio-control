@@ -1,0 +1,52 @@
+diff --git a/MSHV_2762/src/HvDecodeList/decodelist.cpp b/MSHV_2762/src/HvDecodeList/decodelist.cpp
+index f7ccc90..e53dc73 100644
+--- a/MSHV_2762/src/HvDecodeList/decodelist.cpp
++++ b/MSHV_2762/src/HvDecodeList/decodelist.cpp
+@@ -1526,12 +1526,13 @@ QStringList DecodeList::CompactStatuses(const QString &callsign) const
+     const bool callWorked = m_dxccTracker->isCallWorkedAllTime(call);
+     const bool callNewBand = !m_dxccTracker->isCallWorkedOnBand(call, band);
+     const bool callNewMode = !m_dxccTracker->isCallWorkedOnMode(call, mode);
++    const QString callSuffix = m_dxccTracker->isCallConfirmed(call) ? "C" : "W";
+     QString cs;
+     if (!callWorked) cs = "NC";
+     else if (m_dxccTracker->isCallConfirmedBandMode(call, band, mode)) cs = "C";
+-    else if (callNewBand && callNewMode) cs = "NB+NM";
+-    else if (callNewBand) cs = "NB";
+-    else if (callNewMode) cs = "NM";
++    else if (callNewBand && callNewMode) cs = "NB+NM/" + callSuffix;
++    else if (callNewBand) cs = "NB/" + callSuffix;
++    else if (callNewMode) cs = "NM/" + callSuffix;
+     else cs = "W";
+ 
+     QString ds;
+@@ -1542,13 +1543,13 @@ QStringList DecodeList::CompactStatuses(const QString &callsign) const
+             const bool newBand = !m_dxccTracker->isDxccWorked(entity, band);
+             const bool newMode = !m_dxccTracker->isDxccWorkedOnMode(entity, mode);
+             if (m_dxccTracker->isDxccConfirmedBandMode(entity, band, mode)) ds = "C";
+-            else {
+-                const QString prefix = m_dxccTracker->isDxccConfirmed(entity) ? "C/" : "W/";
+-                if (newBand && newMode) ds = prefix + "NB+NM";
+-                else if (newBand) ds = prefix + "NB";
+-                else if (newMode) ds = prefix + "NM";
+-                else ds = "W";
+-            }
++            else if (newBand && newMode)
++                ds = "NB+NM/" + QString(m_dxccTracker->isDxccConfirmed(entity) ? "C" : "W");
++            else if (newBand)
++                ds = "NB/" + QString(m_dxccTracker->isDxccConfirmed(entity) ? "C" : "W");
++            else if (newMode)
++                ds = "NM/" + QString(m_dxccTracker->isDxccConfirmed(entity) ? "C" : "W");
++            else ds = "W";
+         }
+     }
+     const QStringList result = QStringList() << cs << ds;
+@@ -1566,6 +1567,9 @@ QColor DecodeList::StatusColor(const QString &status, bool dxcc) const
+     else if (status == "NB+NM") full = "New Band+Mode";
+     else if (status == "C") full = "Confirmed";
+     else if (status == "W") full = "Worked";
++    else if (status.endsWith("/C")) full = "C/New " + status.left(status.size()-2).replace("NB", "Band").replace("NM", "Mode");
++    else if (status.endsWith("/W")) full = "W/New " + status.left(status.size()-2).replace("NB", "Band").replace("NM", "Mode");
++    // Read rows written by earlier OM0RX builds without losing their colors.
+     else if (status.startsWith("C/")) full = "C/New " + status.mid(2).replace("NB", "Band").replace("NM", "Mode");
+     else if (status.startsWith("W/")) full = "W/New " + status.mid(2).replace("NB", "Band").replace("NM", "Mode");
+     QSettings palette(QCoreApplication::applicationDirPath() + "/settings/database/status-colors.ini", QSettings::IniFormat);

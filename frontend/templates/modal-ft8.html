@@ -32,7 +32,7 @@
             <div class="ft8-station-strip">
                 <div class="ft8-control-group">
                     <label>Mode</label>
-                    <select v-model="ft8.mode" @change="ft8ModeChanged">
+                    <select v-model="ft8.mode" @change="ft8ModeChanged" :disabled="mshvOwnsDigitalPlanner">
                         <option value="FT8">FT8</option>
                         <option value="FT4">FT4</option>
                     </select>
@@ -49,6 +49,8 @@
 
             <div v-if="ft8.activeTab === 'settings'" class="ft8-settings-panel">
                 <h3>Digital Mode Configuration</h3>
+                <p v-if="mshvOwnsDigitalPlanner" class="ft8-wsjtx-automation-strip">These OM0RX / WSJT-Z controls are read-only while {{ digitalEngineDisabled ? 'digital engines are disabled' : 'MSHV owns digital operation' }}.</p>
+                <fieldset :disabled="mshvOwnsDigitalPlanner" style="border:0;padding:0;margin:0;min-width:0;">
 
                 <div class="ft8-settings-section">
                     <h4>Station</h4>
@@ -298,6 +300,7 @@
                     <button @click="ft8LoadSettings" class="ft8-load-btn">Reload from Server</button>
                     <span v-if="ft8.configSaved" class="ft8-save-status">Saved</span>
                 </div>
+                </fieldset>
             </div>
 
             <div v-if="ft8.activeTab === 'operate'" class="ft8-operate-panel">
@@ -402,7 +405,7 @@
                 </div>
 
                 <div class="ft8-operator-strip">
-                    <select v-model="ft8.selectedBand" @change="ft8BandChanged" class="ft8-band-select">
+                    <select v-model="ft8.selectedBand" @change="ft8BandChanged" class="ft8-band-select" :disabled="mshvOwnsDigitalPlanner">
                         <option v-for="band in ft8.availableBands"
                                 :key="band.band"
                                 :value="band.band"
@@ -414,12 +417,12 @@
                     <div class="ft8-frequency-readout">{{ formatFT8Frequency(ft8.currentFrequency) }}</div>
                     <div class="ft8-clock-readout">{{ ft8.utcClock }}</div>
 
-                    <label><input type="checkbox" v-model="ft8.autoCQ" :disabled="!ft8.engine.transmit"> Auto CQ</label>
-                    <label><input type="checkbox" v-model="ft8.autoCall" :disabled="!ft8.engine.transmit" @change="ft8AutoCallChanged"> Auto Call</label>
-                    <label><input type="checkbox" v-model="ft8.holdTxFreq"> Hold Tx Freq</label>
-                    <label class="ft8-hot"><input type="checkbox" v-model="ft8.txEvenFirst"> Tx even/1st</label>
-                    <label><input type="checkbox" v-model="ft8.cqOnly"> CQ only</label>
-                    <label><input type="checkbox" v-model="ft8.radioSyncEnabled"> Sync radio</label>
+                    <label><input type="checkbox" v-model="ft8.autoCQ" :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit"> Auto CQ</label>
+                    <label><input type="checkbox" v-model="ft8.autoCall" :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit" @change="ft8AutoCallChanged"> Auto Call</label>
+                    <label><input type="checkbox" v-model="ft8.holdTxFreq" :disabled="mshvOwnsDigitalPlanner"> Hold Tx Freq</label>
+                    <label class="ft8-hot"><input type="checkbox" v-model="ft8.txEvenFirst" :disabled="mshvOwnsDigitalPlanner"> Tx even/1st</label>
+                    <label><input type="checkbox" v-model="ft8.cqOnly" :disabled="mshvOwnsDigitalPlanner"> CQ only</label>
+                    <label><input type="checkbox" v-model="ft8.radioSyncEnabled" :disabled="mshvOwnsDigitalPlanner"> Sync radio</label>
 
                     <div class="ft8-cycle-meter" :class="{ tx: ft8.txInProgress, armed: ft8.txEnabled }">
                         <div class="ft8-cycle-fill" :style="ft8CycleProgressStyle()"></div>
@@ -432,7 +435,7 @@
                         </div>
                         <button class="ft8-watchdog-extend-btn"
                                 @click="ft8ExtendWatchdog"
-                                :disabled="!ft8.txEnabled || !ft8.watchdogLimitSeconds">
+                                :disabled="mshvOwnsDigitalPlanner || !ft8.txEnabled || !ft8.watchdogLimitSeconds">
                             Extend
                         </button>
                     </div>
@@ -447,7 +450,8 @@
                     <span v-if="ft8.automationDecisions && ft8.automationDecisions.length">{{ ft8.automationDecisions[ft8.automationDecisions.length - 1].event }}: {{ ft8.automationDecisions[ft8.automationDecisions.length - 1].reason }}</span>
                 </div>
 
-                <div class="ft8-wsjtx-automation-strip">
+                <div v-if="mshvOwnsDigitalPlanner" class="ft8-wsjtx-automation-strip">{{ digitalEngineDisabled ? 'Digital engines are disabled.' : 'MSHV internal Auto DX owns target selection.' }} Use Digital engines settings to manage the engine and halt TX.</div>
+                <div v-else class="ft8-wsjtx-automation-strip">
                     <span class="ft8-debug-label">WSJT-X</span>
                     <strong>{{ ft8WsjtxQueueLabel() }}</strong>
                     <span :class="['ft8-planner-db-badge', ft8WsjtxPersistenceClass()]"
@@ -475,15 +479,15 @@
 
                     <div v-if="['messages', 'reply', 'free'].includes(ft8.rxPanelTab)" class="ft8-message-builder">
                         <div class="ft8-message-actions">
-                            <button @click="ft8GenerateMessages" :disabled="!ft8.engine.transmit">Gen Msgs</button>
-                            <button :disabled="!ft8.engine.transmit">Lookup</button>
-                            <button :disabled="!ft8.engine.transmit">Add</button>
+                            <button @click="ft8GenerateMessages" :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit">Gen Msgs</button>
+                            <button :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit">Lookup</button>
+                            <button :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit">Add</button>
                         </div>
                         <div class="ft8-message-lines">
                             <div v-for="tx in ft8.txMessages" :key="tx.id" class="ft8-tx-line">
-                                <input type="radio" :value="tx.id" v-model="ft8.selectedTxMessage" :disabled="!ft8.engine.transmit">
-                                <input type="text" v-model="tx.text" :disabled="!ft8.engine.transmit">
-                                <button @click="ft8QueueSelectedTxMessage(tx.id, { immediate: true })" :disabled="!ft8.engine.transmit || !tx.text">{{ tx.label }}</button>
+                                <input type="radio" :value="tx.id" v-model="ft8.selectedTxMessage" :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit">
+                                <input type="text" v-model="tx.text" :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit">
+                                <button @click="ft8QueueSelectedTxMessage(tx.id, { immediate: true })" :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit || !tx.text">{{ tx.label }}</button>
                             </div>
                         </div>
                     </div>
@@ -581,11 +585,11 @@
                     </div>
 
                     <div v-if="ft8.rxPanelTab === 'others'" class="ft8-wsjtz-panel others">
-                        <div class="ft8-band-hopper">
+                        <fieldset class="ft8-band-hopper" :disabled="mshvOwnsDigitalPlanner" style="border:0;padding:0;margin:0;min-width:0;">
                             <label><input type="checkbox" v-model="ft8.automation.bandHopping"> Band hopping</label>
                             <textarea v-model="ft8.automation.bandPlan" rows="5"></textarea>
-                        </div>
-                        <div class="ft8-automation-box">
+                        </fieldset>
+                        <fieldset class="ft8-automation-box" :disabled="mshvOwnsDigitalPlanner" style="border:0;padding:0;margin:0;min-width:0;">
                             <label><input type="checkbox" v-model="ft8.automation.modeSwitching"> Mode switching</label>
                             <label><input type="checkbox" v-model="ft8.automation.allowedModes.FT8"> Use FT8</label>
                             <label><input type="checkbox" v-model="ft8.automation.allowedModes.FT4"> Use FT4</label>
@@ -605,15 +609,15 @@
                                     <option value="distance">Distance</option>
                                 </select>
                             </label>
-                        </div>
-                        <div class="ft8-automation-options">
+                        </fieldset>
+                        <fieldset class="ft8-automation-options" :disabled="mshvOwnsDigitalPlanner" style="border:0;padding:0;margin:0;min-width:0;">
                             <label><input type="checkbox" v-model="ft8.automation.treat73AsCQ"> Treat 73's as CQ</label>
-                            <label><input type="checkbox" v-model="ft8.automation.enabled" :disabled="!ft8.engine.transmit"> Scheduled automation</label>
-                            <label><input type="checkbox" v-model="ft8.automation.spotHuntEnabled" :disabled="!ft8.engine.transmit"> Spot-driven hunt</label>
+                            <label><input type="checkbox" v-model="ft8.automation.enabled" :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit"> Scheduled automation</label>
+                            <label><input type="checkbox" v-model="ft8.automation.spotHuntEnabled" :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit"> Spot-driven hunt</label>
                             <label><input type="checkbox" v-model="ft8.automation.avoidLogged"> Avoid logged band/mode duplicates</label>
                             <label><input type="checkbox" v-model="ft8.automation.requireHeardBeforeCall"> Require heard decode before call</label>
-                            <label><input type="checkbox" v-model="ft8.automation.autoLogToWavelog" :disabled="!ft8.engine.transmit"> Auto log to Wavelog</label>
-                        </div>
+                            <label><input type="checkbox" v-model="ft8.automation.autoLogToWavelog" :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit"> Auto log to Wavelog</label>
+                        </fieldset>
                         <div class="ft8-automation-controller" v-if="ft8.automationController">
                             <span>Backend controller</span>
                             <strong>{{ ft8.automationController.enabled ? 'armed' : 'standby' }}</strong>
@@ -637,22 +641,22 @@
                         <button @click="ft8SetRxOffset(ft8.rxOffset - 10)">&lt;</button>
                         <button @click="ft8SetRxOffset(ft8.rxOffset + 10)">&gt;</button>
                         <label>Tx
-                            <input type="number" :min="ft8TxOffsetRange().low" :max="ft8TxOffsetRange().high" step="1" v-model.number="ft8.txOffset" @change="ft8SetTxOffset(ft8.txOffset)">
+                            <input type="number" :min="ft8TxOffsetRange().low" :max="ft8TxOffsetRange().high" step="1" v-model.number="ft8.txOffset" @change="ft8SetTxOffset(ft8.txOffset)" :disabled="mshvOwnsDigitalPlanner">
                         </label>
-                        <button @click="ft8MaybeUpdateFreeTxOffset('manual')" :disabled="!ft8.engine.transmit">Auto</button>
+                        <button @click="ft8MaybeUpdateFreeTxOffset('manual')" :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit">Auto</button>
                         <label>Call <input type="text" v-model="ft8.selectedCall"></label>
                         <label>Grid <input type="text" v-model="ft8.selectedGrid"></label>
                         <button @click="ft8ClearQsoTarget()" class="ft8-neutral-btn">Clear QSO</button>
-                        <button @click="ft8EnableTx" :disabled="!ft8.engine.transmit" :class="{ 'ft8-enable-tx-active': ft8.txEnabled }">
+                        <button @click="ft8EnableTx" :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit" :class="{ 'ft8-enable-tx-active': ft8.txEnabled }">
                             {{ ft8.txEnabled ? 'Tx Armed' : 'Enable Tx' }}
                         </button>
-                        <button @click="ft8StopTransmitOnly"
-                                :disabled="!ft8.engine.transmit"
+                        <button @click="mshvOwnsDigitalPlanner ? ft8HaltTx() : ft8StopTransmitOnly()"
+                                :disabled="!mshvOwnsDigitalPlanner && !ft8.engine.transmit"
                                 title="Abort the current QSO attempt and clear its pending TX">
-                            Abort QSO / Stop TX
+                            {{ mshvOwnsDigitalPlanner ? 'Emergency Halt TX' : 'Abort QSO / Stop TX' }}
                         </button>
-                        <button @click="ft8TuneTone" :disabled="!ft8.engine.transmit || !ft8.connected">Tune</button>
-                        <label><input type="checkbox" v-model="ft8.pounce"> Pounce</label>
+                        <button @click="ft8TuneTone" :disabled="mshvOwnsDigitalPlanner || !ft8.engine.transmit || !ft8.connected">Tune</button>
+                        <label><input type="checkbox" v-model="ft8.pounce" :disabled="mshvOwnsDigitalPlanner"> Pounce</label>
                         <label><input type="checkbox" v-model="ft8.menus"> Menus</label>
                         <label><input type="checkbox" v-model="ft8.mini"> Mini</label>
                     </div>

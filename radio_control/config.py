@@ -114,6 +114,8 @@ POSTGRES_PORT = _cfg_int("POSTGRES_PORT", 5432)
 POSTGRES_DB = _cfg_value("POSTGRES_DB", "")
 POSTGRES_USER = _cfg_value("POSTGRES_USER", "")
 POSTGRES_PASSWORD = _cfg_value("POSTGRES_PASSWORD", "")
+POSTGRES_CONNECT_TIMEOUT_SECONDS = _cfg_int("POSTGRES_CONNECT_TIMEOUT_SECONDS", 2)
+POSTGRES_RETRY_COOLDOWN_SECONDS = _cfg_int("POSTGRES_RETRY_COOLDOWN_SECONDS", 30)
 MY_STATION = _cfg_value("MY_STATION", "OM0RX")
 CLUSTERS = _cfg_value("CLUSTERS", [])
 CLUSTER_HOST = _cfg_value("CLUSTER_HOST", "localhost")
@@ -165,6 +167,89 @@ FLEX_ANTENNA_POLICY = _cfg_dict("FLEX_ANTENNA_POLICY", {
     },
 })
 FLEX_ENABLED_DEFAULT = _cfg_bool("FLEX_ENABLED_DEFAULT", True)
+
+# === Elecraft KPA500 / KAT500 ===
+KPA500_ENABLED = _cfg_bool("KPA500_ENABLED", False)
+KPA500_PORT = _cfg_value("KPA500_PORT", "COM6")
+KPA500_BAUDRATE = _cfg_int("KPA500_BAUDRATE", 38400)
+DIGITAL_KPA_POLICY = str(_cfg_value("DIGITAL_KPA_POLICY", "operate") or "operate").strip().lower()
+KAT500_ENABLED = _cfg_bool("KAT500_ENABLED", False)
+KAT500_PORT = _cfg_value("KAT500_PORT", "COM11")
+KAT500_BAUDRATE = _cfg_int("KAT500_BAUDRATE", 38400)
+ELECRAFT_FOLLOW_RADIO = _cfg_bool("ELECRAFT_FOLLOW_RADIO", True)
+# Temporary migration switch. Keep legacy direct writes disabled until the
+# station safety coordinator performs TX/interlock checks and exact readback.
+ELECRAFT_LEGACY_CONTROL_ENABLED = _cfg_bool("ELECRAFT_LEGACY_CONTROL_ENABLED", False)
+# Station-level writes stay locked until the installation has been physically
+# verified and this independent commissioning latch is explicitly enabled.
+STATION_COORDINATOR_COMMISSIONED = _cfg_bool("STATION_COORDINATOR_COMMISSIONED", False)
+STATION_AMPLIFIER_ALLOWED_BANDS = _cfg_value("STATION_AMPLIFIER_ALLOWED_BANDS", [
+    "160m", "80m", "40m", "30m", "15m", "12m", "10m", "6m",
+])
+STATION_AMPLIFIER_DRIVE_W = _cfg_dict("STATION_AMPLIFIER_DRIVE_W", {
+    "160m": 25,
+    "80m": 25,
+    "60m": 25,
+    "40m": 25,
+    "30m": 25,
+    "20m": 25,
+    "17m": 25,
+    "15m": 25,
+    "12m": 25,
+    "10m": 25,
+    "6m": 25,
+})
+STATION_BAREFOOT_DRIVE_W = _cfg_dict("STATION_BAREFOOT_DRIVE_W", {
+    "160m": 25,
+    "80m": 25,
+    "60m": 25,
+    "40m": 25,
+    "30m": 25,
+    "20m": 25,
+    "17m": 25,
+    "15m": 25,
+    "12m": 25,
+    "10m": 25,
+    "6m": 25,
+})
+STATION_DIGITAL_AMPLIFIER_ALLOWED_BANDS = _cfg_value(
+    "STATION_DIGITAL_AMPLIFIER_ALLOWED_BANDS",
+    list(STATION_AMPLIFIER_ALLOWED_BANDS),
+)
+STATION_DIGITAL_AMPLIFIER_DRIVE_W = _cfg_dict(
+    "STATION_DIGITAL_AMPLIFIER_DRIVE_W",
+    dict(STATION_AMPLIFIER_DRIVE_W),
+)
+STATION_ROUTE_VERIFY_TTL_SECONDS = _cfg_float("STATION_ROUTE_VERIFY_TTL_SECONDS", 10.0)
+STATION_TUNE_POWER_W = _cfg_int("STATION_TUNE_POWER_W", 20)
+STATION_TUNE_TARGET_SWR = _cfg_float("STATION_TUNE_TARGET_SWR", 1.5)
+STATION_TUNE_ABORT_SWR = _cfg_float("STATION_TUNE_ABORT_SWR", 3.0)
+STATION_TUNE_TIMEOUT_SECONDS = _cfg_float("STATION_TUNE_TIMEOUT_SECONDS", 30.0)
+STATION_TELEMETRY_INTERVAL_SECONDS = _cfg_float("STATION_TELEMETRY_INTERVAL_SECONDS", 5.0)
+STATION_TELEMETRY_RETENTION_DAYS = _cfg_int("STATION_TELEMETRY_RETENTION_DAYS", 7)
+# Alarm thresholds are deliberately unset by default. Telemetry alone must not
+# invent a safe operating envelope for a particular amplifier installation.
+KPA500_TEMPERATURE_MAX_C = _cfg_value("KPA500_TEMPERATURE_MAX_C", None)
+KPA500_VOLTAGE_MIN_V = _cfg_value("KPA500_VOLTAGE_MIN_V", None)
+KPA500_VOLTAGE_MAX_V = _cfg_value("KPA500_VOLTAGE_MAX_V", None)
+KAT500_ANTENNA_POLICY = _cfg_dict("KAT500_ANTENNA_POLICY", {
+    "160m": 2,
+    "80m": 2,
+    "60m": 2,
+    "40m": 2,
+    "30m": 2,
+    "20m": 1,
+    "17m": 1,
+    "15m": 1,
+    "12m": 1,
+    "10m": 1,
+    "6m": 1,
+})
+KAT500_ANTENNA_NAMES = _cfg_dict("KAT500_ANTENNA_NAMES", {
+    "1": "KAT ANT1",
+    "2": "KAT ANT2",
+    "3": "KAT ANT3",
+})
 CTY_CSV_PATH = str(DATA_DIR / "cty.csv")
 CTY_IGNORE_SUFFIXES = ["P","M","MM","AM","QRP","QRPP","A","B","QTH"]
 CTY_OVERRIDES = {

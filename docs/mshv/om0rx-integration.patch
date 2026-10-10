@@ -1,0 +1,1331 @@
+diff --git a/MSHV_2762/MSHV_WIN64.pro b/MSHV_2762/MSHV_WIN64.pro
+index 91c0285..7cf2194 100644
+--- a/MSHV_2762/MSHV_WIN64.pro
++++ b/MSHV_2762/MSHV_WIN64.pro
+@@ -1,4 +1,6 @@
+-QT += widgets axcontainer network websockets sql
++QT += widgets axcontainer network websockets sql
++QT -= axcontainer
++DEFINES += NO_OMNIRIG
+ QMAKE_CXXFLAGS += -std=gnu++11 -pedantic-errors
+ CONFIG += release warn_on exceptions_off
+ DESTDIR = bin
+@@ -255,7 +257,7 @@ RESOURCES += src/main_ms.qrc \
+ LIBS = src/Hv_Lib_DirectX90c/win64/libdsound.a src/Hv_lib_fftw/win/libfftw3v3310_gcc730_64bit.a -lsetupapi
+ RC_FILE = src/ms_ico_win.rc
+ TEMPLATE = app
+-TRANSLATIONS += src/HvTranslations/mshv_bg.ts \
++TRANSLATIONS += src/HvTranslations/mshv_bg.ts \
+  src/HvTranslations/mshv_ru.ts \
+  src/HvTranslations/mshv_zh.ts \
+  src/HvTranslations/mshv_zhhk.ts \
+@@ -269,4 +271,12 @@ TRANSLATIONS += src/HvTranslations/mshv_bg.ts \
+  src/HvTranslations/mshv_frfr.ts \
+  src/HvTranslations/mshv_nbno.ts \
+  src/HvTranslations/mshv_itit.ts \
+- src/HvTranslations/mshv_cscz.ts
++ src/HvTranslations/mshv_cscz.ts
++
++# FlexRadio uses the native network CAT driver; ActiveQt is not required.
++DEFINES += NO_OMNIRIG
++HEADERS -= src/HvRigControl/HvRigCat/omnirig/omnirig.h src/HvRigControl/HvRigCat/omnirig/omnirighv.h
++SOURCES -= src/HvRigControl/HvRigCat/omnirig/omnirig.cpp src/HvRigControl/HvRigCat/omnirig/omnirighv.cpp
++HEADERS += src/om0rxstationgate.h
++HEADERS += src/HvAutoBand/hvspotcollector.h src/HvAutoBand/hvrbntelnet.h src/HvAutoBand/hvpskreporter.h src/HvAutoBand/hvbandscorer.h src/HvAutoBand/hvbandswitcher.h src/HvAutoBand/hvdecodetracker.h src/HvAutoBand/hvslotfinder.h src/HvReliability/hvwatchdog.h src/HvReliability/hvlogger.h src/HvTxW/HvQsoPriority/hvqsopriority.h src/HvTxW/HvOpMode/hvopmode.h src/HvAutoDxSettings/hvautodxsettings.h src/HvAutoDxSettings/hvautodxstatuspanel.h
++SOURCES += src/HvAutoBand/hvspotcollector.cpp src/HvAutoBand/hvrbntelnet.cpp src/HvAutoBand/hvpskreporter.cpp src/HvAutoBand/hvbandscorer.cpp src/HvAutoBand/hvbandswitcher.cpp src/HvAutoBand/hvdecodetracker.cpp src/HvAutoBand/hvslotfinder.cpp src/HvReliability/hvwatchdog.cpp src/HvReliability/hvlogger.cpp src/HvTxW/HvQsoPriority/hvqsopriority.cpp src/HvTxW/HvOpMode/hvopmode.cpp src/HvAutoDxSettings/hvautodxsettings.cpp src/HvAutoDxSettings/hvautodxstatuspanel.cpp
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+index 78ababf..74f2e61 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+@@ -217,7 +217,7 @@ void HvAutoDxSettings::createSpotSourcesGroup()
+     // === Filtering Options ===
+     QHBoxLayout *filterLayout = new QHBoxLayout;
+     m_usOnlyFilter = new QCheckBox("US Spotters Only");
+-    m_usOnlyFilter->setChecked(true);
++    m_usOnlyFilter->setChecked(false);
+     m_usOnlyFilter->setToolTip("Only accept spots from US-based skimmers.\n"
+                                "Ensures stations are likely hearable from your location.");
+     filterLayout->addWidget(m_usOnlyFilter);
+@@ -665,7 +665,7 @@ void HvAutoDxSettings::loadSettings(const QString& appPath)
+     m_pskEnabled->setChecked(settings.value("SpotSources/PskEnabled", true).toBool());
+     m_pskPollInterval->setValue(settings.value("SpotSources/PskPollInterval", 120).toInt());
+     m_dxcEnabled->setChecked(settings.value("SpotSources/DxcEnabled", true).toBool());
+-    m_usOnlyFilter->setChecked(settings.value("SpotSources/UsOnlyFilter", true).toBool());
++    m_usOnlyFilter->setChecked(settings.value("SpotSources/UsOnlyFilter", false).toBool());
+     m_minSnr->setValue(settings.value("SpotSources/MinSnr", -24).toInt());
+ 
+     // Load DX Cluster servers
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+index 3600353..f815faa 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -223,6 +223,7 @@ void AutoDxerCore::setEnabled(bool enabled)
+ void AutoDxerCore::setCallsign(const QString &call)
+ {
+     m_myCallsign = call.toUpper();
++    m_targetScorer->setMyCallsign(m_myCallsign);
+     m_spotAggregator->setCallsign(m_myCallsign);
+     m_localSpotBridge->setMyCallsign(m_myCallsign);
+ 
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp b/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
+index 508aab2..0361a9a 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
+@@ -100,6 +100,23 @@ void AutoDxerPanel::loadEnableFromSettings()
+     m_usGridOnlyCheck->setChecked(usGridOnly);
+     m_core->targetScorer()->setUSGridOnly(usGridOnly);
+ 
++    const int newDxccWeight = qMax(0, settings.value("TargetPriority/NewDxcc", TargetPriority::NewDXCC).toInt());
++    const int newBandSlotWeight = qMax(0, settings.value("TargetPriority/NewBandSlot", TargetPriority::NewBandSlot).toInt());
++    const int newGridWeight = qMax(1, settings.value("TargetPriority/NewGrid", TargetPriority::NewGrid).toInt());
++    const int callingMeWeight = qMax(0, settings.value("TargetPriority/CallingMe", TargetPriority::CallingMe).toInt());
++    const int cqWeight = qMax(0, settings.value("TargetPriority/Cq", TargetPriority::CQBonus).toInt());
++    const int snrWeight = qMax(0, settings.value("TargetPriority/SnrPerDb", TargetPriority::SNRBonus).toInt());
++    const bool gridChaseEnabled = settings.value("GridChase/Enabled", true).toBool();
++    m_core->targetScorer()->setTargetWeights(newDxccWeight, newBandSlotWeight, newGridWeight,
++                                             callingMeWeight, cqWeight, snrWeight);
++    m_core->targetScorer()->setPriorityDXCC(newDxccWeight > 0);
++    m_core->targetScorer()->setPriorityBandSlot(newBandSlotWeight > 0);
++    m_core->targetScorer()->setPriorityGrid(gridChaseEnabled);
++
++    int minSnr = qBound(-30, settings.value("SpotSources/MinSNR", -20).toInt(), 0);
++    m_minSnrSpin->setValue(minSnr);
++    m_core->targetScorer()->setMinSNR(minSnr);
++
+     // Load Scarce Target Threshold (default 5)
+     int scarceThreshold = settings.value("AutoDx/ScarceThreshold", 5).toInt();
+     m_scarceThresholdSpin->setValue(scarceThreshold);
+diff --git a/MSHV_2762/src/HvAutoDxer/spotaggregator.cpp b/MSHV_2762/src/HvAutoDxer/spotaggregator.cpp
+index 16b9280..523b3ad 100644
+--- a/MSHV_2762/src/HvAutoDxer/spotaggregator.cpp
++++ b/MSHV_2762/src/HvAutoDxer/spotaggregator.cpp
+@@ -51,7 +51,7 @@ SpotAggregator::SpotAggregator(QObject *parent)
+     , m_rbnEnabled(true)
+     , m_pskrEnabled(true)
+     , m_dxClusterEnabled(true)
+-    , m_usOnly(true)
++    , m_usOnly(false)
+     , m_useDefaultServers(true)  // Use defaults unless settings override
+     , m_rbnPort(0)               // 0 means use default (7001)
+     , m_rbnReconnectBackoff(30000)  // 24/7 stability: start at 30 seconds
+diff --git a/MSHV_2762/src/HvAutoDxer/targeteligibility.h b/MSHV_2762/src/HvAutoDxer/targeteligibility.h
+new file mode 100644
+index 0000000..2cb0600
+--- /dev/null
++++ b/MSHV_2762/src/HvAutoDxer/targeteligibility.h
+@@ -0,0 +1,26 @@
++/* Pure target-eligibility contract shared by the native scorer and tests. */
++#ifndef TARGETELIGIBILITY_H
++#define TARGETELIGIBILITY_H
++
++struct TargetEligibility
++{
++    bool newDxcc;
++    bool newBandSlot;
++    bool newGrid;
++    bool callingMe;
++
++    TargetEligibility(bool dxcc, bool bandSlot, bool grid, bool calling)
++        : newDxcc(dxcc), newBandSlot(bandSlot), newGrid(grid), callingMe(calling) {}
++
++    bool any() const { return newDxcc || newBandSlot || newGrid || callingMe; }
++
++    int weightedScore(int dxccScore, int bandSlotWeight, int gridWeight,
++                      int callingWeight) const {
++        return (newDxcc ? dxccScore : 0)
++             + (newBandSlot ? bandSlotWeight : 0)
++             + (newGrid ? gridWeight : 0)
++             + (callingMe ? callingWeight : 0);
++    }
++};
++
++#endif // TARGETELIGIBILITY_H
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+index da1da6e..8472776 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+@@ -3,6 +3,7 @@
+  * May be used under the terms of the GNU General Public License (GPL)
+  */
+ #include "targetscorer.h"
++#include "targeteligibility.h"
+ #include "dxcctracker.h"
+ #include "../HvDecodeList/hvcty.h"
+ #include <algorithm>
+@@ -157,6 +158,12 @@ TargetScorer::TargetScorer(DxccTracker *tracker, HvCty *cty, QObject *parent)
+     , m_priorityBandSlot(true)
+     , m_priorityGrid(true)
+     , m_usGridOnly(true)  // Default: only chase US territory grids
++    , m_weightNewDXCC(TargetPriority::NewDXCC)
++    , m_weightNewBandSlot(TargetPriority::NewBandSlot)
++    , m_weightNewGrid(TargetPriority::NewGrid)
++    , m_weightCallingMe(TargetPriority::CallingMe)
++    , m_weightCQBonus(TargetPriority::CQBonus)
++    , m_weightSNRPerDb(TargetPriority::SNRBonus)
+ {
+     // Initialize Club Log Most Wanted rankings for rarity-based scoring
+     initRankings();
+@@ -257,6 +264,9 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     target.decodeCount = decode.decodeCount;
+     target.isLocalDecode = decode.isLocalDecode;  // Preserve local decode flag
+     target.priority = 0;
++
++    const QString firstToken = decode.originalMessage.simplified().section(' ', 0, 0).toUpper();
++    target.isCallingMe = m_weightCallingMe > 0 && !m_myCallsign.isEmpty() && firstToken == m_myCallsign;
+     
+     // Skip if below minimum SNR
+     if (decode.snr < m_minSNR) {
+@@ -273,22 +283,24 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     if (entity.isEmpty()) entity = lookupDXCC(decode.callsign);
+     target.dxccEntity = entity;
+ 
+-    // Skip own country - never score as "New DXCC"
+-    if (!m_myCountry.isEmpty() && entity == m_myCountry) {
+-        target.priorityReason = "Own country";
+-        return target;
+-    }
++    // Own country is ineligible only for the DXCC dimension. Band, grid and
++    // explicit calling-me eligibility remain independent.
++    const bool ownCountry = !m_myCountry.isEmpty() && entity == m_myCountry;
+ 
+     // Calculate priority based on needs
+     QStringList reasons;
++    if (target.isCallingMe && m_weightCallingMe > 0) {
++        reasons << "Calling me";
++    }
++    int dxccScore = 0;
+     
+     // Use callsign-based lookup to avoid entity name abbreviation mismatch (EU Russia vs European Russia)
+-    if (m_priorityDXCC && m_tracker && m_tracker->isNewDXCCByCall(decode.callsign)) {
++    if (!ownCountry && m_priorityDXCC && m_tracker && m_tracker->isNewDXCCByCall(decode.callsign)) {
+         // Apply rarity multiplier based on Club Log Most Wanted rankings
+         int rank = getMostWantedRank(entity);
+         double multiplier = getRarityMultiplier(rank);
+-        int rarityScore = static_cast<int>(TargetPriority::NewDXCC * multiplier);
+-        target.priority += rarityScore;
++        int rarityScore = static_cast<int>(m_weightNewDXCC * multiplier);
++        dxccScore = rarityScore;
+         target.isNewDXCC = true;
+ 
+         // Build reason string with rarity info for ranked entities
+@@ -297,29 +309,20 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+             emit debugMessage(QString("RARITY-SCORED: %1 (%2) rank=%3 mult=%4x base=%5 final=%6")
+                              .arg(decode.callsign).arg(entity)
+                              .arg(rank).arg(multiplier, 0, 'f', 1)
+-                             .arg(TargetPriority::NewDXCC).arg(rarityScore));
++                             .arg(m_weightNewDXCC).arg(rarityScore));
+         } else {
+             reasons << "New DXCC";
+         }
+     }
+-    else if (m_priorityBandSlot && m_tracker && m_tracker->isNewBandSlotByCall(decode.callsign, decode.bandIndex)) {
+-        target.priority += TargetPriority::NewBandSlot;
++    if (m_priorityBandSlot && m_tracker && m_tracker->isNewBandSlotByCall(decode.callsign, decode.bandIndex)) {
+         target.isNewBandSlot = true;
+         reasons << "New Band Slot";
+     }
+-    else if (m_priorityGrid && !decode.grid.isEmpty() && m_tracker && m_tracker->isNewGrid(decode.grid)) {
+-        // Skip grid chasing for countries we've already worked on this band
+-        // This prevents targeting stations like VE3RPY (Canada) for "New US Grid"
+-        // when we've already worked Canada on this band
+-        bool countryAlreadyWorked = m_tracker && !m_tracker->isNewBandSlotByCall(decode.callsign, decode.bandIndex);
+-
+-        if (countryAlreadyWorked) {
+-            // Country already worked on this band - skip grid targeting
+-            // (no priority added, station will not be selected)
+-        }
+-        // Check US grid filter if enabled - only chase grids within US territory
+-        else if (!m_usGridOnly || isUSGrid(decode.grid)) {
+-            target.priority += TargetPriority::NewGrid;
++    if (m_priorityGrid && !decode.grid.isEmpty() && m_tracker && m_tracker->isNewGrid(decode.grid)) {
++        // Grid eligibility is independent of DXCC/band-slot state. The prior
++        // else-if/country-worked coupling made new-grid chase unreachable for
++        // exactly the calls that also had a new band slot.
++        if (!m_usGridOnly || isUSGrid(decode.grid)) {
+             target.isNewGrid = true;
+             reasons << (m_usGridOnly ? "New US Grid" : "New Grid");
+         }
+@@ -327,12 +330,16 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     
+     // Only apply bonuses if station has at least one "new" status
+     // Without this check, SNR/CQ bonuses alone could cause already-worked stations to be chased
+-    bool hasNewStatus = target.isNewDXCC || target.isNewBandSlot || target.isNewGrid;
++    const TargetEligibility eligibility(target.isNewDXCC, target.isNewBandSlot,
++                                        target.isNewGrid, target.isCallingMe);
++    bool hasNewStatus = eligibility.any();
++    target.priority += eligibility.weightedScore(dxccScore, m_weightNewBandSlot,
++                                                 m_weightNewGrid, m_weightCallingMe);
+ 
+     if (hasNewStatus) {
+         // SNR bonus (per dB above -15)
+         if (decode.snr > -15) {
+-            int snrBonus = (decode.snr + 15) * TargetPriority::SNRBonus;
++            int snrBonus = (decode.snr + 15) * m_weightSNRPerDb;
+             target.priority += snrBonus;
+         }
+ 
+@@ -343,7 +350,7 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+ 
+         // Bonus for CQ stations (actively looking for contacts)
+         if (decode.isCQ) {
+-            target.priority += TargetPriority::CQBonus;
++            target.priority += m_weightCQBonus;
+             reasons << "CQ";
+         }
+     }
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.h b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+index 2c53bf1..f4105e5 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.h
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+@@ -18,6 +18,7 @@ namespace TargetPriority {
+     const int NewDXCC = 10000;
+     const int NewBandSlot = 1000;
+     const int NewGrid = 500;
++    const int CallingMe = 400;
+     const int CQBonus = 200;      // Bonus for stations actively CQing
+     const int SNRBonus = 10;      // Per dB above -15
+     const int MultipleDecodes = 50;  // Per additional decode
+@@ -39,11 +40,12 @@ struct ScoredTarget
+     bool isNewDXCC;
+     bool isNewBandSlot;
+     bool isNewGrid;
++    bool isCallingMe;
+     bool isLocalDecode;  // true = decoded locally, false = from external spot only
+     int decodeCount;
+ 
+     ScoredTarget() : bandIndex(-1), audioFrequency(0), dialFrequencyHz(0), snr(0), priority(0),
+-                     isNewDXCC(false), isNewBandSlot(false), isNewGrid(false), isLocalDecode(true), decodeCount(0) {}
++                     isNewDXCC(false), isNewBandSlot(false), isNewGrid(false), isCallingMe(false), isLocalDecode(true), decodeCount(0) {}
+ 
+     bool operator<(const ScoredTarget &other) const { return priority > other.priority; }
+ };
+@@ -66,6 +68,16 @@ public:
+     void setPriorityDXCC(bool enabled) { m_priorityDXCC = enabled; }
+     void setPriorityBandSlot(bool enabled) { m_priorityBandSlot = enabled; }
+     void setPriorityGrid(bool enabled) { m_priorityGrid = enabled; }
++    void setMyCallsign(const QString &callsign) { m_myCallsign = callsign.trimmed().toUpper(); }
++    void setTargetWeights(int newDxcc, int newBandSlot, int newGrid,
++                          int callingMe, int cqBonus, int snrPerDb) {
++        m_weightNewDXCC = qMax(0, newDxcc);
++        m_weightNewBandSlot = qMax(0, newBandSlot);
++        m_weightNewGrid = qMax(1, newGrid);
++        m_weightCallingMe = qMax(0, callingMe);
++        m_weightCQBonus = qMax(0, cqBonus);
++        m_weightSNRPerDb = qMax(0, snrPerDb);
++    }
+ 
+     // US-only grid filtering - only chase grids within US territory
+     void setUSGridOnly(bool enabled) { m_usGridOnly = enabled; }
+@@ -93,6 +105,13 @@ private:
+     bool m_priorityGrid;
+     bool m_usGridOnly;    // Only chase grids within US territory
+     QString m_myCountry;  // Own country to filter out
++    QString m_myCallsign;
++    int m_weightNewDXCC;
++    int m_weightNewBandSlot;
++    int m_weightNewGrid;
++    int m_weightCallingMe;
++    int m_weightCQBonus;
++    int m_weightSNRPerDb;
+ 
+     // DXCC rarity scoring - Club Log Most Wanted rankings
+     static QMap<QString, int> s_mostWantedByCountry;
+diff --git a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp
+index 766671a..19cb502 100644
+--- a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp
++++ b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp
+@@ -394,8 +394,10 @@ bool HvDxccTracker::loadDxccNumberMapping()
+         return true;
+     }
+ 
+-    QTextStream in(&file);
+-    while (!in.atEnd()) {
++    QTextStream in(&file);
++    QMap<int, int> remap;
++    const auto originalPrefixes = m_prefixToEntity;
++    while (!in.atEnd()) {
+         QString line = in.readLine().trimmed();
+         if (line.isEmpty() || line.startsWith('#')) continue;
+ 
+@@ -405,20 +407,30 @@ bool HvDxccTracker::loadDxccNumberMapping()
+             int dxccNum = parts.at(1).trimmed().toInt();
+ 
+             // Update entity number for this prefix
+-            if (m_prefixToEntity.contains(prefix)) {
+-                DxccEntity entity = m_prefixToEntity[prefix];
+-                int oldNum = entity.entityNumber;
+-                entity.entityNumber = dxccNum;
+-                m_prefixToEntity[prefix] = entity;
+-                m_entityById[dxccNum] = entity;
+-                m_entityById.remove(oldNum);
++            if (originalPrefixes.contains(prefix) && dxccNum > 0) {
++                remap[originalPrefixes[prefix].entityNumber] = dxccNum;
+             }
+         }
+     }
+ 
+-    file.close();
+-    return true;
+-}
++    file.close();
++    // Rebuild from the original maps: official IDs can overlap sequential IDs.
++    // Also update every alias and exact callsign, not only the primary prefix.
++    const auto originalEntities = m_entityById;
++    m_entityById.clear();
++    for (auto it = originalEntities.constBegin(); it != originalEntities.constEnd(); ++it) {
++        DxccEntity entity = it.value();
++        entity.entityNumber = remap.value(entity.entityNumber, 10000 + entity.entityNumber);
++        m_entityById[entity.entityNumber] = entity;
++    }
++    for (auto it = m_prefixToEntity.begin(); it != m_prefixToEntity.end(); ++it) {
++        it.value().entityNumber = remap.value(it.value().entityNumber, 10000 + it.value().entityNumber);
++    }
++    for (auto it = m_callPrefixToEntity.begin(); it != m_callPrefixToEntity.end(); ++it) {
++        it.value() = remap.value(it.value(), 10000 + it.value());
++    }
++    return true;
++}
+ 
+ void HvDxccTracker::loadMostWantedRankings()
+ {
+@@ -1262,7 +1274,7 @@ void HvDxccTracker::importFromAdifLog(const QString& logPath)
+         recordNum++;
+         if (record.trimmed().isEmpty()) continue;
+ 
+-        QString call, grid, band, mode, date;
++        QString call, grid, band, mode, submode, date;
+         bool parseError = false;
+ 
+         QRegularExpressionMatchIterator it = fieldRx.globalMatch(record);
+@@ -1288,21 +1300,19 @@ void HvDxccTracker::importFromAdifLog(const QString& logPath)
+             if (field == "CALL") call = value;
+             else if (field == "GRIDSQUARE") grid = value;
+             else if (field == "BAND") band = value;
+-            else if (field == "MODE") mode = value;
++            else if (field == "MODE") mode = value;
++            else if (field == "SUBMODE") submode = value;
+             else if (field == "QSO_DATE") date = value;
+         }
+ 
+-        // FT8-only filtering (user requirement)
+-        // Skip records that have an explicit non-FT8 mode
+-        if (!mode.isEmpty() && mode.toUpper() != "FT8") {
++        // FT4 is represented either as MODE=FT4 or MODE=MFSK/SUBMODE=FT4.
++        mode = mode.toUpper();
++        if (mode == "MFSK" && submode.toUpper() == "FT4") mode = "FT4";
++        if (mode != "FT8" && mode != "FT4") {
+             skippedNonFt8++;
+             continue;
+         }
+ 
+-        // If mode is empty, default to FT8
+-        if (mode.isEmpty()) {
+-            mode = "FT8";
+-        }
+ 
+         // Process the record if we have call and band
+         if (!call.isEmpty() && !band.isEmpty()) {
+@@ -1392,7 +1402,7 @@ void HvDxccTracker::importFromAdifLog(const QString& logPath)
+     // Single commit at end
+     m_db.exec("COMMIT");
+ 
+-    emit debugMessage(QString("[ADIF] Import complete: %1 imported, %2 skipped (non-FT8), %3 errors")
++    emit debugMessage(QString("[ADIF] Import complete: %1 imported, %2 skipped (non-FT8/FT4), %3 errors")
+         .arg(imported).arg(skippedNonFt8).arg(errors));
+ 
+     // ONE signal at end (not per record!)
+@@ -1432,7 +1442,8 @@ void HvDxccTracker::importFromEdiLog(const QString& logPath)
+         QString band = fields.count() > 5 ? fields.at(5) : "";
+ 
+         // FT8-only filtering
+-        if (!mode.isEmpty() && mode.toUpper() != "FT8") {
++        mode = mode.toUpper();
++        if (mode != "FT8" && mode != "FT4") {
+             skippedNonFt8++;
+             continue;
+         }
+@@ -1550,5 +1561,5 @@ static int bandToBandIndex(const QString& band)
+     if (b == "6") return 14;
+     if (b == "2") return 17;
+ 
+-    return 8;  // Default to 20m
++    return -1;  // Unknown bands must never silently mark a 20m slot worked.
+ }
+diff --git a/MSHV_2762/src/HvRigControl/hvrigcontrol.cpp b/MSHV_2762/src/HvRigControl/hvrigcontrol.cpp
+index cb150c9..8db172f 100644
+--- a/MSHV_2762/src/HvRigControl/hvrigcontrol.cpp
++++ b/MSHV_2762/src/HvRigControl/hvrigcontrol.cpp
+@@ -4,6 +4,7 @@
+  */
+ #define _BANDS_H_
+ #include "hvrigcontrol.h"
++#include "../om0rxstationgate.h"
+ #include <unistd.h>   // uslepp Linux and windows
+ #include <math.h> /* round, floor, ceil, trunc */
+ #include <QDebug>     // For debug logging
+@@ -1228,6 +1229,12 @@ void HvRigControl::TestPtt()
+ {
+     if (!f_test_port)
+     {
++        if (!Om0rxStationGate::hasPermit()) {
++            Om0rxStationGate::lastReason() = "test-ptt-permit-unavailable";
++            (new Om0rxStationGate(this))->auditRejected("HvRigControl::TestPtt", Om0rxStationGate::lastReason());
++            Om0rxStationGate::prefetch(this);
++            return;
++        }
+         f_test_port = true;
+         SetPtt(true,1);//id 0=All 1=p1 2=p2
+         pb_test_port->setText(" "+tr("STOP PTT TEST")+" "+omnirig_type);
+@@ -1885,28 +1892,94 @@ void HvRigControl::set_mode()// za mahane
+ }*/
+ void HvRigControl::SetPtt_p(bool flag,int id)//2.17 id 0=All 1=p1 2=p2
+ {
+-    if (id==0 || id==1)//id 0=All 1=p1 2=p2
++    // This is the lowest shared hardware PTT edge for CAT, RTS and DTR.  Keep
++    // upstream sequencing intact, but fail closed for every rising edge.
++    const int requestedPttMask = id == 0 ? 3 : (id == 1 ? 1 : 2);
++    const quint64 requestSequence = Om0rxStationGate::notePttRequest(flag, requestedPttMask);
++    const unsigned requestGeneration = Om0rxStationGate::generation();
++    const int requestHz = Om0rxStationGate::currentHz();
++    // Do not trust the local requested-output mask as proof that hardware is
++    // still keyed. An external Halt or CAT failure can unkey the radio without
++    // a matching native callback, so every true request must be authorized.
++    const bool risingEdge = flag;
++    if (risingEdge) {
++        Om0rxStationGate gate(this);
++        if (!gate.consumePermitBlocking("HvRigControl::SetPtt_p")) {
++            (new Om0rxStationGate(this))->auditRejected("HvRigControl::SetPtt_p", Om0rxStationGate::lastReason());
++            Om0rxStationGate::prefetch(this);
++            return;
++        }
++        // QNetworkAccessManager processes events while the authoritative
++        // consume POST is pending.  Never let a successful but late response
++        // resurrect TX after a re-entrant RX, Stop, QSY, invalidation or
++        // frequency change.
++        if (!Om0rxStationGate::pttRequestStillCurrent(
++                requestSequence, requestGeneration, requestHz, requestedPttMask)) {
++            Om0rxStationGate::lastReason() = "ptt-request-superseded";
++            (new Om0rxStationGate(this))->auditRejected(
++                "HvRigControl::SetPtt_p", Om0rxStationGate::lastReason());
++            return;
++        }
++    } else if (!flag) {
++        Om0rxStationGate::pttMask() &= ~requestedPttMask;
++    }
++    bool pttOutputAttempted = false;
++    if (om0rxPttOutputForTest)
++    {
++        pttOutputAttempted = true;
++        om0rxPttOutputForTest(flag, id);
++    }
++    else if (id==0 || id==1)//id 0=All 1=p1 2=p2
+     {
+         ////// omnirig /////////////
+         if (omnirig_active || net_active)////// net //////////
++        {
++            pttOutputAttempted = true;
+             THvRigCat->set_ptt(flag,false);
++        }
+         else
+         {
+             if (rb_rts->isChecked())
++            {
++                pttOutputAttempted = true;
+                 Set_Rts(flag);
++            }
+             if (rb_dtr->isChecked())
++            {
++                pttOutputAttempted = true;
+                 Set_Dtr(flag);
++            }
+             if (rb_cat->isChecked() && port->isOpen())
++            {
++                pttOutputAttempted = true;
+                 THvRigCat->set_ptt(flag,false);
++            }
+         }
+         ////// omnirig end /////////////
+     }
+-    if (id==0 || id==2)//id 0=All 1=p1 2=p2
++    if (!om0rxPttOutputForTest && (id==0 || id==2))//id 0=All 1=p1 2=p2
+     {
+         if (rb_rts2->isChecked())
++        {
++            pttOutputAttempted = true;
+             Set_Rts2(flag);
++        }
+         if (rb_dtr2->isChecked())
++        {
++            pttOutputAttempted = true;
+             Set_Dtr2(flag);
++        }
++    }
++    // Track requested hardware outputs only after the authoritative server
++    // consume succeeded and the upstream CAT/RTS/DTR calls were reached.
++    if (risingEdge && pttOutputAttempted)
++        Om0rxStationGate::pttMask() |= requestedPttMask;
++    else if (risingEdge)
++    {
++        Om0rxStationGate::pttMask() &= ~requestedPttMask;
++        Om0rxStationGate::lastReason() = "ptt-output-path-unavailable";
++        (new Om0rxStationGate(this))->auditRejected(
++            "HvRigControl::SetPtt_p", Om0rxStationGate::lastReason());
+     }
+ }
+ void HvRigControl::SetQSOProgress(int i) //2.45
+@@ -2414,6 +2487,12 @@ void HvRigControl::TestPtt2()
+ {
+     if (!f_test_port2)
+     {
++        if (!Om0rxStationGate::hasPermit()) {
++            Om0rxStationGate::lastReason() = "test-ptt2-permit-unavailable";
++            (new Om0rxStationGate(this))->auditRejected("HvRigControl::TestPtt2", Om0rxStationGate::lastReason());
++            Om0rxStationGate::prefetch(this);
++            return;
++        }
+         f_test_port2 = true;
+         SetPtt(true,2);//id 0=All 1=p1 2=p2
+         pb_test_port2->setText(" "+tr("STOP PTT TEST")+" ");
+@@ -2538,4 +2617,4 @@ void HvRigControl::SetupPtt2(QString str)
+ {
+     if (str.toInt()==0) rb_dtr2->setChecked(true);
+     if (str.toInt()==1) rb_rts2->setChecked(true);
+-}
+\ No newline at end of file
++}
+diff --git a/MSHV_2762/src/HvRigControl/hvrigcontrol.h b/MSHV_2762/src/HvRigControl/hvrigcontrol.h
+index c0f34d4..4972e8f 100644
+--- a/MSHV_2762/src/HvRigControl/hvrigcontrol.h
++++ b/MSHV_2762/src/HvRigControl/hvrigcontrol.h
+@@ -16,6 +16,7 @@
+ #include <QGroupBox>
+ #include <QSpinBox>
+ #include <QLineEdit>
++#include <functional>
+ 
+ #include "HvRigCat/hvrigcatw.h"
+ 
+@@ -140,7 +141,14 @@ public:
+     void SetModSetFrqToRig(QString);
+ 	void SetNetRigSrvPort(QString s);
+ 	void CatStopPttIfClose();
+-	void SetMsf(bool f);
++    void SetMsf(bool f);
++
++    // Native regression hook only.  It has no UI, command-line, network or
++    // production caller.  The full HvRigControl test installs this callback so
++    // the real SetPtt_p path can be exercised without CAT/RTS/DTR hardware.
++    void SetOm0rxPttOutputForTest(const std::function<void(bool,int)> &output)
++    { om0rxPttOutputForTest = output; }
++    void InvokeOm0rxPttForTest(bool flag, int id) { SetPtt_p(flag, id); }
+ 
+ //public slots:	
+  
+@@ -216,6 +224,7 @@ private slots:
+     void SetFullRigInfo(QString);//2.76.1
+     
+ private:
++	std::function<void(bool,int)> om0rxPttOutputForTest;
+ 	bool f_msf;//2.76sf
+ 	bool f_msf_new;//2.76sf
+ 	uint8_t f_msf_special_tx_rx;//2.76sf
+diff --git a/MSHV_2762/src/HvTxW/HvLogW/hvlogw.cpp b/MSHV_2762/src/HvTxW/HvLogW/hvlogw.cpp
+index c4183c6..0d8e744 100644
+--- a/MSHV_2762/src/HvTxW/HvLogW/hvlogw.cpp
++++ b/MSHV_2762/src/HvTxW/HvLogW/hvlogw.cpp
+@@ -2159,7 +2159,7 @@ QString HvLogW::ExtractAdifRecord(QString in,QString str)
+ //#define MAX_LOG_COUNT 15000
+ //#define MAX_LOG_COUNT 25000 //2.48
+ //#define MAX_LOG_COUNT 45000 //2.59
+-static int MAX_LOG_COUNT = 50000; //2.69
++static int MAX_LOG_COUNT = 150000; // OM0RX historical log exceeds upstream's 50k default
+ bool d_max_log_count = false;
+ void HvLogW::CheckLogCount()
+ {
+@@ -2194,7 +2194,8 @@ void HvLogW::AddExtrnalAdif()
+     End_Add_Man_Qso();
+     QFileDialog dialog;
+ 
+-    QString path = QFileDialog::getOpenFileName(this,
++    QString path = om0rxOfflineImport;
++    if (path.isEmpty()) path = QFileDialog::getOpenFileName(this,
+                    "Add ADIF To Log", AppPath, "LOG File (*.adi)");
+ 
+     if (path.isEmpty())
+@@ -2207,7 +2208,7 @@ void HvLogW::AddExtrnalAdif()
+     int added_qso = 0;
+     int err_mod_qso = 0;
+ 
+-    THvProgrD->Show(tr("Adding QSOs"),tr("Please Wait, Adding QSOs")+" ",510);
++    if (om0rxOfflineImport.isEmpty()) THvProgrD->Show(tr("Adding QSOs"),tr("Please Wait, Adding QSOs")+" ",510);
+ 
+     QString line;
+     QTextStream in(&file);
+@@ -2512,7 +2513,7 @@ void HvLogW::AddExtrnalAdif()
+     THvLogList->scrollToBottom();
+     l_qsos_in_log->setText(QString("%1").arg(THvLogList->model.rowCount()));
+ 
+-    QMessageBox::information(this, "MSHV", tr("Added")+" "+QString("%1").arg(added_qso)+" "+tr("QSOs from ADIF to Log.")+"\n"+
++    if (om0rxOfflineImport.isEmpty()) QMessageBox::information(this, "MSHV", tr("Added")+" "+QString("%1").arg(added_qso)+" "+tr("QSOs from ADIF to Log.")+"\n"+
+                              tr("Non-supported modes of QSOs")+" "+QString("%1").arg(err_mod_qso), QMessageBox::Ok);
+     //qDebug()<<"All Lines Count="<<allc<<"Exported QSOs="<<THvLogList->model.rowCount()<<"Error no supported modes="<<ccc<<"Eror is: "<<err;
+ 
+diff --git a/MSHV_2762/src/HvTxW/HvLogW/hvlogw.h b/MSHV_2762/src/HvTxW/HvLogW/hvlogw.h
+index 3da69b3..e358cb0 100644
+--- a/MSHV_2762/src/HvTxW/HvLogW/hvlogw.h
++++ b/MSHV_2762/src/HvTxW/HvLogW/hvlogw.h
+@@ -197,6 +197,11 @@ class HvLogW : public QWidget
+ public:
+     HvLogW(QString,QString app_path, bool,int,int,QWidget *, QWidget * parent = 0);
+     virtual ~HvLogW();
++    bool ImportHistoryOffline(const QString &path) {
++        om0rxOfflineImport = path;
++        AddExtrnalAdif();
++        return QFile::exists(AppPath + "/log/mshvlog.edim");
++    }
+ 
+    	bool Insert(QStringList,bool,bool,int,bool,bool);
+    	void SetMyCallGridExchAllCont(QString,QString,QString);	
+@@ -310,6 +315,7 @@ private:
+     HvLogList *THvLogList; 
+     //HvLogDetiles *THvLogDetiles;
+     void SaveEDI(QString,bool);//2.48 append
++    QString om0rxOfflineImport;
+     void ReadEDI(QString,bool pbarr,bool check_format);
+     HvEditW *THvEditW;
+     HvEditW *AddManQsoW;
+diff --git a/MSHV_2762/src/HvTxW/HvRadioNetW/MessageClient.cpp b/MSHV_2762/src/HvTxW/HvRadioNetW/MessageClient.cpp
+index 02ac2fd..e08f934 100644
+--- a/MSHV_2762/src/HvTxW/HvRadioNetW/MessageClient.cpp
++++ b/MSHV_2762/src/HvTxW/HvRadioNetW/MessageClient.cpp
+@@ -26,7 +26,7 @@
+ 
+ #include "pimpl_impl.h"
+ 
+-#include "moc_MessageClient.cpp" // HV triabva vazno neznam za6to
++// Header MOC is compiled by qmake; including it here produces duplicate symbols.
+ 
+ //#include <QtGui>
+ class MessageClient::impl
+@@ -431,6 +431,8 @@ QHostAddress MessageClient::server_address () const
+ {
+     return m_->server_;
+ }
++MessageClient::~MessageClient() = default;
++
+ auto MessageClient::server_port () const -> port_type
+ {
+     return m_->server_port_;
+diff --git a/MSHV_2762/src/HvTxW/HvRadioNetW/MessageClient.h b/MSHV_2762/src/HvTxW/HvRadioNetW/MessageClient.h
+index fc1962e..3a4a9c0 100644
+--- a/MSHV_2762/src/HvTxW/HvRadioNetW/MessageClient.h
++++ b/MSHV_2762/src/HvTxW/HvRadioNetW/MessageClient.h
+@@ -44,6 +44,7 @@ public:
+     //
+     // messages will be silently dropped until a server host lookup is complete
+     MessageClient (QString const& id, QString const& version, QString const& server, port_type server_port, bool hbt, QObject * parent = nullptr);
++    ~MessageClient() override;
+ 
+     void logged_QSO(QStringList ls);
+     void logged_ADIF(QByteArray const& ADIF_record); 
+diff --git a/MSHV_2762/src/HvTxW/HvRadioNetW/radionetw.cpp b/MSHV_2762/src/HvTxW/HvRadioNetW/radionetw.cpp
+index 9b782ce..2bfe3ea 100644
+--- a/MSHV_2762/src/HvTxW/HvRadioNetW/radionetw.cpp
++++ b/MSHV_2762/src/HvTxW/HvRadioNetW/radionetw.cpp
+@@ -1607,7 +1607,7 @@ RadioAndNetW::RadioAndNetW(QString inst,QString path,bool indsty,int x,int y,QWi
+     //qDebug()<<"Time===========================";
+ 
+     if (!inst.isEmpty()) inst = " -"+inst;
+-    m_messageClientBroad = new MessageClient {"MSHV"+inst,VER_MS,"",2237,true,this};
++    m_messageClientBroad = new MessageClient {"MSHV-OM0RX-AUTO-DX",VER_MS,"127.0.0.1",2237,true,this};
+     //m_messageClientBroad = new MessageClient {"MSHV ID:14MHz",VER_MS,"",2237,true,this};
+     connect(m_messageClientBroad, SIGNAL(error(QString)), this, SLOT(networkErrorUDPBrodcast(QString)));
+     connect(m_messageClientBroad, SIGNAL(replay()), this, SLOT(replayDecodes()));
+@@ -1623,6 +1623,13 @@ RadioAndNetW::RadioAndNetW(QString inst,QString path,bool indsty,int x,int y,QWi
+ 
+     sr_path = path+"/settings/ms_stinfonet";
+     ReadSettings();
++    // OM0RX build uses one fixed local protocol client and canonical log route.
++    UDPServerBroad->setText("127.0.0.1");
++    QString om0rxUdpPort = QString::fromUtf8(qgetenv("OM0RX_UDP_PORT"));
++    UDPPortBroad->setText(om0rxUdpPort.isEmpty() ? "2237" : om0rxUdpPort);
++    cb_udp_broad_log_qso->setChecked(false);
++    cb_udp_broad_log_adif->setChecked(true);
++    cb_udp_broad_decod->setChecked(true);
+ 
+     //this->setSize(450,240);//setMinimumWidth(450);
+     //this->resize(452,520);
+@@ -3537,7 +3544,7 @@ void RadioAndNetW::ReconnectUdpBroad()
+ }
+ void RadioAndNetW::UDPSrvPortBroadChanged(QString)
+ {
+-    QString s = UDPServerBroad->text();
++    QString s = "127.0.0.1";
+     QString p = UDPPortBroad->text();
+     if (!s.isEmpty() && !p.isEmpty() &&
+             (cb_udp_broad_log_qso->isChecked() || cb_udp_broad_log_adif->isChecked() || cb_udp_broad_decod->isChecked()))// && cb_udp_broad->isChecked())
+diff --git a/MSHV_2762/src/HvTxW/hvtxw.cpp b/MSHV_2762/src/HvTxW/hvtxw.cpp
+index 51cba40..c15a57b 100644
+--- a/MSHV_2762/src/HvTxW/hvtxw.cpp
++++ b/MSHV_2762/src/HvTxW/hvtxw.cpp
+@@ -5,6 +5,7 @@
+ #define _BANDS_H_
+ #define _FREQTOBAND_H_
+ #include "hvtxw.h"
++#include "../om0rxstationgate.h"
+ #include "../config_str_color.h"
+ #include "config_rpt_all.h"
+ //#include <QtGui>
+@@ -3529,6 +3530,9 @@ bool HvTxW::is_pfx(QString s)
+ }*/
+ void HvTxW::StopAuto()
+ {
++    (new Om0rxStationGate(this))->auditEvent("auto-stop", "HvTxW::StopAuto");
++    Om0rxStationGate::autoDesired() = false;
++    Om0rxStationGate::invalidateAndNotify(this, "auto-stopped");
+     f_auto_on = false;
+     b_auto_on->setText(tr("AUTO IS OFF"));
+     b_auto_on->setStyleSheet("QPushButton{background-color:palette(Button);}");
+@@ -3561,6 +3565,10 @@ void HvTxW::auto_on()
+         TRadioAndNetW->SetAuto(true);
+         MultiAnswerMod->SetAuto(true);
+     }
++    Om0rxStationGate::autoDesired() = f_auto_on;
++    if (f_auto_on) Om0rxStationGate::prefetch(this);
++    else Om0rxStationGate::invalidateAndNotify(this, "auto-toggled-off");
++    (new Om0rxStationGate(this))->auditEvent("auto-toggle", "HvTxW::auto_on", f_auto_on ? "on" : "off");
+     emit EmitAuto();
+     emit EmitAutoModeChanged(f_auto_on);  // AutoDxer TX confirmation feedback
+     //one_addtolog_auto_seq = false;//reset add to log
+@@ -3582,6 +3590,9 @@ void HvTxW::StartAuto()
+         emit EmitAuto();
+         emit EmitAutoModeChanged(f_auto_on);
+     }
++    Om0rxStationGate::autoDesired() = true;
++    Om0rxStationGate::prefetch(this);
++    (new Om0rxStationGate(this))->auditEvent("auto-start", "HvTxW::StartAuto", "autodx");
+ }
+ void HvTxW::SaveSettings()
+ {
+diff --git a/MSHV_2762/src/main.cpp b/MSHV_2762/src/main.cpp
+index ab890f8..cee1fdc 100644
+--- a/MSHV_2762/src/main.cpp
++++ b/MSHV_2762/src/main.cpp
+@@ -56,6 +56,28 @@ int main(int argc, char ** argv)
+ {
+     //QApplication::setDesktopSettingsAware(false); remove desktop settings
+     QApplication app(argc,argv);
++    QString importPath, importRoot;
++    for (const QString &argument : app.arguments()) {
++        if (argument.startsWith("--om0rx-import-history=")) importPath = argument.mid(23);
++        if (argument.startsWith("--om0rx-import-root=")) importRoot = argument.mid(20);
++    }
++    if (!importPath.isEmpty()) {
++        // Offline staging only: no Main_Ms, CAT, DAX, network clients or AutoDxer.
++        if (importRoot.isEmpty() || !QFile::exists(importPath) ||
++            QFile::exists(importRoot + "/log/mshvlog.edim") ||
++            QFile::exists(importRoot + "/settings/database/worked.db")) return 20;
++        QWidget parent;
++        HvLogW log("", importRoot, false, 0, 0, &parent);
++        log.SetMaxLogQsoCount("500000");
++        if (!log.ImportHistoryOffline(importPath)) return 21;
++        HvDxccTracker tracker(importRoot);
++        if (!tracker.initDatabase()) return 22;
++        bool failed = false;
++        QObject::connect(&tracker, &HvDxccTracker::importFailed, [&failed](QString) { failed = true; });
++        tracker.importFromAdifLog(importPath);
++        return failed ? 23 : 0;
++    }
++    if (QFile::exists(QCoreApplication::applicationDirPath() + "/.history-import.lock")) return 24;
+     /* no used just test
+     ExceptionCatchingApplication app(argc, argv);
+     try
+diff --git a/MSHV_2762/src/main_ms.cpp b/MSHV_2762/src/main_ms.cpp
+index 253e04e..c8ca278 100644
+--- a/MSHV_2762/src/main_ms.cpp
++++ b/MSHV_2762/src/main_ms.cpp
+@@ -14,6 +14,7 @@
+ #include <QDesktopServices>
+ #include <QMimeData>  // For QT5
+ #include <QDebug>     // For debug logging
++#include "om0rxstationgate.h"
+ 
+ #define _CONT_NAME_      
+ #include "config_str_con.h"
+@@ -748,6 +749,33 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     // Create Auto DXer core with DXCC lookup from existing HvCty
+     HvCty* hvCty = TDecodeList1->getHvCty();  // Get existing DXCC lookup
+     m_autoDxerCore = new AutoDxerCore(hvCty, App_Path + "/settings", this);
++    // Provider telemetry supplements standard WSJT UDP; it never asserts TX.
++    QNetworkAccessManager *om0rxNetwork = new QNetworkAccessManager(this);
++    QTimer *om0rxStateTimer = new QTimer(this);
++    connect(om0rxStateTimer, &QTimer::timeout, this, [this, om0rxNetwork]() {
++        // Read-only maintenance: prefetch a short-lived permit during RX without
++        // touching upstream Auto/AutoDX/queue/target state.
++        if (Om0rxStationGate::autoDesired() && !f_tx_busy)
++            Om0rxStationGate::prefetch(this);
++        QString base = QString::fromUtf8(qgetenv("OM0RX_API_BASE"));
++        if (base.isEmpty()) base = "http://127.0.0.1:8080";
++        const QUrl url(base + "/api/digital/engine-state");
++        if (url.host() != "127.0.0.1" && url.host() != "localhost") return;
++        QNetworkRequest request(url);
++        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
++        request.setRawHeader("X-OM0RX-Control-Token", qgetenv("OM0RX_CONTROL_TOKEN"));
++        QJsonObject state;
++        state["provider"] = "mshv_auto_dx";
++        state["state"] = m_autoDxerCore->stateString();
++        state["enabled"] = m_autoDxerCore->isEnabled();
++        state["target_call"] = m_autoDxerCore->currentTarget().callsign;
++        state["frequency_hz"] = Om0rxStationGate::currentHz();
++        state["timestamp"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
++        QNetworkReply *reply = om0rxNetwork->post(request, QJsonDocument(state).toJson(QJsonDocument::Compact));
++        connect(reply, &QNetworkReply::finished, reply, &QObject::deleteLater);
++        QTimer::singleShot(1500, reply, [reply]() { if (!reply->isFinished()) reply->abort(); });
++    });
++    om0rxStateTimer->start(2000);
+     m_autoDxerPanel = new AutoDxerPanel(m_autoDxerCore, this);
+     m_autoDxerPanel->setAppPath(App_Path);  // Enable settings persistence
+ 
+@@ -995,7 +1023,7 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     connect(THvTxW, SIGNAL(EmitFreqGlobalToRig(QString,int)), THvRigControl, SLOT(SetFreq(QString,int)));//2.74
+     //connect(THvTxW, SIGNAL(EmitModeGlobalToRig(QString)), THvRigControl, SLOT(SetMode(QString)));//1.61= stop for the moment
+     connect(THvRigControl, SIGNAL(EmitGetedFreq(QString)), THvTxW, SLOT(SetFreqGlobalFromRigCat(QString)));//1.61=
+-    connect(THvRigControl, SIGNAL(EmitGetedFreq(QString)), this, SLOT(ForwardDialFreqToAutoDxer(QString)));//AutoDxer dial freq from rig
++    connect(THvRigControl, SIGNAL(EmitGetedFreq(QString)), this, SLOT(ObserveRigFrequency(QString)));//CAT acknowledgement
+     connect(THvRigControl, SIGNAL(EmitGetedMode(QString)), THvTxW, SLOT(SetModeGlobalFromRigCat(QString)));//1.61=
+     connect(THvRigControl, SIGNAL(EmitTxActive(int)), THvTxW, SLOT(SetTxActive(int)));//2.21
+     connect(THvRigControl, SIGNAL(EmitRigCatActiveAndRead(bool,QString)), THvTxW, SLOT(SetRigCatActiveAndRead(bool,QString)));//2.53 //2.76.1
+@@ -2852,17 +2880,38 @@ void Main_Ms::SetBandFromAutoDxer(int bandIndex)
+ {
+     // Validate band index (CRITICAL: skip LF bands 0,1,2)
+     if (bandIndex >= 3 && bandIndex < COUNT_BANDS) {
++        const int hz = m_autoDxerCore->bandManager()->bandFrequencyHz(bandIndex);
++        Om0rxStationGate::invalidateAndNotify(this, "autodx-band-qsy");
++        Om0rxStationGate *gate = new Om0rxStationGate(this);
++        gate->prepare(hz, m_autoDxerCore->bandManager()->bandName(bandIndex), [this, bandIndex, hz](bool ready) {
++        if (!ready) {
++            m_autoDxerCore->appendDebugMessage("OM0RX: Station preparation rejected/timed out; QSY not attempted");
++            return;
++        }
+         ListBands.at(bandIndex)->setChecked(true);
+         // BandChanged() will be triggered automatically via Qt signal
+ 
+-        // Delay confirmation to allow Qt signal queue to process BandChanged()
+-        // and CAT command to be sent to radio. Without this delay, AutoDxer
+-        // may think it's on the new band before the radio actually switches.
+-        QTimer::singleShot(250, this, [this, bandIndex]() {
+-            if (m_autoDxerCore) {
+-                m_autoDxerCore->onBandChangeComplete(bandIndex);
++        QTimer *confirmation = new QTimer(this);
++        const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + 4000;
++        connect(confirmation, &QTimer::timeout, this, [this, confirmation, bandIndex, hz, deadline]() {
++            if (Om0rxStationGate::currentHz() == hz) {
++                confirmation->stop(); confirmation->deleteLater();
++                Om0rxStationGate *finalGate = new Om0rxStationGate(this);
++                finalGate->confirm(hz, m_autoDxerCore->bandManager()->bandName(bandIndex), [this, bandIndex](bool finalReady) {
++                    if (finalReady && Om0rxStationGate::hasPermit()) {
++                        m_autoDxerCore->onBandChangeComplete(bandIndex);
++                    } else {
++                        m_autoDxerCore->appendDebugMessage("OM0RX: Final station readback rejected/timed out; TX remains inhibited");
++                    }
++                });
++            } else if (QDateTime::currentMSecsSinceEpoch() >= deadline) {
++                Om0rxStationGate::invalidateAndNotify(this, "cat-qsy-timeout");
++                m_autoDxerCore->appendDebugMessage("OM0RX: CAT did not acknowledge prepared frequency; TX remains inhibited");
++                confirmation->stop(); confirmation->deleteLater();
+             }
+         });
++        confirmation->start(50);
++        });
+     }
+ }
+ 
+@@ -2873,6 +2922,13 @@ void Main_Ms::SetDialFreqFromAutoDxer(int dialFreqHz)
+     qDebug() << "[DIAL-QSY] SetDialFreqFromAutoDxer called with" << dialFreqHz << "Hz";
+ 
+     if (dialFreqHz > 0 && THvRigControl) {
++        Om0rxStationGate::invalidateAndNotify(this, "autodx-dial-qsy");
++        Om0rxStationGate *gate = new Om0rxStationGate(this);
++        gate->prepare(dialFreqHz, QString(), [this, dialFreqHz](bool ready) {
++        if (!ready) {
++            m_autoDxerCore->appendDebugMessage("OM0RX: Dial preparation rejected/timed out; QSY not attempted");
++            return;
++        }
+         QString freqStr = QString::number(dialFreqHz);
+         qDebug() << "[DIAL-QSY] Sending SetFreq to rig:" << freqStr;
+         // Use Qt meta-object invocation for private slot
+@@ -2880,12 +2936,41 @@ void Main_Ms::SetDialFreqFromAutoDxer(int dialFreqHz)
+         QMetaObject::invokeMethod(THvRigControl, "SetFreq", Qt::QueuedConnection,
+                                   Q_ARG(QString, freqStr), Q_ARG(int, 2));
+         qDebug() << "[DIAL-QSY] SetFreq invoked successfully";
++        QTimer *confirmation = new QTimer(this);
++        const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + 4000;
++        connect(confirmation, &QTimer::timeout, this, [this, confirmation, dialFreqHz, deadline]() {
++            if (Om0rxStationGate::currentHz() == dialFreqHz) {
++                confirmation->stop(); confirmation->deleteLater();
++                Om0rxStationGate *finalGate = new Om0rxStationGate(this);
++                finalGate->confirm(dialFreqHz, QString(), [this](bool finalReady) {
++                    if (!finalReady || !Om0rxStationGate::hasPermit())
++                        m_autoDxerCore->appendDebugMessage("OM0RX: Final dial readback rejected/timed out; TX remains inhibited");
++                });
++            } else if (QDateTime::currentMSecsSinceEpoch() >= deadline) {
++                Om0rxStationGate::invalidateAndNotify(this, "cat-dial-qsy-timeout");
++                m_autoDxerCore->appendDebugMessage("OM0RX: CAT did not acknowledge prepared dial frequency; TX remains inhibited");
++                confirmation->stop(); confirmation->deleteLater();
++            }
++        });
++        confirmation->start(50);
++        });
+     } else {
+         qDebug() << "[DIAL-QSY] SKIPPED: dialFreqHz=" << dialFreqHz
+                  << "THvRigControl=" << (THvRigControl ? "exists" : "NULL");
+     }
+ }
+ 
++void Main_Ms::ObserveRigFrequency(QString freqStr)
++{
++    const int hz = freqStr.section('#', 0, 0).toInt();
++    if (hz != Om0rxStationGate::currentHz() && hz != Om0rxStationGate::permitHz() &&
++        hz != Om0rxStationGate::preparedHz()) {
++        Om0rxStationGate::invalidateAndNotify(this, "cat-frequency-changed");
++    }
++    Om0rxStationGate::currentHz() = hz;
++    ForwardDialFreqToAutoDxer(freqStr);
++}
++
+ void Main_Ms::ForwardDialFreqToAutoDxer(QString freqStr)
+ {
+     // Forward dial frequency changes from MSHV/rig to Auto DXer
+@@ -2920,6 +3005,14 @@ void Main_Ms::ModeMenuStatRefresh(bool dea)
+ }
+ void Main_Ms::SetRigTxRx(bool f)
+ {
++    // Keep the upstream UI/timing state unchanged when a slot is not yet
++    // authorized. The lower HvRigControl edge consumes the permit universally.
++    if (f && !Om0rxStationGate::hasPermit()) {
++        Om0rxStationGate::lastReason() = "ptt-permit-unavailable";
++        (new Om0rxStationGate(this))->auditRejected("Main_Ms::SetRigTxRx", Om0rxStationGate::lastReason());
++        Om0rxStationGate::prefetch(this);
++        return;
++    }
+     //qDebug()<<"SetRigTxRx...................."<<f;
+     f_tx_busy = f;//2.47
+     THvRigControl->SetPtt(f,0);//id 0=All 1=p1 2=p2
+@@ -2936,6 +3029,7 @@ void Main_Ms::SetRigTxRx(bool f)
+         l_tx_text->setStyleSheet("QLabel{background-color:palette(Button);}");
+         Band_m->setDisabled(false);
+         W_band_bt_sw->setDisabled(false); //qDebug()<<g_block_mam<<g_ub_m_k;
++        if (Om0rxStationGate::autoDesired()) Om0rxStationGate::prefetch(this);
+     }
+     //f_tx_busy = f;
+     if (s_mod_ident==11 || s_mod_ident==13 || allq65) ModeMenuStatRefresh(f_de_active);//ft8 and ft4     
+diff --git a/MSHV_2762/src/main_ms.h b/MSHV_2762/src/main_ms.h
+index 0e5e349..0d50d09 100644
+--- a/MSHV_2762/src/main_ms.h
++++ b/MSHV_2762/src/main_ms.h
+@@ -70,6 +70,7 @@ private slots:
+     void SetBandFromAutoDxer(int bandIndex);  // Auto DXer band change
+     void SetDialFreqFromAutoDxer(int dialFreqHz);  // Auto DXer non-standard dial frequency
+     void ForwardDialFreqToAutoDxer(QString freqStr);  // Forward dial freq changes to AutoDxer
++    void ObserveRigFrequency(QString freqStr);
+     void SetSHAllColl(bool);
+     void SetTwoDecList(bool f);
+     void ShowCloseAstroW(bool);
+diff --git a/MSHV_2762/src/om0rxstationgate.h b/MSHV_2762/src/om0rxstationgate.h
+new file mode 100644
+index 0000000..b14db16
+--- /dev/null
++++ b/MSHV_2762/src/om0rxstationgate.h
+@@ -0,0 +1,269 @@
++/* OM0RX station integration. GPL-3.0-or-later; same license as MSHV. */
++#ifndef OM0RXSTATIONGATE_H
++#define OM0RXSTATIONGATE_H
++#include <QNetworkAccessManager>
++#include <QNetworkReply>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QTimer>
++#include <QUuid>
++#include <QDateTime>
++#include <QEventLoop>
++#include <functional>
++
++// Additive fail-closed PTT authorization. MSHV remains the owner of its Auto,
++// AutoDX, queue, target and timing state; this class never toggles those.
++class Om0rxStationGate : public QObject {
++public:
++    static constexpr int requestTimeoutMs() { return 75000; }
++    static constexpr int consumeTimeoutMs() { return 1500; }
++    explicit Om0rxStationGate(QObject *parent) : QObject(parent), network(this), timeoutMs(requestTimeoutMs()) {}
++#ifdef OM0RX_STATION_GATE_TESTING
++    explicit Om0rxStationGate(QObject *parent, int testTimeoutMs)
++        : QObject(parent), network(this), timeoutMs(testTimeoutMs > 0 ? testTimeoutMs : 1) {}
++#endif
++    static bool &pending() { static bool value = false; return value; }
++    static unsigned &pendingGeneration() { static unsigned value = 0; return value; }
++    static bool &autoDesired() { static bool value = false; return value; }
++    static int &currentHz() { static int value = 0; return value; }
++    static int &preparedHz() { static int value = 0; return value; }
++    static int &permitHz() { static int value = 0; return value; }
++    static QString &prepareNonce() { static QString value; return value; }
++    static QString &permitNonce() { static QString value; return value; }
++    static qint64 &permitExpiresAt() { static qint64 value = 0; return value; }
++    static QString &lastReason() { static QString value = "not-authorized"; return value; }
++    static unsigned &generation() { static unsigned value = 0; return value; }
++    static int &pttMask() { static int value = 0; return value; }
++    static quint64 &pttRequestSequence() { static quint64 value = 0; return value; }
++    static int &requestedPttMask() { static int value = 0; return value; }
++
++    // The consume request runs a nested Qt event loop so that the legacy PTT
++    // call remains synchronous.  Every requested edge receives a monotonically
++    // increasing sequence.  A re-entrant RX/Stop/QSY/frequency event therefore
++    // makes an earlier TX request observably stale before hardware can be
++    // reached, even when its HTTP approval arrives later.
++    static quint64 notePttRequest(bool transmit, int mask) {
++        const quint64 value = ++pttRequestSequence();
++        if (transmit) requestedPttMask() |= mask;
++        else requestedPttMask() &= ~mask;
++        return value;
++    }
++    static void cancelPttRequests() {
++        ++pttRequestSequence();
++        requestedPttMask() = 0;
++        pttMask() = 0;
++    }
++    static bool pttRequestStillCurrent(quint64 sequence, unsigned permitGeneration,
++                                       int hz, int mask) {
++        return sequence == pttRequestSequence() &&
++            permitGeneration == generation() && hz > 0 && hz == currentHz() &&
++            (requestedPttMask() & mask) == mask;
++    }
++
++    static void invalidate(const QString &reason = "invalidated") {
++        cancelPttRequests();
++        ++generation();
++        preparedHz() = 0;
++        permitHz() = 0;
++        prepareNonce().clear();
++        permitNonce().clear();
++        permitExpiresAt() = 0;
++        lastReason() = reason;
++    }
++    static void invalidateAndNotify(QObject *parent, const QString &reason) {
++        invalidate(reason);
++        (new Om0rxStationGate(parent))->auditEvent(
++            "authorization-invalidated", "Om0rxStationGate::invalidate", reason);
++    }
++    static bool requestPending() { return pending() && pendingGeneration() == generation(); }
++    static bool hasPermit() {
++        return !requestPending() && currentHz() > 0 && currentHz() == permitHz() &&
++            !permitNonce().isEmpty() && QDateTime::currentMSecsSinceEpoch() < permitExpiresAt();
++    }
++    bool consumePermitBlocking(const QString &path) {
++        if (!hasPermit()) {
++            lastReason() = "ptt-edge-permit-unavailable";
++            return false;
++        }
++        // Retire the local copy before starting I/O. A timeout is ambiguous:
++        // the server may have consumed it while the response was lost, so a
++        // retry must obtain a newly prepared permit rather than replaying.
++        const QString nonce = permitNonce();
++        permitNonce().clear();
++        permitHz() = 0;
++        permitExpiresAt() = 0;
++        const QUrl url = endpoint("/api/digital/station-permit/consume");
++        if (!loopback(url)) {
++            lastReason() = "non-loopback-endpoint";
++            return false;
++        }
++        QJsonObject body;
++        body["provider"] = "mshv_auto_dx";
++        body["permit_nonce"] = nonce;
++        body["frequency_hz"] = currentHz();
++        body["mode"] = "DIGU";
++        body["path"] = path;
++        body["authorization_generation"] = static_cast<qint64>(generation());
++        QNetworkReply *reply = network.post(
++            makeRequest(url), QJsonDocument(body).toJson(QJsonDocument::Compact));
++        QEventLoop loop;
++        QTimer timer;
++        timer.setSingleShot(true);
++        connect(&timer, &QTimer::timeout, reply, &QNetworkReply::abort);
++        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
++        timer.start(consumeTimeoutMs());
++        loop.exec();
++        timer.stop();
++        const QJsonObject result = QJsonDocument::fromJson(reply->readAll()).object();
++        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
++        const bool consumed = reply->error() == QNetworkReply::NoError &&
++            status >= 200 && status < 300 &&
++            result.value("success").isBool() && result.value("success").toBool() &&
++            result.value("reason").toString() == "permit-consumed";
++        lastReason() = consumed ? "permit-consumed"
++                                : result.value("reason").toString("permit-consume-timeout-or-error");
++        reply->deleteLater();
++        return consumed;
++    }
++    static QString bandForFrequency(int hz) {
++        struct Band { int low; int high; const char *name; };
++        static const Band bands[] = {{1800000,2000000,"160m"},{3500000,4000000,"80m"},
++            {5351500,5366500,"60m"},{7000000,7300000,"40m"},{10100000,10150000,"30m"},
++            {14000000,14350000,"20m"},{18068000,18168000,"17m"},{21000000,21450000,"15m"},
++            {24890000,24990000,"12m"},{28000000,29700000,"10m"},{50000000,54000000,"6m"}};
++        for (const Band &band : bands) if (hz >= band.low && hz <= band.high) return band.name;
++        return QString();
++    }
++    static void prefetch(QObject *parent) {
++        const int hz = currentHz();
++        if (hz <= 0 || requestPending() || hasPermit()) return;
++        const QString band = bandForFrequency(hz);
++        if (band.isEmpty() || band == "60m") return;
++        (new Om0rxStationGate(parent))->prepare(hz, band, [parent, hz, band](bool prepared) {
++            if (!prepared || hz != currentHz()) return;
++            (new Om0rxStationGate(parent))->confirm(hz, band, [](bool) {});
++        });
++    }
++    void prepare(int hz, const QString &band, std::function<void(bool)> done) {
++        request(hz, band, "prepare", QString(), done);
++    }
++    void confirm(int hz, const QString &band, std::function<void(bool)> done) {
++        if (preparedHz() != hz || prepareNonce().isEmpty()) {
++            lastReason() = "prepare-required";
++            done(false);
++            deleteLater();
++            return;
++        }
++        const QString nonce = prepareNonce();
++        prepareNonce().clear();
++        preparedHz() = 0;
++        request(hz, band, "final", nonce, done);
++    }
++    void auditRejected(const QString &path, const QString &reason) {
++        QJsonObject body;
++        body["provider"] = "mshv_auto_dx";
++        body["event"] = "ptt-rejected";
++        body["frequency_hz"] = currentHz();
++        body["mode"] = "DIGU";
++        body["path"] = path;
++        body["reason"] = reason;
++        body["authorization_generation"] = static_cast<qint64>(generation());
++        postAudit(body);
++    }
++    void auditEvent(const QString &event, const QString &path, const QString &reason = QString()) {
++        QJsonObject body;
++        body["provider"] = "mshv_auto_dx";
++        body["event"] = event;
++        body["frequency_hz"] = currentHz();
++        body["mode"] = "DIGU";
++        body["path"] = path;
++        body["authorization_generation"] = static_cast<qint64>(generation());
++        if (!reason.isEmpty()) body["reason"] = reason;
++        postAudit(body);
++    }
++private:
++    QUrl endpoint(const QString &path) const {
++        QString base = QString::fromUtf8(qgetenv("OM0RX_API_BASE"));
++        if (base.isEmpty()) base = "http://127.0.0.1:8080";
++        return QUrl(base + path);
++    }
++    bool loopback(const QUrl &url) const {
++        return (url.host() == "127.0.0.1" || url.host() == "localhost") &&
++            (url.scheme() == "http" || url.scheme() == "https");
++    }
++    QNetworkRequest makeRequest(const QUrl &url) const {
++        QNetworkRequest request(url);
++        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
++        request.setRawHeader("X-OM0RX-Control-Token", qgetenv("OM0RX_CONTROL_TOKEN"));
++        return request;
++    }
++    void postAudit(const QJsonObject &body) {
++        const QUrl url = endpoint("/api/digital/station-audit");
++        if (!loopback(url)) { deleteLater(); return; }
++        QNetworkReply *reply = network.post(makeRequest(url), QJsonDocument(body).toJson(QJsonDocument::Compact));
++        QTimer::singleShot(5000, reply, [reply]() { if (!reply->isFinished()) reply->abort(); });
++        connect(reply, &QNetworkReply::finished, this, [this, reply]() {
++            reply->deleteLater();
++            deleteLater();
++        });
++    }
++    void request(int hz, const QString &band, const QString &phase, const QString &nonce,
++                 std::function<void(bool)> done) {
++        if (requestPending() || hz <= 0) { lastReason() = "request-pending-or-invalid"; done(false); deleteLater(); return; }
++        pending() = true;
++        const unsigned requestGeneration = generation();
++        pendingGeneration() = requestGeneration;
++        const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
++        const QUrl url = endpoint("/api/digital/station-ready");
++        if (!loopback(url)) {
++            if (pendingGeneration() == requestGeneration) pending() = false;
++            lastReason() = "non-loopback-endpoint"; done(false); deleteLater(); return;
++        }
++        QJsonObject body;
++        body["provider"] = "mshv_auto_dx";
++        body["request_id"] = id;
++        body["phase"] = phase;
++        body["frequency_hz"] = hz;
++        body["band"] = band.isEmpty() ? bandForFrequency(hz) : band;
++        body["mode"] = "DIGU";
++        body["authorization_generation"] = static_cast<qint64>(requestGeneration);
++        if (!nonce.isEmpty()) body["prepare_nonce"] = nonce;
++        QNetworkReply *reply = network.post(makeRequest(url), QJsonDocument(body).toJson(QJsonDocument::Compact));
++        QTimer::singleShot(timeoutMs, reply, [reply]() { if (!reply->isFinished()) reply->abort(); });
++        connect(reply, &QNetworkReply::finished, this, [this, reply, id, hz, phase, requestGeneration, done]() {
++            const QJsonObject result = QJsonDocument::fromJson(reply->readAll()).object();
++            const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
++            const bool baseReady = requestGeneration == generation() &&
++                reply->error() == QNetworkReply::NoError && status >= 200 && status < 300 &&
++                result.value("request_id").toString() == id && result.value("phase").toString() == phase &&
++                result.value("ready").isBool() && result.value("ready").toBool() &&
++                result.value("prepared").isBool() && result.value("prepared").toBool();
++            bool ready = false;
++            if (phase == "prepare") {
++                const QString value = result.value("prepare_nonce").toString();
++                ready = baseReady && result.value("transmit_ready").isBool() &&
++                    !result.value("transmit_ready").toBool() && !value.isEmpty();
++                if (ready) { preparedHz() = hz; prepareNonce() = value; }
++            } else {
++                const QString value = result.value("permit_nonce").toString();
++                const int ttl = result.value("permit_expires_in_ms").toInt();
++                ready = baseReady && result.value("transmit_ready").isBool() &&
++                    result.value("transmit_ready").toBool() && !value.isEmpty() && ttl > 0;
++                if (ready) {
++                    permitHz() = hz;
++                    permitNonce() = value;
++                    permitExpiresAt() = QDateTime::currentMSecsSinceEpoch() + ttl;
++                }
++            }
++            if (pendingGeneration() == requestGeneration) pending() = false;
++            lastReason() = ready ? (phase == "prepare" ? "station-prepared" : "permit-ready")
++                                 : result.value("reason").toString("station-request-failed");
++            done(ready);
++            reply->deleteLater();
++            deleteLater();
++        });
++    }
++    QNetworkAccessManager network;
++    const int timeoutMs;
++};
++#endif
+diff --git a/MSHV_2762/src/HvRigControl/HvRigCat/network/network.cpp b/MSHV_2762/src/HvRigControl/HvRigCat/network/network.cpp
+index f78b003..231ad3d 100644
+--- a/MSHV_2762/src/HvRigControl/HvRigCat/network/network.cpp
++++ b/MSHV_2762/src/HvRigControl/HvRigCat/network/network.cpp
+@@ -647,6 +647,11 @@ int cretr_nt = -1;
+ void Network::connected_s()
+ {
+     emit EmitNetConnInfo("<font color='red'>"+tr("Connecting to")+" "+s_nethost+" "+tr("Port")+" "+s_netport+"</font>",true,false);
++    // OM0RX station policy: initialize the Flex CAT TX drive on the same
++    // session before polling or any automatic PTT can be issued.  Keep this
++    // scoped to the configured FlexRadio 6xxx SmartSDR CAT endpoint so other
++    // rigs and the native SmartSDR slice API are unaffected.
++    if (s_ModelID==6 && s_netport=="5002") writeData("PC050;",false,NULL);
+     cretr_nt = -1;
+     cinit_id_nt = -1;
+     wdevice = "NONE";  //tci
+@@ -1959,4 +1964,4 @@ void Network::get_mode()
+ }
+ /*void Network::SetReadyRead(QByteArray,int)
+ {}*/
+-////////////////////////////////////////////////////////end new read com
+\ No newline at end of file
++////////////////////////////////////////////////////////end new read com

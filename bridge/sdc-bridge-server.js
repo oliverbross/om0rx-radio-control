@@ -27,20 +27,23 @@ import https from 'https';
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { WebSocketServer } from 'ws';
 import { WsjtxParser } from './wsjtx-parser.js';
 import { buildCommand } from './wsjtx-protocol.js';
+import { providerForClient, plannerOwnerForProvider, LoggedQsoCoalescer, localSourceAllowed } from './digital-provider.js';
 
 // Configuration from environment or defaults
 const TCP_HOST = process.env.TCP_HOST || '127.0.0.1';
 const TCP_PORT = parseInt(process.env.TCP_PORT || '12166');
-const WSJTX_UDP_PORT = parseInt(process.env.WSJTX_UDP_PORT || '2237');
+const WSJTX_UDP_PORT = parseInt(process.env.OM0RX_UDP_PORT || process.env.WSJTX_UDP_PORT || '2237');
 const WSJTX_UDP_MULTICAST = process.env.WSJTX_UDP_MULTICAST || '224.0.0.1';
 const WS_PORT = parseInt(process.env.WS_PORT || '8091');
 const WS_HOST = process.env.WS_HOST || '127.0.0.1';
 const WSJTX_COMMAND_PORT = parseInt(process.env.WSJTX_COMMAND_PORT || '8092');
 const WSJTX_ENABLED = process.env.WSJTX_ENABLED !== 'false';
 const BRIDGE_TEST_MODE = process.env.OM0RX_BRIDGE_TEST_MODE === '1';
+const BRIDGE_TEST_PERSIST = process.env.OM0RX_BRIDGE_TEST_PERSIST === '1';
 const OM0RX_BACKEND_URL = (process.env.OM0RX_BACKEND_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '');
 const CONTROL_TOKEN = process.env.WSJTX_BRIDGE_TOKEN || process.env.CONTROL_TOKEN || '';
 const ALLOWED_ORIGINS = new Set((process.env.BRIDGE_ALLOWED_ORIGINS || 'http://127.0.0.1:8080,http://localhost:8080')
@@ -58,11 +61,27 @@ let wss = null;
 const wsjtxParser = new WsjtxParser();
 let latestWsjtxEndpoint = null;
 let latestWsjtxClientId = '';
+let selectedDigitalProvider = 'none';
+let digitalProviderConflict = false;
+try {
+  selectedDigitalProvider = JSON.parse(fs.readFileSync(new URL('../settings/digital_engine.json', import.meta.url), 'utf8')).provider || 'none';
+} catch { /* Missing/corrupt selection is intentionally disabled. */ }
+if (!['none', 'wsjtz', 'mshv_auto_dx'].includes(selectedDigitalProvider)) selectedDigitalProvider = 'none';
+const loggedQsoCoalescer = new LoggedQsoCoalescer(data => uploadLoggedQsoToBackend(data));
 let wsjtxCommandSender = null;
 let pendingQsoLoggedUploadTimer = null;
 let pendingQsoLoggedData = null;
 let loggedQsoRetryTimer = null;
 let loggedQsoUploadQueue = [];
+let loggedQsoQueueFault = null;
+const optionalWarningAt = new Map();
+function rateLimitedOptionalWarning(key, message, intervalMs = 300000) {
+  const now = Date.now();
+  if (optionalWarningAt.has(key) && now - optionalWarningAt.get(key) < intervalMs) return false;
+  optionalWarningAt.set(key, now);
+  console.warn(message);
+  return true;
+}
 let wsjtxStats = {
   packets: 0,
   statuses: 0,
@@ -84,6 +103,20 @@ const WSJTX_TIMELINE_LIMIT = 80;
 const wsjtxTimeline = [];
 const WSJTX_RECENT_DECODE_LIMIT = 120;
 const wsjtxRecentDecodes = [];
+
+function acceptDigitalClient(msg, rinfo) {
+  if (!localSourceAllowed(rinfo.address, os.networkInterfaces())) return false;
+  const incomingProvider = providerForClient(msg.id);
+  if (!incomingProvider) return false;
+  const endpointFresh = latestWsjtxEndpoint && Date.now() - Number(latestWsjtxEndpoint.ts || 0) <= 15000;
+  if (incomingProvider !== selectedDigitalProvider || (endpointFresh && (latestWsjtxEndpoint.address !== rinfo.address || latestWsjtxEndpoint.port !== rinfo.port || latestWsjtxClientId !== msg.id))) {
+    digitalProviderConflict = true;
+    return false;
+  }
+  latestWsjtxEndpoint = {address: rinfo.address, port: rinfo.port, ts: Date.now()};
+  latestWsjtxClientId = msg.id;
+  return true;
+}
 
 // ============= SDC PARSING =============
 
@@ -226,16 +259,17 @@ function addWsjtxTimeline(entry) {
 }
 
 function commandCapabilities() {
+  const nativeOwnsControl = selectedDigitalProvider === 'mshv_auto_dx';
   return {
-    clear: true,
-    replay: true,
+    clear: !nativeOwnsControl,
+    replay: !nativeOwnsControl,
     halt_tx: true,
-    free_text: true,
-    location: true,
-    switch_configuration: true,
-    configure: true,
-    reply: true,
-    start_target_qso: true,
+    free_text: !nativeOwnsControl,
+    location: !nativeOwnsControl,
+    switch_configuration: !nativeOwnsControl,
+    configure: !nativeOwnsControl,
+    reply: !nativeOwnsControl,
+    start_target_qso: !nativeOwnsControl,
   };
 }
 
@@ -304,10 +338,28 @@ function getWsjtxStatsSnapshot() {
     lastDecodeAgeMs: age(wsjtxStats.lastDecode),
     lastLoggedAgeMs: age(wsjtxStats.lastLogged),
     lastCommandAgeMs: age(wsjtxStats.lastCommand),
+    pendingLoggedQsoUploads: loggedQsoUploadQueue.length,
+    loggedQsoQueueFault,
   };
 }
 
 function dispatchWsjtxCommand(command, payload = {}) {
+  if (command === 'select_provider' || command === 'reset_client') {
+    if (command === 'select_provider') {
+      if (!['none', 'wsjtz', 'mshv_auto_dx'].includes(payload.provider)) return { success: false, error: 'Unknown provider' };
+      selectedDigitalProvider = payload.provider;
+    }
+    latestWsjtxEndpoint = null;
+    latestWsjtxClientId = '';
+    wsjtxStats.lastStatus = null;
+    wsjtxRecentDecodes.length = 0;
+    digitalProviderConflict = false;
+    return { success: true, provider: selectedDigitalProvider };
+  }
+  if (digitalProviderConflict && !['status', 'halt_tx'].includes(command)) return {success: false, error: 'Conflicting digital clients detected; reset engine ownership'};
+  if (selectedDigitalProvider === 'mshv_auto_dx' && !['status', 'halt_tx'].includes(command)) {
+    return { success: false, error: 'Command unsupported by MSHV; internal planner owns target control' };
+  }
   if (command === 'status') {
     return {
       success: true,
@@ -462,7 +514,7 @@ function connectSDC() {
 
   // On connection error
   client.on('error', (err) => {
-    console.error('❌ SDC connection error:', err.message);
+    rateLimitedOptionalWarning(`sdc-connection:${err.message}`, `SDC connection error (rate-limited): ${err.message}`);
   });
 
   // On connection closed
@@ -549,6 +601,8 @@ function startWSJTXListener() {
         return;
       }
 
+      if (!acceptDigitalClient(msg, rinfo)) return;
+
       latestWsjtxEndpoint = {
         address: rinfo.address,
         port: rinfo.port,
@@ -579,6 +633,7 @@ function startWSJTXListener() {
           type: 'wsjtx_status',
           source: 'wsjtx',
           dialFrequency: msg.dialFrequency ? Number(msg.dialFrequency) : null,
+          mode: msg.mode || '',
           dxCall: msg.dxCall || '',
           dxGrid: msg.dxGrid || '',
           txEnabled: msg.txEnabled || false,
@@ -586,6 +641,8 @@ function startWSJTXListener() {
           decoding: msg.decoding || false,
           qsoState,
           qso_state: qsoState,
+          deCall: msg.deCall || '',
+          deGrid: msg.deGrid || '',
           txRst: msg.txRst || '',
           rxRst: msg.rxRst || '',
           ts: Date.now()
@@ -642,6 +699,11 @@ function startWSJTXListener() {
           txRst: msg.reportSent || msg.txRst || '',
           rxRst: msg.reportReceived || msg.rxRst || '',
           adifText: msg.adifText || '',
+          dateTime: msg.dateTime || null,
+          timeOn: msg.timeOn || null,
+          timeOff: msg.timeOff || null,
+          stationCallsign: wsjtxStats.lastStatus?.deCall || '',
+          clientId: latestWsjtxClientId,
           ts: Date.now()
         };
         wsjtxStats.lastLogged = broadcastData;
@@ -671,6 +733,8 @@ function startWSJTXListener() {
       }
 
       if (broadcastData) {
+        broadcastData.provider = selectedDigitalProvider;
+        broadcastData.planner_owner = plannerOwnerForProvider(selectedDigitalProvider);
         broadcast(broadcastData);
       }
     } catch (e) {
@@ -732,7 +796,7 @@ function startWSJTXListener() {
   // When you don't specify an address, the socket listens on all interfaces
   // This allows the OS to properly route multicast packets to this socket
   // The listening event handler (registered above) will configure multicast AFTER bind completes
-  udp.bind(WSJTX_UDP_PORT);
+  udp.bind(WSJTX_UDP_PORT); // Windows multicast WSJT-Z needs wildcard binding.
 }
 
 function readJsonBody(req) {
@@ -818,15 +882,46 @@ function postJson(url, payload, timeoutMs = 5000) {
 
 function buildLoggedQsoUpload(loggedData) {
   if (!loggedData || !loggedData.dxCall) return null;
+  const provider = loggedData.provider || selectedDigitalProvider;
+  const explicitMode = String(loggedData.mode || '').trim().toUpperCase();
+  // MSHV supports two distinct exact-slot modes. Never silently turn a
+  // missing FT4 mode into FT8, because that corrupts duplicate suppression
+  // and Wavelog history. Legacy WSJT-X packets keep their protocol default.
+  if (provider === 'mshv_auto_dx' && !['FT8', 'FT4'].includes(explicitMode)) return null;
+  const mode = explicitMode || 'FT8';
+  // Type 5 (QSO Logged) and type 12 (Logged ADIF) are two receipts for the
+  // same completed QSO. Their correlation identity must not contain the UDP
+  // message type or TIME_ON (which type 5 does not carry). TIME_OFF is the
+  // completion timestamp common to both packet formats.
+  const eventIdentity = {
+    provider,
+    station_callsign: String(loggedData.stationCallsign || '').trim().toUpperCase(),
+    call: String(loggedData.dxCall || '').trim().toUpperCase(),
+    time_off: loggedData.timeOff || loggedData.dateTime || null,
+    frequency_hz: loggedData.dialFrequency ? Number(loggedData.dialFrequency) : null,
+    mode,
+    client_id: loggedData.clientId || latestWsjtxClientId,
+  };
+  const eventId = crypto.createHash('sha256')
+    .update(JSON.stringify(eventIdentity))
+    .digest('hex');
   return {
     call: String(loggedData.dxCall || '').trim().toUpperCase(),
     frequency_hz: loggedData.dialFrequency ? Number(loggedData.dialFrequency) : null,
-    mode: loggedData.mode || 'FT8',
+    mode,
     grid: loggedData.dxGrid || '',
     rst_sent: loggedData.txRst || '',
     rst_received: loggedData.rxRst || '',
     comments: loggedData.adifText ? 'Auto-logged from WSJT-X UDP ADIF' : 'Auto-logged from WSJT-X UDP QSO Logged',
     adif_text: loggedData.adifText || '',
+    provider,
+    date_time: loggedData.dateTime || null,
+    time_on: loggedData.timeOn || null,
+    time_off: loggedData.timeOff || loggedData.dateTime || null,
+    station_callsign: eventIdentity.station_callsign,
+    client_id: eventIdentity.client_id,
+    event_id: eventId,
+    event_type: loggedData.eventType || '',
     source: 'wsjtx-bridge',
     async_upload: true,
   };
@@ -835,6 +930,7 @@ function buildLoggedQsoUpload(loggedData) {
 function loggedQsoResultSucceeded(body = {}) {
   if (!body || typeof body !== 'object') return false;
   if (body.duplicate && body.success) return true;
+  if (body.success && body.provisional_queued) return true;
   if (body.wavelog && body.wavelog.success) return true;
   return Boolean(body.success && body.outbox_queued);
 }
@@ -855,7 +951,8 @@ function buildLoggedQsoResultEvent(payload, uploadEntry = {}) {
     success,
     status: success ? 'success' : 'error',
     backend_uploaded: Boolean(uploadEntry.success),
-    queued: Boolean(body.outbox_queued || uploadEntry.queued),
+    queued: Boolean(body.outbox_queued || body.provisional_queued || uploadEntry.queued),
+    provisional: Boolean(body.provisional_queued),
     retry: Boolean(uploadEntry.retry),
     statusCode: uploadEntry.statusCode || null,
     message,
@@ -896,38 +993,51 @@ function loggedQsoIdentity(payload) {
   ].map(value => String(value || '').trim().toUpperCase()).join('|');
 }
 
-function persistLoggedQsoUploadQueue() {
-  if (BRIDGE_TEST_MODE) return;
+function persistLoggedQsoUploadQueue(queue = loggedQsoUploadQueue) {
+  if (BRIDGE_TEST_MODE && !BRIDGE_TEST_PERSIST) return true;
+  // A corrupt existing journal may still contain the only copy of a QSO.
+  // Never overwrite it with a newly constructed queue in the same process.
+  if (loggedQsoQueueFault) return false;
+  let fd = null;
   try {
     fs.mkdirSync(path.dirname(LOGGED_QSO_PENDING_PATH), { recursive: true });
-    const data = loggedQsoUploadQueue
+    const data = queue
       .map(item => JSON.stringify(item))
       .join('\n');
     const tempPath = `${LOGGED_QSO_PENDING_PATH}.tmp`;
-    fs.writeFileSync(tempPath, data ? `${data}\n` : '', 'utf8');
+    fd = fs.openSync(tempPath, 'w');
+    fs.writeFileSync(fd, data ? `${data}\n` : '', 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
     fs.renameSync(tempPath, LOGGED_QSO_PENDING_PATH);
+    try {
+      const directoryFd = fs.openSync(path.dirname(LOGGED_QSO_PENDING_PATH), 'r');
+      try { fs.fsyncSync(directoryFd); } finally { fs.closeSync(directoryFd); }
+    } catch { /* Windows may not allow directory fsync; file+rename remains atomic. */ }
+    return true;
   } catch (error) {
-    console.warn(`⚠️  Could not persist WSJT-X logged QSO retry queue: ${error.message || error}`);
+    if (fd !== null) try { fs.closeSync(fd); } catch { /* best effort */ }
+    loggedQsoQueueFault = `retry-queue-persistence-failed:${error.message || error}`;
+    console.error(`❌ Could not durably persist WSJT-X logged QSO retry queue: ${error.message || error}`);
+    return false;
   }
 }
 
 function loadLoggedQsoUploadQueue() {
-  if (BRIDGE_TEST_MODE || !fs.existsSync(LOGGED_QSO_PENDING_PATH)) return;
+  if ((BRIDGE_TEST_MODE && !BRIDGE_TEST_PERSIST) || !fs.existsSync(LOGGED_QSO_PENDING_PATH)) return;
   try {
     const lines = fs.readFileSync(LOGGED_QSO_PENDING_PATH, 'utf8')
       .split(/\r?\n/)
       .map(line => line.trim())
       .filter(Boolean);
     const now = Date.now();
-    loggedQsoUploadQueue = lines
-      .map(line => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      })
-      .filter(item => item && item.payload && loggedQsoIdentity(item.payload));
+    const parsed = lines.map(line => JSON.parse(line));
+    if (parsed.some(item => !item || !item.payload || !loggedQsoIdentity(item.payload))) {
+      throw new Error('retry queue contains an invalid identity record');
+    }
+    loggedQsoQueueFault = null;
+    loggedQsoUploadQueue = parsed;
     for (const item of loggedQsoUploadQueue) {
       const lastError = String(item.lastError || '').toLowerCase();
       if (lastError.includes('econnrefused') || lastError.includes('etimedout') || lastError.includes('socket hang up')) {
@@ -940,19 +1050,21 @@ function loadLoggedQsoUploadQueue() {
     }
   } catch (error) {
     console.warn(`⚠️  Could not load WSJT-X logged QSO retry queue: ${error.message || error}`);
+    loggedQsoQueueFault = `retry-queue-load-failed:${error.message || error}`;
     loggedQsoUploadQueue = [];
   }
 }
 
 function enqueueLoggedQsoUpload(payload, reason = '') {
   const identity = loggedQsoIdentity(payload);
-  if (!identity) return;
-  const existing = loggedQsoUploadQueue.find(item => item.identity === identity);
+  if (!identity) return false;
+  const nextQueue = loggedQsoUploadQueue.map(item => ({ ...item }));
+  const existing = nextQueue.find(item => item.identity === identity);
   if (existing) {
     existing.lastError = reason || existing.lastError || '';
     existing.nextAttemptAt = Math.min(existing.nextAttemptAt || Date.now(), Date.now() + LOGGED_QSO_RETRY_INTERVAL_MS);
   } else {
-    loggedQsoUploadQueue.push({
+    nextQueue.push({
       identity,
       payload,
       attempts: 0,
@@ -961,18 +1073,23 @@ function enqueueLoggedQsoUpload(payload, reason = '') {
       lastError: reason,
     });
   }
-  persistLoggedQsoUploadQueue();
+  if (!persistLoggedQsoUploadQueue(nextQueue)) return false;
+  loggedQsoUploadQueue = nextQueue;
+  return true;
 }
 
 async function retryLoggedQsoUploadItem(item) {
   item.attempts = (item.attempts || 0) + 1;
   try {
-    const result = await postJson(`${OM0RX_BACKEND_URL}/api/wsjtx/log-qso`, item.payload, 15000);
+    const result = await postJson(`${OM0RX_BACKEND_URL}/api/digital/log-qso`, item.payload, 15000);
     if (!loggedQsoResultSucceeded(result.body)) {
       throw new Error(result.body?.message || result.body?.error || 'Backend did not durably accept QSO');
     }
-    loggedQsoUploadQueue = loggedQsoUploadQueue.filter(entry => entry !== item);
-    persistLoggedQsoUploadQueue();
+    const nextQueue = loggedQsoUploadQueue.filter(entry => entry !== item);
+    if (!persistLoggedQsoUploadQueue(nextQueue)) {
+      throw new Error('Backend accepted QSO but retry queue removal was not durably persisted');
+    }
+    loggedQsoUploadQueue = nextQueue;
     wsjtxStats.loggedUploads += 1;
     wsjtxStats.lastLoggedUpload = {
       ts: Date.now(),
@@ -990,7 +1107,9 @@ async function retryLoggedQsoUploadItem(item) {
   } catch (error) {
     item.lastError = error.message || String(error);
     item.nextAttemptAt = Date.now() + Math.min(300000, LOGGED_QSO_RETRY_INTERVAL_MS * Math.max(1, item.attempts));
-    persistLoggedQsoUploadQueue();
+    if (!persistLoggedQsoUploadQueue()) {
+      item.lastError += '; retry state persistence failed';
+    }
     console.warn(`⚠️  Retried WSJT-X logged QSO upload failed for ${item.payload.call}: ${item.lastError}`);
     return false;
   }
@@ -1041,7 +1160,7 @@ async function uploadLoggedQsoToBackend(loggedData) {
     error: '',
   };
   try {
-    const result = await postJson(`${OM0RX_BACKEND_URL}/api/wsjtx/log-qso`, payload, 15000);
+    const result = await postJson(`${OM0RX_BACKEND_URL}/api/digital/log-qso`, payload, 15000);
     if (!loggedQsoResultSucceeded(result.body)) {
       throw new Error(result.body?.message || result.body?.error || 'Backend did not durably accept QSO');
     }
@@ -1052,9 +1171,9 @@ async function uploadLoggedQsoToBackend(loggedData) {
     console.log(`✅ WSJT-X logged QSO uploaded to OM0RX backend: ${payload.call}`);
   } catch (error) {
     uploadEntry.error = error.message || String(error);
-    uploadEntry.queued = true;
+    uploadEntry.queued = enqueueLoggedQsoUpload(payload, uploadEntry.error);
+    if (!uploadEntry.queued) uploadEntry.error += '; durable retry queue write failed';
     wsjtxStats.loggedUploadErrors += 1;
-    enqueueLoggedQsoUpload(payload, uploadEntry.error);
     console.warn(`⚠️  WSJT-X logged QSO backend upload failed for ${payload.call}: ${uploadEntry.error}`);
   } finally {
     wsjtxStats.lastLoggedUpload = uploadEntry;
@@ -1073,30 +1192,7 @@ async function uploadLoggedQsoToBackend(loggedData) {
 }
 
 function scheduleLoggedQsoUpload(messageType, loggedData) {
-  if (messageType === 'LOGGED_ADIF') {
-    if (pendingQsoLoggedUploadTimer) {
-      clearTimeout(pendingQsoLoggedUploadTimer);
-      pendingQsoLoggedUploadTimer = null;
-      pendingQsoLoggedData = null;
-    }
-    uploadLoggedQsoToBackend(loggedData);
-    return;
-  }
-
-  if (messageType !== 'QSO_LOGGED') {
-    return;
-  }
-
-  if (pendingQsoLoggedUploadTimer) {
-    clearTimeout(pendingQsoLoggedUploadTimer);
-  }
-  pendingQsoLoggedData = loggedData;
-  pendingQsoLoggedUploadTimer = setTimeout(() => {
-    const fallback = pendingQsoLoggedData;
-    pendingQsoLoggedUploadTimer = null;
-    pendingQsoLoggedData = null;
-    uploadLoggedQsoToBackend(fallback);
-  }, 1500);
+  loggedQsoCoalescer.accept(messageType, { ...loggedData, eventType: messageType, provider: selectedDigitalProvider });
 }
 
 function startWsjtxCommandServer() {
@@ -1146,6 +1242,9 @@ function startWsjtxCommandServer() {
 
 function getWsjtxStatusSnapshot() {
   return {
+    conflict: digitalProviderConflict,
+    provider: selectedDigitalProvider,
+    planner_owner: plannerOwnerForProvider(selectedDigitalProvider),
     success: true,
     enabled: WSJTX_ENABLED,
     client: getWsjtxClientSnapshot(),
@@ -1156,6 +1255,9 @@ function getWsjtxStatusSnapshot() {
 }
 
 export function __resetWsjtxBridgeDiagnosticsForTest() {
+  loggedQsoCoalescer.reset();
+  selectedDigitalProvider = 'wsjtz';
+  digitalProviderConflict = false;
   if (pendingQsoLoggedUploadTimer) {
     clearTimeout(pendingQsoLoggedUploadTimer);
     pendingQsoLoggedUploadTimer = null;
@@ -1166,6 +1268,7 @@ export function __resetWsjtxBridgeDiagnosticsForTest() {
   }
   pendingQsoLoggedData = null;
   loggedQsoUploadQueue = [];
+  loggedQsoQueueFault = null;
   latestWsjtxEndpoint = null;
   latestWsjtxClientId = '';
   wsjtxCommandSender = null;
@@ -1194,6 +1297,13 @@ export function __dispatchWsjtxCommandForTest(command, payload = {}) {
   return dispatchWsjtxCommand(command, payload);
 }
 
+export function __attachDigitalClientForTest(packet, endpoint, sender) {
+  const message = wsjtxParser.parse(packet);
+  if (!message || !acceptDigitalClient(message, endpoint)) return false;
+  wsjtxCommandSender = sender;
+  return true;
+}
+
 export function __getWsjtxStatusForTest() {
   return getWsjtxStatusSnapshot();
 }
@@ -1202,8 +1312,25 @@ export function __buildLoggedQsoUploadForTest(loggedData) {
   return buildLoggedQsoUpload(loggedData);
 }
 
+export async function __uploadLoggedQsoForTest(loggedData) {
+  return await uploadLoggedQsoToBackend(loggedData);
+}
+
 export function __buildLoggedQsoResultEventForTest(payload, uploadEntry = {}) {
   return buildLoggedQsoResultEvent(payload, uploadEntry);
+}
+
+export function __enqueueLoggedQsoUploadForTest(payload, reason = '') {
+  return enqueueLoggedQsoUpload(payload, reason);
+}
+
+export function __loggedQsoQueueForTest() {
+  return loggedQsoUploadQueue.map(item => ({ ...item }));
+}
+
+export function __loadLoggedQsoQueueForTest() {
+  loadLoggedQsoUploadQueue();
+  return { count: loggedQsoUploadQueue.length, fault: loggedQsoQueueFault };
 }
 
 export function __deriveWsjtxQsoStateForTest(msg = {}) {

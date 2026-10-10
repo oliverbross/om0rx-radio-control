@@ -1,0 +1,561 @@
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+index 0e18488..b77d73c 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+@@ -27,7 +27,8 @@
+ #include <QProgressDialog>
+ #include <QApplication>
+ #include <QInputDialog>
+-#include <QHeaderView>
++#include <QHeaderView>
++#include <QSet>
+ 
+ HvAutoDxSettings::HvAutoDxSettings(QWidget *parent)
+     : QDialog(parent)
+@@ -76,7 +77,8 @@ void HvAutoDxSettings::setupUi()
+     createDxpeditionGroup();
+     createBandSwitchingGroup();
+     createAutomationTimingGroup();
+-    createEligibilityGroup();
++    createEligibilityGroup();
++    createUsStatesGroup();
+     createBandSelectionGroup();
+     createPriorityGroup();
+     createOperatingModeGroup();
+@@ -87,7 +89,8 @@ void HvAutoDxSettings::setupUi()
+     scrollLayout->addWidget(m_dxpeditionGroup);
+     scrollLayout->addWidget(m_bandSwitchingGroup);
+     scrollLayout->addWidget(m_automationTimingGroup);
+-    scrollLayout->addWidget(m_eligibilityGroup);
++    scrollLayout->addWidget(m_eligibilityGroup);
++    scrollLayout->addWidget(m_usStatesGroup);
+     scrollLayout->addWidget(m_bandSelectionGroup);
+     scrollLayout->addWidget(m_priorityGroup);
+     // The legacy CQ/Hybrid/S&P helper is not part of the native AutoDxerCore.
+@@ -537,7 +540,38 @@ void HvAutoDxSettings::createEligibilityGroup()
+     layout->addWidget(note);
+ }
+ 
+-void HvAutoDxSettings::createBandSelectionGroup()
++void HvAutoDxSettings::createUsStatesGroup()
++{
++    m_usStatesGroup = new QGroupBox("US States chase (Wavelog authoritative)");
++    QGridLayout *layout = new QGridLayout(m_usStatesGroup);
++    m_usStatesEnabled = new QCheckBox("Enable state/band chase");
++    m_usStatesRequireConfirmation = new QCheckBox("Require at least one confirmed QSO");
++    m_usStatesPreferLotw = new QCheckBox("Prefer known LoTW users");
++    m_usStatesMinimumWorked = new QSpinBox;
++    m_usStatesMinimumWorked->setRange(1, 10);
++    m_usStatesMissingConfirmationWeight = new QSpinBox;
++    m_usStatesMissingConfirmationWeight->setRange(0, 100000);
++    m_usStatesUnderQuotaWeight = new QSpinBox;
++    m_usStatesUnderQuotaWeight->setRange(0, 100000);
++    m_usStatesBands = new QLineEdit("3,4,6,7,8,9,10,11,12");
++    m_usStatesBands->setToolTip("MSHV band indexes: 3=160m, 4=80m, 6=40m, 7=30m, 8=20m, 9=17m, 10=15m, 11=12m, 12=10m");
++    layout->addWidget(m_usStatesEnabled, 0, 0);
++    layout->addWidget(m_usStatesRequireConfirmation, 0, 1);
++    layout->addWidget(m_usStatesPreferLotw, 0, 2);
++    layout->addWidget(new QLabel("Distinct calls per state/band:"), 1, 0);
++    layout->addWidget(m_usStatesMinimumWorked, 1, 1);
++    layout->addWidget(new QLabel("Missing confirmation weight:"), 2, 0);
++    layout->addWidget(m_usStatesMissingConfirmationWeight, 2, 1);
++    layout->addWidget(new QLabel("Under-quota weight:"), 2, 2);
++    layout->addWidget(m_usStatesUnderQuotaWeight, 2, 3);
++    layout->addWidget(new QLabel("Bands (160m-10m, no 6m):"), 3, 0);
++    layout->addWidget(m_usStatesBands, 3, 1, 1, 3);
++    QLabel *help = new QLabel("A slot completes after the distinct-call quota and one LoTW/paper confirmation. FT8 and FT4 calls are pooled; exact call/band/mode duplicates remain prohibited.");
++    help->setWordWrap(true);
++    layout->addWidget(help, 4, 0, 1, 4);
++}
++
++void HvAutoDxSettings::createBandSelectionGroup()
+ {
+     m_bandSelectionGroup = new QGroupBox("Band Selection");
+     QVBoxLayout *mainLayout = new QVBoxLayout(m_bandSelectionGroup);
+@@ -1141,8 +1175,19 @@ void HvAutoDxSettings::loadSettings(const QString& appPath)
+         "Dxpedition/MaxSpotAgeSeconds", 120).toInt());
+     m_dxpeditionTxOffsetHz->setValue(settings.value(
+         "Dxpedition/TxOffsetHz", 1000).toInt());
+-    m_dxpeditionReturnToStandard->setChecked(settings.value(
+-        "Dxpedition/ReturnToStandard", true).toBool());
++    m_dxpeditionReturnToStandard->setChecked(settings.value(
++        "Dxpedition/ReturnToStandard", true).toBool());
++    m_usStatesEnabled->setChecked(settings.value("USStates/Enabled", true).toBool());
++    m_usStatesMinimumWorked->setValue(settings.value("USStates/MinimumWorked", 3).toInt());
++    m_usStatesRequireConfirmation->setChecked(settings.value(
++        "USStates/RequireConfirmation", true).toBool());
++    m_usStatesPreferLotw->setChecked(settings.value("USStates/PreferLotw", true).toBool());
++    m_usStatesMissingConfirmationWeight->setValue(settings.value(
++        "USStates/MissingConfirmationWeight", 8500).toInt());
++    m_usStatesUnderQuotaWeight->setValue(settings.value(
++        "USStates/UnderQuotaWeight", 7000).toInt());
++    m_usStatesBands->setText(settings.value(
++        "USStates/Bands", "3,4,6,7,8,9,10,11,12").toString());
+ 
+     // Band Selection - default to all HF bands enabled (no 6m)
+     QString bandStr = settings.value("BandSelection/EnabledBands", "3,4,6,7,8,9,10,11,12").toString();
+@@ -1318,8 +1363,22 @@ void HvAutoDxSettings::saveSettings(const QString& appPath)
+     settings.setValue("Dxpedition/MaxSpotAgeSeconds",
+                       m_dxpeditionMaxSpotAgeSeconds->value());
+     settings.setValue("Dxpedition/TxOffsetHz", m_dxpeditionTxOffsetHz->value());
+-    settings.setValue("Dxpedition/ReturnToStandard",
+-                      m_dxpeditionReturnToStandard->isChecked());
++    settings.setValue("Dxpedition/ReturnToStandard",
++                      m_dxpeditionReturnToStandard->isChecked());
++    settings.setValue("USStates/Enabled", m_usStatesEnabled->isChecked());
++    settings.setValue("USStates/MinimumWorked", m_usStatesMinimumWorked->value());
++    settings.setValue("USStates/RequireConfirmation", m_usStatesRequireConfirmation->isChecked());
++    settings.setValue("USStates/PreferLotw", m_usStatesPreferLotw->isChecked());
++    settings.setValue("USStates/MissingConfirmationWeight", m_usStatesMissingConfirmationWeight->value());
++    settings.setValue("USStates/UnderQuotaWeight", m_usStatesUnderQuotaWeight->value());
++    QStringList stateBands;
++    const QSet<QString> validStateBands = QSet<QString>() << "3" << "4" << "6" << "7" << "8" << "9" << "10" << "11" << "12";
++    for (const QString &token : m_usStatesBands->text().split(',', Qt::SkipEmptyParts)) {
++        const QString band = token.trimmed();
++        if (validStateBands.contains(band) && !stateBands.contains(band)) stateBands << band;
++    }
++    if (stateBands.isEmpty()) stateBands << "3" << "4" << "6" << "7" << "8" << "9" << "10" << "11" << "12";
++    settings.setValue("USStates/Bands", stateBands.join(','));
+ 
+     // Priority
+     settings.setValue("Priority/NewDxccAllTime", m_weightNewDxccAllTime->value());
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+index 5ad6a71..b68f740 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+@@ -206,7 +206,8 @@ private:
+     void createDxpeditionGroup();
+     void createBandSwitchingGroup();
+     void createAutomationTimingGroup();
+-    void createEligibilityGroup();
++    void createEligibilityGroup();
++    void createUsStatesGroup();
+     void populateDefaultServers();  // Helper to populate defaults without confirmation
+     void createPriorityGroup();
+     void createOperatingModeGroup();
+@@ -308,7 +309,16 @@ private:
+     QComboBox *m_atnoChaseType;
+     QSpinBox *m_scarceThreshold;
+     QSpinBox *m_nonEuropeBoost;
+-    QSpinBox *m_dxpeditionBoost;
++    QSpinBox *m_dxpeditionBoost;
++
++    QGroupBox *m_usStatesGroup;
++    QCheckBox *m_usStatesEnabled;
++    QSpinBox *m_usStatesMinimumWorked;
++    QCheckBox *m_usStatesRequireConfirmation;
++    QCheckBox *m_usStatesPreferLotw;
++    QSpinBox *m_usStatesMissingConfirmationWeight;
++    QSpinBox *m_usStatesUnderQuotaWeight;
++    QLineEdit *m_usStatesBands;
+ 
+     // Band Selection
+     QGroupBox *m_bandSelectionGroup;
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+index ddecfc5..a1711c3 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -23,6 +23,7 @@
+ #include <QSettings>
+ #include <QUrl>
+ #include <QUuid>
++#include <algorithm>
+ 
+ // Helper: Check if callsign is rare DX (DXpedition) that should use dial frequency directly
+ // For these stations, the spotted frequency IS the dial frequency, not an RF frequency
+@@ -417,6 +418,17 @@ void AutoDxerCore::loadRuntimeConfig(const QString &settingsPath)
+     m_targetScorer->setUSGridOnly(config.gridUsOnly);
+     m_targetScorer->setMinSNR(config.selection.minSignal);
+     m_targetScorer->setSelectionConfig(m_selectionConfig);
++    m_targetScorer->configureUsStates(
++        config.usStatesEnabled, config.usStatesMinimumWorked,
++        config.usStatesRequireConfirmation, config.usStatesPreferLotw,
++        config.usStatesMissingConfirmationWeight, config.usStatesUnderQuotaWeight,
++        config.usStatesBands);
++    const bool usStateDataAvailable = m_targetScorer->loadUsStateIndex(
++        settingsPath + "/database/us-states.txt");
++    emit debugMessage(QString("US-STATES: index=%1 calls=%2 complete-slots=%3")
++        .arg(usStateDataAvailable ? "available" : "unavailable")
++        .arg(m_targetScorer->usStateKnownCalls())
++        .arg(m_targetScorer->usStateCompleteSlots()));
+ 
+     QSet<QString> lotwMembers;
+     const QString lotwPath = settingsPath + "/database/lotw-users.txt";
+@@ -824,6 +836,21 @@ QJsonObject AutoDxerCore::runtimeConfigStatus() const
+     result["non_europe_boost"] = m_selectionConfig.nonEuropeBoost;
+     result["lotw_membership_capability"] = m_lotwMembershipCapability;
+     result["confirmed_dxcc_data_available"] = m_confirmedDxccDataAvailable;
++    QJsonObject usStates;
++    usStates["enabled"] = m_targetScorer->usStatesEnabled();
++    usStates["minimum_worked"] = m_targetScorer->usStatesMinimumWorked();
++    usStates["require_confirmation"] = m_targetScorer->usStatesRequireConfirmation();
++    usStates["prefer_lotw"] = m_targetScorer->usStatesPreferLotw();
++    usStates["missing_confirmation_weight"] = m_targetScorer->usStatesMissingConfirmationWeight();
++    usStates["under_quota_weight"] = m_targetScorer->usStatesUnderQuotaWeight();
++    usStates["known_calls"] = m_targetScorer->usStateKnownCalls();
++    usStates["complete_slots"] = m_targetScorer->usStateCompleteSlots();
++    QJsonArray stateBands;
++    QList<int> orderedStateBands = m_targetScorer->usStatesBands().values();
++    std::sort(orderedStateBands.begin(), orderedStateBands.end());
++    for (int band : orderedStateBands) stateBands.append(band);
++    usStates["bands"] = stateBands;
++    result["us_states"] = usStates;
+     result["eligibility"] = eligibility;
+     result["atno_chase_type"] = static_cast<int>(m_atnoChaseType);
+     result["scarce_threshold"] = m_scarceTargetThreshold;
+@@ -3448,6 +3475,7 @@ void AutoDxerCore::onMSHVQsoLogged(QStringList qsoData)
+     const QString slotKey = workedSlotKey(callsign, bandIndex, mode);
+     m_recentlyWorked.insert(slotKey);
+     m_workedTimestamps[slotKey] = QDateTime::currentDateTime();
++    if (m_targetScorer) m_targetScorer->recordUsStateQso(callsign, bandIndex);
+ 
+     // Remove from decode cache so it won't appear as a target
+     if (m_decodeCache) {
+@@ -3712,7 +3740,8 @@ void AutoDxerCore::checkCrossBandAlerts()
+                              m_dxccTracker->isNewDXCCByCall(spot.callsign);
+             bool isNewBandSlot = m_targetScorer->priorityBandSlotEnabled() &&
+                                  m_dxccTracker->isNewBandSlotByCall(spot.callsign, band);
+-            bool isNeeded = isNewDxcc || isNewBandSlot;
++            const bool isUsStateNeeded = m_targetScorer->usStateNeeded(spot.callsign, band);
++            bool isNeeded = isNewDxcc || isNewBandSlot || isUsStateNeeded;
+             const bool dxpedition = isDxpeditionTarget(spot.callsign, band);
+             if (dxpedition && (!m_dxpeditionChaseEnabled
+                     || !m_dxpeditionAllowCrossBandQsy)) {
+@@ -3785,10 +3814,11 @@ void AutoDxerCore::checkCrossBandAlerts()
+             candidate.spot = spot;
+             candidate.entity = entity;
+             candidate.band = band;
+-            candidate.priority = isNewDxcc ? 2 : 1;
++            candidate.priority = isNewDxcc ? 3 : isUsStateNeeded ? 2 : 1;
+             candidate.reason = isNewDxcc && isNewBandSlot
+                 ? "new-dxcc+new-band-slot"
+                 : isNewDxcc ? "new-dxcc"
++                : isUsStateNeeded ? "us-state-needed"
+                 : isNewBandSlot ? "new-band-slot" : "active-dxpedition";
+             candidate.standardDial = standardDial;
+             candidate.spotDialFreq = spotDialFreq;
+@@ -3945,7 +3975,9 @@ void AutoDxerCore::checkSameBandNonStdFreqAlerts()
+                          m_dxccTracker->isNewDXCCByCall(spot.callsign);
+         bool isNewBandSlot = m_targetScorer->priorityBandSlotEnabled() &&
+                              m_dxccTracker->isNewBandSlotByCall(spot.callsign, m_currentBandIndex);
+-        bool isNeeded = isNewDxcc || isNewBandSlot;
++        const bool isUsStateNeeded = m_targetScorer->usStateNeeded(
++            spot.callsign, m_currentBandIndex);
++        bool isNeeded = isNewDxcc || isNewBandSlot || isUsStateNeeded;
+         const bool dxpedition = isDxpeditionTarget(
+             spot.callsign, m_currentBandIndex);
+         if (dxpedition && (!m_dxpeditionChaseEnabled
+@@ -4018,7 +4050,8 @@ void AutoDxerCore::checkSameBandNonStdFreqAlerts()
+             if (catTransitionPending()) return;
+             QString entity;
+             if (m_cty) entity = m_cty->FindCountry(spot.callsign, false);
+-            QString needType = isNewDxcc ? "ATNO" : "BandNew";
++            QString needType = isNewDxcc ? "ATNO"
++                : isUsStateNeeded ? "USState" : "BandNew";
+ 
+             emit debugMessage(QString("SAMEBAND-NONSTD-ALERT: %1 %2 (%3) on %4 at %5 kHz (dial %6 Hz) - QSYing to verify locally")
+                 .arg(needType).arg(spot.callsign).arg(entity).arg(bandName(m_currentBandIndex))
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+index 7647110..0cde077 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+@@ -3,6 +3,7 @@
+ 
+ #include <QSettings>
+ #include <QStringList>
++#include <QSet>
+ #include <QRegExp>
+ #include "autodxselectionpolicy.h"
+ 
+@@ -100,6 +101,13 @@ struct AutoDxRuntimeConfig
+     int dxpeditionMaxSpotAgeSeconds;
+     int dxpeditionTxOffsetHz;
+     bool dxpeditionReturnToStandard;
++    bool usStatesEnabled;
++    int usStatesMinimumWorked;
++    bool usStatesRequireConfirmation;
++    bool usStatesPreferLotw;
++    int usStatesMissingConfirmationWeight;
++    int usStatesUnderQuotaWeight;
++    QSet<int> usStatesBands;
+ 
+     bool modeAllowed(const QString &mode) const
+     {
+@@ -223,6 +231,24 @@ struct AutoDxRuntimeConfig
+             "Dxpedition/TxOffsetHz", 1000).toInt(), 2400);
+         c.dxpeditionReturnToStandard = settings.value(
+             "Dxpedition/ReturnToStandard", true).toBool();
++        c.usStatesEnabled = settings.value("USStates/Enabled", true).toBool();
++        c.usStatesMinimumWorked = qBound(1, settings.value(
++            "USStates/MinimumWorked", 3).toInt(), 10);
++        c.usStatesRequireConfirmation = settings.value(
++            "USStates/RequireConfirmation", true).toBool();
++        c.usStatesPreferLotw = settings.value("USStates/PreferLotw", true).toBool();
++        c.usStatesMissingConfirmationWeight = qBound(0, settings.value(
++            "USStates/MissingConfirmationWeight", 8500).toInt(), 100000);
++        c.usStatesUnderQuotaWeight = qBound(0, settings.value(
++            "USStates/UnderQuotaWeight", 7000).toInt(), 100000);
++        const QSet<int> validStateBands = QSet<int>() << 3 << 4 << 6 << 7 << 8 << 9 << 10 << 11 << 12;
++        const QStringList requestedStateBands = settings.value(
++            "USStates/Bands", "3,4,6,7,8,9,10,11,12").toString().split(',', Qt::SkipEmptyParts);
++        for (const QString &bandText : requestedStateBands) {
++            const int band = bandText.trimmed().toInt();
++            if (validStateBands.contains(band)) c.usStatesBands.insert(band);
++        }
++        if (c.usStatesBands.isEmpty()) c.usStatesBands = validStateBands;
+         c.callsign = settings.value("SpotSources/Callsign", "").toString().trimmed().toUpper();
+         c.grid = settings.value("SpotSources/Grid", "").toString().trimmed().toUpper();
+         c.rbnEnabled = settings.value("SpotSources/RbnEnabled", true).toBool();
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+index 943e8a1..eee251d 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+@@ -8,6 +8,7 @@
+ #include "dxcctracker.h"
+ #include "../HvDecodeList/hvcty.h"
+ #include <algorithm>
++#include <QFile>
+ 
+ // Static member definitions for DXCC rarity scoring
+ QMap<QString, int> TargetScorer::s_mostWantedByCountry;
+@@ -171,6 +172,12 @@ TargetScorer::TargetScorer(DxccTracker *tracker, HvCty *cty, QObject *parent)
+     , m_dxpeditionChaseEnabled(true)
+     , m_dxpeditionChaseAnyActive(false)
+     , m_confirmationDataAvailable(false)
++    , m_usStatesEnabled(true)
++    , m_usStatesMinimumWorked(3)
++    , m_usStatesRequireConfirmation(true)
++    , m_usStatesPreferLotw(true)
++    , m_usStatesMissingConfirmationWeight(8500)
++    , m_usStatesUnderQuotaWeight(7000)
+ {
+     // Initialize Club Log Most Wanted rankings for rarity-based scoring
+     initRankings();
+@@ -180,6 +187,86 @@ TargetScorer::~TargetScorer()
+ {
+ }
+ 
++void TargetScorer::configureUsStates(bool enabled, int minimumWorked,
++                                     bool requireConfirmation, bool preferLotw,
++                                     int missingConfirmationWeight, int underQuotaWeight,
++                                     const QSet<int> &bands)
++{
++    m_usStatesEnabled = enabled;
++    m_usStatesMinimumWorked = qBound(1, minimumWorked, 10);
++    m_usStatesRequireConfirmation = requireConfirmation;
++    m_usStatesPreferLotw = preferLotw;
++    m_usStatesMissingConfirmationWeight = qMax(0, missingConfirmationWeight);
++    m_usStatesUnderQuotaWeight = qMax(0, underQuotaWeight);
++    m_usStatesBands = bands;
++}
++
++bool TargetScorer::loadUsStateIndex(const QString &path)
++{
++    QFile file(path);
++    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
++    QHash<QString, QString> stateByCall;
++    QSet<QString> lotwCalls;
++    QHash<QString, QSet<QString> > worked;
++    QHash<QString, QSet<QString> > confirmed;
++    while (!file.atEnd()) {
++        const QString line = QString::fromUtf8(file.readLine()).trimmed();
++        if (line.isEmpty() || line.startsWith('#')) continue;
++        const QStringList fields = line.split('|');
++        if (fields.size() >= 4 && fields.at(0) == "CALL") {
++            const QString call = baseCallsign(fields.at(1));
++            const QString state = fields.at(2).trimmed().toUpper();
++            if (!call.isEmpty() && state.size() == 2) stateByCall.insert(call, state);
++            if (fields.at(3).toInt() != 0) lotwCalls.insert(call);
++        } else if (fields.size() >= 5 && fields.at(0) == "WORKED") {
++            const QString call = baseCallsign(fields.at(1));
++            const QString state = fields.at(2).trimmed().toUpper();
++            const int band = fields.at(3).toInt();
++            const QString key = state + "@" + QString::number(band);
++            if (!call.isEmpty() && state.size() == 2 && band > 0) {
++                worked[key].insert(call);
++                if (fields.at(4).toInt() != 0) confirmed[key].insert(call);
++            }
++        }
++    }
++    m_usStateByCall = stateByCall;
++    m_usStateLotwCalls = lotwCalls;
++    m_usStateWorkedCalls = worked;
++    m_usStateConfirmedCalls = confirmed;
++    return true;
++}
++
++bool TargetScorer::usStateNeeded(const QString &call, int bandIndex) const
++{
++    if (!m_usStatesEnabled || !m_usStatesBands.contains(bandIndex)) return false;
++    const QString state = m_usStateByCall.value(baseCallsign(call));
++    if (state.isEmpty()) return false;
++    const QString key = state + "@" + QString::number(bandIndex);
++    return m_usStateWorkedCalls.value(key).size() < m_usStatesMinimumWorked
++        || (m_usStatesRequireConfirmation && m_usStateConfirmedCalls.value(key).isEmpty());
++}
++
++void TargetScorer::recordUsStateQso(const QString &call, int bandIndex)
++{
++    const QString base = baseCallsign(call);
++    const QString state = m_usStateByCall.value(base);
++    if (!state.isEmpty())
++        m_usStateWorkedCalls[state + "@" + QString::number(bandIndex)].insert(base);
++}
++
++int TargetScorer::usStateCompleteSlots() const
++{
++    int complete = 0;
++    static const char *states[] = {"AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"};
++    for (int s = 0; s < 50; ++s) for (int band : m_usStatesBands) {
++        const QString key = QString::fromLatin1(states[s]) + "@" + QString::number(band);
++        if (m_usStateWorkedCalls.value(key).size() >= m_usStatesMinimumWorked
++                && (!m_usStatesRequireConfirmation || !m_usStateConfirmedCalls.value(key).isEmpty()))
++            ++complete;
++    }
++    return complete;
++}
++
+ QString TargetScorer::baseCallsign(const QString &call)
+ {
+     const QString normalized = call.trimmed().toUpper();
+@@ -354,6 +441,16 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     // the same work again through eligibilityFacts().
+     // Calculate priority based on needs
+     QStringList reasons;
++    const QString usState = m_usStateByCall.value(baseCallsign(decode.callsign));
++    const QString usStateSlot = usState + "@" + QString::number(decode.bandIndex);
++    const int usStateWorked = m_usStateWorkedCalls.value(usStateSlot).size();
++    const int usStateConfirmed = m_usStateConfirmedCalls.value(usStateSlot).size();
++    const bool usStateBandEnabled = m_usStatesEnabled && !usState.isEmpty()
++        && m_usStatesBands.contains(decode.bandIndex);
++    target.usState = usState;
++    target.isUsStateConfirmation = usStateBandEnabled && m_usStatesRequireConfirmation
++        && usStateConfirmed == 0;
++    target.isUsStateQuota = usStateBandEnabled && usStateWorked < m_usStatesMinimumWorked;
+     if (target.isCallingMe && m_weightCallingMe > 0) {
+         reasons << "Calling me";
+     }
+@@ -424,12 +521,13 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     const bool activeDxpeditionAdmission = m_dxpeditionChaseEnabled
+         && m_dxpeditionChaseAnyActive && watchedDxpedition
+         && m_historicalNoveltyAllowed && facts.bandCall;
+-    bool hasNewStatus = m_selectionConfig.filterMatrixEnabled
+-        ? policy.eligible : eligibility.any();
++    const bool usStateAdmission = target.isUsStateConfirmation || target.isUsStateQuota;
++    bool hasNewStatus = usStateAdmission || (m_selectionConfig.filterMatrixEnabled
++        ? policy.eligible : eligibility.any());
+     if (!policy.blockers.isEmpty()) {
+         const bool noveltyOnlyBlock = policy.blockers.size() == 1
+             && policy.blockers.first() == "not-selected-by-filter-matrix";
+-        if (!activeDxpeditionAdmission || !noveltyOnlyBlock) {
++        if ((!activeDxpeditionAdmission && !usStateAdmission) || !noveltyOnlyBlock) {
+             target.priorityReason = policy.blockers.join(", ");
+             return target;
+         }
+@@ -448,6 +546,19 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+         else target.priority = 5000;
+     }
+     target.eligibilityClass = policy.targetClass;
++    if (usStateAdmission) {
++        const int stateWeight = target.isUsStateConfirmation
++            ? m_usStatesMissingConfirmationWeight : m_usStatesUnderQuotaWeight;
++        target.priority = qMax(target.priority, stateWeight);
++        target.eligibilityClass = target.isUsStateConfirmation
++            ? "us-state-confirmation" : "us-state-quota";
++        reasons << QString("US state %1 %2/%3 worked, %4 confirmed")
++            .arg(usState).arg(usStateWorked).arg(m_usStatesMinimumWorked).arg(usStateConfirmed);
++        if (m_usStatesPreferLotw && m_usStateLotwCalls.contains(baseCallsign(decode.callsign))) {
++            target.priority += 500;
++            reasons << "LoTW state candidate";
++        }
++    }
+     // Preference/catalog bonuses enhance an admitted positive-base target;
+     // they never create eligibility or resurrect a rejected target.
+     if (activeDxpeditionAdmission) {
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.h b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+index d7fa894..f5b41ad 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.h
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+@@ -10,6 +10,7 @@
+ #include <QList>
+ #include <QMap>
+ #include <QSet>
++#include <QHash>
+ #include "decodecache.h"
+ #include "autodxselectionpolicy.h"
+ 
+@@ -46,11 +47,15 @@ struct ScoredTarget
+     bool isNewBandSlot;
+     bool isNewGrid;
+     bool isCallingMe;
++    bool isUsStateConfirmation;
++    bool isUsStateQuota;
++    QString usState;
+     bool isLocalDecode;  // true = decoded locally, false = from external spot only
+     int decodeCount;
+ 
+     ScoredTarget() : bandIndex(-1), audioFrequency(0), dialFrequencyHz(0), snr(0), priority(0),
+-                     isNewDXCC(false), isUnconfirmedDXCC(false), isNewBandSlot(false), isNewGrid(false), isCallingMe(false), isLocalDecode(true), decodeCount(0) {}
++                     isNewDXCC(false), isUnconfirmedDXCC(false), isNewBandSlot(false), isNewGrid(false), isCallingMe(false),
++                     isUsStateConfirmation(false), isUsStateQuota(false), isLocalDecode(true), decodeCount(0) {}
+ 
+     bool operator<(const ScoredTarget &other) const { return priority > other.priority; }
+ };
+@@ -115,6 +120,21 @@ public:
+         m_confirmedDxccEntities = entities;
+         m_confirmationDataAvailable = dataAvailable;
+     }
++    void configureUsStates(bool enabled, int minimumWorked, bool requireConfirmation,
++                           bool preferLotw, int missingConfirmationWeight,
++                           int underQuotaWeight, const QSet<int> &bands);
++    bool loadUsStateIndex(const QString &path);
++    void recordUsStateQso(const QString &call, int bandIndex);
++    bool usStateNeeded(const QString &call, int bandIndex) const;
++    int usStateKnownCalls() const { return m_usStateByCall.size(); }
++    int usStateCompleteSlots() const;
++    bool usStatesEnabled() const { return m_usStatesEnabled; }
++    int usStatesMinimumWorked() const { return m_usStatesMinimumWorked; }
++    bool usStatesRequireConfirmation() const { return m_usStatesRequireConfirmation; }
++    bool usStatesPreferLotw() const { return m_usStatesPreferLotw; }
++    int usStatesMissingConfirmationWeight() const { return m_usStatesMissingConfirmationWeight; }
++    int usStatesUnderQuotaWeight() const { return m_usStatesUnderQuotaWeight; }
++    QSet<int> usStatesBands() const { return m_usStatesBands; }
+ 
+     // US-only grid filtering - only chase grids within US territory
+     void setUSGridOnly(bool enabled) { m_usGridOnly = enabled; }
+@@ -162,6 +182,17 @@ private:
+     bool m_dxpeditionChaseAnyActive;
+     QSet<QString> m_confirmedDxccEntities;
+     bool m_confirmationDataAvailable;
++    bool m_usStatesEnabled;
++    int m_usStatesMinimumWorked;
++    bool m_usStatesRequireConfirmation;
++    bool m_usStatesPreferLotw;
++    int m_usStatesMissingConfirmationWeight;
++    int m_usStatesUnderQuotaWeight;
++    QSet<int> m_usStatesBands;
++    QHash<QString, QString> m_usStateByCall;
++    QSet<QString> m_usStateLotwCalls;
++    QHash<QString, QSet<QString> > m_usStateWorkedCalls;
++    QHash<QString, QSet<QString> > m_usStateConfirmedCalls;
+ 
+     // DXCC rarity scoring - Club Log Most Wanted rankings
+     static QMap<QString, int> s_mostWantedByCountry;
+diff --git a/MSHV_2762/src/HvDecodeList/decodelist.cpp b/MSHV_2762/src/HvDecodeList/decodelist.cpp
+index e53dc73..6e14d23 100644
+--- a/MSHV_2762/src/HvDecodeList/decodelist.cpp
++++ b/MSHV_2762/src/HvDecodeList/decodelist.cpp
+@@ -1782,6 +1782,13 @@ void DecodeList::InsertItem_hv(QStringList list,bool ffopen,bool forme)
+             else
+             {
+ 	            	if (call.isEmpty()) call = FindHisCall(list.at(4));
++                // The RX-frequency/QSO panel also contains our transmitted
++                // rows. For those rows status describes the remote destination.
++                if (s_list_ident == 2 && list.at(1).startsWith("TX")) {
++                    const AutoDxParsedMessage parsed = AutoDxMessageParser::parse(list.at(4));
++                    if (parsed.senderResolved && !parsed.destination.isEmpty())
++                        call = parsed.destination.trimmed().toUpper();
++                }
+ 	            	const QString country = FindCountry(list.at(1), list.at(4), call);
+ 	            	const QStringList statuses = CompactStatuses(call);
+ 	            	QString mwValue;

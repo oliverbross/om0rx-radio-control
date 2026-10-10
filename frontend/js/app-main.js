@@ -6,30 +6,11 @@ console.log('✅ Loading app-main.js module...');
 const { createApp } = Vue;
 
 // ⚡ CRITICAL FIX: Prevent double mounting
-let templatesReady = false;
 let vueMounted = false;
-
-// Listen for templates to finish loading before mounting Vue
-document.addEventListener('templates-loaded', () => {
-    console.log('📋 Templates loaded - ready to mount Vue app');
-    templatesReady = true;
-    if (!vueMounted) {
-        mountVueApp();
-    }
-});
-
-// ⚡ CRITICAL FIX: Increased timeout to 10 seconds and prevent double mounting
-setTimeout(() => {
-    if (!templatesReady && !vueMounted) {
-        console.warn('⚠️ Templates took too long to load (10s timeout), mounting Vue anyway...');
-        mountVueApp();
-    } else if (vueMounted) {
-        console.log('✅ Vue already mounted, skipping fallback mount');
-    }
-}, 10000);
 
 // Wrap Vue app creation in a function to be called after templates load
 function mountVueApp() {
+    if (vueMounted) return;
     // Verify all required modules are loaded
     console.log('🔍 Checking module dependencies...');
     console.log('FlexRadioCore:', window.FlexRadioCore ? '✅' : '❌');
@@ -52,6 +33,10 @@ function mountVueApp() {
         console.error('Make sure all JavaScript files are loaded in the correct order.');
         throw new Error('Missing required modules');
     }
+
+    // Claim the mount before Vue begins so duplicate readiness signals cannot
+    // create two applications on the same DOM tree.
+    vueMounted = true;
 
     // Create the main Vue application
     createApp({
@@ -1157,6 +1142,11 @@ function mountVueApp() {
         trackDocumentListener(eventName, callback) {
             document.addEventListener(eventName, callback);
             this.lifecycleDisposables.push(() => document.removeEventListener(eventName, callback));
+        },
+
+        trackWindowListener(eventName, callback) {
+            window.addEventListener(eventName, callback);
+            this.lifecycleDisposables.push(() => window.removeEventListener(eventName, callback));
         },
 
         async initializeApp() {
@@ -2370,6 +2360,8 @@ function mountVueApp() {
     },
     
     async mounted() {
+        this.loadDigitalEngineStatus();
+        this.trackWindowListener('focus', () => this.loadDigitalEngineStatus());
         // Expose Vue instance to window first (needed by WinKeyer and other modules)
         window.vueInstance = this;
         console.log('✅ Vue instance exposed globally for WSJT-X integration');
@@ -2417,14 +2409,57 @@ function mountVueApp() {
     }
     }).mount('#app');
 
-    // ⚡ CRITICAL FIX: Mark Vue as mounted to prevent double mounting
-    vueMounted = true;
+    document.getElementById('app-loading')?.remove();
+    document.documentElement.dataset.om0rxMounted = 'true';
     console.log('✅ Vue app mounted successfully');
     console.log('✅ Vue instance exposed to window for inter-window communication');
 }
 
-// If templates already loaded (shouldn't happen, but safety check), mount now
-if (document.readyState === 'loading' && templatesReady) {
-    mountVueApp();
+function renderBootstrapFailure(error) {
+    console.error('❌ OM0RX WebUI bootstrap failed:', error);
+    document.getElementById('app-loading')?.remove();
+    const shell = document.getElementById('app') || document.body;
+    shell.removeAttribute?.('v-cloak');
+    const panel = document.createElement('section');
+    panel.id = 'app-bootstrap-error';
+    panel.setAttribute('role', 'alert');
+    const title = document.createElement('h1');
+    title.textContent = 'OM0RX interface could not be started';
+    const details = document.createElement('p');
+    details.textContent = error?.message || 'A required WebUI module failed to load.';
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = 'Retry';
+    retry.addEventListener('click', () => window.location.reload());
+    panel.append(title, details, retry);
+    shell.replaceChildren(panel);
 }
+
+function startVueApp() {
+    try {
+        mountVueApp();
+    } catch (error) {
+        renderBootstrapFailure(error);
+    }
+}
+
+function mountWhenTemplatesAreReady() {
+    const readiness = window.om0rxTemplateReady;
+    if (readiness?.state === 'loaded') {
+        startVueApp();
+        return;
+    }
+    if (readiness?.promise) {
+        readiness.promise.then(result => {
+            if (result?.ok) startVueApp();
+        });
+        return;
+    }
+
+    // Compatibility path for an older template loader. The current loader's
+    // stateful promise prevents the lost-event race that used to add 10 s.
+    document.addEventListener('templates-loaded', startVueApp, { once: true });
+}
+
+mountWhenTemplatesAreReady();
 

@@ -26,6 +26,11 @@ def _env_flag_enabled(name: str) -> bool:
     return str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _unsafe_windows_runtime() -> bool:
+    """Return whether importing PortAudio is unsafe on this Python runtime."""
+    return os.name == "nt" and sys.version_info >= (3, 14)
+
+
 def get_sounddevice() -> Optional[ModuleType]:
     """Return sounddevice if it can be imported without killing Python."""
     global _checked, _module, _reason
@@ -38,6 +43,14 @@ def get_sounddevice() -> Optional[ModuleType]:
     if _env_flag_enabled("FT8_DISABLE_SOUNDDEVICE"):
         _reason = "sounddevice disabled by FT8_DISABLE_SOUNDDEVICE"
         logger.info(_reason)
+        return None
+
+    if _unsafe_windows_runtime() and not _env_flag_enabled("FT8_ENABLE_SOUNDDEVICE_PROBE"):
+        _reason = (
+            "sounddevice skipped on Windows with Python 3.14+; "
+            "set FT8_ENABLE_SOUNDDEVICE_PROBE=1 to opt in"
+        )
+        logger.info("%s; using the safe soundcard fallback", _reason)
         return None
 
     try:

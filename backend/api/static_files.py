@@ -5,17 +5,44 @@ Handles frontend asset serving and static file endpoints
 
 import logging
 from pathlib import Path
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger(__name__)
+
+_IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
+_REVALIDATE_CACHE = "no-cache"
+_HTML_CACHE = "no-cache, no-store, must-revalidate"
 
 LEGACY_SINGLE_PAGE_ROUTES = {
     "radio-control.html",
     "logging.html",
     "launcher.html",
 }
+
+
+class CacheAwareStaticFiles(StaticFiles):
+    """Cache fingerprinted vendor files while keeping development assets fresh."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        query = scope.get("query_string", b"")
+        response.headers["Cache-Control"] = (
+            _IMMUTABLE_CACHE if b"v=" in query else _REVALIDATE_CACHE
+        )
+        return response
+
+
+def _file_response(file: Path, media_type: str, *, versioned: bool = False) -> FileResponse:
+    response = FileResponse(file, media_type=media_type)
+    if file.suffix.lower() == ".html":
+        response.headers["Cache-Control"] = _HTML_CACHE
+    else:
+        response.headers["Cache-Control"] = (
+            _IMMUTABLE_CACHE if versioned else _REVALIDATE_CACHE
+        )
+    return response
 
 
 def setup_static_files(app):
@@ -28,7 +55,7 @@ def setup_static_files(app):
     # Define paths
     frontend_path = Path(__file__).parent.parent.parent / "frontend"
     # Mount static files from frontend directory
-    app.mount("/static", StaticFiles(directory=str(frontend_path)), name="static")
+    app.mount("/static", CacheAwareStaticFiles(directory=str(frontend_path)), name="static")
 
     # Register individual file endpoints
     register_static_endpoints(app, frontend_path)
@@ -44,7 +71,7 @@ def register_static_endpoints(app, frontend_path: Path):
     """
 
     @app.get("/{file_path:path}")
-    async def serve_frontend_files(file_path: str):
+    async def serve_frontend_files(file_path: str, request: Request):
         """Serve all other frontend files (HTML, JS, CSS, etc.)"""
         
         # ⚠️ CRITICAL: Don't intercept API routes!
@@ -55,7 +82,7 @@ def register_static_endpoints(app, frontend_path: Path):
         if file_path in LEGACY_SINGLE_PAGE_ROUTES:
             index_file = frontend_path / "index.html"
             if index_file.exists():
-                return FileResponse(index_file, media_type='text/html')
+                return _file_response(index_file, "text/html")
 
         file = frontend_path / file_path
 
@@ -84,19 +111,18 @@ def register_static_endpoints(app, frontend_path: Path):
                 '.wasm': 'application/wasm',
             }
             media_type = media_types.get(suffix, 'application/octet-stream')
-            response = FileResponse(file, media_type=media_type)
-            # Add cache-busting headers for development
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
-            return response
+            return _file_response(
+                file,
+                media_type,
+                versioned="v" in request.query_params,
+            )
 
         # If file not found and it's a request for a page, try index.html (for SPA support)
         # Handle root path request (empty file_path) or pages without extension
         if not file_path or '.' not in file_path:
             index_file = frontend_path / "index.html"
             if index_file.exists():
-                return FileResponse(index_file, media_type='text/html')
+                return _file_response(index_file, "text/html")
 
         # File not found
         raise HTTPException(status_code=404, detail="File not found")

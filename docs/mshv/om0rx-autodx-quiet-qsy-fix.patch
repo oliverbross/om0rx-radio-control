@@ -1,0 +1,1553 @@
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+index 1f56620..381e86a 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -82,6 +82,10 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     , m_runtimeDxClusterServerCount(0)
+     , m_cty(cty)
+     , m_hvDxccTracker(nullptr)
++    , m_targetAttemptElapsedOffsetMs(0)
++    , m_autoOffReconcileTimer(nullptr)
++    , m_autoModeOn(false)
++    , m_reconcilingAutoOff(false)
+     , m_historyTimer(nullptr)
+     , m_historyNetwork(nullptr)
+     , m_historyRequestPending(false)
+@@ -108,7 +112,15 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     , m_currentTargetIsNewSlot(false)
+     , m_currentTargetIsNewGrid(false)
+     , m_atnoTotalCallCycles(0)            // Reset when new target is queued
++    , m_suspendedTargetElapsedMs(0)
++    , m_suspendedTargetIsATNO(false)
++    , m_suspendedTargetIsNewSlot(false)
++    , m_suspendedTargetIsNewGrid(false)
++    , m_resumingSuspendedTarget(false)
+     , m_waitingForSlotAnalysis(false)     // Not waiting for slot analysis initially
++    , m_bandChangePending(false)
++    , m_requestedBandIndex(-1)
++    , m_bandChangeRequestId(0)
+     , m_pendingCrossBandBand(-1)          // No pending cross-band verification
+     , m_pendingCrossBandReturnBand(-1)    // No originating band to restore
+     , m_pendingCrossBandDialFreq(0)       // No pending dial frequency change
+@@ -175,6 +187,16 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     m_timeoutTimer->setInterval(5000);
+     connect(m_timeoutTimer, SIGNAL(timeout()), this, SLOT(checkTimeout()));
+ 
++    // StopAuto can occur briefly while MSHV advances an FT8 exchange.  Only a
++    // sustained AUTO-off state is terminal ownership evidence; reconcile it
++    // after a grace interval so a normal stop/start edge cannot clear an
++    // active QSO or a target that is about to continue in the next slot.
++    m_autoOffReconcileTimer = new QTimer(this);
++    m_autoOffReconcileTimer->setSingleShot(true);
++    m_autoOffReconcileTimer->setInterval(AUTO_OFF_RECONCILE_MS);
++    connect(m_autoOffReconcileTimer, &QTimer::timeout,
++            this, &AutoDxerCore::reconcileSustainedAutoOff);
++
+     // Wavelog is the sole worked-history authority. Historical novelty is
+     // fail-closed until OM0RX confirms an attested snapshot and acknowledged
+     // deltas. This background poll is independent of the PTT permit path.
+@@ -274,10 +296,16 @@ void AutoDxerCore::setEnabled(bool enabled)
+     } else {
+         m_spotAggregator->stop();
+         m_timeoutTimer->stop();
++        emit requestAuthorizationInvalidation(
++            enabled ? "autodx-mode-exit" : "autodx-disabled");
+         // Turn off AUTO mode when disabling AutoDxer
+         emit requestDisableAuto();
+         setState(Idle);
+         m_currentTarget.clear();
++        emit targetChanged(m_currentTarget);
++        m_targetAttemptTimer.invalidate();
++        m_targetAttemptElapsedOffsetMs = 0;
++        clearSuspendedTarget();
+         // Clear any pending slot analysis
+         m_waitingForSlotAnalysis = false;
+         m_pendingSlotAnalysisTarget = ScoredTarget();
+@@ -442,6 +470,17 @@ QJsonObject AutoDxerCore::runtimeConfigStatus() const
+     result["mode_allowed"] = isConfiguredMode(m_currentMode);
+     result["auto_dx_modes"] = modes;
+     result["band_switching_enabled"] = m_bandSwitchingEnabled;
++    QJsonObject quietState;
++    quietState["timer_valid"] = m_quietBandTimer.isValid();
++    const qint64 quietElapsed = m_quietBandTimer.isValid()
++        ? m_quietBandTimer.elapsed() : 0;
++    quietState["elapsed_seconds"] = static_cast<int>(quietElapsed / 1000);
++    quietState["remaining_seconds"] = qMax(
++        0, m_quietBandSeconds - static_cast<int>(quietElapsed / 1000));
++    quietState["waiting_for_slot_analysis"] = m_waitingForSlotAnalysis;
++    quietState["band_change_pending"] = m_bandChangePending;
++    quietState["requested_band"] = m_requestedBandIndex;
++    result["quiet_band_state"] = quietState;
+     QJsonObject timing;
+     timing["normal_call_seconds"] = m_normalCallSeconds;
+     timing["quiet_band_seconds"] = m_quietBandSeconds;
+@@ -647,8 +686,9 @@ bool AutoDxerCore::isPendingWavelogCall(const QString &callsign) const
+ 
+ bool AutoDxerCore::historicalActionAllowed(const QString &callsign, bool isCallingMe) const
+ {
++    if (isCallingMe) return true;
+     if (isPendingWavelogCall(callsign)) return false;
+-    return isCallingMe || m_historicalNoveltyAllowed;
++    return m_historicalNoveltyAllowed;
+ }
+ 
+ bool AutoDxerCore::cancelPendingWavelogPaths()
+@@ -734,7 +774,7 @@ bool AutoDxerCore::returnFromPendingCrossBandVerification(const QString &reason)
+     m_lastBandSwitchTime = QDateTime::currentDateTimeUtc();
+     emit debugMessage(QString("CROSSBAND-RETURN: %1; returning from %2 to %3")
+                      .arg(reason).arg(bandName(destinationBand)).arg(bandName(originBand)));
+-    emit requestBandChange(originBand);
++    beginBandChange(originBand);
+     return true;
+ }
+ 
+@@ -918,6 +958,7 @@ void AutoDxerCore::onLocalDecode(QStringList decodeData)
+     localDecode.callsign = callsign;
+     localDecode.grid = grid;
+     localDecode.dxccEntity = entity;
++    localDecode.originalMessage = originalMsg;
+     localDecode.bandIndex = m_currentBandIndex;
+     localDecode.audioFrequency = freq;
+     localDecode.dialFrequencyHz = m_currentDialFrequencyHz;  // For proper RF frequency calculation
+@@ -976,6 +1017,12 @@ void AutoDxerCore::onLocalDecode(QStringList decodeData)
+         }
+     }
+ 
++    // A station explicitly addressing us outranks an unanswered search-and-
++    // pounce chase. Run this after response detection so an already engaged
++    // exchange remains non-preemptible, but do not wait for the next decode-
++    // complete tick to answer a fresh caller.
++    considerCallingMePreemption(localDecode);
++
+     // NOTE: QSO completion is handled by onMSHVQsoLogged() when MSHV logs the contact.
+     // MSHV's queue system handles all FT8 mechanics (response detection, 73 exchange).
+ }
+@@ -1272,21 +1319,25 @@ void AutoDxerCore::onDecodeComplete(bool busy, int decState)
+         // Only process missed cycle logic if enough time has passed (debounce)
+         if (secsSinceLastCheck >= MISSED_CYCLE_DEBOUNCE_SECS) {
+             m_lastMissedCycleCheck = now;
+-            if (!m_targetRespondedToUs && !m_currentTarget.isCallingMe) {
+-                if (currentTargetPersistsWhileHeard()) {
+-                    if (!targetLocallyFresh(m_currentTarget.callsign, m_currentTarget.bandIndex,
+-                                            m_targetHeardFreshSeconds)) {
+-                        abandonCurrentTarget(QString("not heard locally for %1 seconds")
+-                                             .arg(m_targetHeardFreshSeconds));
+-                        evaluateTargets();
+-                        return;
+-                    }
+-                // Boundary: m_targetAttemptTimer.elapsed() >= m_normalCallSeconds * 1000
+-                } else if (m_targetAttemptTimer.isValid()
+-                           && AutoDxTimingPolicy::normalAttemptExpired(
+-                               m_targetAttemptTimer.elapsed(), m_normalCallSeconds)) {
+-                    abandonCurrentTarget(QString("no reply after %1 seconds").arg(m_normalCallSeconds));
+-                    evaluateTargets();
++            if (!m_targetRespondedToUs) {
++                // Freshness admits a target; it does not shorten an accepted
++                // attempt. Every unanswered target owns the full configured
++                // 120/240-second budget. After that boundary only configured
++                // novelty targets that are still heard locally may persist.
++                const bool attemptExpired = m_targetAttemptTimer.isValid()
++                    && AutoDxTimingPolicy::normalAttemptExpired(
++                        currentTargetAttemptElapsedMs(), m_normalCallSeconds);
++                const bool persistentAndFresh = !m_currentTarget.isCallingMe
++                    && currentTargetPersistsWhileHeard()
++                    && targetLocallyFresh(m_currentTarget.callsign,
++                                          m_currentTarget.bandIndex,
++                                          m_targetHeardFreshSeconds);
++                if (attemptExpired && !persistentAndFresh) {
++                    const QString reason = m_currentTarget.isCallingMe
++                        ? QString("direct caller timeout after %1 seconds").arg(m_normalCallSeconds)
++                        : QString("no reply after %1 seconds").arg(m_normalCallSeconds);
++                    abandonCurrentTarget(reason);
++                    if (m_state == Listening && !m_currentTarget.isValid()) evaluateTargets();
+                     return;
+                 }
+             }
+@@ -1362,7 +1413,7 @@ void AutoDxerCore::evaluateTargets()
+                 m_lastBandSwitchTime = now;
+                 emit debugMessage(QString("CROSSBAND-TIMEOUT-RETURN: Returning from %1 to originating band %2")
+                     .arg(bandName(timedOutBand)).arg(bandName(returnBand)));
+-                emit requestBandChange(returnBand);
++                beginBandChange(returnBand);
+                 return;
+             }
+ 
+@@ -1544,7 +1595,6 @@ void AutoDxerCore::evaluateTargets()
+     ScoredTarget best = m_targetScorer->getBestTarget(localStations);
+ 
+     if (best.priority > 0) {
+-        resetQuietBandTimer();
+         if (!historicalActionAllowed(best.callsign, best.isCallingMe)) {
+             emit debugMessage("SELECT-BLOCKED: Wavelog authority/pending guard for " + best.callsign);
+             return;
+@@ -1591,9 +1641,150 @@ void AutoDxerCore::evaluateTargets()
+     }
+ }
+ 
+-void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt)
++qint64 AutoDxerCore::currentTargetAttemptElapsedMs() const
++{
++    return m_targetAttemptElapsedOffsetMs
++        + (m_targetAttemptTimer.isValid() ? m_targetAttemptTimer.elapsed() : 0);
++}
++
++void AutoDxerCore::clearSuspendedTarget()
++{
++    m_suspendedTarget = ScoredTarget();
++    m_suspendedTargetElapsedMs = 0;
++    m_suspendedTargetIsATNO = false;
++    m_suspendedTargetIsNewSlot = false;
++    m_suspendedTargetIsNewGrid = false;
++}
++
++void AutoDxerCore::considerCallingMePreemption(const CachedDecode &decode)
++{
++    if (!m_enabled || !m_targetScorer || !decode.isLocalDecode
++            || decode.bandIndex != m_currentBandIndex) return;
++
++    const ScoredTarget caller = m_targetScorer->scoreTarget(decode);
++    if (!caller.isCallingMe || caller.callsign.isEmpty()) return;
++
++    if (m_currentTarget.isValid()
++            && callsignsMatch(caller.callsign, m_currentTarget.callsign)) return;
++
++    // Once reports are being exchanged, finish that QSO. The calling-me flag
++    // also protects a previously selected direct caller from being displaced
++    // by a second caller.
++    if (m_state == WaitingForQSO && m_currentTarget.isValid()
++            && (m_targetRespondedToUs || m_currentTarget.isCallingMe)) {
++        emit debugMessage(QString("CALLING-ME-DEFERRED: %1 while engaged with %2")
++                         .arg(caller.callsign).arg(m_currentTarget.callsign));
++        return;
++    }
++
++    if (m_state != Listening && m_state != WaitingForQSO) return;
++
++    if (m_currentTarget.isValid()) {
++        clearSuspendedTarget();
++        m_suspendedTarget.callsign = m_currentTarget.callsign;
++        m_suspendedTarget.grid = m_currentTarget.grid;
++        m_suspendedTarget.dxccEntity = m_currentTarget.dxccEntity;
++        m_suspendedTarget.bandIndex = m_currentTarget.bandIndex;
++        m_suspendedTarget.audioFrequency = m_currentTarget.audioFrequency;
++        m_suspendedTarget.dialFrequencyHz = m_currentTarget.dialFrequencyHz;
++        m_suspendedTarget.priority = m_currentTarget.priority;
++        m_suspendedTarget.snr = -15;
++        m_suspendedTarget.isLocalDecode = true;
++        m_suspendedTarget.isNewDXCC = m_currentTargetIsATNO;
++        m_suspendedTarget.isNewBandSlot = m_currentTargetIsNewSlot;
++        m_suspendedTarget.isNewGrid = m_currentTargetIsNewGrid;
++        m_suspendedTargetElapsedMs = currentTargetAttemptElapsedMs();
++        m_suspendedTargetIsATNO = m_currentTargetIsATNO;
++        m_suspendedTargetIsNewSlot = m_currentTargetIsNewSlot;
++        m_suspendedTargetIsNewGrid = m_currentTargetIsNewGrid;
++        emit debugMessage(QString("CALLING-ME-SUSPEND: %1 at %2 ms for %3")
++                         .arg(m_currentTarget.callsign)
++                         .arg(m_suspendedTargetElapsedMs)
++                         .arg(caller.callsign));
++    } else if (m_waitingForSlotAnalysis && m_pendingSlotAnalysisTarget.callsign.length() > 0) {
++        clearSuspendedTarget();
++        m_suspendedTarget = m_pendingSlotAnalysisTarget;
++        m_suspendedTargetElapsedMs = 0;
++        m_suspendedTargetIsATNO = m_pendingSlotAnalysisTarget.isNewDXCC;
++        m_suspendedTargetIsNewSlot = m_pendingSlotAnalysisTarget.isNewBandSlot;
++        m_suspendedTargetIsNewGrid = m_pendingSlotAnalysisTarget.isNewGrid;
++        m_waitingForSlotAnalysis = false;
++        m_pendingSlotAnalysisTarget = ScoredTarget();
++    }
++
++    emit requestDisableAuto();
++    if (m_queueWidget) m_queueWidget->clearBothLists();
++    m_currentTarget.clear();
++    m_targetRespondedToUs = false;
++    m_currentTargetIsATNO = false;
++    m_currentTargetIsNewSlot = false;
++    m_currentTargetIsNewGrid = false;
++    m_targetAttemptTimer.invalidate();
++    m_targetAttemptElapsedOffsetMs = 0;
++    setState(Listening);
++
++    feedToQueue(caller, true);
++    if (m_currentTarget.isValid() && m_currentTarget.isCallingMe) {
++        emit debugMessage(QString("CALLING-ME-PREEMPT: %1 selected immediately (score=%2)")
++                         .arg(caller.callsign).arg(caller.priority));
++    }
++}
++
++bool AutoDxerCore::resumeSuspendedTarget(const QString &reason)
+ {
+-    if (newAttempt && m_bandManager
++    if (m_suspendedTarget.callsign.isEmpty()) return false;
++
++    const ScoredTarget target = m_suspendedTarget;
++    const qint64 elapsedMs = m_suspendedTargetElapsedMs;
++    const bool persistent = AutoDxTimingPolicy::noveltyPersists(
++        m_suspendedTargetIsATNO, m_suspendedTargetIsNewSlot, true,
++        m_persistNewDxccWhileHeard, m_persistNewBandSlotWhileHeard,
++        static_cast<int>(m_atnoChaseType));
++    const bool budgetRemaining = !AutoDxTimingPolicy::normalAttemptExpired(
++        elapsedMs, m_normalCallSeconds);
++    const bool persistentAndFresh = persistent
++        && targetLocallyFresh(target.callsign, target.bandIndex,
++                              m_targetHeardFreshSeconds);
++    const bool eligible = target.bandIndex == m_currentBandIndex
++        && historicalActionAllowed(target.callsign, false)
++        && (budgetRemaining || persistentAndFresh);
++
++    if (!eligible) {
++        emit debugMessage(QString("CALLING-ME-RESUME-DROP: %1 after %2 (%3 ms consumed)")
++                         .arg(target.callsign).arg(reason).arg(elapsedMs));
++        clearSuspendedTarget();
++        return false;
++    }
++
++    m_currentTargetIsATNO = m_suspendedTargetIsATNO;
++    m_currentTargetIsNewSlot = m_suspendedTargetIsNewSlot;
++    m_currentTargetIsNewGrid = m_suspendedTargetIsNewGrid;
++    m_targetRespondedToUs = false;
++    m_targetAttemptElapsedOffsetMs = elapsedMs;
++    m_targetAttemptTimer.restart();
++    m_resumingSuspendedTarget = true;
++    feedToQueue(target, false);
++    m_resumingSuspendedTarget = false;
++    const bool resumed = m_currentTarget.isValid()
++        && callsignsMatch(m_currentTarget.callsign, target.callsign);
++    clearSuspendedTarget();
++    if (resumed) {
++        emit debugMessage(QString("CALLING-ME-RESUME: %1 after %2 with %3 ms remaining")
++                         .arg(target.callsign).arg(reason)
++                         .arg(qMax<qint64>(0, qint64(m_normalCallSeconds) * 1000
++                                              - elapsedMs)));
++        return true;
++    }
++
++    m_targetAttemptTimer.invalidate();
++    m_targetAttemptElapsedOffsetMs = 0;
++    return false;
++}
++
++void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
++                               bool admittedReinsert)
++{
++    if (newAttempt && !target.isCallingMe && m_bandManager
+             && !m_bandManager->isBandOpenNow(m_currentBandIndex)) {
+         emit debugMessage(QString("QUEUE-BLOCKED: %1 band schedule closed")
+                          .arg(target.callsign));
+@@ -1618,8 +1809,7 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt)
+     CachedDecode cacheCheck;
+     bool foundCurrentBand = false;
+     const int cacheAgeSeconds = newAttempt ? m_targetHeardFreshSeconds
+-        : (currentTargetPersistsWhileHeard() ? m_targetHeardFreshSeconds
+-                                            : m_normalCallSeconds);
++        : qMax(m_targetHeardFreshSeconds, m_normalCallSeconds);
+     if (target.bandIndex == m_currentBandIndex) {
+         const QList<CachedDecode> currentBandDecodes = m_decodeCache->getActiveDecodes(
+             m_currentBandIndex, cacheAgeSeconds);
+@@ -1631,6 +1821,23 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt)
+             }
+         }
+     }
++    const bool retainingAcceptedTarget = admittedReinsert && !newAttempt
++        && m_currentTarget.isValid()
++        && callsignsMatch(m_currentTarget.callsign, target.callsign)
++        && !m_targetRespondedToUs
++        && m_targetAttemptTimer.isValid()
++        && !AutoDxTimingPolicy::normalAttemptExpired(
++            currentTargetAttemptElapsedMs(), m_normalCallSeconds);
++    if (!foundCurrentBand && !newAttempt
++        && (m_resumingSuspendedTarget || retainingAcceptedTarget)) {
++        // The chase was already admitted from a fresh local decode. Keeping
++        // it in MSHV's queue for the remainder of that accepted attempt (or
++        // resuming after a directed caller) is not a new selection and must
++        // not depend on the original decode still being fresh/cached.
++        cacheCheck.callsign = target.callsign;
++        cacheCheck.isLocalDecode = true;
++        foundCurrentBand = true;
++    }
+     if (!foundCurrentBand) {
+         emit debugMessage(QString("QUEUE-BLOCKED: %1 not in decode cache - external spot only")
+                          .arg(target.callsign));
+@@ -1649,11 +1856,13 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt)
+     // Check if this call was recently worked (5 minute blacklist)
+     // Use portable callsign matching to handle cases like 6W/DB1RUL vs DB1RUL
+     cleanupRecentlyWorked();  // Clean expired entries first
+-    for (const QString &workedCall : m_recentlyWorked) {
+-        if (callsignsMatch(target.callsign, workedCall)) {
+-            emit debugMessage(QString("RECENTLY-WORKED: %1 matches worked %2 - skipping (5 min blacklist)")
+-                             .arg(target.callsign).arg(workedCall));
+-            return;
++    if (!target.isCallingMe) {
++        for (const QString &workedCall : m_recentlyWorked) {
++            if (callsignsMatch(target.callsign, workedCall)) {
++                emit debugMessage(QString("RECENTLY-WORKED: %1 matches worked %2 - skipping (5 min blacklist)")
++                                 .arg(target.callsign).arg(workedCall));
++                return;
++            }
+         }
+     }
+ 
+@@ -1704,7 +1913,10 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt)
+         m_sessionTargetsAttempted++;
+         m_targetMissedCycles = 0;
+         m_targetHeardThisCycle = true;
+-        m_targetRespondedToUs = target.isCallingMe;
++        // The first directed decode is an invitation, not proof that an
++        // exchange is already in progress. A later directed decode for the
++        // selected caller sets m_targetRespondedToUs in onLocalDecode().
++        m_targetRespondedToUs = false;
+         m_lastMissedCycleCheck = QDateTime();
+         m_scarceTargetMode = false;
+         m_atnoTotalCallCycles = 0;
+@@ -1712,6 +1924,7 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt)
+         m_currentTargetIsNewSlot = target.isNewBandSlot;
+         m_currentTargetIsNewGrid = target.isNewGrid;
+         m_targetAttemptTimer.restart();
++        m_targetAttemptElapsedOffsetMs = 0;
+         m_quietBandTimer.invalidate();
+         emit debugMessage(QString("TARGET-POLICY: %1 normal=%2s ATNO=%3 slot=%4 calling-me=%5")
+                          .arg(target.callsign).arg(m_normalCallSeconds)
+@@ -1787,26 +2000,32 @@ void AutoDxerCore::checkQueueStatus()
+ 
+         const bool fresh = targetLocallyFresh(targetCall, m_currentTarget.bandIndex,
+                                                m_targetHeardFreshSeconds);
+-        const bool persistent = currentTargetPersistsWhileHeard() && fresh;
+-        const bool normalAttemptActive = !currentTargetPersistsWhileHeard()
++        const bool persistent = !m_currentTarget.isCallingMe
++            && currentTargetPersistsWhileHeard() && fresh;
++        const bool normalAttemptActive = !m_targetRespondedToUs
+             && m_targetAttemptTimer.isValid()
+             && !AutoDxTimingPolicy::normalAttemptExpired(
+-                m_targetAttemptTimer.elapsed(), m_normalCallSeconds);
+-        const bool shouldReinsert = m_targetRespondedToUs || m_currentTarget.isCallingMe
++                currentTargetAttemptElapsedMs(), m_normalCallSeconds);
++        const bool shouldReinsert = m_targetRespondedToUs
+             || persistent || normalAttemptActive;
+-        QString reinsertReason = m_targetRespondedToUs || m_currentTarget.isCallingMe
+-            ? "engaged" : (persistent ? "needed+heard" : "normal-attempt");
++        QString reinsertReason = m_targetRespondedToUs
++            ? "engaged" : (normalAttemptActive ? "normal-attempt" : "needed+heard");
+ 
+         if (shouldReinsert) {
+             emit debugMessage(QString("QUEUE-REINSERT: %1 removed by MSHV, re-adding (reason=%2)")
+                              .arg(targetCall)
+                              .arg(reinsertReason));
+ 
+-            // Re-insert into queue using cached target data
++            // Prefer fresh cached presentation data, but an admitted target
++            // owns its complete configured attempt. Its stored target state
++            // remains authoritative for reinsertion after the decode ages
++            // out; freshness is consulted again only for post-boundary
++            // novelty persistence/new selection.
+             CachedDecode decode;
+             bool foundCurrentBand = false;
+-            const int reinsertAgeSeconds = currentTargetPersistsWhileHeard()
+-                ? m_targetHeardFreshSeconds : m_normalCallSeconds;
++            const int reinsertAgeSeconds = normalAttemptActive
++                ? qMax(m_targetHeardFreshSeconds, m_normalCallSeconds)
++                : m_targetHeardFreshSeconds;
+             const QList<CachedDecode> currentBandDecodes = m_decodeCache->getActiveDecodes(
+                 m_currentBandIndex, reinsertAgeSeconds);
+             for (const CachedDecode &candidate : currentBandDecodes) {
+@@ -1816,33 +2035,45 @@ void AutoDxerCore::checkQueueStatus()
+                     break;
+                 }
+             }
+-            if (foundCurrentBand) {
++            if (foundCurrentBand || normalAttemptActive || m_targetRespondedToUs) {
+                 // Save state before feedToQueue (it resets m_scarceTargetMode)
+                 bool wasScarce = m_scarceTargetMode;
+                 bool hadResponded = m_targetRespondedToUs;
+ 
+                 ScoredTarget reinsert;
+-                reinsert.callsign = decode.callsign;
+-                reinsert.grid = decode.grid;
+-                reinsert.dxccEntity = decode.dxccEntity;
++                reinsert.callsign = foundCurrentBand ? decode.callsign : m_currentTarget.callsign;
++                reinsert.grid = foundCurrentBand ? decode.grid : m_currentTarget.grid;
++                reinsert.dxccEntity = foundCurrentBand ? decode.dxccEntity : m_currentTarget.dxccEntity;
+                 reinsert.bandIndex = m_currentTarget.bandIndex;
+-                reinsert.audioFrequency = decode.audioFrequency;
+-                reinsert.dialFrequencyHz = decode.dialFrequencyHz;
+-                reinsert.snr = decode.snr;
++                reinsert.audioFrequency = foundCurrentBand ? decode.audioFrequency : m_currentTarget.audioFrequency;
++                reinsert.dialFrequencyHz = foundCurrentBand ? decode.dialFrequencyHz : m_currentTarget.dialFrequencyHz;
++                reinsert.snr = foundCurrentBand ? decode.snr : 0;
+                 reinsert.priority = m_currentTarget.priority;
+                 reinsert.isNewDXCC = m_currentTargetIsATNO;
+                 reinsert.isNewBandSlot = m_currentTargetIsNewSlot;
+                 reinsert.isCallingMe = m_currentTarget.isCallingMe;
+                 reinsert.priorityReason = "Re-inserted by active target policy";
+-                feedToQueue(reinsert, false);
++                feedToQueue(reinsert, false, normalAttemptActive);
+ 
+                 m_scarceTargetMode = wasScarce;
+                 m_targetRespondedToUs = hadResponded;
+-                return;  // Stay in WaitingForQSO state
++                const bool retained =
++                    m_queueWidget->getQueueList()->FindCallOrBaseCallRow(targetCall) >= 0
++                    || m_queueWidget->getNowList()->FindCallOrBaseCallRow(targetCall) >= 0;
++                if (retained) return;  // Stay in WaitingForQSO state
++                if (m_targetRespondedToUs) {
++                    emit debugMessage(QString("QSO-ENGAGED: %1 remains active pending log completion")
++                                     .arg(targetCall));
++                    return;
++                }
++                emit debugMessage(QString("QUEUE-REINSERT: %1 insertion failed; abandoning active attempt")
++                                 .arg(targetCall));
++                abandonCurrentTarget(QString("queue reinsertion failed"));
++                return;
+             }
+-            // If not in cache anymore, fall through to normal abandonment
+-            emit debugMessage(QString("QUEUE-REINSERT: %1 not in cache, cannot re-add").arg(targetCall));
+-            if (m_targetRespondedToUs || m_currentTarget.isCallingMe) {
++            // Post-boundary persistence still requires a fresh local decode.
++            emit debugMessage(QString("QUEUE-REINSERT: %1 not fresh after attempt boundary, cannot re-add").arg(targetCall));
++            if (m_targetRespondedToUs) {
+                 emit debugMessage(QString("QSO-ENGAGED: %1 remains active pending log completion")
+                                  .arg(targetCall));
+                 return;
+@@ -1861,7 +2092,8 @@ void AutoDxerCore::checkTimeout()
+     if (!m_enabled || !m_bandSwitchingEnabled || m_state != Listening
+             || m_currentTarget.isValid() || m_targetRespondedToUs
+             || !m_pendingCrossBandCallsign.isEmpty()
+-            || !m_pendingNonStdCallsign.isEmpty() || m_waitingForSlotAnalysis) {
++            || !m_pendingNonStdCallsign.isEmpty() || m_waitingForSlotAnalysis
++            || m_bandChangePending) {
+         return;
+     }
+ 
+@@ -1879,15 +2111,6 @@ void AutoDxerCore::checkTimeout()
+         return;
+     }
+ 
+-    // A currently eligible local target means the band is not quiet even if
+-    // another decode-complete callback has not selected it yet.
+-    const QList<CachedDecode> local = m_decodeCache->getActiveDecodes(
+-        m_currentBandIndex, m_targetHeardFreshSeconds);
+-    if (!local.isEmpty() && m_targetScorer->getBestTarget(local).priority > 0) {
+-        m_quietBandTimer.restart();
+-        return;
+-    }
+-
+     if (!AutoDxTimingPolicy::quietBandExpired(
+             m_quietBandTimer.elapsed(), m_quietBandSeconds)) return;
+     if (m_lastBandSwitchTime.isValid()
+@@ -1896,6 +2119,17 @@ void AutoDxerCore::checkTimeout()
+         return;
+     }
+ 
++    // Give a genuinely last-second local candidate one normal selection pass.
++    // Only actual ownership (queued/current target, active QSO, or accepted
++    // slot deferral/verification) suppresses QSY. A scored candidate rejected
++    // by history, freshness or queue checks must not restart the 300s clock.
++    evaluateTargets();
++    if (m_state != Listening || m_currentTarget.isValid() || m_targetRespondedToUs
++            || !m_pendingCrossBandCallsign.isEmpty()
++            || !m_pendingNonStdCallsign.isEmpty() || m_waitingForSlotAnalysis
++            || m_bandChangePending) {
++        return;
++    }
+     switchBand();
+ }
+ 
+@@ -1919,7 +2153,6 @@ void AutoDxerCore::switchBand()
+     // Clear current target
+     m_currentTarget.clear();
+     m_targetAttemptTimer.invalidate();
+-    m_quietBandTimer.invalidate();
+ 
+     // Clear decode cache for old band - we only want local decodes on new band
+     if (m_decodeCache) {
+@@ -1935,7 +2168,16 @@ void AutoDxerCore::switchBand()
+                          .arg(m_bandManager->bandName(nextBand)));
+     }
+ 
+-    emit requestBandChange(nextBand);
++    beginBandChange(nextBand);
++}
++
++void AutoDxerCore::beginBandChange(int bandIndex)
++{
++    ++m_bandChangeRequestId;
++    if (m_bandChangeRequestId == 0) ++m_bandChangeRequestId;
++    m_bandChangePending = true;
++    m_requestedBandIndex = bandIndex;
++    emit requestBandChange(bandIndex);
+ }
+ 
+ int AutoDxerCore::bestBandForSwitch()
+@@ -2015,9 +2257,10 @@ void AutoDxerCore::abandonCurrentTarget(const QString &reason)
+     m_currentTargetIsNewGrid = false;
+     m_scarceTargetMode = false;
+     m_targetAttemptTimer.invalidate();
++    m_targetAttemptElapsedOffsetMs = 0;
+     setState(Listening);
+-    resetQuietBandTimer();
+     emit targetChanged(m_currentTarget);
++    if (!resumeSuspendedTarget(reason)) resetQuietBandTimer();
+ }
+ 
+ void AutoDxerCore::resetQuietBandTimer()
+@@ -2084,9 +2327,23 @@ void AutoDxerCore::onBandChangedExternally(int bandIndex)
+ 
+ void AutoDxerCore::onBandChangeComplete(int bandIndex)
+ {
++    onBandChangeCompleteForRequest(bandIndex, m_bandChangeRequestId);
++}
++
++void AutoDxerCore::onBandChangeCompleteForRequest(int bandIndex, quint64 requestId)
++{
++    if (!m_bandChangePending || m_requestedBandIndex != bandIndex
++            || requestId == 0 || requestId != m_bandChangeRequestId) {
++        emit debugMessage(QString("AutoDxerCore: Ignoring stale band-change completion for %1 request %2")
++                         .arg(bandName(bandIndex)).arg(requestId));
++        return;
++    }
+     emit debugMessage(QString("AutoDxerCore: Band change confirmed to %1")
+                      .arg(m_bandManager->bandName(bandIndex)));
+ 
++    m_bandChangePending = false;
++    m_requestedBandIndex = -1;
++    m_quietBandTimer.invalidate();
+     setCurrentBand(bandIndex);
+ 
+     if (!m_pendingCrossBandCallsign.isEmpty() && m_bandManager
+@@ -2131,6 +2388,40 @@ void AutoDxerCore::onBandChangeComplete(int bandIndex)
+     setState(Listening);
+ }
+ 
++void AutoDxerCore::onBandChangeFailed(int bandIndex, const QString &reason)
++{
++    onBandChangeFailedForRequest(bandIndex, reason, m_bandChangeRequestId, false);
++}
++
++void AutoDxerCore::onBandChangeFailedForRequest(int bandIndex, const QString &reason,
++                                                quint64 requestId,
++                                                bool observedAtDestination)
++{
++    const bool tracked = m_bandChangePending && m_requestedBandIndex == bandIndex
++        && requestId != 0 && requestId == m_bandChangeRequestId;
++    if (!tracked) return;
++    emit debugMessage(QString("AutoDxerCore: Band change to %1 failed: %2")
++                     .arg(bandName(bandIndex)).arg(reason));
++    m_bandChangePending = false;
++    m_requestedBandIndex = -1;
++    if (m_pendingCrossBandBand == bandIndex) {
++        clearPendingCrossBandVerification();
++    }
++    if (observedAtDestination) {
++        // CAT already confirmed the destination. Final station proof failed, so
++        // TX remains inhibited, but the planner must follow the observed radio
++        // rather than retain the origin and create a split-brain state.
++        setCurrentBand(bandIndex);
++        m_quietBandTimer.restart();
++        setState(Listening);
++        return;
++    }
++    // Preserve the already elapsed quiet interval. The existing switch
++    // cooldown throttles retries without creating another 300-second wait.
++    if (!m_quietBandTimer.isValid()) m_quietBandTimer.start();
++    setState(Listening);
++}
++
+ void AutoDxerCore::onQSOComplete(bool success, const QString &callsign)
+ {
+     Q_UNUSED(success);
+@@ -2139,7 +2430,9 @@ void AutoDxerCore::onQSOComplete(bool success, const QString &callsign)
+     m_currentTarget.clear();
+     setState(Listening);
+     m_targetAttemptTimer.invalidate();
+-    resetQuietBandTimer();
++    m_targetAttemptElapsedOffsetMs = 0;
++    emit targetChanged(m_currentTarget);
++    if (!resumeSuspendedTarget("legacy QSO completion")) resetQuietBandTimer();
+ }
+ 
+ void AutoDxerCore::onWordsChanged(QStringList words, int cq, int type)
+@@ -2171,8 +2464,47 @@ void AutoDxerCore::onWordsChanged(QStringList words, int cq, int type)
+ 
+ void AutoDxerCore::onAutoModeChanged(bool isOn)
+ {
+-    Q_UNUSED(isOn);
+-    // TX confirmation feedback from HvTxW - handled silently
++    m_autoModeOn = isOn;
++    if (isOn) {
++        if (m_autoOffReconcileTimer) m_autoOffReconcileTimer->stop();
++        m_autoOffPendingCallsign.clear();
++        return;
++    }
++
++    if (m_reconcilingAutoOff || !m_enabled || m_state != WaitingForQSO
++            || !m_currentTarget.isValid()) return;
++    if (m_autoOffReconcileTimer && m_autoOffReconcileTimer->isActive()) return;
++
++    emit debugMessage(QString("AUTO-OFF-PENDING: %1 will be reconciled after %2 ms if AUTO stays off")
++                     .arg(m_currentTarget.callsign).arg(AUTO_OFF_RECONCILE_MS));
++    m_autoOffPendingCallsign = m_currentTarget.callsign;
++    if (m_autoOffReconcileTimer) m_autoOffReconcileTimer->start();
++}
++
++void AutoDxerCore::reconcileSustainedAutoOff()
++{
++    // AUTO-on is the authoritative protection for a live native exchange.
++    // A transient false edge is cancelled by onAutoModeChanged(true).  If the
++    // false edge remains stable, release exactly the target still owned now;
++    // abandonCurrentTarget preserves suspended-chase resume and starts the
++    // quiet clock only when no resumed target takes ownership.
++    if (m_autoOffReconcileTimer) m_autoOffReconcileTimer->stop();
++    const QString pendingCallsign = m_autoOffPendingCallsign;
++    m_autoOffPendingCallsign.clear();
++    if (m_autoModeOn || !m_enabled || m_state != WaitingForQSO
++            || !m_currentTarget.isValid() || m_reconcilingAutoOff) return;
++    if (pendingCallsign.isEmpty()
++            || !callsignsMatch(pendingCallsign, m_currentTarget.callsign)) {
++        emit debugMessage(QString("AUTO-OFF-STALE: ignoring terminal edge for %1; current target is %2")
++                         .arg(pendingCallsign).arg(m_currentTarget.callsign));
++        return;
++    }
++
++    const QString callsign = m_currentTarget.callsign;
++    emit debugMessage(QString("AUTO-OFF-TERMINAL: releasing stale target %1").arg(callsign));
++    m_reconcilingAutoOff = true;
++    abandonCurrentTarget("AUTO remained off after terminal stop");
++    m_reconcilingAutoOff = false;
+ }
+ 
+ void AutoDxerCore::on2ClickAutoOnChanged(bool enabled)
+@@ -2264,10 +2596,11 @@ void AutoDxerCore::onMSHVQsoLogged(QStringList qsoData)
+         m_targetRespondedToUs = false;  // Reset for next target
+         setState(Listening);
+         m_targetAttemptTimer.invalidate();
++        m_targetAttemptElapsedOffsetMs = 0;
+         m_currentTargetIsATNO = false;
+         m_currentTargetIsNewSlot = false;
+         m_currentTargetIsNewGrid = false;
+-        resetQuietBandTimer();
++        emit targetChanged(m_currentTarget);
+ 
+         // Clear pending cross-band and non-standard frequency targets
+         // These were set for this QSO - don't carry them forward
+@@ -2295,8 +2628,11 @@ void AutoDxerCore::onMSHVQsoLogged(QStringList qsoData)
+             }
+         }
+ 
+-        // Evaluate next target after delay to let system stabilize
+-        QTimer::singleShot(2000, this, SLOT(evaluateTargets()));
++        if (!resumeSuspendedTarget(QString("QSO completed with %1").arg(callsign))) {
++            resetQuietBandTimer();
++            // Evaluate next target after delay to let system stabilize
++            QTimer::singleShot(2000, this, SLOT(evaluateTargets()));
++        }
+     }
+ 
+     emit statsUpdated();
+@@ -2588,7 +2924,7 @@ void AutoDxerCore::checkCrossBandAlerts()
+                 }
+ 
+                 m_lastBandSwitchTime = QDateTime::currentDateTimeUtc();
+-                emit requestBandChange(band);
++                beginBandChange(band);
+                 return;
+             }
+         }
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.h b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+index c968fbc..6ae5fb0 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+@@ -77,6 +77,7 @@ public:
+     bool isEnabled() const { return m_enabled; }
+     bool desiredEnabled() const { return m_desiredEnabled; }
+     State state() const { return m_state; }
++    quint64 activeBandChangeRequestId() const { return m_bandChangeRequestId; }
+     QString stateString() const;
+     QJsonObject runtimeConfigStatus() const;
+     void reloadRuntimeConfig();
+@@ -118,6 +119,7 @@ public:
+     
+     // Current target
+     DxTarget currentTarget() const { return m_currentTarget; }
++    bool targetRespondedToUs() const { return m_targetRespondedToUs; }
+ 
+     // Debug helper for external callers
+     void appendDebugMessage(const QString &msg) { emit debugMessage(msg); }
+@@ -149,6 +151,7 @@ signals:
+     // AUTO mode control
+     void requestEnableAuto();   // Enable AUTO when feeding target to queue
+     void requestDisableAuto();  // Turn off AUTO when giving up on a target
++    void requestAuthorizationInvalidation(QString reason); // Explicit provider/lifecycle exit only
+     // TX frequency slot selection - emitted after band switch + 2 decode cycles
+     void requestTxFreqChange(double audioFreqHz);
+ 
+@@ -160,6 +163,10 @@ public slots:
+     void onBandChanged(int bandIndex);
+     void onBandChangedExternally(int bandIndex);
+     void onBandChangeComplete(int bandIndex);
++    void onBandChangeCompleteForRequest(int bandIndex, quint64 requestId);
++    void onBandChangeFailed(int bandIndex, const QString &reason);
++    void onBandChangeFailedForRequest(int bandIndex, const QString &reason,
++                                      quint64 requestId, bool observedAtDestination);
+     void onWordsChanged(QStringList words, int cq, int type);
+     void onAutoModeChanged(bool isOn);  // TX confirmation feedback from HvTxW
+     void on2ClickAutoOnChanged(bool enabled);  // Critical setting for TX triggering
+@@ -182,14 +189,21 @@ private:
+     void setState(State newState);
+     void startListening();
+     void evaluateTargets();
+-    void feedToQueue(const ScoredTarget &target, bool newAttempt = true);
++    void feedToQueue(const ScoredTarget &target, bool newAttempt = true,
++                     bool admittedReinsert = false);
+     void checkQueueStatus();
++    void considerCallingMePreemption(const CachedDecode &decode);
++    bool resumeSuspendedTarget(const QString &reason);
++    void clearSuspendedTarget();
++    qint64 currentTargetAttemptElapsedMs() const;
++    void beginBandChange(int bandIndex);
+     void switchBand();
+     int bestBandForSwitch();
+     bool targetLocallyFresh(const QString &callsign, int bandIndex, int maxAgeSeconds) const;
+     bool currentTargetPersistsWhileHeard() const;
+     void abandonCurrentTarget(const QString &reason);
+     void resetQuietBandTimer();
++    void reconcileSustainedAutoOff();
+     void parseDecodeMessage(const QStringList &data, QString &callsign, QString &grid,
+                             int &snr, int &freq, bool &isCQ);
+     QString extractCallsign(const QString &msg);
+@@ -268,7 +282,13 @@ private:
+     
+     QTimer *m_timeoutTimer;
+     QElapsedTimer m_targetAttemptTimer;
++    qint64 m_targetAttemptElapsedOffsetMs;
+     QElapsedTimer m_quietBandTimer;
++    QTimer *m_autoOffReconcileTimer;
++    bool m_autoModeOn;
++    bool m_reconcilingAutoOff;
++    QString m_autoOffPendingCallsign;
++    static const int AUTO_OFF_RECONCILE_MS = 20000;
+     QTimer *m_historyTimer;
+     QNetworkAccessManager *m_historyNetwork;
+     bool m_historyRequestPending;
+@@ -310,6 +330,9 @@ private:
+ 
+     // Cross-band alert cooldown
+     QDateTime m_lastBandSwitchTime;
++    bool m_bandChangePending;
++    int m_requestedBandIndex;
++    quint64 m_bandChangeRequestId;
+ 
+     // Cross-band verification - require local decode before calling
+     QString m_pendingCrossBandCallsign;   // Callsign we're waiting to verify locally
+@@ -335,6 +358,16 @@ private:
+     bool m_currentTargetIsNewGrid;   // Current target is a new grid
+     int m_atnoTotalCallCycles;       // Total cycles spent calling current ATNO target
+ 
++    // A direct caller may interrupt an unanswered chase, but never an engaged
++    // exchange. Preserve the chase and its consumed attempt budget so it can
++    // resume without granting a fresh NormalCallSeconds window.
++    ScoredTarget m_suspendedTarget;
++    qint64 m_suspendedTargetElapsedMs;
++    bool m_suspendedTargetIsATNO;
++    bool m_suspendedTargetIsNewSlot;
++    bool m_suspendedTargetIsNewGrid;
++    bool m_resumingSuspendedTarget;
++
+     // Slot analysis pending target - wait for TX slot analysis before queueing after band switch
+     ScoredTarget m_pendingSlotAnalysisTarget;  // Target waiting for slot analysis to complete
+     bool m_waitingForSlotAnalysis;             // True when target is waiting for slot analysis
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxstatusownership.h b/MSHV_2762/src/HvAutoDxer/autodxstatusownership.h
+new file mode 100644
+index 0000000..e95a7f0
+--- /dev/null
++++ b/MSHV_2762/src/HvAutoDxer/autodxstatusownership.h
+@@ -0,0 +1,86 @@
++#ifndef AUTODXSTATUSOWNERSHIP_H
++#define AUTODXSTATUSOWNERSHIP_H
++
++#include <QString>
++
++// Keeps the legacy MSHV/WSJT-compatible DX-call cache in step with the
++// native AutoDX target without giving the cache any control over targeting.
++// The ownership marker prevents an AutoDX clear from erasing a manual QSO.
++class AutoDxStatusOwnership
++{
++public:
++    enum Action {
++        NoChange,
++        SetOwnedTarget,
++        ClearOwnedTarget
++    };
++
++    struct Decision {
++        Action action;
++        QString callsign;
++        QString grid;
++
++        Decision(Action nextAction = NoChange,
++                 const QString &nextCallsign = QString(),
++                 const QString &nextGrid = QString())
++            : action(nextAction), callsign(nextCallsign), grid(nextGrid) {}
++    };
++
++    Decision targetChanged(const QString &callsign, const QString &grid,
++                           bool qsoEngaged, const QString &legacyCall,
++                           const QString &statusCall,
++                           bool reconcileIdleStartup = false)
++    {
++        const QString nextCall = callsign.trimmed().toUpper();
++        const QString currentLegacy = legacyCall.trimmed().toUpper();
++        const QString currentStatus = statusCall.trimmed().toUpper();
++
++        if (!nextCall.isEmpty()) {
++            // targetChanged(non-empty) is the authoritative native ownership
++            // transition. An already engaged exchange remains untouchable.
++            if (qsoEngaged) return Decision();
++            m_ownedCall = nextCall;
++            m_ownedGrid = grid.trimmed().toUpper();
++            return Decision(SetOwnedTarget, m_ownedCall, m_ownedGrid);
++        }
++
++        if (qsoEngaged) return Decision();
++
++        // The in-memory ownership marker intentionally does not survive a
++        // process restart. During the single explicit startup reconciliation,
++        // an enabled native AutoDX core with no target may therefore retire a
++        // persisted legacy/status pair. Requiring both caches to contain the
++        // same call keeps an independently changed manual/foreign field safe;
++        // ordinary empty-target notifications remain ownership-neutral.
++        if (m_ownedCall.isEmpty()) {
++            if (reconcileIdleStartup && !currentLegacy.isEmpty()
++                    && currentLegacy == currentStatus) {
++                return Decision(ClearOwnedTarget, currentLegacy, QString());
++            }
++            return Decision();
++        }
++
++        // Clear only if both observable caches are still empty or still show
++        // the exact target that AutoDX claimed. A manual replacement wins.
++        const bool legacyStillOwned = currentLegacy.isEmpty() || currentLegacy == m_ownedCall;
++        const bool statusStillOwned = currentStatus.isEmpty() || currentStatus == m_ownedCall;
++        if (!legacyStillOwned || !statusStillOwned) {
++            m_ownedCall.clear();
++            m_ownedGrid.clear();
++            return Decision();
++        }
++
++        const Decision clear(ClearOwnedTarget, m_ownedCall, m_ownedGrid);
++        m_ownedCall.clear();
++        m_ownedGrid.clear();
++        return clear;
++    }
++
++    QString ownedCall() const { return m_ownedCall; }
++
++private:
++    QString m_ownedCall;
++    QString m_ownedGrid;
++};
++
++#endif // AUTODXSTATUSOWNERSHIP_H
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+index 1d6dc90..43de15b 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+@@ -298,13 +298,13 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     // A completed QSO waiting in the Wavelog outbox is not authoritative
+     // worked history yet, but it is negative-only evidence: never select the
+     // same call again while acknowledgement is pending.
+-    if (isPendingWavelogCall(decode.callsign)) {
++    if (!target.isCallingMe && isPendingWavelogCall(decode.callsign)) {
+         target.priorityReason = "Wavelog acknowledgement pending";
+         return target;
+     }
+     
+     // Skip if below minimum SNR
+-    if (decode.snr < m_minSNR) {
++    if (!target.isCallingMe && decode.snr < m_minSNR) {
+         target.priorityReason = "SNR too low";
+         return target;
+     }
+diff --git a/MSHV_2762/src/HvRigControl/hvrigcontrol.cpp b/MSHV_2762/src/HvRigControl/hvrigcontrol.cpp
+index 860ed59..0a2a940 100644
+--- a/MSHV_2762/src/HvRigControl/hvrigcontrol.cpp
++++ b/MSHV_2762/src/HvRigControl/hvrigcontrol.cpp
+@@ -1892,35 +1892,11 @@ void HvRigControl::set_mode()// za mahane
+ }*/
+ void HvRigControl::SetPtt_p(bool flag,int id)//2.17 id 0=All 1=p1 2=p2
+ {
+-    // This is the lowest shared hardware PTT edge for CAT, RTS and DTR.  Keep
+-    // upstream sequencing intact, but fail closed for every rising edge.
++    // This is the lowest shared native hardware PTT edge for CAT, RTS and DTR.
++    // OM0RX follows the resulting radio state asynchronously; it does not
++    // authorize or veto MSHV's native PTT sequencing.
+     const int requestedPttMask = id == 0 ? 3 : (id == 1 ? 1 : 2);
+-    const quint64 requestSequence = Om0rxStationGate::notePttRequest(flag, requestedPttMask);
+-    const unsigned requestGeneration = Om0rxStationGate::generation();
+-    const int requestHz = Om0rxStationGate::currentHz();
+-    // Do not trust the local requested-output mask as proof that hardware is
+-    // still keyed. An external Halt or CAT failure can unkey the radio without
+-    // a matching native callback, so every true request must be authorized.
+-    const bool risingEdge = flag;
+-    if (risingEdge) {
+-        Om0rxStationGate gate(this);
+-        if (!gate.consumePermitBlocking("HvRigControl::SetPtt_p")) {
+-            (new Om0rxStationGate(this))->auditRejected("HvRigControl::SetPtt_p", Om0rxStationGate::lastReason());
+-            Om0rxStationGate::prefetch(this);
+-            return;
+-        }
+-        // QNetworkAccessManager processes events while the authoritative
+-        // consume POST is pending. Never let a successful but late response
+-        // resurrect TX after a re-entrant RX, Stop, QSY, invalidation or
+-        // frequency change.
+-        if (!Om0rxStationGate::pttRequestStillCurrent(
+-                requestSequence, requestGeneration, requestHz, requestedPttMask)) {
+-            Om0rxStationGate::lastReason() = "ptt-request-superseded";
+-            (new Om0rxStationGate(this))->auditRejected(
+-                "HvRigControl::SetPtt_p", Om0rxStationGate::lastReason());
+-            return;
+-        }
+-    } else if (!flag) {
++    if (!flag) {
+         Om0rxStationGate::pttMask() &= ~requestedPttMask;
+     }
+     bool pttOutputAttempted = false;
+@@ -1970,11 +1946,11 @@ void HvRigControl::SetPtt_p(bool flag,int id)//2.17 id 0=All 1=p1 2=p2
+             Set_Dtr2(flag);
+         }
+     }
+-    // Track requested hardware outputs only after the authoritative server
+-    // consume succeeded and the upstream CAT/RTS/DTR calls were reached.
+-    if (risingEdge && pttOutputAttempted)
++    // Track which native output paths were actually reached so explicit Stop,
++    // emergency and teardown paths can still force and observe an RX edge.
++    if (flag && pttOutputAttempted)
+         Om0rxStationGate::pttMask() |= requestedPttMask;
+-    else if (risingEdge)
++    else if (flag)
+     {
+         Om0rxStationGate::pttMask() &= ~requestedPttMask;
+         Om0rxStationGate::lastReason() = "ptt-output-path-unavailable";
+diff --git a/MSHV_2762/src/HvTxW/HvRadioNetW/radionetw.h b/MSHV_2762/src/HvTxW/HvRadioNetW/radionetw.h
+index 46cd83d..be7a8ad 100644
+--- a/MSHV_2762/src/HvTxW/HvRadioNetW/radionetw.h
++++ b/MSHV_2762/src/HvTxW/HvRadioNetW/radionetw.h
+@@ -226,6 +226,7 @@ public:
+     void SetAuto(bool);
+     void SetTx(bool);
+     void SetDxParm(QString,QString,QString);
++    QString GetStatusDxCall() const { return s_dx_call; }
+     void SetUdpDecClr();
+     void FindFreqRadList(int id,QString &sfrq);
+     void SetTxMsg(QString);
+diff --git a/MSHV_2762/src/HvTxW/hvtxw.cpp b/MSHV_2762/src/HvTxW/hvtxw.cpp
+index c15a57b..b50925b 100644
+--- a/MSHV_2762/src/HvTxW/hvtxw.cpp
++++ b/MSHV_2762/src/HvTxW/hvtxw.cpp
+@@ -6,8 +6,10 @@
+ #define _FREQTOBAND_H_
+ #include "hvtxw.h"
+ #include "../om0rxstationgate.h"
++#include "../om0rxtxwatchdogedge.h"
+ #include "../config_str_color.h"
+ #include "config_rpt_all.h"
++#include <climits>
+ //#include <QtGui>
+ 
+ HvLabAutoSeq::HvLabAutoSeq(bool f,QWidget * parent )
+@@ -313,6 +315,7 @@ HvTxW::HvTxW(QString inst,QString path,int lid,bool f,int x,int y,QWidget * pare
+     s_txwatchdog_time = 20*60;//default=20min
+     s_txwatchdog_coun = 10;//default=10 perions;
+     f_no_time_count_txwatchdog = 0;//default=1 0=off 1=time 2=count;
++    m_om0rxTxEdgeGeneration = 0;
+     //TX watchdog
+ 
+     direct_log_qso = true;//2.51 default
+@@ -3531,8 +3534,7 @@ bool HvTxW::is_pfx(QString s)
+ void HvTxW::StopAuto()
+ {
+     (new Om0rxStationGate(this))->auditEvent("auto-stop", "HvTxW::StopAuto");
+-    Om0rxStationGate::autoDesired() = false;
+-    Om0rxStationGate::invalidateAndNotify(this, "auto-stopped");
++    Om0rxStationGate::noteInternalAutoStopped();
+     f_auto_on = false;
+     b_auto_on->setText(tr("AUTO IS OFF"));
+     b_auto_on->setStyleSheet("QPushButton{background-color:palette(Button);}");
+@@ -3541,6 +3543,7 @@ void HvTxW::StopAuto()
+     count_73_auto_seq = 0;//2.50 reset 73 for sop from watchdog or manual stop TX with 73 or RR73
+     //one_addtolog_auto_seq = false;//reset add to log
+     emit EmitAuto();
++    emit EmitAutoModeChanged(false);  // AutoDxer terminal-edge reconciliation (debounced in core)
+ }
+ void HvTxW::auto_on()
+ {
+@@ -3566,8 +3569,7 @@ void HvTxW::auto_on()
+         MultiAnswerMod->SetAuto(true);
+     }
+     Om0rxStationGate::autoDesired() = f_auto_on;
+-    if (f_auto_on) Om0rxStationGate::prefetch(this);
+-    else Om0rxStationGate::invalidateAndNotify(this, "auto-toggled-off");
++    if (!f_auto_on) Om0rxStationGate::invalidateAndNotify(this, "auto-toggled-off");
+     (new Om0rxStationGate(this))->auditEvent("auto-toggle", "HvTxW::auto_on", f_auto_on ? "on" : "off");
+     emit EmitAuto();
+     emit EmitAutoModeChanged(f_auto_on);  // AutoDxer TX confirmation feedback
+@@ -3591,7 +3593,6 @@ void HvTxW::StartAuto()
+         emit EmitAutoModeChanged(f_auto_on);
+     }
+     Om0rxStationGate::autoDesired() = true;
+-    Om0rxStationGate::prefetch(this);
+     (new Om0rxStationGate(this))->auditEvent("auto-start", "HvTxW::StartAuto", "autodx");
+ }
+ void HvTxW::SaveSettings()
+@@ -4137,6 +4138,35 @@ void HvTxW::SetDxParm(QString dc,QString re,QString dxg)//2.66
+     dxg0 = dxg;
+     TRadioAndNetW->SetDxParm(dc,QString("%1").arg(irptt),dxg); //qDebug()<<"SetDxParm="<<dc<<re<<dxg;
+ }
++void HvTxW::SyncAutoDxerStatusTarget(QString callsign, QString grid, bool qsoEngaged,
++                                     bool reconcileIdleStartup)
++{
++    const AutoDxStatusOwnership::Decision decision =
++        m_autoDxStatusOwnership.targetChanged(callsign, grid, qsoEngaged,
++                                              le_his_call->getText(),
++                                              TRadioAndNetW->GetStatusDxCall(),
++                                              reconcileIdleStartup);
++    if (decision.action == AutoDxStatusOwnership::NoChange) return;
++
++    if (decision.action == AutoDxStatusOwnership::SetOwnedTarget) {
++        le_his_call->SetText(decision.callsign);
++        if (!decision.grid.isEmpty()) LeHisLoc->SetText(decision.grid);
++        SetDxParm(decision.callsign, le_rst_tx->getText(), decision.grid);
++        return;
++    }
++
++    if (le_his_call->getText().trimmed().compare(decision.callsign,
++                                                 Qt::CaseInsensitive) == 0) {
++        le_his_call->SetText("");
++    }
++    if (!decision.grid.isEmpty()
++            && LeHisLoc->getText().trimmed().compare(decision.grid,
++                                                     Qt::CaseInsensitive) == 0) {
++        LeHisLoc->SetText("");
++    }
++    // SetDxParm schedules the normal 150 ms WSJT-compatible Status update.
++    SetDxParm("", le_rst_tx->getText(), "");
++}
+ void HvTxW::RfreshDxParm() //2.66
+ {
+     if (f_multi_answer_mod && (s_mode==11 || s_mode==13 || allq65)) return;//MAM and MAM Modes
+@@ -5014,7 +5044,19 @@ void HvTxW::CountTx73_p(bool svlog)
+ }
+ void HvTxW::SetTxRxCountAutoSeq(bool f)
+ {
++    const quint64 txEdgeGeneration = ++m_om0rxTxEdgeGeneration;
+     f_tx_rx = f;
++    if (f && f_no_time_count_txwatchdog != 0 && s_txwatchdog_time > 0)
++    {
++        const int timeoutMs = static_cast<int>(qMin<unsigned int>(
++            s_txwatchdog_time, static_cast<unsigned int>(INT_MAX / 1000))) * 1000;
++        QTimer::singleShot(timeoutMs, this, [this, txEdgeGeneration]() {
++            if (!Om0rxTxWatchdogEdge::shouldTrip(
++                    f_tx_rx, txEdgeGeneration, m_om0rxTxEdgeGeneration))
++                return;
++            emit EmitTxWatchdogStop();
++        });
++    }
+     if ((s_mode==11 || s_mode==13 || allq65) && f_multi_answer_mod) MultiAnswerMod->SetTxRxMsg(f);//eventual ft4
+ 
+     TRadioAndNetW->SetTx(f);
+@@ -5053,26 +5095,6 @@ void HvTxW::SetTxRxCountAutoSeq(bool f)
+     if (!f)	//only end tx
+     {
+         CountTx73_p(false); // v1.47 2.59=false
+-
+-        //TX watchdog
+-        if (f_no_time_count_txwatchdog == 0)    //by 0=no 1=time 2=count;
+-            return;
+-        else if (f_no_time_count_txwatchdog == 1) //by 0=no 1=time 2=count;
+-        {
+-            unsigned int hh = QDateTime::currentDateTimeUtc().toTime_t();
+-            if (hh < s_last_txwatchdog_time + s_txwatchdog_time)//1min 1*60=60s
+-                return;
+-            s_last_txwatchdog_time = hh;
+-        }
+-        else if (f_no_time_count_txwatchdog == 2) //by 0=no 1=time 2=count;
+-        {
+-            s_last_txwatchdog_coun++;
+-            if (s_txwatchdog_coun > s_last_txwatchdog_coun)//1min 1*60=60s      1802=30:02  1800+2  2=seconds
+-                return;
+-            s_last_txwatchdog_coun = 0;
+-        }
+-        StopAuto();
+-        //END TX watchdog
+     }
+ }
+ void HvTxW::SetLastTxRptAutoSeq(QString t)
+diff --git a/MSHV_2762/src/HvTxW/hvtxw.h b/MSHV_2762/src/HvTxW/hvtxw.h
+index 1e77e2d..0d4df4d 100644
+--- a/MSHV_2762/src/HvTxW/hvtxw.h
++++ b/MSHV_2762/src/HvTxW/hvtxw.h
+@@ -151,6 +151,7 @@ private:
+ //#undef _BCNBAND_H_
+ //#undef _BANDTOFREQ_H_
+ #include "../config_band_all.h"
++#include "../HvAutoDxer/autodxstatusownership.h"
+ 
+ class HvTxW : public QWidget
+ {
+@@ -331,6 +332,8 @@ public slots:
+     void ShowLog();
+     void SetNewDb();
+     void SetDxParm(QString dc,QString re,QString dxg);
++    void SyncAutoDxerStatusTarget(QString callsign, QString grid, bool qsoEngaged,
++                                  bool reconcileIdleStartup = false);
+     void gen_msg();
+     void bt_gen_msg();//for SWL
+     void auto_on();
+@@ -379,6 +382,7 @@ signals:
+     void EmitAuto();
+     void EmitAutoModeChanged(bool isOn);  // AutoDxer TX confirmation feedback
+     void Emit2ClickAutoOnChanged(bool enabled);  // AutoDxer needs to know if TX triggering works
++    void EmitTxWatchdogStop();  // Actual continuously asserted PTT exceeded timeout
+     void EmitFileNameChenged();
+     void EmitDfSdbChanged(int,int);
+     void EmitDfChanged(int,int);
+@@ -502,6 +506,7 @@ private:
+     bool f_recognize_tp1;
+     bool f_recognize_tp2;
+     RadioAndNetW *TRadioAndNetW;
++    AutoDxStatusOwnership m_autoDxStatusOwnership;
+     bool TrySetQueuedCall(bool);
+     void CountTx73_p(bool);
+     void SetLockTxrxMode(int);
+@@ -682,6 +687,7 @@ private:
+     unsigned int s_txwatchdog_time;
+     int s_txwatchdog_coun;
+     int f_no_time_count_txwatchdog;//by 0=no 1=time 2=count;
++    quint64 m_om0rxTxEdgeGeneration;
+     void ResetTxWatchdog(QString,bool,bool);
+     //HvAstroDataW *THvAstroDataW;
+     QLabel *l_trxmx;
+@@ -696,4 +702,4 @@ protected:
+ 
+ 
+ };
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/MSHV_2762/src/main_ms.cpp b/MSHV_2762/src/main_ms.cpp
+index c3317b1..8569782 100644
+--- a/MSHV_2762/src/main_ms.cpp
++++ b/MSHV_2762/src/main_ms.cpp
+@@ -146,6 +146,9 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     f_once_pt_15_to_30 = 0;// 0<-no 1<-30s 2<-15s
+     f_rx_only_fi_se = false;
+     f_fast_rfresh_only_fi_se = false;
++    m_autoDxerBandChangePending = false;
++    m_autoDxerRequestedBand = -1;
++    m_autoDxerBandChangeRequestId = 0;
+ 
+     //+ 100ms za da spre signala kam PA sigurno
+     stop_tx_befor_end = (370);//(370 + 100); 4096*1000/11025 stop tx 370ms bifor rx period tx buffer is 4096=370ms
+@@ -753,10 +756,6 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     QNetworkAccessManager *om0rxNetwork = new QNetworkAccessManager(this);
+     QTimer *om0rxStateTimer = new QTimer(this);
+     connect(om0rxStateTimer, &QTimer::timeout, this, [this, om0rxNetwork]() {
+-        // Read-only maintenance: prefetch a short-lived permit during RX without
+-        // touching upstream Auto/AutoDX/queue/target state.
+-        if (Om0rxStationGate::autoDesired() && !f_tx_busy)
+-            Om0rxStationGate::prefetch(this);
+         QString base = QString::fromUtf8(qgetenv("OM0RX_API_BASE"));
+         if (base.isEmpty()) base = "http://127.0.0.1:8080";
+         const QUrl url(base + "/api/digital/engine-state");
+@@ -783,6 +782,14 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     // Pass MSHV queue widget to AutoDxer for direct queue insertion
+     m_autoDxerCore->setQueueWidget(THvTxW->getMultiAnswerMod());
+ 
++    // Mirror only the native AutoDX-owned target into MSHV's legacy fields
++    // used by WSJT-compatible Status. This is telemetry synchronization only;
++    // it has no path back into target selection, CAT, PTT or band control.
++    connect(m_autoDxerCore, &AutoDxerCore::targetChanged,
++            this, [this](const DxTarget &target) {
++        THvTxW->SyncAutoDxerStatusTarget(target.callsign, target.grid,
++                                         m_autoDxerCore->targetRespondedToUs());
++    });
+     // Connect ALL local decodes to Auto DXer (EmitRxStationInfo fires for every decode)
+     connect(TDecodeList1, SIGNAL(EmitRxStationInfo(QStringList,int,bool,uint8_t)),
+             m_autoDxerCore, SLOT(onStationInfo(QStringList,int,bool,uint8_t)));
+@@ -825,11 +832,24 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+             THvTxW, SLOT(StartAuto()));
+     connect(m_autoDxerCore, SIGNAL(requestDisableAuto()),
+             THvTxW, SLOT(StopAuto()));
++    connect(m_autoDxerCore, &AutoDxerCore::requestAuthorizationInvalidation,
++            this, [this](const QString &reason) {
++        Om0rxStationGate::invalidateAndNotify(this, reason);
++    });
+ 
+     // Loading the persisted panel state can enable AutoDX.  Do it only after
+     // every safety/upstream-control signal is connected so the initial enable
+     // cannot miss CQ-disable, Auto, queue or telemetry observers.
+     m_autoDxerCore->setCurrentMode(ModeStr(s_mod_ident));
++    // A restart loses the in-memory ownership marker while the legacy/status
++    // cache is persisted. Reconcile that one startup boundary only when native
++    // AutoDX is the effective owner for this mode and neither core nor legacy
++    // AUTO is engaged.
++    const DxTarget startupTarget = m_autoDxerCore->currentTarget();
++    THvTxW->SyncAutoDxerStatusTarget(
++        startupTarget.callsign, startupTarget.grid,
++        m_autoDxerCore->targetRespondedToUs() || THvTxW->GetAutoIsOn(),
++        m_autoDxerCore->isEnabled());
+     // Establish the actual operating mode before the panel hydrates from the
+     // authoritative core so desired/effective state is never rendered against
+     // an empty startup mode.
+@@ -998,6 +1018,9 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     //THvTxW->HisLocChanged(); // for ft8
+ 
+     connect(THvRigControl, SIGNAL(EmitTxWatchdogParms(int,int,int)), THvTxW, SLOT(SetTxWatchdogParms(int,int,int)));
++    connect(THvTxW, &HvTxW::EmitTxWatchdogStop, this, [this]() {
++        StopTxGlobalWithReason("tx-watchdog-stop");
++    });
+     connect(THvRigControl, SIGNAL(EmitModSetFrqToRig(bool)), THvTxW, SLOT(SetModSetFrqToRig(bool)));
+   
+     //connect(THvTxW, SIGNAL(EmitRigBandFromFreq(int)), this, SLOT(SetBandFromRigFreq(int)));//1.61= down is started
+@@ -1970,7 +1993,7 @@ Main_Ms::~Main_Ms()
+     //// Translation ////
+     SaveSS();
+     //// end Translation ////
+-    THvTxW->StopAuto();
++    StopTxGlobalWithReason("process-teardown");
+     TMsPlayerHV->Stop();
+     StopRxGlobal();
+     TMsCore->close_sound();
+@@ -2849,50 +2872,74 @@ void Main_Ms::BandChanged(bool)
+             W_band_bt_sw->SetActiveBt(i);
+ 
+             // Notify Auto DXer of band change (only for HF bands 3-13)
+-            if (m_autoDxerCore && i >= 3 && i <= 14) {
++            if (m_autoDxerCore && i >= 3 && i <= 14
++                    && !(m_autoDxerBandChangePending
++                         && m_autoDxerRequestedBand == i)) {
+                 m_autoDxerCore->onBandChangedExternally(i);
+             }
+             break;
+         }
+     }
+ }
++bool Main_Ms::isCurrentAutoDxerBandChange(int bandIndex, quint64 requestId) const
++{
++    return m_autoDxerBandChangePending
++        && m_autoDxerRequestedBand == bandIndex
++        && requestId != 0
++        && m_autoDxerBandChangeRequestId == requestId;
++}
++
++void Main_Ms::clearAutoDxerBandChange(int bandIndex, quint64 requestId)
++{
++    if (!isCurrentAutoDxerBandChange(bandIndex, requestId)) return;
++    m_autoDxerBandChangePending = false;
++    m_autoDxerRequestedBand = -1;
++    m_autoDxerBandChangeRequestId = 0;
++}
++
+ // Auto DXer band change slot
+ void Main_Ms::SetBandFromAutoDxer(int bandIndex)
+ {
+     // Validate band index (CRITICAL: skip LF bands 0,1,2)
+     if (bandIndex >= 3 && bandIndex < COUNT_BANDS) {
+         const int hz = m_autoDxerCore->bandManager()->bandFrequencyHz(bandIndex);
++        const quint64 requestId = m_autoDxerCore->activeBandChangeRequestId();
++        m_autoDxerBandChangePending = true;
++        m_autoDxerRequestedBand = bandIndex;
++        m_autoDxerBandChangeRequestId = requestId;
++        // Generic StopAuto (including an empty queue) never changes the station
++        // authorization generation. This explicit QSY edge owns the one and
++        // only invalidation before the asynchronous hardware prepare begins.
+         Om0rxStationGate::invalidateAndNotify(this, "autodx-band-qsy");
+-        Om0rxStationGate *gate = new Om0rxStationGate(this);
+-        gate->prepare(hz, m_autoDxerCore->bandManager()->bandName(bandIndex), [this, bandIndex, hz](bool ready) {
+-        if (!ready) {
+-            m_autoDxerCore->appendDebugMessage("OM0RX: Station preparation rejected/timed out; QSY not attempted");
+-            return;
+-        }
++        // Preserve upstream ownership of CAT/QSY.  OM0RX observes the resulting
++        // radio band and applies the Station Profile asynchronously; transient
++        // accessory/profile readback must never roll back this native QSY.
+         ListBands.at(bandIndex)->setChecked(true);
+         // BandChanged() will be triggered automatically via Qt signal
+ 
+         QTimer *confirmation = new QTimer(this);
+         const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + 4000;
+-        connect(confirmation, &QTimer::timeout, this, [this, confirmation, bandIndex, hz, deadline]() {
++        connect(confirmation, &QTimer::timeout, this, [this, confirmation, bandIndex, hz, deadline, requestId]() {
++            if (!isCurrentAutoDxerBandChange(bandIndex, requestId)) {
++                confirmation->stop(); confirmation->deleteLater();
++                return;
++            }
+             if (Om0rxStationGate::currentHz() == hz) {
+                 confirmation->stop(); confirmation->deleteLater();
+-                Om0rxStationGate *finalGate = new Om0rxStationGate(this);
+-                finalGate->confirm(hz, m_autoDxerCore->bandManager()->bandName(bandIndex), [this, bandIndex](bool finalReady) {
+-                    if (finalReady && Om0rxStationGate::hasPermit()) {
+-                        m_autoDxerCore->onBandChangeComplete(bandIndex);
+-                    } else {
+-                        m_autoDxerCore->appendDebugMessage("OM0RX: Final station readback rejected/timed out; TX remains inhibited");
+-                    }
+-                });
++                m_autoDxerCore->onBandChangeCompleteForRequest(bandIndex, requestId);
++                clearAutoDxerBandChange(bandIndex, requestId);
+             } else if (QDateTime::currentMSecsSinceEpoch() >= deadline) {
+                 Om0rxStationGate::invalidateAndNotify(this, "cat-qsy-timeout");
+                 m_autoDxerCore->appendDebugMessage("OM0RX: CAT did not acknowledge prepared frequency; TX remains inhibited");
++                m_autoDxerCore->onBandChangeFailedForRequest(
++                    bandIndex, "CAT acknowledgement timed out", requestId, false);
++                clearAutoDxerBandChange(bandIndex, requestId);
+                 confirmation->stop(); confirmation->deleteLater();
+             }
+         });
+         confirmation->start(50);
+-        });
++    } else if (m_autoDxerCore) {
++        m_autoDxerCore->onBandChangeFailed(bandIndex, "invalid band index");
+     }
+ }
+ 
+@@ -2904,12 +2951,6 @@ void Main_Ms::SetDialFreqFromAutoDxer(int dialFreqHz)
+ 
+     if (dialFreqHz > 0 && THvRigControl) {
+         Om0rxStationGate::invalidateAndNotify(this, "autodx-dial-qsy");
+-        Om0rxStationGate *gate = new Om0rxStationGate(this);
+-        gate->prepare(dialFreqHz, QString(), [this, dialFreqHz](bool ready) {
+-        if (!ready) {
+-            m_autoDxerCore->appendDebugMessage("OM0RX: Dial preparation rejected/timed out; QSY not attempted");
+-            return;
+-        }
+         QString freqStr = QString::number(dialFreqHz);
+         qDebug() << "[DIAL-QSY] Sending SetFreq to rig:" << freqStr;
+         // Use Qt meta-object invocation for private slot
+@@ -2922,11 +2963,6 @@ void Main_Ms::SetDialFreqFromAutoDxer(int dialFreqHz)
+         connect(confirmation, &QTimer::timeout, this, [this, confirmation, dialFreqHz, deadline]() {
+             if (Om0rxStationGate::currentHz() == dialFreqHz) {
+                 confirmation->stop(); confirmation->deleteLater();
+-                Om0rxStationGate *finalGate = new Om0rxStationGate(this);
+-                finalGate->confirm(dialFreqHz, QString(), [this](bool finalReady) {
+-                    if (!finalReady || !Om0rxStationGate::hasPermit())
+-                        m_autoDxerCore->appendDebugMessage("OM0RX: Final dial readback rejected/timed out; TX remains inhibited");
+-                });
+             } else if (QDateTime::currentMSecsSinceEpoch() >= deadline) {
+                 Om0rxStationGate::invalidateAndNotify(this, "cat-dial-qsy-timeout");
+                 m_autoDxerCore->appendDebugMessage("OM0RX: CAT did not acknowledge prepared dial frequency; TX remains inhibited");
+@@ -2934,7 +2970,6 @@ void Main_Ms::SetDialFreqFromAutoDxer(int dialFreqHz)
+             }
+         });
+         confirmation->start(50);
+-        });
+     } else {
+         qDebug() << "[DIAL-QSY] SKIPPED: dialFreqHz=" << dialFreqHz
+                  << "THvRigControl=" << (THvRigControl ? "exists" : "NULL");
+@@ -2986,14 +3021,6 @@ void Main_Ms::ModeMenuStatRefresh(bool dea)
+ }
+ void Main_Ms::SetRigTxRx(bool f)
+ {
+-    // Keep the upstream UI/timing state unchanged when a slot is not yet
+-    // authorized. The lower HvRigControl edge consumes the permit universally.
+-    if (f && !Om0rxStationGate::hasPermit()) {
+-        Om0rxStationGate::lastReason() = "ptt-permit-unavailable";
+-        (new Om0rxStationGate(this))->auditRejected("Main_Ms::SetRigTxRx", Om0rxStationGate::lastReason());
+-        Om0rxStationGate::prefetch(this);
+-        return;
+-    }
+     //qDebug()<<"SetRigTxRx...................."<<f;
+     f_tx_busy = f;//2.47
+     THvRigControl->SetPtt(f,0);//id 0=All 1=p1 2=p2
+@@ -3010,7 +3037,6 @@ void Main_Ms::SetRigTxRx(bool f)
+         l_tx_text->setStyleSheet("QLabel{background-color:palette(Button);}");
+         Band_m->setDisabled(false);
+         W_band_bt_sw->setDisabled(false); //qDebug()<<g_block_mam<<g_ub_m_k;
+-        if (Om0rxStationGate::autoDesired()) Om0rxStationGate::prefetch(this);
+     }
+     //f_tx_busy = f;
+     if (s_mod_ident==11 || s_mod_ident==13 || allq65) ModeMenuStatRefresh(f_de_active);//ft8 and ft4     
+@@ -3656,10 +3682,15 @@ void Main_Ms::Tune()
+ }
+ void Main_Ms::SetUdpCmdStop(bool)// f
+ {
+-    StopTxGlobal();
++    StopTxGlobalWithReason("udp-stop");
+ }
+ void Main_Ms::StopTxGlobal()
+ {
++    StopTxGlobalWithReason("stop-tx-global");
++}
++void Main_Ms::StopTxGlobalWithReason(const QString &reason)
++{
++    Om0rxStationGate::invalidateAndNotify(this, reason);
+     THvTxW->StopAuto();
+     f_tx_to_rx = true; //qDebug()<<"5Stop TX Start RX";
+ }
+@@ -5347,7 +5378,7 @@ void Main_Ms::keyPressEvent(QKeyEvent* event)
+     switch (event->key())
+     {
+     case Qt::Key_Escape:
+-        StopTxGlobal();
++        StopTxGlobalWithReason("escape-stop");
+         break;
+     case Qt::Key_F1:
+         THvTxW->SetTxMessage(0);
+diff --git a/MSHV_2762/src/main_ms.h b/MSHV_2762/src/main_ms.h
+index 0d50d09..f935a78 100644
+--- a/MSHV_2762/src/main_ms.h
++++ b/MSHV_2762/src/main_ms.h
+@@ -151,6 +151,9 @@ private slots:
+ private:
+     QString InstName;
+ 	QString _stcq_;
++	void StopTxGlobalWithReason(const QString &reason);
++	bool isCurrentAutoDxerBandChange(int bandIndex, quint64 requestId) const;
++	void clearAutoDxerBandChange(int bandIndex, quint64 requestId);
+ 	void SkUpDownBandChanged(bool);
+     void SetTxFreq_p();//2.64
+     double s_v_disp_tx_frq;
+@@ -329,6 +332,9 @@ private:
+     // Auto DXer components
+     AutoDxerCore *m_autoDxerCore;
+     AutoDxerPanel *m_autoDxerPanel;
++    bool m_autoDxerBandChangePending;
++    int m_autoDxerRequestedBand;
++    quint64 m_autoDxerBandChangeRequestId;
+ 
+     // DXCC Chaser components
+     HvDxccTracker *m_hvDxccTracker;
+diff --git a/MSHV_2762/src/om0rxstationgate.h b/MSHV_2762/src/om0rxstationgate.h
+index b14db16..b25586d 100644
+--- a/MSHV_2762/src/om0rxstationgate.h
++++ b/MSHV_2762/src/om0rxstationgate.h
+@@ -53,6 +53,10 @@ public:
+         requestedPttMask() = 0;
+         pttMask() = 0;
+     }
++    // An ordinary MSHV AUTO stop (including the empty-queue signal) changes
++    // only MSHV's local sequencer state. It is not a station Halt/QSY/process
++    // event and therefore must not revoke an in-flight preparation or permit.
++    static void noteInternalAutoStopped() { autoDesired() = false; }
+     static bool pttRequestStillCurrent(quint64 sequence, unsigned permitGeneration,
+                                        int hz, int mask) {
+         return sequence == pttRequestSequence() &&
+diff --git a/MSHV_2762/src/om0rxtxwatchdogedge.h b/MSHV_2762/src/om0rxtxwatchdogedge.h
+new file mode 100644
+index 0000000..2778324
+--- /dev/null
++++ b/MSHV_2762/src/om0rxtxwatchdogedge.h
+@@ -0,0 +1,17 @@
++#ifndef OM0RX_TX_WATCHDOG_EDGE_H
++#define OM0RX_TX_WATCHDOG_EDGE_H
++
++namespace Om0rxTxWatchdogEdge {
++
++// A normal false edge is completion, never a watchdog fault.  A watchdog may
++// trip only if the same armed rising edge is still current and PTT remains
++// asserted when its deadline callback runs.
++inline bool shouldTrip(bool txActive, unsigned long long armedGeneration,
++                       unsigned long long currentGeneration)
++{
++    return txActive && armedGeneration == currentGeneration;
++}
++
++} // namespace Om0rxTxWatchdogEdge
++
++#endif

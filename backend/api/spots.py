@@ -122,7 +122,9 @@ async def _halt_tx_before_qsy(flex: Any, frequency_mhz: float) -> Dict[str, Any]
         logger.debug("WSJT-X pre-QSY status check unavailable: %s", exc)
 
     if getattr(flex, "current_mox", None) is True:
-        if not flex.set_mox(False):
+        from services.radio import run_radio_io
+
+        if not await run_radio_io(lambda: flex.set_mox(False)):
             raise HTTPException(status_code=409, detail="Radio could not be returned to RX before QSY")
         result["radio_dekeyed"] = True
 
@@ -336,7 +338,7 @@ def _enrich_spot_cty_locations(app_state: Any, spots: List[Dict[str, Any]], max_
 async def _refresh_uncertain_spot_classifications(
     app_state: Any,
     spots: List[Dict[str, Any]],
-    max_rechecks: int = 25,
+    max_rechecks: Optional[int] = None,
 ) -> None:
     """Repair stale or unsafe DXCC status rows before returning cached spots."""
     classifier = getattr(app_state, "classifier", None)
@@ -348,7 +350,7 @@ async def _refresh_uncertain_spot_classifications(
 
     checked = 0
     for spot in spots:
-        if checked >= max_rechecks:
+        if max_rechecks is not None and checked >= max_rechecks:
             return
         if spot.get("dxcc_status_source") == "verified":
             continue
@@ -425,6 +427,16 @@ async def _enrich_worked_before_dates(app_state: Any, spots: List[Dict[str, Any]
     await asyncio.to_thread(enrich)
 
 
+async def _spots_db_call(method_name: str, *args: Any, **kwargs: Any) -> Any:
+    """Initialize and query the persistent spot store off the API event loop."""
+    from radio_control.spots_logger import get_spots_logger
+
+    def call() -> Any:
+        return getattr(get_spots_logger(), method_name)(*args, **kwargs)
+
+    return await asyncio.to_thread(call)
+
+
 @router.get("/api/spots")
 async def get_spots(
     request: Request,
@@ -438,6 +450,12 @@ async def get_spots(
     """Get DX spots with optional filtering (from cache only)"""
     dx_spots_cache = getattr(request.app.state, 'dx_spots_cache', [])
     filtered_spots = [dict(spot) for spot in dx_spots_cache]
+
+    # A spot can arrive while the Wavelog status cache is warming or being
+    # refreshed.  Reclassify uncertain copied rows before applying status
+    # filters so a transient Unknown does not remain visible for the lifetime
+    # of the in-memory spot.
+    await _refresh_uncertain_spot_classifications(request.app.state, filtered_spots)
     
     # Apply filters
     if band:
@@ -474,6 +492,7 @@ async def get_live_spot_cache(request: Request, limit: int = 250):
     dx_spots_cache = getattr(request.app.state, "dx_spots_cache", [])
     safe_limit = max(1, min(int(limit or 250), 500))
     spots = [dict(spot) for spot in dx_spots_cache[:safe_limit]]
+    await _refresh_uncertain_spot_classifications(request.app.state, spots)
     await _enrich_worked_before_dates(request.app.state, spots)
     return {"spots": spots}
 
@@ -686,12 +705,10 @@ async def search_filtered_spots(req: SpotFilterRequest, request: Request):
     Returns up to 'limit' spots matching all specified filters with cached classifications.
     """
     try:
-        from radio_control.spots_logger import get_spots_logger
-        
         logger.info(f"🔍 Filtered search: callsign={req.callsign}, bands={req.bands}, modes={req.modes}, limit={req.limit}")
-        
-        spots_logger = get_spots_logger()
-        spots = await asyncio.to_thread(spots_logger.get_filtered_spots,
+
+        spots = await _spots_db_call(
+            "get_filtered_spots",
             limit=req.limit,
             callsign=req.callsign,
             bands=req.bands,
@@ -707,6 +724,7 @@ async def search_filtered_spots(req: SpotFilterRequest, request: Request):
             sort_by=req.sort_by,
         )
         _enrich_spot_cty_locations(request.app.state, spots)
+        await _refresh_uncertain_spot_classifications(request.app.state, spots)
         await _enrich_worked_before_dates(request.app.state, spots)
         if req.sort_by == "score":
             spots.sort(key=lambda spot: (spot.get("spot_score", 0), spot.get("timestamp", 0)), reverse=True)
@@ -732,11 +750,8 @@ async def search_filtered_spots(req: SpotFilterRequest, request: Request):
 async def repair_spot_metadata(req: SpotMaintenanceRepairRequest):
     """Recompute stored spot mode/source/RBL/special/country metadata."""
     try:
-        from radio_control.spots_logger import get_spots_logger
-
-        spots_logger = get_spots_logger()
-        result = await asyncio.to_thread(
-            spots_logger.repair_spot_metadata,
+        result = await _spots_db_call(
+            "repair_spot_metadata",
             limit=req.limit,
             dry_run=req.dry_run,
             vacuum=req.vacuum,
@@ -761,23 +776,22 @@ async def tune_to_spot(req: SpotTuneRequest, request: Request):
     
     try:
         # Import broadcast function
+        from services.radio import execute_station_route_change, run_radio_io
         from services.websocket import broadcast_status
 
         # A CAT frequency change while WSJT-Z is keyed makes SmartSDR drop
         # PTT while WSJT-Z continues to display a false TX state. Halt/dekey
         # first so the QSY and the next TX slot cannot race.
         tx_interlock = await _halt_tx_before_qsy(flex, req.frequency)
-        
-        # Tune frequency
-        success = flex.tune_mhz(req.frequency)
-        if not success:
-            raise HTTPException(status_code=400, detail="Tune command failed")
-        
-        radio_mode = _radio_mode_for_spot(req.mode, req.frequency)
 
-        # Set mode if provided
+        await execute_station_route_change(
+            "spot-frequency",
+            lambda: flex.tune_mhz(req.frequency),
+        )
+
+        radio_mode = _radio_mode_for_spot(req.mode, req.frequency)
         if radio_mode:
-            mode_success = flex.set_mode(radio_mode)
+            mode_success = await run_radio_io(lambda: flex.set_mode(radio_mode))
             if not mode_success:
                 logger.warning(f"Mode change to {radio_mode} failed, but frequency changed")
         
@@ -799,9 +813,7 @@ async def tune_to_spot(req: SpotTuneRequest, request: Request):
 async def get_spots_count(request: Request):
     """Get total count of spots from persistent database"""
     try:
-        from radio_control.spots_logger import get_spots_logger
-        spots_logger = get_spots_logger()
-        count = spots_logger.get_spot_count()
+        count = await _spots_db_call("get_spot_count")
         return {"count": count}
     except Exception as e:
         logger.error(f"Error getting spot count: {e}")
@@ -820,10 +832,7 @@ async def get_spots_source_stats(request: Request, fast: bool = False):
             "windows": [],
         }
     try:
-        from radio_control.spots_logger import get_spots_logger
-
-        spots_logger = get_spots_logger()
-        persisted = spots_logger.get_source_stats([5, 15, 60])
+        persisted = await _spots_db_call("get_source_stats", [5, 15, 60])
         if not persisted.get("ok"):
             return {
                 "ok": False,
@@ -853,9 +862,7 @@ async def get_spots_source_stats(request: Request, fast: bool = False):
 async def get_spots_stats_by_band(date: Optional[str] = None):
     """Get persisted spots grouped by band."""
     try:
-        from radio_control.spots_logger import get_spots_logger
-        spots_logger = get_spots_logger()
-        stats = spots_logger.get_stats_by_band(date)
+        stats = await _spots_db_call("get_stats_by_band", date)
         return {"ok": True, "data": stats, "date_filter": date}
     except Exception as e:
         logger.error(f"Error getting band statistics: {e}", exc_info=True)
@@ -866,9 +873,7 @@ async def get_spots_stats_by_band(date: Optional[str] = None):
 async def get_spots_stats_by_mode(date: Optional[str] = None):
     """Get persisted spots grouped by mode."""
     try:
-        from radio_control.spots_logger import get_spots_logger
-        spots_logger = get_spots_logger()
-        stats = spots_logger.get_stats_by_mode(date)
+        stats = await _spots_db_call("get_stats_by_mode", date)
         return {"ok": True, "data": stats, "date_filter": date}
     except Exception as e:
         logger.error(f"Error getting mode statistics: {e}", exc_info=True)
@@ -882,9 +887,7 @@ async def get_spots_stats_by_country(
 ):
     """Get persisted spots grouped by country."""
     try:
-        from radio_control.spots_logger import get_spots_logger
-        spots_logger = get_spots_logger()
-        stats = spots_logger.get_stats_by_country(limit, date)
+        stats = await _spots_db_call("get_stats_by_country", limit, date)
         return {"ok": True, "data": stats, "limit": limit, "date_filter": date}
     except Exception as e:
         logger.error(f"Error getting country statistics: {e}", exc_info=True)
@@ -895,9 +898,7 @@ async def get_spots_stats_by_country(
 async def get_special_event_spots(limit: int = 100):
     """Get persisted spots tagged as special event stations."""
     try:
-        from radio_control.spots_logger import get_spots_logger
-        spots_logger = get_spots_logger()
-        spots = spots_logger.get_special_event_spots(limit)
+        spots = await _spots_db_call("get_special_event_spots", limit)
         return {"ok": True, "data": spots, "count": len(spots)}
     except Exception as e:
         logger.error(f"Error getting special event spots: {e}", exc_info=True)
@@ -912,9 +913,7 @@ async def get_recent_spots(
 ):
     """Return one bounded, newest-first page from the persistent database."""
     try:
-        from radio_control.spots_logger import get_spots_logger
-        spots_logger = get_spots_logger()
-        spots = await asyncio.to_thread(spots_logger.get_recent_spots, limit, before)
+        spots = await _spots_db_call("get_recent_spots", limit, before)
         await _enrich_worked_before_dates(request.app.state, spots)
         next_cursor = spots[-1].get("received_at") if len(spots) == limit else None
         return {
@@ -933,9 +932,7 @@ async def get_recent_spots(
 async def get_spots_by_callsign(callsign: str, request: Request, limit: int = 100):
     """Get all spots for a specific callsign from persistent database"""
     try:
-        from radio_control.spots_logger import get_spots_logger
-        spots_logger = get_spots_logger()
-        spots = await asyncio.to_thread(spots_logger.get_spots_by_callsign, callsign, limit)
+        spots = await _spots_db_call("get_spots_by_callsign", callsign, limit)
         await _enrich_worked_before_dates(request.app.state, spots)
         return {"callsign": callsign, "count": len(spots), "spots": spots}
     except Exception as e:

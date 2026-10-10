@@ -12,6 +12,7 @@ public sealed class SettingsForm : Form
     private readonly CheckBox _startLauncher = new();
     private readonly CheckBox _manageDocker = new();
     private readonly CheckBox _rememberWindowLayout = new();
+    private readonly ComboBox _digitalEngine = new();
     private readonly CheckBox _startWsjtz = new();
     private readonly CheckBox _enableAutoCall = new();
     private readonly NumericUpDown _autoCallLimit = new();
@@ -35,7 +36,7 @@ public sealed class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 3,
-            RowCount = 17,
+            RowCount = 18,
             Padding = new Padding(12),
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
@@ -52,14 +53,15 @@ public sealed class SettingsForm : Form
         AddCheckRow(root, 6, _startLauncher, "Start desktop/browser launcher");
         AddCheckRow(root, 7, _manageDocker, "Manage Docker/Postgres compose");
         AddCheckRow(root, 8, _rememberWindowLayout, "Remember app window positions");
-        AddCheckRow(root, 9, _startWsjtz, "Start WSJT-Z when agent starts");
-        AddCheckRow(root, 10, _enableAutoCall, "Enable Auto Call after startup");
-        AddNumberRow(root, 11, "Auto Call limit", _autoCallLimit, 0, 99);
-        AddNumberRow(root, 12, "Check interval sec", _interval, 2, 300);
-        AddNumberRow(root, 13, "Failures before restart", _threshold, 1, 20);
-        AddNumberRow(root, 14, "Restart cooldown sec", _cooldown, 10, 600);
-        AddTextRow(root, 15, "Compose file", _composeFile);
-        AddTextRow(root, 16, "Watched processes", _watchedProcesses);
+        AddComboRow(root, 9, "Digital engine", _digitalEngine, new[] { "none", "wsjtz", "mshv_auto_dx" });
+        AddCheckRow(root, 10, _startWsjtz, "Start selected digital engine with agent");
+        AddCheckRow(root, 11, _enableAutoCall, "Enable WSJT-Z Auto Call after startup");
+        AddNumberRow(root, 12, "Auto Call limit", _autoCallLimit, 0, 99);
+        AddNumberRow(root, 13, "Check interval sec", _interval, 2, 300);
+        AddNumberRow(root, 14, "Failures before restart", _threshold, 1, 20);
+        AddNumberRow(root, 15, "Restart cooldown sec", _cooldown, 10, 600);
+        AddTextRow(root, 16, "Compose file", _composeFile);
+        AddTextRow(root, 17, "Watched processes", _watchedProcesses);
 
         var buttons = new FlowLayoutPanel
         {
@@ -93,6 +95,8 @@ public sealed class SettingsForm : Form
         _startLauncher.Checked = _settings.StartLauncher;
         _manageDocker.Checked = _settings.ManageDocker;
         _rememberWindowLayout.Checked = _settings.RememberWindowLayout;
+        _digitalEngine.SelectedItem = _settings.DigitalEngineProvider;
+        if (_digitalEngine.SelectedIndex < 0) _digitalEngine.SelectedItem = "none";
         _startWsjtz.Checked = _settings.StartWsjtzWithAgent;
         _enableAutoCall.Checked = _settings.EnableAutoCallOnStartup;
         _autoCallLimit.Value = Clamp(_settings.AutoCallLimit, _autoCallLimit.Minimum, _autoCallLimit.Maximum);
@@ -114,8 +118,9 @@ public sealed class SettingsForm : Form
         _settings.StartLauncher = _startLauncher.Checked;
         _settings.ManageDocker = _manageDocker.Checked;
         _settings.RememberWindowLayout = _rememberWindowLayout.Checked;
-        _settings.StartWsjtzWithAgent = _startWsjtz.Checked;
-        _settings.EnableAutoCallOnStartup = _enableAutoCall.Checked;
+        _settings.DigitalEngineProvider = AgentSettings.NormalizeDigitalProvider(_digitalEngine.SelectedItem?.ToString(), false);
+        _settings.StartWsjtzWithAgent = _digitalEngine.SelectedItem?.ToString() != "none" && _startWsjtz.Checked;
+        _settings.EnableAutoCallOnStartup = _digitalEngine.SelectedItem?.ToString() == "wsjtz" && _enableAutoCall.Checked;
         _settings.AutoCallLimit = (int)_autoCallLimit.Value;
         _settings.CheckIntervalSeconds = (int)_interval.Value;
         _settings.FailureRestartThreshold = (int)_threshold.Value;

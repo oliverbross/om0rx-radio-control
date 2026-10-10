@@ -25,6 +25,7 @@ from radio_control.qso_outbox import get_qso_outbox
 from radio_control import config
 from radio_control.postgres_store import connect as connect_postgres
 from radio_control.postgres_store import should_use_postgres
+from radio_control.log_throttle import warning as throttled_warning
 from services.wavelog_log import get_wavelog_log_service
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ _dedupe_lock = RLock()
 _dedupe_ledger_path = config.LOGS_DIR / "qso_log_dedupe.json"
 _pending_dedupe_claims: Dict[str, Dict[str, Any]] = {}
 _PENDING_DEDUPE_TTL_SECONDS = 600
+_MSHV_REPEAT_QSO_WINDOW_SECONDS = 600
 _WSJT_DIGITAL_MODES = {"FT8", "FT4", "FT2"}
 
 
@@ -87,31 +89,27 @@ class QSORequest(BaseModel):
     freq_rx: Optional[str] = None
     mode_rx: Optional[str] = None
     qso_key: Optional[str] = None
+    provider: Optional[str] = None
+    station_callsign: Optional[str] = None
+    client_id: Optional[str] = None
+    event_id: Optional[str] = None
+    time_on: Optional[str] = None
+    frequency_hz: Optional[float] = None
 
 
 def build_qso_dedupe_key(qso_data: Dict[str, Any]) -> str:
     """Build a stable logical key used to make QSO logging restart-safe."""
-    return _build_qso_dedupe_key(qso_data, bucket_seconds=300, include_reports=True)
+    return _build_qso_dedupe_key(qso_data, bucket_seconds=1, include_reports=True)
 
 
 def build_qso_loose_dedupe_key(qso_data: Dict[str, Any]) -> str:
-    """Build a broader duplicate key for repeated digital-mode logged-ADIF events."""
-    return _build_qso_dedupe_key(qso_data, bucket_seconds=900, include_reports=False)
+    """Build an exact-QSO key without reports for retransmitted log packets."""
+    return _build_qso_dedupe_key(qso_data, bucket_seconds=1, include_reports=False)
 
 
 def build_qso_loose_dedupe_keys(qso_data: Dict[str, Any]) -> list[str]:
-    """Build loose duplicate keys across adjacent buckets for near-boundary repeats."""
-    keys: list[str] = []
-    for bucket_offset in (-1, 0, 1):
-        key = _build_qso_dedupe_key(
-            qso_data,
-            bucket_seconds=900,
-            include_reports=False,
-            bucket_offset=bucket_offset,
-        )
-        if key not in keys:
-            keys.append(key)
-    return keys
+    """Return only the exact retransmission key; never collapse later QSOs."""
+    return [build_qso_loose_dedupe_key(qso_data)]
 
 
 def normalise_digital_qso_mode(qso_data: Dict[str, Any]) -> str:
@@ -152,6 +150,18 @@ def _build_qso_dedupe_key(
     include_reports: bool,
     bucket_offset: int = 0,
 ) -> str:
+    event_id = str(qso_data.get("event_id") or "").strip().lower()
+    provider = str(qso_data.get("provider") or "").strip().lower()
+    station = str(qso_data.get("station_callsign") or config.MY_STATION or "").strip().upper()
+    client_id = str(qso_data.get("client_id") or "").strip()
+    if event_id and provider:
+        payload = {
+            "provider": provider, "station": station, "client": client_id,
+            "event_id": event_id, "reports": bool(include_reports),
+        }
+        return "qso:" + hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
     callsign = str(qso_data.get("callsign") or qso_data.get("call") or "").strip().upper()
     own_call = str(qso_data.get("station_callsign") or config.MY_STATION or "").strip().upper()
     mode = normalise_digital_qso_mode(qso_data)
@@ -173,14 +183,17 @@ def _build_qso_dedupe_key(
         dt = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
     except Exception:
         dt = datetime.now(timezone.utc)
-    bucket = int(dt.timestamp() // bucket_seconds) + int(bucket_offset)
+    # Exact UTC seconds are the retransmission identity.  Deliberately do not
+    # use multi-minute buckets: two legitimate contacts with the same station
+    # 45 seconds apart are distinct QSOs.
+    bucket = int(dt.timestamp()) + int(bucket_offset)
 
     payload = {
         "dx": callsign,
         "own": own_call,
         "band": band,
         "mode": mode,
-        "bucket": bucket,
+        "utc_second": bucket,
     }
     if include_reports:
         payload["freq"] = round(frequency, 3)
@@ -378,6 +391,7 @@ def _parse_adif_fields(adif_text: str) -> Dict[str, str]:
 
 def _qso_data_from_adif_record(adif_record: str) -> Dict[str, Any]:
     fields = _parse_adif_fields(adif_record)
+    comment = fields.get("comment") or fields.get("comments") or fields.get("notes") or ""
     frequency = None
     try:
         if fields.get("freq"):
@@ -390,8 +404,26 @@ def _qso_data_from_adif_record(adif_record: str) -> Dict[str, Any]:
         "band": fields.get("band") or "",
         "mode": (fields.get("submode") or fields.get("mode") or "").upper(),
         "submode": (fields.get("submode") or "").upper(),
+        "qso_date": fields.get("qso_date") or "",
+        "date": fields.get("qso_date") or "",
+        "time_on": fields.get("time_on") or "",
+        "time_off": fields.get("time_off") or "",
         "gridsquare": (fields.get("gridsquare") or "").upper(),
         "dxcc": fields.get("dxcc") or None,
+        # Keep the original ADIF portable-award vocabulary intact.  Outbox
+        # replay is an authority transition, so dropping these fields here
+        # would briefly reopen an already-worked award slot until the next
+        # complete Wavelog mirror refresh.
+        "pota_ref": fields.get("pota_ref") or "",
+        "pota": fields.get("pota_ref") or "",
+        "sota_ref": fields.get("sota_ref") or "",
+        "sota": fields.get("sota_ref") or "",
+        "wwff_ref": fields.get("wwff_ref") or "",
+        "wwff": fields.get("wwff_ref") or "",
+        "sig": fields.get("sig") or "",
+        "sig_info": fields.get("sig_info") or "",
+        "comment": comment,
+        "notes": comment,
         "lotw_qsl_rcvd": fields.get("lotw_qsl_rcvd") or "",
         "qsl_rcvd": fields.get("qsl_rcvd") or "",
     }
@@ -580,17 +612,51 @@ def write_qso_to_postgres_read_cache(qso_dict: Dict[str, Any]) -> bool:
         return False
 
 
-def record_qso_in_local_read_cache(qso_dict: Dict[str, Any]) -> None:
+def record_qso_in_local_read_cache(
+    qso_dict: Dict[str, Any], *, require_award_journal: bool = False,
+) -> None:
     """Update both hot in-memory and PostgreSQL read-cache status for a logged QSO."""
     _record_qso_status(qso_dict)
     write_qso_to_postgres_read_cache(qso_dict)
+    # Portable award novelty changes only after this Wavelog-authoritative
+    # write-through. Invalidate first, then atomically rebuild the native
+    # sidecar so an acknowledgement can never leave a stale "needed" slot.
+    try:
+        from radio_control.activity_references import extract_activity_references
+
+        programs = {
+            str(item.get("type") or "").upper()
+            for item in extract_activity_references(qso_dict)
+        }
+        if programs & {"POTA", "SOTA", "WWFF"}:
+            from services.mshv_award_hunting import (
+                record_acknowledged_award_qso,
+                republish_after_authoritative_history_change,
+            )
+
+            recorded = record_acknowledged_award_qso(qso_dict)
+            if recorded.get("recorded"):
+                republish_after_authoritative_history_change(
+                    "wavelog-qso-acknowledged", acknowledged_qso=qso_dict,
+                )
+            elif require_award_journal:
+                raise RuntimeError(str(recorded.get("reason") or "portable award journal rejected QSO"))
+    except Exception as exc:
+        logger.warning("Unable to refresh MSHV portable award history after Wavelog acknowledgement", exc_info=True)
+        if require_award_journal:
+            raise RuntimeError("portable award acknowledgement was not durably journaled") from exc
 
 
 def record_qso_status_from_adif(adif_record: str) -> None:
-    """Record one resolved outbox ADIF record in the hot local status cache."""
+    """Promote one verified outbox replay into canonical local read state."""
     qso_data = _qso_data_from_adif_record(adif_record)
     if qso_data.get("callsign"):
-        record_qso_in_local_read_cache(qso_data)
+        qso_key = build_qso_dedupe_key(qso_data)
+        _record_dedupe_entries(
+            [qso_key, *build_qso_loose_dedupe_keys(qso_data)], qso_data,
+            {"wavelog": {"success": True}, "adif_saved": True, "outbox_queued": False},
+        )
+        record_qso_in_local_read_cache(qso_data, require_award_journal=True)
 
 
 class RecentQSOsRequest(BaseModel):
@@ -746,49 +812,126 @@ def _recent_qso_datetime(qso: Dict[str, Any]) -> Optional[datetime]:
         return None
 
 
-def _recent_wavelog_duplicate_entry(qso_dict: Dict[str, Any], *, window_seconds: int = 1800) -> Optional[Dict[str, Any]]:
+def _recent_mshv_repeat_entry(
+    qso_dict: Dict[str, Any],
+    *,
+    window_seconds: int = _MSHV_REPEAT_QSO_WINDOW_SECONDS,
+) -> Optional[Dict[str, Any]]:
+    """Reject a second MSHV QSO with the same call/band/mode in one exchange window.
+
+    MSHV MASTD can emit a second, distinct log event when a station remains in
+    its multi-answer queue after the first QSO has already completed.  Event-ID
+    dedupe correctly treats those packets as different events, so this narrow
+    provider-specific guard uses the canonical read cache to prevent a second
+    Wavelog row while still allowing later, intentional QSOs.
+    """
+    if str(qso_dict.get("provider") or "").strip().lower() != "mshv_auto_dx":
+        return None
     call = str(qso_dict.get("callsign") or qso_dict.get("call") or "").strip().upper()
-    if not call:
-        return None
-    requested_band = str(qso_dict.get("band") or "").strip().lower()
-    requested_mode = normalise_digital_qso_mode(qso_dict)
     _, requested_dt, _, _ = _parse_log_datetime(qso_dict)
-    if requested_dt is None:
+    if not call or requested_dt is None:
         return None
 
-    recent: list[dict[str, Any]] = []
-    for fetcher in (_get_recent_qsos_from_duckdb, _get_recent_qsos_from_wavelog_db):
+    requested_mode = normalise_digital_qso_mode(qso_dict)
+    requested_band = str(qso_dict.get("band") or "").strip().lower()
+    if not requested_band:
         try:
-            recent.extend(fetcher(call, 20))
-        except Exception as exc:
-            logger.debug("Recent QSO duplicate lookup skipped for %s via %s: %s", call, fetcher.__name__, exc)
+            from radio_control.spot_processor import band_from_khz
+            requested_band = band_from_khz(float(qso_dict.get("frequency") or 0) * 1000).lower()
+        except Exception:
+            requested_band = ""
+    if not requested_band or not requested_mode:
+        return None
 
-    for existing in recent:
-        existing_call = str(existing.get("call") or existing.get("callsign") or "").strip().upper()
-        existing_band = str(existing.get("band") or "").strip().lower()
-        existing_mode = normalise_digital_qso_mode(existing)
-        if existing_call and existing_call != call:
-            continue
-        if requested_band and existing_band and existing_band != requested_band:
-            continue
-        if not _qso_modes_duplicate_compatible(requested_mode, existing_mode):
-            continue
+    for existing in _get_recent_qsos_from_duckdb(call, 10):
         existing_dt = _recent_qso_datetime(existing)
         if existing_dt is None:
             continue
-        if abs((requested_dt - existing_dt).total_seconds()) <= window_seconds:
-            return {
-                "recent_wavelog": True,
-                "callsign": call,
-                "band": existing.get("band") or qso_dict.get("band") or "",
-                "mode": existing.get("mode") or qso_dict.get("mode") or "",
-                "qso_date": existing.get("qso_date") or "",
-                "time_on": existing.get("time_on") or "",
-                "wavelog_success": True,
-                "adif_saved": True,
-                "outbox_queued": False,
-            }
+        age_seconds = (requested_dt - existing_dt).total_seconds()
+        if age_seconds < 0 or age_seconds > max(1, int(window_seconds)):
+            continue
+        existing_band = str(existing.get("band") or "").strip().lower()
+        existing_mode = normalise_digital_qso_mode(existing)
+        if existing_band != requested_band or not _qso_modes_duplicate_compatible(requested_mode, existing_mode):
+            continue
+        return {
+            "canonical_recent_readback": True,
+            "identity_verified": True,
+            "mshv_repeat_suppressed": True,
+            "provider": "mshv_auto_dx",
+            "callsign": call,
+            "band": existing.get("band") or requested_band,
+            "mode": existing_mode or requested_mode,
+            "existing_qso_date": existing.get("qso_date") or "",
+            "existing_time_on": existing.get("time_on") or "",
+            "age_seconds": int(age_seconds),
+            "wavelog_success": True,
+            "adif_saved": True,
+            "outbox_queued": False,
+        }
     return None
+
+
+def _recent_wavelog_duplicate_entry(qso_dict: Dict[str, Any], *, window_seconds: int = 2) -> Optional[Dict[str, Any]]:
+    """Verify one exact canonical identity; never infer from a nearby QSO.
+
+    ``window_seconds`` remains only for compatibility with older callers and
+    is intentionally capped by the direct Wavelog verifier at two seconds.
+    """
+    call = str(qso_dict.get("callsign") or qso_dict.get("call") or "").strip().upper()
+    event_id = str(qso_dict.get("event_id") or "").strip().lower()
+    provider = str(qso_dict.get("provider") or "").strip().lower()
+    station = str(qso_dict.get("station_callsign") or config.MY_STATION or "").strip().upper()
+    qso_date, parsed_dt, _, _ = _parse_log_datetime(qso_dict)
+    if not call or not parsed_dt or not qso_date:
+        return None
+    if provider == "mshv_auto_dx" and (not event_id or not station):
+        return None
+    expected_on = parsed_dt.replace(tzinfo=timezone.utc) if parsed_dt.tzinfo is None else parsed_dt.astimezone(timezone.utc)
+    expected_off = expected_on
+    time_off = _format_qso_time(qso_dict.get("time_off"))
+    if time_off:
+        try:
+            expected_off = datetime.strptime(qso_date + time_off[:6], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    frequency = qso_dict.get("frequency_hz")
+    if not frequency:
+        try:
+            frequency = int(round(float(qso_dict.get("frequency") or 0) * 1_000_000))
+        except (TypeError, ValueError):
+            frequency = 0
+    identity = {
+        "provider": provider,
+        "event_id": event_id,
+        "station_callsign": station,
+        "call": call,
+        "mode": normalise_digital_qso_mode(qso_dict),
+        "frequency_hz": frequency,
+        "time_on_utc": expected_on,
+        "time_off_utc": expected_off,
+    }
+    result = get_wavelog_log_service().find_exact_qso(
+        identity, station_id=int(getattr(config, "WAVELOG_STATION_ID", 1)),
+    )
+    if not result.get("verified"):
+        return None
+    match = result["matches"][0]
+    return {
+        "canonical_exact_readback": True,
+        "identity_verified": True,
+        "readback_identity_exact": True,
+        "event_id": event_id,
+        "provider": provider,
+        "station_callsign": station,
+        "wavelog_id": match.get("id"),
+        "callsign": call,
+        "band": match.get("band") or qso_dict.get("band") or "",
+        "mode": match.get("submode") or match.get("mode") or qso_dict.get("mode") or "",
+        "wavelog_success": True,
+        "adif_saved": True,
+        "outbox_queued": False,
+    }
 
 
 def init_qso_logging_clients(
@@ -850,7 +993,11 @@ async def log_qso(qso: QSORequest):
         dedupe_entry = _claim_dedupe_keys(dedupe_keys, qso_dict)
         if dedupe_entry:
             logger.info("Skipping duplicate QSO log request for stable key %s / %s (%s)", qso_key, loose_qso_key, qso.callsign)
-            record_qso_in_local_read_cache(qso_dict)
+            # An outbox-only dedupe entry is durable pending state, not a
+            # Wavelog acknowledgement. Never let it contaminate the canonical
+            # PostgreSQL/read-status cache used by duplicate checks/exports.
+            if dedupe_entry.get("wavelog_success") is True:
+                record_qso_in_local_read_cache(qso_dict)
             return {
                 "success": True,
                 "message": "Duplicate QSO log request ignored",
@@ -861,6 +1008,29 @@ async def log_qso(qso: QSORequest):
                 "wavelog": {"success": bool(dedupe_entry.get("wavelog_success"))},
                 "adif_saved": bool(dedupe_entry.get("adif_saved")),
                 "outbox_queued": bool(dedupe_entry.get("outbox_queued")),
+                "outbox": get_qso_outbox().status(),
+            }
+        mshv_repeat = _recent_mshv_repeat_entry(qso_dict)
+        if mshv_repeat:
+            logger.warning(
+                "Suppressing repeated MSHV QSO for %s on %s %s after %ss",
+                qso.callsign, qso.band, qso.mode, mshv_repeat.get("age_seconds"),
+            )
+            _record_dedupe_entries(
+                dedupe_keys,
+                qso_dict,
+                {"wavelog": {"success": True}, "adif_saved": True, "outbox_queued": False},
+            )
+            return {
+                "success": True,
+                "message": "Repeated MSHV QSO suppressed within the live exchange window",
+                "duplicate": True,
+                "qso_key": qso_key,
+                "loose_qso_key": loose_qso_key,
+                "dedupe": mshv_repeat,
+                "wavelog": {"success": True},
+                "adif_saved": True,
+                "outbox_queued": False,
                 "outbox": get_qso_outbox().status(),
             }
         notes = str(qso_dict.get("notes") or qso_dict.get("comment") or "").lower()
@@ -938,7 +1108,7 @@ async def log_qso(qso: QSORequest):
             _record_dedupe_entries(dedupe_keys, qso_dict, response)
         else:
             _release_dedupe_keys(dedupe_keys)
-        if response["success"]:
+        if wavelog_result.get("success"):
             record_qso_in_local_read_cache(qso_dict)
         return response
 
@@ -968,12 +1138,12 @@ async def get_qrz_profile(callsign: str):
         if result.get('success'):
             logger.info(f"✅ QRZ profile retrieved for {callsign}")
         else:
-            logger.warning(f"QRZ profile not found for {callsign}")
+            throttled_warning(logger, f"qrz-profile-missing:{callsign}", 300, "QRZ profile not found for %s", callsign)
 
         return result
 
     except asyncio.TimeoutError:
-        logger.warning("QRZ profile lookup timed out for %s", callsign)
+        throttled_warning(logger, f"qrz-profile-timeout:{callsign}", 300, "QRZ profile lookup timed out for %s", callsign)
         return {'success': False, 'message': 'QRZ lookup timed out'}
     except Exception as e:
         logger.error(f"QRZ profile error: {str(e)}")
@@ -993,7 +1163,7 @@ async def get_qrz_history(callsign: str, limit: int = 20):
         return result
 
     except asyncio.TimeoutError:
-        logger.warning("QRZ history lookup timed out for %s", callsign)
+        throttled_warning(logger, f"qrz-history-timeout:{callsign}", 300, "QRZ history lookup timed out for %s", callsign)
         return {'success': False, 'data': [], 'message': 'QRZ history lookup timed out'}
     except Exception as e:
         logger.error(f"QRZ history error: {str(e)}")

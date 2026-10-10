@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <base href="/">
+    <title>OM0RX Station Path</title>
+    <link rel="stylesheet" href="station-widget.css?v=20261010-compact-2">
+</head>
+<body data-widget-orientation="horizontal">
+    <main
+        id="station-path-dashboard"
+        class="station-path-dashboard station-widget"
+        data-state="unknown"
+        aria-label="Live station RF path and guarded amplifier control">
+        <header class="station-widget-toolbar">
+            <div class="station-widget-heading">
+                <span class="station-widget-live" aria-hidden="true"></span>
+                <span>Station path</span>
+                <span class="station-path-state state-unknown" data-path-role="overall-state">Unknown</span>
+            </div>
+            <div class="station-widget-actions" aria-label="Widget layout">
+                <button type="button" data-widget-orientation="horizontal" aria-pressed="true" title="Show the four devices horizontally">Horizontal</button>
+                <button type="button" data-widget-orientation="vertical" aria-pressed="false" title="Stack the four devices vertically">Vertical</button>
+                <button type="button" data-widget-management title="Open full Station Management">Manage</button>
+            </div>
+        </header>
+
+        <div class="station-widget-grid">
+            <article class="station-path-node state-unknown" data-path-segment="flex">
+                <div class="station-path-node-head">
+                    <span class="station-path-step">1</span>
+                    <span class="station-path-device">FLEX-8400</span>
+                    <span class="station-path-node-state" data-path-role="state">Unknown</span>
+                </div>
+                <strong class="station-path-primary" data-path-role="primary">— MHz</strong>
+                <span class="station-path-secondary" data-path-role="secondary">Waiting for radio</span>
+                <dl class="station-path-values">
+                    <div><dt>Mode</dt><dd data-path-value="mode">—</dd></div>
+                    <div><dt>RF power</dt><dd data-path-value="rf-power">—</dd></div>
+                    <div><dt>TX port</dt><dd data-path-value="tx-port">—</dd></div>
+                    <div><dt>Interlock</dt><dd data-path-value="interlock">—</dd></div>
+                </dl>
+            </article>
+
+            <article class="station-path-node state-unknown" data-path-segment="kpa500">
+                <div class="station-path-node-head">
+                    <span class="station-path-step">2</span>
+                    <span class="station-path-device">KPA500</span>
+                </div>
+                <div class="station-kpa-primary-row">
+                    <strong class="station-path-primary" data-path-role="primary" aria-live="polite">Waiting for amplifier</strong>
+                    <button
+                        type="button"
+                        class="station-kpa-toggle"
+                        data-kpa-toggle
+                        role="switch"
+                        aria-checked="false"
+                        aria-label="KPA500 state unavailable"
+                        disabled>Switch</button>
+                </div>
+                <dl class="station-path-values">
+                    <div><dt>Output</dt><dd data-path-value="output">—</dd></div>
+                    <div><dt>SWR</dt><dd data-path-value="swr">—</dd></div>
+                    <div><dt>PA</dt><dd data-path-value="pa">—</dd></div>
+                </dl>
+            </article>
+
+            <article class="station-path-node state-unknown" data-path-segment="kat500">
+                <div class="station-path-node-head">
+                    <span class="station-path-step">3</span>
+                    <span class="station-path-device">KAT500</span>
+                    <span class="station-path-node-state" data-path-role="state">Unknown</span>
+                </div>
+                <strong class="station-path-primary" data-path-role="primary">Waiting for tuner</strong>
+                <span class="station-path-secondary" data-path-role="secondary">No fresh readback</span>
+                <dl class="station-path-values">
+                    <div><dt>Mode</dt><dd data-path-value="mode">—</dd></div>
+                    <div><dt>SWR</dt><dd data-path-value="swr">—</dd></div>
+                    <div><dt>Tune</dt><dd data-path-value="tune">—</dd></div>
+                </dl>
+            </article>
+
+            <article class="station-path-node state-unknown" data-path-segment="antenna">
+                <div class="station-path-node-head">
+                    <span class="station-path-step">4</span>
+                    <span class="station-path-device">Antenna</span>
+                    <span class="station-path-node-state" data-path-role="state">Unknown</span>
+                </div>
+                <strong class="station-path-primary" data-path-role="primary">Unknown antenna</strong>
+                <span class="station-path-secondary" data-path-role="secondary">No output selected</span>
+                <strong class="station-antenna-tx" data-path-role="tx-power">TX — W</strong>
+                <dl class="station-path-values">
+                    <div><dt>Output</dt><dd data-path-value="output">—</dd></div>
+                    <div><dt>Band</dt><dd data-path-value="band">—</dd></div>
+                    <div><dt>Route</dt><dd data-path-value="route">Unconfirmed</dd></div>
+                </dl>
+            </article>
+        </div>
+
+        <p class="station-widget-accessible-status" data-path-role="route-label">FLEX → KPA500 → KAT500 → antenna</p>
+        <p class="station-widget-status-message" data-path-role="message" aria-live="polite">Waiting for fresh station telemetry.</p>
+    </main>
+
+    <script src="js/station-path.js?v=20261010-compact-2"></script>
+    <script src="js/station-widget.js?v=20261010-compact-stable-size-3"></script>
+</body>
+</html>

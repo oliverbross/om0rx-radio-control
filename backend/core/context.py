@@ -39,6 +39,11 @@ class AppContext:
     adif_handler: Any = None
     wavelog_sync_manager: Any = None
     rotor: Any = None
+    elecraft: Any = None
+    station_coordinator: Any = None
+    station_training_manager: Any = None
+    station_telemetry: Any = None
+    station_telemetry_task: Any = None
     activity_intelligence: Any = None
     sync_status: Dict[str, Any] = field(default_factory=default_sync_status)
     radio_snapshot: Dict[str, Any] = field(default_factory=lambda: {
@@ -77,4 +82,8 @@ def sync_app_state(app: Any, context: AppContext) -> None:
     app.state.adif_handler = context.adif_handler
     app.state.wavelog_sync_manager = context.wavelog_sync_manager
     app.state.rotor = context.rotor
+    app.state.elecraft = context.elecraft
+    app.state.station_coordinator = context.station_coordinator
+    app.state.station_training_manager = context.station_training_manager
+    app.state.station_telemetry = context.station_telemetry
     app.state.activity_intelligence = context.activity_intelligence

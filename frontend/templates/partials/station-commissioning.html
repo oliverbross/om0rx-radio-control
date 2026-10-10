@@ -1,0 +1,59 @@
+<section id="station-commissioning-panel" class="station-commissioning-panel" aria-labelledby="station-commissioning-title">
+    <header class="station-commissioning-header">
+        <div>
+            <span class="station-commissioning-eyebrow">Operator review</span>
+            <h2 id="station-commissioning-title">Commissioning readiness</h2>
+        </div>
+        <span class="station-commissioning-badge">Evaluation only</span>
+    </header>
+
+    <p class="station-commissioning-safety">
+        This panel does not commission, apply changes, key, or transmit. It only previews readiness from operator evidence.
+    </p>
+
+    <form data-station-commissioning="form">
+        <fieldset>
+            <legend>Human-verified evidence</legend>
+            <label>
+                <input type="checkbox" data-evidence-key="physical_key_interrupt_verified">
+                Physical key interrupt verified
+            </label>
+            <label>
+                <input type="checkbox" data-evidence-key="antenna_routes_names_verified">
+                Antenna routes and names verified
+            </label>
+            <label>
+                <input type="checkbox" data-evidence-key="vendor_backups_captured">
+                Vendor backups captured
+            </label>
+            <label>
+                <input type="checkbox" data-evidence-key="dummy_load_or_approved_antenna_connected">
+                Dummy load or approved antenna connected
+            </label>
+            <label>
+                <input type="checkbox" data-evidence-key="digital_engine_inhibit_verified">
+                Digital-engine inhibit verified
+            </label>
+        </fieldset>
+        <button type="submit" data-station-commissioning="evaluate">Evaluate evidence</button>
+    </form>
+
+    <p class="station-commissioning-status" data-station-commissioning="status" role="status" aria-live="polite">
+        Loading the current readiness report…
+    </p>
+
+    <div class="station-commissioning-results">
+        <section aria-labelledby="station-commissioning-blockers-title">
+            <h3 id="station-commissioning-blockers-title">Blockers <span data-station-commissioning-count="blockers">0</span></h3>
+            <ul data-station-commissioning-list="blockers"><li>None reported.</li></ul>
+        </section>
+        <section aria-labelledby="station-commissioning-warnings-title">
+            <h3 id="station-commissioning-warnings-title">Warnings <span data-station-commissioning-count="warnings">0</span></h3>
+            <ul data-station-commissioning-list="warnings"><li>None reported.</li></ul>
+        </section>
+        <section aria-labelledby="station-commissioning-checks-title">
+            <h3 id="station-commissioning-checks-title">Checks <span data-station-commissioning-count="checks">0</span></h3>
+            <ul data-station-commissioning-list="checks"><li>None reported.</li></ul>
+        </section>
+    </div>
+</section>

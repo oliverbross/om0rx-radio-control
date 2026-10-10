@@ -25,15 +25,17 @@ def test_frontend_uses_engine_boundary_not_retired_decoder():
     assert "loadFT8Decoder" not in modal
 
 
-def test_digital_button_launches_the_patched_wsjtz_engine():
+def test_digital_buttons_launch_explicitly_selected_provider():
     modal = read_text("frontend/js/ft8-modal.js")
     config_modal = read_text("frontend/js/config-modal.js")
     controls = read_text("frontend/templates/controls-row1.html")
 
-    assert '@click="launchPatchedWsjtxEngine"' in controls
-    assert "async launchPatchedWsjtxEngine()" in config_modal
+    assert '@click="launchDigitalEngine(\'wsjtz\')"' in controls
+    assert '@click="launchDigitalEngine(\'mshv_auto_dx\')"' in controls
+    assert "async launchDigitalEngine(engine)" in config_modal
+    assert "this.digitalEngineAction('start', provider)" in config_modal
+    assert "fetch(`/api/digital/${action}`" in config_modal
     assert "window.open(" not in modal
-    assert "/api/wsjtx/launch-patched-engine" in config_modal
 
 
 def test_engine_uses_mit_ft8lib_without_mshv_dependency():
@@ -1496,6 +1498,7 @@ def test_wsjtz_dial_owner_blocks_backend_qsy(monkeypatch):
 
     flex = FakeFlex()
     monkeypatch.setattr(radio, "get_radio_instance", lambda: flex)
+
     service = FT8Service(mycall="OM0RX", mygrid="JN88")
     service.automation_controller.apply_operator_settings({
         "automation": {"dialFrequencyOwner": "wsjtz"}
@@ -1523,6 +1526,7 @@ def test_backend_dial_owner_retains_explicit_legacy_tune_path(monkeypatch):
 
         def set_mode(self, mode):
             self.modes.append(mode)
+            return True
 
         def tune_mhz(self, frequency):
             self.tune_calls.append(frequency)
@@ -1530,6 +1534,14 @@ def test_backend_dial_owner_retains_explicit_legacy_tune_path(monkeypatch):
 
     flex = FakeFlex()
     monkeypatch.setattr(radio, "get_radio_instance", lambda: flex)
+
+    async def safe_route(_reason, operation, **_kwargs):
+        return operation()
+
+    # Production route changes are fail-closed when the station coordinator is
+    # absent.  This unit test supplies the coordinator explicitly instead of
+    # relying on state leaked from another backend lifecycle test.
+    monkeypatch.setattr(radio.radio_control_state, "station_route_handler", safe_route)
     service = FT8Service(mycall="OM0RX", mygrid="JN88")
     service.automation_controller.apply_operator_settings({
         "automation": {"dialFrequencyOwner": "backend"}

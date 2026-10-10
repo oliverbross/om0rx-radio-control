@@ -449,7 +449,56 @@ def test_backend_logging_dedupe_survives_restart(monkeypatch, tmp_path):
     assert fake_adif.calls == 1
 
 
-def test_backend_logging_loose_dedupe_catches_adjacent_time_bucket(monkeypatch, tmp_path):
+def test_outbox_pending_never_enters_wavelog_authoritative_read_cache(monkeypatch, tmp_path):
+    import services.qso_logging as qlog
+    from services.qso_logging import QSORequest
+
+    class OfflineWavelog:
+        async def log_qso(self, _qso):
+            return {"success": False, "message": "offline"}
+
+    class FakeAdif:
+        def add_qso(self, _qso):
+            return True
+
+    class FakeOutbox:
+        def enqueue(self, _qso, reason=""):
+            return True
+
+        def status(self):
+            return {"queued": 1}
+
+    authoritative_cache_writes = []
+    monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
+    monkeypatch.setattr(qlog, "_pending_dedupe_claims", {})
+    monkeypatch.setattr(qlog, "wavelog_client", OfflineWavelog())
+    monkeypatch.setattr(qlog, "adif_handler", FakeAdif())
+    monkeypatch.setattr(qlog, "qrz_client", None)
+    monkeypatch.setattr(qlog, "get_qso_outbox", lambda: FakeOutbox())
+    monkeypatch.setattr(
+        qlog, "record_qso_in_local_read_cache",
+        lambda qso: authoritative_cache_writes.append(dict(qso)),
+    )
+
+    request = QSORequest(
+        callsign="OM1AA", frequency=14.074, band="20m", mode="FT8",
+        date_time="2026-10-04T12:00:00+00:00",
+        notes="Completed in built-in digital",
+    )
+    first = asyncio.run(qlog.log_qso(request))
+    # Simulate restart: only the durable outbox/dedupe entry remains.
+    qlog._pending_dedupe_claims.clear()
+    second = asyncio.run(qlog.log_qso(request))
+
+    assert first["outbox_queued"] is True
+    assert first["wavelog"]["success"] is False
+    assert second["duplicate"] is True
+    assert second["dedupe"]["wavelog_success"] is False
+    assert second["wavelog"]["success"] is False
+    assert authoritative_cache_writes == []
+
+
+def test_backend_logging_does_not_collapse_legitimate_repeat_across_seconds(monkeypatch, tmp_path):
     import services.qso_logging as qlog
     from services.qso_logging import QSORequest
 
@@ -505,9 +554,9 @@ def test_backend_logging_loose_dedupe_catches_adjacent_time_bucket(monkeypatch, 
     second_result = asyncio.run(qlog.log_qso(second))
 
     assert first_result["success"] is True
-    assert second_result["duplicate"] is True
-    assert fake_wavelog.calls == 1
-    assert fake_adif.calls == 1
+    assert second_result.get("duplicate") is not True
+    assert fake_wavelog.calls == 2
+    assert fake_adif.calls == 2
 
 
 def test_backend_logging_skips_when_recent_wavelog_row_exists(monkeypatch, tmp_path):
@@ -534,18 +583,14 @@ def test_backend_logging_skips_when_recent_wavelog_row_exists(monkeypatch, tmp_p
     fake_adif = FakeAdif()
     monkeypatch.setattr(qlog, "_dedupe_ledger_path", tmp_path / "qso_log_dedupe.json")
     monkeypatch.setattr(qlog, "_pending_dedupe_claims", {})
-    monkeypatch.setattr(qlog, "_get_recent_qsos_from_duckdb", lambda _call, _limit: [])
-    monkeypatch.setattr(
-        qlog,
-        "_get_recent_qsos_from_wavelog_db",
-        lambda _call, _limit: [{
-            "call": "M6OTU",
-            "qso_date": "20260605",
-            "time_on": "104216",
-            "band": "12m",
-            "mode": "FT8",
-        }],
-    )
+    class ExactReadback:
+        def find_exact_qso(self, identity, station_id=1):
+            assert identity["call"] == "M6OTU"
+            return {"verified": True, "matches": [{
+                "id": 123, "band": "12m", "mode": "FT8", "submode": "",
+            }]}
+
+    monkeypatch.setattr(qlog, "get_wavelog_log_service", lambda: ExactReadback())
     monkeypatch.setattr(qlog, "wavelog_client", fake_wavelog)
     monkeypatch.setattr(qlog, "adif_handler", fake_adif)
     monkeypatch.setattr(qlog, "qrz_client", None)
@@ -558,7 +603,7 @@ def test_backend_logging_skips_when_recent_wavelog_row_exists(monkeypatch, tmp_p
         rst_sent="-10",
         rst_received="-07",
         notes="Completed in built-in DIGITAL",
-        date_time=datetime(2026, 6, 5, 10, 43, 0, tzinfo=timezone.utc).isoformat(),
+        date_time=datetime(2026, 6, 5, 10, 42, 16, tzinfo=timezone.utc).isoformat(),
     )))
 
     assert result["success"] is True
@@ -566,6 +611,64 @@ def test_backend_logging_skips_when_recent_wavelog_row_exists(monkeypatch, tmp_p
     assert fake_wavelog.calls == 0
     assert fake_adif.calls == 1
     assert result["adif_saved"] is True
+
+
+def test_wavelog_exact_readback_requires_time_off_when_identity_supplies_it(monkeypatch):
+    from services.wavelog_log import WavelogLogService
+
+    class Cursor:
+        def __init__(self, rows):
+            self.rows = rows
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def execute(self, *_args):
+            return None
+        def fetchall(self):
+            return self.rows
+
+    class Connection:
+        def __init__(self, rows):
+            self.rows = rows
+        def cursor(self):
+            return Cursor(self.rows)
+        def close(self):
+            return None
+
+    expected_on = datetime(2026, 10, 4, 12, 0, 0, tzinfo=timezone.utc)
+    expected_off = datetime(2026, 10, 4, 12, 0, 15, tzinfo=timezone.utc)
+    base_row = {
+        "id": 99, "time_on": expected_on.replace(tzinfo=None),
+        "time_off": None, "callsign": "A1AA", "frequency_hz": 14_074_000,
+        "band": "20m", "mode": "FT8", "submode": None,
+        "station_callsign": "OM0RX", "station_id": 1,
+    }
+    service = WavelogLogService()
+    monkeypatch.setattr(service, "_get_connection", lambda: Connection([base_row]))
+    identity = {
+        "call": "A1AA", "mode": "FT8", "station_callsign": "OM0RX",
+        "frequency_hz": 14_074_000, "time_on_utc": expected_on,
+        "time_off_utc": expected_off,
+    }
+    assert service.find_exact_qso(identity)["verified"] is False
+
+    complete = {**base_row, "time_off": expected_off.replace(tzinfo=None)}
+    monkeypatch.setattr(service, "_get_connection", lambda: Connection([complete]))
+    assert service.find_exact_qso(identity)["verified"] is True
+
+    mhz = {**complete, "frequency_hz": 14.074049}
+    monkeypatch.setattr(service, "_get_connection", lambda: Connection([mhz]))
+    assert service.find_exact_qso(identity)["verified"] is True
+
+    outside_tolerance = {**complete, "frequency_hz": 14.074051}
+    monkeypatch.setattr(service, "_get_connection", lambda: Connection([outside_tolerance]))
+    assert service.find_exact_qso(identity)["verified"] is False
+
+    monkeypatch.setattr(service, "_get_connection", lambda: Connection([complete, mhz]))
+    ambiguous = service.find_exact_qso(identity)
+    assert ambiguous["verified"] is False
+    assert ambiguous["reason"] == "exact-match-ambiguous"
 
 
 def test_qso_logging_enriches_missing_fields_from_qrz(monkeypatch):

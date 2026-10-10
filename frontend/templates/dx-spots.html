@@ -324,12 +324,13 @@
                                 <span v-if="referenceHunter.message" class="reference-hunter-message">{{ referenceHunter.message }}</span>
                             </div>
                             <button @click="queueVisibleWsjtxCandidates(25); openDropdown = null"
-                                    :disabled="wsjtxCandidateQueue.busy"
+                                    :disabled="mshvOwnsDigitalPlanner || wsjtxCandidateQueue.busy"
                                     class="wsjtx-queue-btn"
                                     title="Queue the best visible digital candidates without arming transmit">
                                 {{ wsjtxCandidateQueue.busy ? 'Queueing...' : 'Queue WSJT candidates' }}
                             </button>
                             <button @click="toggleWsjtxPlannerPanel(); openDropdown = null"
+                                    :disabled="mshvOwnsDigitalPlanner"
                                     :class="['wsjtx-planner-toggle-btn', { active: wsjtxPlanner.open }]">
                                 {{ wsjtxPlanner.open ? 'Hide WSJT planner' : 'Open WSJT planner' }}
                             </button>
@@ -418,7 +419,7 @@
                 <button @click="showConfigDialog('wsjtx')">WSJT tools</button>
             </div>
 
-            <div v-if="isSpotSectionVisible('wsjtxPlanner') && wsjtxPlanner.open" class="wsjtx-planner-panel">
+            <div v-if="!mshvOwnsDigitalPlanner && isSpotSectionVisible('wsjtxPlanner') && wsjtxPlanner.open" class="wsjtx-planner-panel">
                 <div class="wsjtx-planner-header">
                         <div>
                             <strong>WSJT Planner</strong>
@@ -747,12 +748,12 @@
                         </div>
                         <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;">
                             <button @click.stop="tuneToSpot(selectedSpot)">Tune</button>
-                            <button v-if="isDigitalSpotMode(selectedSpot)"
+                            <button v-if="!mshvOwnsDigitalPlanner && isDigitalSpotMode(selectedSpot)"
                                     @click.stop="startWsjtxTargetFromSpot(selectedSpot)"
                                     title="Send this FT8/FT4/FT2 spot to the patched WSJT engine">
                                 Prepare WSJT
                             </button>
-                            <button v-if="isDigitalSpotMode(selectedSpot)"
+                            <button v-if="!mshvOwnsDigitalPlanner && isDigitalSpotMode(selectedSpot)"
                                     @click.stop="startWsjtxTargetFromSpot(selectedSpot, { arm: true })"
                                     title="Prepare and arm this target in the patched WSJT engine">
                                 Arm WSJT

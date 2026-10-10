@@ -38,6 +38,9 @@ if (-not $env:WSJTX_BRIDGE_TOKEN -and (Test-Path -LiteralPath $LocalSecretsPath)
 $LogDir = Join-Path $ProjectRoot "logs"
 $BridgeScript = Join-Path $ProjectRoot "bridge\sdc-bridge-server.js"
 $LauncherScript = Join-Path $ProjectRoot "scripts\launch\launch_windows.py"
+$RuntimeOwnerHelpers = Join-Path $ProjectRoot "scripts\start\runtime_owner.ps1"
+$RuntimeOwnerPath = Join-Path $ProjectRoot "logs\runtime_owner.json"
+$RuntimeOwnerLockPath = Join-Path $ProjectRoot "logs\runtime_owner.lock"
 $LifecycleRequestPath = Join-Path $ProjectRoot "logs\app_lifecycle_request.json"
 $BackendStdoutLog = Join-Path $LogDir "start_all-backend.out.log"
 $BackendStderrLog = Join-Path $LogDir "start_all-backend.err.log"
@@ -52,6 +55,17 @@ $BackendUrl = "http://${BackendProbeHost}:$BackendPort"
 $BackendReadyMaxAttempts = 90
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+. $RuntimeOwnerHelpers
+
+$RuntimeOwnerId = [Guid]::NewGuid().ToString('N')
+$RuntimeOwnerLock = $null
+$RuntimePorts = @{
+    backend = $BackendPort
+    bridge_ws = 8091
+    bridge_command = 8092
+    bridge_tcp = 12166
+    bridge_udp = 2237
+}
 
 function Clear-StartupLogs {
     $logs = @(
@@ -157,17 +171,26 @@ function Stop-ProcessesOnPort {
     foreach ($owner in $owners) {
         $ownerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $owner" -ErrorAction SilentlyContinue
         if (-not (Test-ProjectOwnedProcessId -ProcessId $owner)) {
-            throw "Port $Port is owned by unrelated PID $owner ($($ownerProcess.Name)). Stop it manually or choose another port."
+            # The listener can exit between the Get-NetTCPConnection snapshot
+            # above and the ownership walk. Treat that as an already-clean port,
+            # not as an unrelated process (and do not dereference a vanished PID
+            # under StrictMode).
+            $ownerStillListening = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+                Where-Object { [int]$_.OwningProcess -eq [int]$owner }).Count -gt 0
+            $ownerProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $owner" -ErrorAction SilentlyContinue
+            if (-not $ownerStillListening -or -not $ownerProcess) {
+                continue
+            }
+
+            $ownerName = [string]$ownerProcess.Name
+            throw "Port $Port is owned by unrelated PID $owner ($ownerName). Stop it manually or choose another port."
         }
         Stop-ProcessId -ProcessId $owner -Reason "port $Port is already in use"
     }
 }
 
 function Stop-KnownRuntimePorts {
-    $ports = @($BackendPort, 8080, 8081, 8091, 12166, 2237) | Select-Object -Unique
-    foreach ($port in $ports) {
-        Stop-ProcessesOnPort -Port $port
-    }
+    Invoke-RuntimePortCleanup -BackendPort $BackendPort -StopPort { param($port) Stop-ProcessesOnPort -Port $port }
 }
 
 function Stop-ProjectProcesses {
@@ -243,19 +266,33 @@ function Get-LifecycleAction {
 
 function Start-BridgeProcess {
     Write-Host "📡 Starting WSJT-X bridge server..." -ForegroundColor Yellow
-    $bridgeCommand = "Set-Location '$ProjectRoot'; `$env:TCP_HOST='127.0.0.1'; `$env:TCP_PORT='12166'; `$env:WSJTX_UDP_PORT='2237'; `$env:WSJTX_UDP_MULTICAST='224.0.0.1'; `$env:WS_PORT='8091'; `$env:WSJTX_ENABLED='true'; & node '$BridgeScript'"
-    $process = Start-Process powershell -ArgumentList "-NoProfile", "-Command", $bridgeCommand -WindowStyle Hidden -PassThru -RedirectStandardOutput $BridgeStdoutLog -RedirectStandardError $BridgeStderrLog
+    $env:TCP_HOST = '127.0.0.1'
+    $env:TCP_PORT = '12166'
+    $env:WSJTX_UDP_PORT = '2237'
+    $env:WSJTX_UDP_MULTICAST = '224.0.0.1'
+    $env:WS_PORT = '8091'
+    $env:WSJTX_COMMAND_PORT = '8092'
+    $env:WSJTX_ENABLED = 'true'
+    $node = (Get-Command node -ErrorAction Stop).Source
+    $process = Start-Process -FilePath $node -ArgumentList @($BridgeScript) -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $BridgeStdoutLog -RedirectStandardError $BridgeStderrLog
     Write-Host "✅ Bridge process started (PID: $($process.Id))" -ForegroundColor Green
-    Start-Sleep -Seconds 2
     return $process
 }
 
 function Start-BackendProcess {
     Write-Host "📡 Starting backend server..." -ForegroundColor Yellow
-    $reloadArgs = if ($EnableReload) { " --reload" } else { "" }
     $reloadFlag = if ($EnableReload) { "1" } else { "0" }
-    $backendCommand = "Set-Location '$ProjectRoot'; `$env:APP_ENV='$AppEnv'; `$env:APP_LIFECYCLE_SUPERVISOR='1'; `$env:APP_UVICORN_RELOAD='$reloadFlag'; `$env:BACKEND_HOST='$BackendHost'; `$env:BACKEND_PORT='$BackendPort'; & python -m uvicorn backend.main:app --host $BackendHost --port $BackendPort$reloadArgs"
-    $process = Start-Process powershell -ArgumentList "-NoProfile", "-Command", $backendCommand -WindowStyle Hidden -PassThru -RedirectStandardOutput $BackendStdoutLog -RedirectStandardError $BackendStderrLog
+    $env:APP_ENV = $AppEnv
+    $env:APP_LIFECYCLE_SUPERVISOR = '1'
+    $env:APP_UVICORN_RELOAD = $reloadFlag
+    $env:BACKEND_HOST = $BackendHost
+    $env:BACKEND_PORT = [string]$BackendPort
+    $env:OM0RX_RUNTIME_OWNER_ID = $RuntimeOwnerId
+    $env:OM0RX_RUNTIME_OWNER_PATH = $RuntimeOwnerPath
+    $python = (Get-Command python -ErrorAction Stop).Source
+    $arguments = @('-m', 'uvicorn', 'backend.main:app', '--app-dir', $ProjectRoot, '--host', $BackendHost, '--port', [string]$BackendPort)
+    if ($EnableReload) { $arguments += '--reload' }
+    $process = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput $BackendStdoutLog -RedirectStandardError $BackendStderrLog
     Write-Host "✅ Backend process started (PID: $($process.Id))" -ForegroundColor Green
     return $process
 }
@@ -284,10 +321,89 @@ function Wait-BackendReady {
 
 function Start-LauncherProcess {
     Write-Host "🚀 Launching native windows..." -ForegroundColor Yellow
-    $launcherCommand = "Set-Location '$ProjectRoot'; `$env:APP_ENV='$AppEnv'; `$env:BACKEND_HOST='$BackendHost'; `$env:BACKEND_PORT='$BackendPort'; & python '$LauncherScript'"
-    $process = Start-Process powershell -ArgumentList "-NoProfile", "-Command", $launcherCommand -WindowStyle Hidden -PassThru -RedirectStandardOutput $LauncherStdoutLog -RedirectStandardError $LauncherStderrLog
+    $python = (Get-Command python -ErrorAction Stop).Source
+    $pythonw = Join-Path (Split-Path -Parent $python) "pythonw.exe"
+    $launcherPython = if (Test-Path -LiteralPath $pythonw) { $pythonw } else { $python }
+    $process = Start-Process -FilePath $launcherPython -ArgumentList @('-u', $LauncherScript) -WorkingDirectory $ProjectRoot -PassThru -RedirectStandardOutput $LauncherStdoutLog -RedirectStandardError $LauncherStderrLog
     Write-Host "✅ Launcher process started (PID: $($process.Id))" -ForegroundColor Green
-    return $process
+
+    # A GUI process started with SW_HIDE stays alive and even connects its
+    # websocket, but the operator never sees a window. Do not report startup
+    # success until Windows exposes the actual OM0RX top-level window.
+    $deadline = (Get-Date).AddSeconds(45)
+    while ((Get-Date) -lt $deadline) {
+        if ($process.HasExited) {
+            break
+        }
+
+        $process.Refresh()
+        if ($process.MainWindowHandle -ne 0 -and $process.MainWindowTitle -like '*OM0RX Radio Control*') {
+            Write-Host "✅ Launcher UI ready (native window PID: $($process.Id))" -ForegroundColor Green
+            return $process
+        }
+
+        Start-Sleep -Milliseconds 250
+    }
+
+    if (-not $process.HasExited) {
+        Stop-StartedProcess -Process $process -Name "unresponsive desktop launcher"
+    }
+
+    $launcherError = if (Test-Path -LiteralPath $LauncherStderrLog) {
+        (Get-Content -LiteralPath $LauncherStderrLog -Tail 1 -ErrorAction SilentlyContinue)
+    }
+    if ($launcherError) {
+        Write-Host "⚠️ Native launcher did not expose a visible window: $launcherError" -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "⚠️ Native launcher did not expose a visible window within 45 seconds." -ForegroundColor Yellow
+    }
+
+    # Keep the station usable even when WebView2/pywebview cannot initialize.
+    # The default browser is an independent, visible fallback UI.
+    Start-Process $BackendUrl
+    Write-Host "✅ Launcher UI ready (browser fallback: $BackendUrl)" -ForegroundColor Green
+    return $null
+}
+
+function Resolve-PortProcess {
+    param(
+        [int]$Port,
+        [System.Diagnostics.Process]$RootProcess,
+        [string]$Name
+    )
+
+    $owners = @(Get-RuntimePortOwnerIds -Port $Port)
+    if ($owners.Count -ne 1) {
+        throw "$Name must have exactly one listener on port $Port; found $($owners.Count)."
+    }
+    $owner = Get-Process -Id ([int]$owners[0]) -ErrorAction Stop
+    if ($owner.Id -ne $RootProcess.Id) {
+        $cursor = Get-CimInstance Win32_Process -Filter "ProcessId = $($owner.Id)" -ErrorAction SilentlyContinue
+        $isChild = $false
+        while ($cursor -and [int]$cursor.ParentProcessId -gt 0) {
+            if ([int]$cursor.ParentProcessId -eq $RootProcess.Id) { $isChild = $true; break }
+            $cursor = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$cursor.ParentProcessId)" -ErrorAction SilentlyContinue
+        }
+        if (-not $isChild) { throw "$Name listener PID $($owner.Id) is not owned by launched PID $($RootProcess.Id)." }
+    }
+    return $owner
+}
+
+function Revoke-RuntimeOwnership {
+    param([string]$Reason)
+
+    $haltResult = Invoke-DirectBridgeHalt -ControlToken ([string]$env:WSJTX_BRIDGE_TOKEN) -BackendHaltUri "$BackendUrl/api/digital/halt-tx" -TimeoutSec 3
+    if (-not $haltResult.direct_halt_accepted) {
+        Write-Host "⚠️ Direct bridge halt was not acknowledged before runtime teardown." -ForegroundColor Yellow
+    }
+    if (-not $haltResult.idle_confirmed) {
+        Write-Host "⚠️ Fresh RF-idle confirmation was unavailable during runtime teardown." -ForegroundColor Yellow
+    }
+    try {
+        Write-RuntimeOwnerManifest -Path $RuntimeOwnerPath -OwnerId $RuntimeOwnerId -State 'revoked' -Supervisor (Get-Process -Id $PID) -Backend $backendProcess -Bridge $bridgeProcess -Ports $RuntimePorts -Reason $Reason | Out-Null
+    } catch { }
+    return $haltResult
 }
 
 Write-Host ""
@@ -299,22 +415,34 @@ Write-Host "Mode: $AppEnv | Backend: $BackendUrl | Reload: $EnableReload" -Foreg
 Write-Host ""
 
 $bridgeProcess = $null
+$backendRootProcess = $null
 $backendProcess = $null
 $launcherProcess = $null
 
 try {
+    $RuntimeOwnerLock = Enter-RuntimeOwnerLock -Path $RuntimeOwnerLockPath
     Clear-StartupLogs
     Clear-LifecycleRequest
+    Invoke-DirectBridgeHalt -ControlToken ([string]$env:WSJTX_BRIDGE_TOKEN) -BackendHaltUri "$BackendUrl/api/digital/halt-tx" -TimeoutSec 3 | Out-Null
     Stop-StaleRuntime
+    Write-RuntimeOwnerManifest -Path $RuntimeOwnerPath -OwnerId $RuntimeOwnerId -State 'starting' -Supervisor (Get-Process -Id $PID) -Backend $null -Bridge $null -Ports $RuntimePorts | Out-Null
 
     $bridgeProcess = Start-BridgeProcess
-    $backendProcess = Start-BackendProcess
+    $backendRootProcess = Start-BackendProcess
 
     if (-not (Wait-BackendReady)) {
         Write-Host "❌ Backend failed to start after $BackendReadyMaxAttempts seconds" -ForegroundColor Red
         Write-Host "Check the application logs for configuration or dependency errors." -ForegroundColor Red
         exit 1
     }
+
+    $backendProcess = Resolve-PortProcess -Port $BackendPort -RootProcess $backendRootProcess -Name 'Backend'
+    $bridgeWsProcess = Resolve-PortProcess -Port 8091 -RootProcess $bridgeProcess -Name 'Bridge WebSocket'
+    $bridgeCommandProcess = Resolve-PortProcess -Port 8092 -RootProcess $bridgeProcess -Name 'Bridge command server'
+    if ($bridgeWsProcess.Id -ne $bridgeProcess.Id -or $bridgeCommandProcess.Id -ne $bridgeProcess.Id) {
+        throw 'Bridge listeners are not owned by the launched bridge process.'
+    }
+    Write-RuntimeOwnerManifest -Path $RuntimeOwnerPath -OwnerId $RuntimeOwnerId -State 'active' -Supervisor (Get-Process -Id $PID) -Backend $backendProcess -Bridge $bridgeProcess -Ports $RuntimePorts | Out-Null
 
     Write-Host ""
     Write-Host "✅ WSJT-X Bridge connected on WebSocket :8091" -ForegroundColor Green
@@ -336,16 +464,22 @@ try {
 
             if ($action -eq "restart") {
                 Write-Host "🔄 Restart request received from backend" -ForegroundColor Yellow
+                Revoke-RuntimeOwnership -Reason 'backend-restart' | Out-Null
                 Stop-StartedProcess -Process $bridgeProcess -Name "Bridge"
                 Clear-LifecycleRequest
 
                 $bridgeProcess = Start-BridgeProcess
-                $backendProcess = Start-BackendProcess
+                $backendRootProcess = Start-BackendProcess
 
                 if (-not (Wait-BackendReady)) {
                     Write-Host "❌ Backend failed to restart" -ForegroundColor Red
                     break
                 }
+
+                $backendProcess = Resolve-PortProcess -Port $BackendPort -RootProcess $backendRootProcess -Name 'Backend'
+                Resolve-PortProcess -Port 8091 -RootProcess $bridgeProcess -Name 'Bridge WebSocket' | Out-Null
+                Resolve-PortProcess -Port 8092 -RootProcess $bridgeProcess -Name 'Bridge command server' | Out-Null
+                Write-RuntimeOwnerManifest -Path $RuntimeOwnerPath -OwnerId $RuntimeOwnerId -State 'active' -Supervisor (Get-Process -Id $PID) -Backend $backendProcess -Bridge $bridgeProcess -Ports $RuntimePorts | Out-Null
 
                 Write-Host "✅ Services restarted; existing windows can reconnect" -ForegroundColor Green
                 continue
@@ -356,7 +490,22 @@ try {
                 break
             }
 
+            if ($EnableReload -and $backendRootProcess -and -not $backendRootProcess.HasExited) {
+                Write-Host "🔄 Uvicorn reload replaced the backend worker; refreshing exact ownership." -ForegroundColor Yellow
+                if ((Wait-BackendReady)) {
+                    $backendProcess = Resolve-PortProcess -Port $BackendPort -RootProcess $backendRootProcess -Name 'Backend'
+                    Write-RuntimeOwnerManifest -Path $RuntimeOwnerPath -OwnerId $RuntimeOwnerId -State 'active' -Supervisor (Get-Process -Id $PID) -Backend $backendProcess -Bridge $bridgeProcess -Ports $RuntimePorts | Out-Null
+                    continue
+                }
+            }
+
             Write-Host "⚠️ Backend process exited without a lifecycle request" -ForegroundColor Yellow
+            break
+        }
+
+        if ($bridgeProcess.HasExited -or -not (Test-RuntimeOwnerManifest -Path $RuntimeOwnerPath -OwnerId $RuntimeOwnerId -RequirePorts)) {
+            Write-Host "⚠️ Runtime owner or required listener identity was lost; revoking station authorization." -ForegroundColor Red
+            Revoke-RuntimeOwnership -Reason 'owner-or-listener-lost' | Out-Null
             break
         }
 
@@ -382,13 +531,24 @@ try {
     }
 }
 finally {
-    Write-Host ""
-    Write-Host "🛑 Stopping managed processes..." -ForegroundColor Yellow
-    Stop-StartedProcess -Process $backendProcess -Name "Backend"
-    Stop-StartedProcess -Process $bridgeProcess -Name "Bridge"
-    Stop-StartedProcess -Process $launcherProcess -Name "Launcher"
-    Stop-KnownRuntimePorts
-    Stop-ProjectProcesses
-    Clear-LifecycleRequest
-    Write-Host "✅ All managed processes stopped" -ForegroundColor Green
+    if ($RuntimeOwnerLock) {
+        Write-Host ""
+        Write-Host "🛑 Stopping managed processes..." -ForegroundColor Yellow
+        Revoke-RuntimeOwnership -Reason 'supervisor-stopping' | Out-Null
+        if ($backendRootProcess -and (-not $backendProcess -or $backendRootProcess.Id -ne $backendProcess.Id)) {
+            Stop-StartedProcess -Process $backendRootProcess -Name "Backend supervisor"
+        }
+        Stop-StartedProcess -Process $backendProcess -Name "Backend"
+        Stop-StartedProcess -Process $bridgeProcess -Name "Bridge"
+        Stop-StartedProcess -Process $launcherProcess -Name "Launcher"
+        Stop-KnownRuntimePorts
+        Stop-ProjectProcesses
+        Clear-LifecycleRequest
+        Remove-RuntimeOwnerManifest -Path $RuntimeOwnerPath -OwnerId $RuntimeOwnerId
+        $RuntimeOwnerLock.Dispose()
+        Write-Host "✅ All managed processes stopped" -ForegroundColor Green
+    }
+    else {
+        Write-Host "⛔ Runtime ownership was not acquired; existing OM0RX processes were left untouched." -ForegroundColor Yellow
+    }
 }

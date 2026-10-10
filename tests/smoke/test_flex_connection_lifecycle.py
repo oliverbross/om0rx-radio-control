@@ -4,8 +4,20 @@ import socket
 import time
 
 import _bootstrap  # noqa: F401
+import pytest
 
+from radio_control import config as app_config
 from radio_control.flex_radio import FlexCtl
+
+
+@pytest.fixture(autouse=True)
+def explicit_test_antenna_policy(monkeypatch):
+    """Keep driver tests independent of live station policy and processes."""
+    monkeypatch.setattr(app_config, "FLEX_ANTENNA_POLICY", FlexCtl.DEFAULT_ANTENNA_POLICY)
+    monkeypatch.setattr(
+        "services.digital_engine.backend_radio_control_allowed",
+        lambda: True,
+    )
 
 
 class IdleSocket:
@@ -41,6 +53,15 @@ class ScriptedSocket(IdleSocket):
         if isinstance(chunk, Exception):
             raise chunk
         return chunk
+
+
+class RecordingScriptedSocket(ScriptedSocket):
+    def __init__(self, chunks):
+        super().__init__(chunks)
+        self.sent = []
+
+    def sendall(self, data):
+        self.sent.append(data.decode("ascii"))
 
 
 class RecordingFlex(FlexCtl):
@@ -87,6 +108,36 @@ def test_idle_subscription_poll_keeps_existing_flex_socket_open():
     assert flex.last_state_changed == {}
 
 
+def test_transmit_controls_bind_to_active_smartsdr_gui_client():
+    flex = RecordingFlex()
+    flex._record_basic_status_from_line(
+        "S123|client 0xABC connected local_ptt=1 "
+        "client_id=92377769-31EB-4483-824E-6A249E83B0A3 "
+        "program=SmartSDR-Win station=OM0RX-WIN10"
+    )
+
+    assert flex.set_rf_power(90) is True
+    assert flex.bound_gui_client_id == "92377769-31EB-4483-824E-6A249E83B0A3"
+    assert flex.commands == [
+        "sub client all",
+        "client bind client_id=92377769-31EB-4483-824E-6A249E83B0A3",
+        "slice set 0 tx=1",
+        "transmit set rfpower=90",
+    ]
+
+    # A later MSHV/SmartSDR client transition can invalidate the radio-side
+    # association even though our local flag is still true.  Every drive write
+    # must establish the GUI binding again.
+    flex.commands.clear()
+    assert flex.set_rf_power(25) is True
+    assert flex.commands == [
+        "sub client all",
+        "client bind client_id=92377769-31EB-4483-824E-6A249E83B0A3",
+        "slice set 0 tx=1",
+        "transmit set rfpower=25",
+    ]
+
+
 def test_refresh_source_does_not_force_reconnect_on_no_messages():
     source = (  # keep this focused: a regression here causes SmartSDR client spam
         __import__("pathlib")
@@ -130,6 +181,23 @@ def test_om0rx_antenna_policy_can_be_configured_per_band():
         "tx": "ANT1",
     }
     assert FlexCtl.desired_antennas_for_frequency(7.074, {"enabled": False}) is None
+
+
+def test_current_antenna_policy_is_resolved_at_each_request(monkeypatch):
+    flex = RecordingFlex()
+    assert flex.desired_antennas_for_current_config(1.84)["rx"] == "ANT2"
+
+    live_policy = {
+        "enabled": True,
+        "bands": {band: "ANT1" for band in FlexCtl.BAND_RANGES},
+    }
+    monkeypatch.setattr(app_config, "FLEX_ANTENNA_POLICY", live_policy)
+
+    assert flex.desired_antennas_for_current_config(1.84) == {
+        "band": "160m",
+        "rx": "ANT1",
+        "tx": "ANT1",
+    }
 
 
 def test_tune_mhz_enforces_om0rx_antenna_policy():
@@ -292,6 +360,143 @@ def test_refresh_parses_coalesced_interlock_records_in_order():
     assert flex.current_interlock_state == "READY"
     assert flex.current_mox is False
     assert flex.last_state_changed["interlock_state"] == "READY"
+    assert flex.last_tx_state_time > 0
+
+
+def test_refresh_ignores_saved_band_power_rows_for_live_drive():
+    flex = RecordingFlex()
+    flex.current_rfpower = 25
+    flex.sock = ScriptedSocket(
+        [
+            b"S1|transmit freq=1.840000 rfpower=90 tunepower=20\r\n"
+            b"S1|transmit band 0 band_name=160 rfpower=90 tunepower=20\r\n"
+            b"S1|transmit band 20 band_name=6 rfpower=0 tunepower=0\r\n"
+        ]
+    )
+    flex.last_resubscribe_time = time.time()
+
+    assert flex.refresh_radio_state() is True
+    assert flex.current_rfpower == 90
+    assert flex.last_state_changed["drive"] == 90
+
+
+def test_fresh_tx_state_requires_post_subscription_observation(monkeypatch):
+    flex = RecordingFlex()
+    probe = RecordingFlex()
+    probe.last_tx_state_time = 1
+    monkeypatch.setattr(
+        probe,
+        "connect_tx_state_probe",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(flex, "_new_tx_state_probe", lambda: probe)
+
+    stale = flex.get_fresh_tx_state(timeout=0.01)
+
+    assert stale["confirmed"] is False
+    assert probe.sock is None
+
+
+def test_fresh_tx_state_accepts_new_ready_subscription_status(monkeypatch):
+    flex = RecordingFlex()
+    probe = RecordingFlex()
+
+    def connect_tx_state_probe(*_args, **_kwargs):
+        probe.current_mox = False
+        probe.current_interlock_state = "READY"
+        probe.last_tx_state_time = time.time()
+        return True
+
+    monkeypatch.setattr(probe, "connect_tx_state_probe", connect_tx_state_probe)
+    monkeypatch.setattr(flex, "_new_tx_state_probe", lambda: probe)
+
+    fresh = flex.get_fresh_tx_state(timeout=0.01)
+
+    assert fresh["confirmed"] is True
+    assert fresh["mox"] is False
+    assert fresh["interlock_state"] == "READY"
+    assert probe.sock is None
+
+
+def test_minimal_tx_probe_subscribes_only_to_tx_and_requires_ack_and_status(monkeypatch):
+    flex = FlexCtl("127.0.0.1", 4992)
+    sock = ScriptedSocket(
+        [
+            b"V3.4.24.33766\r\nH12345678\r\n",
+            b"R1001|00000000|\r\nS0|interlock state=READY tx_allowed=1\r\n",
+        ]
+    )
+    monkeypatch.setattr(flex._socket_mod, "create_connection", lambda *_args, **_kwargs: sock)
+    requested_at = time.time()
+
+    assert flex.connect_tx_state_probe(0.5, requested_at=requested_at) is True
+    assert sock.closed is False
+    assert flex.current_mox is False
+    assert flex.current_interlock_state == "READY"
+    assert flex.last_tx_state_time >= requested_at
+
+
+def test_minimal_tx_probe_fails_closed_without_fresh_interlock_status(monkeypatch):
+    flex = FlexCtl("127.0.0.1", 4992)
+    sock = ScriptedSocket(
+        [
+            b"V3.4.24.33766\r\n",
+            b"R1001|00000000|\r\n",
+            socket.timeout(),
+        ]
+    )
+    monkeypatch.setattr(flex._socket_mod, "create_connection", lambda *_args, **_kwargs: sock)
+
+    assert flex.connect_tx_state_probe(0.01, requested_at=time.time()) is False
+    assert flex.current_interlock_state is None
+    assert flex.current_mox is None
+
+
+def test_persistent_tx_monitor_reuses_one_connection_for_multiple_proofs(monkeypatch):
+    flex = FlexCtl("127.0.0.1", 4992)
+    sock = RecordingScriptedSocket(
+        [
+            b"V3.4.24.33766\r\nH12345678\r\n",
+            b"R1001|00000000|\r\nS0|interlock state=READY tx_allowed=1\r\n",
+            b"R1002|00000000|\r\n",
+            b"R1003|00000000|\r\nS0|interlock state=TRANSMITTING\r\n",
+        ]
+    )
+    connection_count = 0
+
+    def create_connection(*_args, **_kwargs):
+        nonlocal connection_count
+        connection_count += 1
+        return sock
+
+    monkeypatch.setattr(flex._socket_mod, "create_connection", create_connection)
+    assert flex.connect_tx_state_probe(0.5, requested_at=time.time()) is True
+    existing_timeout = sock.gettimeout()
+    receive = flex.refresh_tx_state_probe(0.5, expect_transmitting=False)
+    transmit = flex.refresh_tx_state_probe(0.5, expect_transmitting=True)
+
+    assert connection_count == 1
+    assert receive["confirmed"] is True
+    assert receive["mox"] is False
+    assert transmit["confirmed"] is True
+    assert transmit["mox"] is True
+    assert len([wire for wire in sock.sent if "sub tx all" in wire]) == 3
+    assert sock.gettimeout() == existing_timeout
+
+
+def test_refresh_radio_state_has_bounded_drain_under_continuous_status():
+    flex = RecordingFlex()
+    chunks = [b"S1|meter 24 value=12.0\r\n" for _ in range(1000)]
+    sock = ScriptedSocket(chunks)
+    flex.sock = sock
+    flex.last_resubscribe_time = time.time()
+
+    started = time.monotonic()
+    assert flex.refresh_radio_state() is True
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5
+    assert sock.chunks
 
 
 def test_refresh_preserves_fragmented_interlock_record_across_polls():

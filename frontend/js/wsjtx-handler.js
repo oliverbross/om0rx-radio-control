@@ -23,7 +23,37 @@ let wsjtxData = {
 };
 
 let previousDxCall = '';
+let lastAutoRotateKey = '';
 let wsjtxHandlerInitialized = false;
+
+/**
+ * Resolve only the amateur band needed to make auto-rotate requests idempotent.
+ * Rotor enablement remains authoritative in the backend.
+ */
+function wsjtxBandFromDialFrequency(dialFrequency) {
+  const frequencyHz = Number(dialFrequency);
+  if (!Number.isFinite(frequencyHz) || frequencyHz <= 0) {
+    return 'unknown';
+  }
+
+  const frequencyMhz = frequencyHz / 1_000_000;
+  const ranges = [
+    [1.8, 2.0, '160m'], [3.5, 4.0, '80m'], [5.0, 5.6, '60m'],
+    [7.0, 7.3, '40m'], [10.0, 10.2, '30m'], [14.0, 14.35, '20m'],
+    [18.0, 18.2, '17m'], [21.0, 21.45, '15m'], [24.8, 25.0, '12m'],
+    [28.0, 30.0, '10m'], [50.0, 54.0, '6m'], [144.0, 148.0, '2m']
+  ];
+  const match = ranges.find(([low, high]) => frequencyMhz >= low && frequencyMhz <= high);
+  return match ? match[2] : `unknown:${Math.round(frequencyHz)}`;
+}
+
+function autoRotateKey(dxCall, dxGrid, dialFrequency) {
+  return [
+    wsjtxBandFromDialFrequency(dialFrequency),
+    String(dxCall || '').trim().toUpperCase(),
+    String(dxGrid || '').trim().toUpperCase()
+  ].join('|');
+}
 
 /**
  * Initialize WSJT-X handler
@@ -78,6 +108,8 @@ function handleWsjtxMessage(event) {
  */
 function handleWsjtxStatus(data) {
   if (!data.dxCall) {
+    previousDxCall = '';
+    lastAutoRotateKey = '';
     return;
   }
 
@@ -285,6 +317,15 @@ function autoRotateToGrid(dxCall, dxGrid, dialFrequency) {
       log('debug', 'rotor', 'Invalid call or grid for auto-rotate');
       return;
     }
+
+    const requestKey = autoRotateKey(dxCall, dxGrid, dialFrequency);
+    if (requestKey === lastAutoRotateKey) {
+      log('debug', 'rotor', `Auto-rotate already handled for ${requestKey}`);
+      return;
+    }
+    // Claim the key before starting the request so bursts of identical status
+    // packets cannot create overlapping rotor commands.
+    lastAutoRotateKey = requestKey;
 
     log('info', 'rotor', `Auto-rotating to ${dxCall} at ${dxGrid}`);
 

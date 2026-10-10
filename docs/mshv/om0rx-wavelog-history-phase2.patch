@@ -1,0 +1,2906 @@
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+index 74f2e61..4032a3b 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+@@ -14,6 +14,7 @@
+ #include "../HvAutoDxer/bandmanager.h"
+ #include "../HvAutoDxer/spotaggregator.h"
+ #include "../HvAutoDxer/dxclusterclient.h"
++#include "../HvAutoDxer/autodxercore.h"
+ 
+ #include <QVBoxLayout>
+ #include <QHBoxLayout>
+@@ -39,6 +40,7 @@ HvAutoDxSettings::HvAutoDxSettings(QWidget *parent)
+     , m_dxccTracker(nullptr)
+     , m_bandManager(nullptr)
+     , m_spotAggregator(nullptr)
++    , m_autoDxerCore(nullptr)
+ {
+     setWindowTitle("MSHackV :: Configuration");
+     setMinimumWidth(500);
+@@ -72,6 +74,7 @@ void HvAutoDxSettings::setupUi()
+     // Create all group boxes
+     createSpotSourcesGroup();
+     createBandSwitchingGroup();
++    createAutomationTimingGroup();
+     createBandSelectionGroup();
+     createPriorityGroup();
+     createOperatingModeGroup();
+@@ -80,6 +83,7 @@ void HvAutoDxSettings::setupUi()
+ 
+     scrollLayout->addWidget(m_spotSourcesGroup);
+     scrollLayout->addWidget(m_bandSwitchingGroup);
++    scrollLayout->addWidget(m_automationTimingGroup);
+     scrollLayout->addWidget(m_bandSelectionGroup);
+     scrollLayout->addWidget(m_priorityGroup);
+     scrollLayout->addWidget(m_opModeGroup);
+@@ -217,7 +221,7 @@ void HvAutoDxSettings::createSpotSourcesGroup()
+     // === Filtering Options ===
+     QHBoxLayout *filterLayout = new QHBoxLayout;
+     m_usOnlyFilter = new QCheckBox("US Spotters Only");
+-    m_usOnlyFilter->setChecked(false);
++    m_usOnlyFilter->setChecked(false);
+     m_usOnlyFilter->setToolTip("Only accept spots from US-based skimmers.\n"
+                                "Ensures stations are likely hearable from your location.");
+     filterLayout->addWidget(m_usOnlyFilter);
+@@ -291,6 +295,82 @@ void HvAutoDxSettings::createBandSwitchingGroup()
+     layout->addLayout(gridLayout);
+ }
+ 
++void HvAutoDxSettings::createAutomationTimingGroup()
++{
++    m_automationTimingGroup = new QGroupBox("Automation Timing & Band Schedules");
++    QVBoxLayout *layout = new QVBoxLayout(m_automationTimingGroup);
++    QLabel *description = new QLabel(
++        "Normal calls stop after the call timer. Needed DXCC/band slots may continue only while heard locally. "
++        "A quiet, idle band changes after the quiet-band timer.");
++    description->setWordWrap(true);
++    description->setStyleSheet("color: #666; font-size: 9pt;");
++    layout->addWidget(description);
++
++    QGridLayout *timing = new QGridLayout;
++    m_normalCallSeconds = new QSpinBox;
++    m_normalCallSeconds->setRange(30, 1800);
++    m_normalCallSeconds->setSuffix(" sec");
++    m_quietBandSeconds = new QSpinBox;
++    m_quietBandSeconds->setRange(60, 3600);
++    m_quietBandSeconds->setSuffix(" sec");
++    m_targetHeardFreshSeconds = new QSpinBox;
++    m_targetHeardFreshSeconds->setRange(15, 300);
++    m_targetHeardFreshSeconds->setSuffix(" sec");
++    m_crossBandVerifySeconds = new QSpinBox;
++    m_crossBandVerifySeconds->setRange(15, 300);
++    m_crossBandVerifySeconds->setSuffix(" sec");
++    m_bandSwitchCooldownSeconds = new QSpinBox;
++    m_bandSwitchCooldownSeconds->setRange(0, 1800);
++    m_bandSwitchCooldownSeconds->setSuffix(" sec");
++    timing->addWidget(new QLabel("Normal call duration:"), 0, 0);
++    timing->addWidget(m_normalCallSeconds, 0, 1);
++    timing->addWidget(new QLabel("Quiet/no-target band dwell:"), 1, 0);
++    timing->addWidget(m_quietBandSeconds, 1, 1);
++    timing->addWidget(new QLabel("Target heard freshness:"), 2, 0);
++    timing->addWidget(m_targetHeardFreshSeconds, 2, 1);
++    timing->addWidget(new QLabel("Cross-band verify timeout:"), 3, 0);
++    timing->addWidget(m_crossBandVerifySeconds, 3, 1);
++    timing->addWidget(new QLabel("Band-switch cooldown:"), 4, 0);
++    timing->addWidget(m_bandSwitchCooldownSeconds, 4, 1);
++    timing->setColumnStretch(2, 1);
++    layout->addLayout(timing);
++
++    m_persistNewDxccWhileHeard = new QCheckBox("Keep calling new DXCC while heard locally");
++    m_persistNewBandSlotWhileHeard = new QCheckBox("Keep calling new band slot while heard locally");
++    layout->addWidget(m_persistNewDxccWhileHeard);
++    layout->addWidget(m_persistNewBandSlotWhileHeard);
++
++    QLabel *scheduleLabel = new QLabel("Allowed local-time windows (system local time, including DST):");
++    scheduleLabel->setStyleSheet("font-weight: bold; margin-top: 6px;");
++    layout->addWidget(scheduleLabel);
++    QGridLayout *schedules = new QGridLayout;
++    schedules->addWidget(new QLabel("Band"), 0, 0);
++    schedules->addWidget(new QLabel("Restricted"), 0, 1);
++    schedules->addWidget(new QLabel("Start"), 0, 2);
++    schedules->addWidget(new QLabel("End"), 0, 3);
++    const QList<int> bands = QList<int>() << 3 << 4 << 6 << 7 << 8 << 9 << 10 << 11 << 12 << 14;
++    const QStringList names = QStringList() << "160m" << "80m" << "40m" << "30m" << "20m"
++                                            << "17m" << "15m" << "12m" << "10m" << "6m";
++    for (int row = 0; row < bands.size(); ++row) {
++        const int band = bands.at(row);
++        QCheckBox *restricted = new QCheckBox;
++        QTimeEdit *start = new QTimeEdit(QTime(18, 0));
++        QTimeEdit *end = new QTimeEdit(QTime(6, 0));
++        start->setDisplayFormat("HH:mm");
++        end->setDisplayFormat("HH:mm");
++        schedules->addWidget(new QLabel(names.at(row)), row + 1, 0);
++        schedules->addWidget(restricted, row + 1, 1, Qt::AlignCenter);
++        schedules->addWidget(start, row + 1, 2);
++        schedules->addWidget(end, row + 1, 3);
++        m_bandScheduleRestricted.insert(band, restricted);
++        m_bandScheduleStart.insert(band, start);
++        m_bandScheduleEnd.insert(band, end);
++        connect(restricted, &QCheckBox::toggled, start, &QWidget::setEnabled);
++        connect(restricted, &QCheckBox::toggled, end, &QWidget::setEnabled);
++    }
++    layout->addLayout(schedules);
++}
++
+ void HvAutoDxSettings::createBandSelectionGroup()
+ {
+     m_bandSelectionGroup = new QGroupBox("Band Selection");
+@@ -622,6 +702,21 @@ AutoDxSettings HvAutoDxSettings::getSettings() const
+     settings.autoReconnectEnabled = m_autoReconnectEnabled->isChecked();
+     settings.maxReconnectDelay = m_maxReconnectDelay->value();
+ 
++    settings.normalCallSeconds = m_normalCallSeconds->value();
++    settings.quietBandSeconds = m_quietBandSeconds->value();
++    settings.targetHeardFreshSeconds = m_targetHeardFreshSeconds->value();
++    settings.crossBandVerifySeconds = m_crossBandVerifySeconds->value();
++    settings.bandSwitchCooldownSeconds = m_bandSwitchCooldownSeconds->value();
++    settings.persistNewDxccWhileHeard = m_persistNewDxccWhileHeard->isChecked();
++    settings.persistNewBandSlotWhileHeard = m_persistNewBandSlotWhileHeard->isChecked();
++    for (auto it = m_bandScheduleRestricted.constBegin(); it != m_bandScheduleRestricted.constEnd(); ++it) {
++        AutoDxBandScheduleSettings schedule;
++        schedule.restricted = it.value()->isChecked();
++        schedule.start = m_bandScheduleStart.value(it.key())->time();
++        schedule.end = m_bandScheduleEnd.value(it.key())->time();
++        settings.bandSchedules.insert(it.key(), schedule);
++    }
++
+     return settings;
+ }
+ 
+@@ -665,7 +760,7 @@ void HvAutoDxSettings::loadSettings(const QString& appPath)
+     m_pskEnabled->setChecked(settings.value("SpotSources/PskEnabled", true).toBool());
+     m_pskPollInterval->setValue(settings.value("SpotSources/PskPollInterval", 120).toInt());
+     m_dxcEnabled->setChecked(settings.value("SpotSources/DxcEnabled", true).toBool());
+-    m_usOnlyFilter->setChecked(settings.value("SpotSources/UsOnlyFilter", false).toBool());
++    m_usOnlyFilter->setChecked(settings.value("SpotSources/UsOnlyFilter", false).toBool());
+     m_minSnr->setValue(settings.value("SpotSources/MinSnr", -24).toInt());
+ 
+     // Load DX Cluster servers
+@@ -704,6 +799,28 @@ void HvAutoDxSettings::loadSettings(const QString& appPath)
+     m_spotWindow->setValue(settings.value("BandSwitching/SpotWindow", 300).toInt());
+     m_hysteresis->setValue(settings.value("BandSwitching/Hysteresis", 0.25).toDouble());
+ 
++    m_normalCallSeconds->setValue(settings.value("AutomationTiming/NormalCallSeconds", 120).toInt());
++    m_quietBandSeconds->setValue(settings.value("AutomationTiming/QuietBandSeconds", 300).toInt());
++    m_targetHeardFreshSeconds->setValue(settings.value("AutomationTiming/TargetHeardFreshSeconds", 60).toInt());
++    m_crossBandVerifySeconds->setValue(settings.value("AutomationTiming/CrossBandVerifySeconds", 60).toInt());
++    m_bandSwitchCooldownSeconds->setValue(settings.value("AutomationTiming/BandSwitchCooldownSeconds", 120).toInt());
++    m_persistNewDxccWhileHeard->setChecked(settings.value("AutomationTiming/PersistNewDxccWhileHeard", true).toBool());
++    m_persistNewBandSlotWhileHeard->setChecked(settings.value("AutomationTiming/PersistNewBandSlotWhileHeard", true).toBool());
++    for (auto it = m_bandScheduleRestricted.begin(); it != m_bandScheduleRestricted.end(); ++it) {
++        const int band = it.key();
++        const bool defaultRestricted = band == 3 || band == 4;
++        const QString prefix = QString("BandSchedules/Band%1").arg(band);
++        QTime start = QTime::fromString(settings.value(prefix + "Start", "18:00").toString(), "HH:mm");
++        QTime end = QTime::fromString(settings.value(prefix + "End", "06:00").toString(), "HH:mm");
++        if (!start.isValid()) start = QTime(18, 0);
++        if (!end.isValid()) end = QTime(6, 0);
++        it.value()->setChecked(settings.value(prefix + "Restricted", defaultRestricted).toBool());
++        m_bandScheduleStart.value(band)->setTime(start);
++        m_bandScheduleEnd.value(band)->setTime(end);
++        m_bandScheduleStart.value(band)->setEnabled(it.value()->isChecked());
++        m_bandScheduleEnd.value(band)->setEnabled(it.value()->isChecked());
++    }
++
+     // Band Selection - default to all HF bands enabled (no 6m)
+     QString bandStr = settings.value("BandSelection/EnabledBands", "3,4,6,7,8,9,10,11,12").toString();
+     QStringList bands = bandStr.split(",", Qt::SkipEmptyParts);
+@@ -791,6 +908,20 @@ void HvAutoDxSettings::saveSettings(const QString& appPath)
+     settings.setValue("BandSwitching/SpotWindow", m_spotWindow->value());
+     settings.setValue("BandSwitching/Hysteresis", m_hysteresis->value());
+ 
++    settings.setValue("AutomationTiming/NormalCallSeconds", m_normalCallSeconds->value());
++    settings.setValue("AutomationTiming/QuietBandSeconds", m_quietBandSeconds->value());
++    settings.setValue("AutomationTiming/TargetHeardFreshSeconds", m_targetHeardFreshSeconds->value());
++    settings.setValue("AutomationTiming/CrossBandVerifySeconds", m_crossBandVerifySeconds->value());
++    settings.setValue("AutomationTiming/BandSwitchCooldownSeconds", m_bandSwitchCooldownSeconds->value());
++    settings.setValue("AutomationTiming/PersistNewDxccWhileHeard", m_persistNewDxccWhileHeard->isChecked());
++    settings.setValue("AutomationTiming/PersistNewBandSlotWhileHeard", m_persistNewBandSlotWhileHeard->isChecked());
++    for (auto it = m_bandScheduleRestricted.constBegin(); it != m_bandScheduleRestricted.constEnd(); ++it) {
++        const QString prefix = QString("BandSchedules/Band%1").arg(it.key());
++        settings.setValue(prefix + "Restricted", it.value()->isChecked());
++        settings.setValue(prefix + "Start", m_bandScheduleStart.value(it.key())->time().toString("HH:mm"));
++        settings.setValue(prefix + "End", m_bandScheduleEnd.value(it.key())->time().toString("HH:mm"));
++    }
++
+     // Priority
+     settings.setValue("Priority/NewDxccAllTime", m_weightNewDxccAllTime->value());
+     settings.setValue("Priority/NewDxccBand", m_weightNewDxccBand->value());
+@@ -848,6 +979,7 @@ void HvAutoDxSettings::updateUiState()
+ 
+     m_spotSourcesGroup->setEnabled(enabled);
+     m_bandSwitchingGroup->setEnabled(enabled);
++    m_automationTimingGroup->setEnabled(enabled);
+     m_bandSelectionGroup->setEnabled(enabled);
+     m_priorityGroup->setEnabled(enabled);
+     m_opModeGroup->setEnabled(enabled);
+@@ -995,6 +1127,7 @@ void HvAutoDxSettings::onApply()
+ {
+     saveSettings(m_appPath);
+     applyToComponents();
++    if (m_autoDxerCore) m_autoDxerCore->reloadRuntimeConfig();
+ }
+ 
+ void HvAutoDxSettings::onOk()
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+index 40e282d..7459381 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+@@ -18,6 +18,8 @@
+ #include <QGroupBox>
+ #include <QSettings>
+ #include <QTableWidget>
++#include <QTimeEdit>
++#include <QMap>
+ 
+ // Forward declarations
+ class HvSpotCollector;
+@@ -29,6 +31,13 @@ class HvWatchdog;
+ class HvDxccTracker;
+ class BandManager;
+ class SpotAggregator;
++class AutoDxerCore;
++
++struct AutoDxBandScheduleSettings {
++    bool restricted;
++    QTime start;
++    QTime end;
++};
+ 
+ // Structure for DX Cluster server configuration
+ struct DxClusterServerConfig {
+@@ -84,6 +93,16 @@ struct AutoDxSettings {
+     int txWatchdogTimeout;
+     bool autoReconnectEnabled;
+     int maxReconnectDelay;
++
++    // Native AutoDxer timing policy
++    int normalCallSeconds;
++    int quietBandSeconds;
++    int targetHeardFreshSeconds;
++    int crossBandVerifySeconds;
++    int bandSwitchCooldownSeconds;
++    bool persistNewDxccWhileHeard;
++    bool persistNewBandSlotWhileHeard;
++    QMap<int, AutoDxBandScheduleSettings> bandSchedules;
+ };
+ 
+ class HvAutoDxSettings : public QDialog
+@@ -114,6 +133,7 @@ public:
+ 
+     // Set callsign for spot sources
+     void setCallsign(const QString& callsign);
++    void setAutoDxerCore(AutoDxerCore *core) { m_autoDxerCore = core; }
+ 
+     // Set/get grid for PSKReporter
+     void setGrid(const QString& grid);
+@@ -145,6 +165,7 @@ private:
+     void setupUi();
+     void createSpotSourcesGroup();
+     void createBandSwitchingGroup();
++    void createAutomationTimingGroup();
+     void populateDefaultServers();  // Helper to populate defaults without confirmation
+     void createPriorityGroup();
+     void createOperatingModeGroup();
+@@ -164,6 +185,7 @@ private:
+     HvDxccTracker *m_dxccTracker;
+     BandManager *m_bandManager;
+     SpotAggregator *m_spotAggregator;
++    AutoDxerCore *m_autoDxerCore;
+ 
+     QString m_appPath;
+     QString m_callsign;
+@@ -196,6 +218,19 @@ private:
+     QSpinBox *m_spotWindow;
+     QDoubleSpinBox *m_hysteresis;
+ 
++    // Native Automation Timing & Band Schedules
++    QGroupBox *m_automationTimingGroup;
++    QSpinBox *m_normalCallSeconds;
++    QSpinBox *m_quietBandSeconds;
++    QSpinBox *m_targetHeardFreshSeconds;
++    QSpinBox *m_crossBandVerifySeconds;
++    QSpinBox *m_bandSwitchCooldownSeconds;
++    QCheckBox *m_persistNewDxccWhileHeard;
++    QCheckBox *m_persistNewBandSlotWhileHeard;
++    QMap<int, QCheckBox*> m_bandScheduleRestricted;
++    QMap<int, QTimeEdit*> m_bandScheduleStart;
++    QMap<int, QTimeEdit*> m_bandScheduleEnd;
++
+     // Band Selection
+     QGroupBox *m_bandSelectionGroup;
+     QCheckBox *m_band160m;  // index 3
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+index 7bdc9ba..1f56620 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -6,12 +6,20 @@
+ #include "autodxruntimeconfig.h"
+ #include "twiliosmsnotifier.h"
+ #include "../HvDecodeList/hvcty.h"
++#include "../HvDxccTracker/hvdxcctracker.h"
+ #include "../HvTxW/hvmultianswermodw.h"
+ #include "../HvReliability/hvlogger.h"
+ #include <QDir>
++#include <QCryptographicHash>
++#include <QFile>
++#include <QFileInfo>
+ #include <QJsonArray>
++#include <QJsonDocument>
++#include <QNetworkRequest>
+ #include <QRegExp>
++#include <QSaveFile>
+ #include <QSettings>
++#include <QUrl>
+ 
+ // Helper: Check if callsign is rare DX (DXpedition) that should use dial frequency directly
+ // For these stations, the spotted frequency IS the dial frequency, not an RF frequency
+@@ -58,6 +66,14 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     , m_currentMode("FT8")
+     , m_autoDxModes(QStringList() << "FT8")
+     , m_bandSwitchingEnabled(false)
++    , m_settingsPath(settingsPath)
++    , m_normalCallSeconds(120)
++    , m_quietBandSeconds(300)
++    , m_targetHeardFreshSeconds(60)
++    , m_crossBandVerifySeconds(60)
++    , m_bandSwitchCooldownSeconds(120)
++    , m_persistNewDxccWhileHeard(true)
++    , m_persistNewBandSlotWhileHeard(true)
+     , m_runtimeRbnEnabled(true)
+     , m_runtimePskrEnabled(true)
+     , m_runtimeDxClusterEnabled(true)
+@@ -66,6 +82,12 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     , m_runtimeDxClusterServerCount(0)
+     , m_cty(cty)
+     , m_hvDxccTracker(nullptr)
++    , m_historyTimer(nullptr)
++    , m_historyNetwork(nullptr)
++    , m_historyRequestPending(false)
++    , m_historicalNoveltyAllowed(false)
++    , m_historyAuthorityStatus("local-tracker")
++    , m_historyLastSequence(0)
+     , m_qsoCount(0)
+     , m_newDxccCount(0)
+     , m_newSlotCount(0)
+@@ -74,7 +96,7 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     , m_sessionQsoCount(0)
+     , m_sessionTargetsAttempted(0)
+     , m_listenCyclesRequired(2)
+-    , m_bandTimeoutMinutes(1)  // 1 minute = ~4 FT8 cycles, then move on
++    , m_bandTimeoutMinutes(5)
+     , m_targetMissedCycles(0)
+     , m_targetHeardThisCycle(false)
+     , m_targetRespondedToUs(false)
+@@ -84,9 +106,11 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     , m_atnoChaseType(ATNOChaseBoth)      // Default: extended calling for both ATNO and new slots
+     , m_currentTargetIsATNO(false)
+     , m_currentTargetIsNewSlot(false)
++    , m_currentTargetIsNewGrid(false)
+     , m_atnoTotalCallCycles(0)            // Reset when new target is queued
+     , m_waitingForSlotAnalysis(false)     // Not waiting for slot analysis initially
+     , m_pendingCrossBandBand(-1)          // No pending cross-band verification
++    , m_pendingCrossBandReturnBand(-1)    // No originating band to restore
+     , m_pendingCrossBandDialFreq(0)       // No pending dial frequency change
+     , m_pendingCrossBandAudioFreq(0)      // Target's audio frequency
+     , m_pendingNonStdDialFreq(0)          // No pending non-std freq verification
+@@ -96,6 +120,7 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     // DxccTracker now delegates to HvDxccTracker (set later via setHvDxccTracker)
+     m_dxccTracker = new DxccTracker(cty, nullptr, this);
+     m_targetScorer = new TargetScorer(m_dxccTracker, cty, this);
++    m_targetScorer->setHistoricalNoveltyAllowed(false);
+     m_spotAggregator = new SpotAggregator(this);
+     m_bandManager = new BandManager(this);
+ 
+@@ -144,11 +169,23 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     // Initialize database
+     m_dxccTracker->initialize();
+ 
+-    // Band timeout timer
++    // Quiet-band policy timer. It never changes bands while a target, QSO or
++    // verification is active; it only evaluates an already-idle Listening state.
+     m_timeoutTimer = new QTimer(this);
+-    m_timeoutTimer->setInterval(m_bandTimeoutMinutes * 60 * 1000);
++    m_timeoutTimer->setInterval(5000);
+     connect(m_timeoutTimer, SIGNAL(timeout()), this, SLOT(checkTimeout()));
+ 
++    // Wavelog is the sole worked-history authority. Historical novelty is
++    // fail-closed until OM0RX confirms an attested snapshot and acknowledged
++    // deltas. This background poll is independent of the PTT permit path.
++    m_historyNetwork = new QNetworkAccessManager(this);
++    loadWavelogDeltaState(settingsPath);
++    m_historyTimer = new QTimer(this);
++    m_historyTimer->setInterval(5000);
++    connect(m_historyTimer, &QTimer::timeout, this, &AutoDxerCore::refreshWavelogHistory);
++    m_historyTimer->start();
++    QTimer::singleShot(0, this, &AutoDxerCore::refreshWavelogHistory);
++
+     // 24/7 stability: Periodic cleanup of recently-worked blacklist (every 60 seconds)
+     // Prevents unbounded memory growth if no targets are queued for extended periods
+     m_recentlyWorkedCleanupTimer = new QTimer(this);
+@@ -205,14 +242,19 @@ void AutoDxerCore::setHvDxccTracker(HvDxccTracker *tracker)
+ void AutoDxerCore::setEnabled(bool enabled)
+ {
+     m_desiredEnabled = enabled;
++    const bool historicalNoveltyReady = m_historicalNoveltyAllowed;
+     const bool effective = enabled && isConfiguredMode(m_currentMode);
++    if (!effective) {
++        clearPendingCrossBandVerification();
++    }
+     if (m_enabled == effective) return;
+ 
+     m_enabled = effective;
+-    emit debugMessage(QString("AutoDxerCore: desired=%1 effective=%2 mode=%3")
++    emit debugMessage(QString("AutoDxerCore: desired=%1 effective=%2 mode=%3 history=%4")
+                       .arg(enabled ? "ON" : "OFF")
+                       .arg(effective ? "ON" : "OFF")
+-                      .arg(m_currentMode));
++                      .arg(m_currentMode)
++                      .arg(historicalNoveltyReady ? "ready" : "novelty-blocked"));
+ 
+     if (effective) {
+         // CRITICAL: Disable "CQ on free slot" - AutoDxer is search-and-pounce only
+@@ -227,6 +269,7 @@ void AutoDxerCore::setEnabled(bool enabled)
+ 
+         m_spotAggregator->start();
+         setState(Listening);
++        resetQuietBandTimer();
+         m_timeoutTimer->start();
+     } else {
+         m_spotAggregator->stop();
+@@ -259,6 +302,13 @@ void AutoDxerCore::loadRuntimeConfig(const QString &settingsPath)
+     m_desiredEnabled = config.desiredEnabled;
+     m_autoDxModes = config.modes;
+     m_bandSwitchingEnabled = config.bandSwitchingEnabled;
++    m_normalCallSeconds = config.normalCallSeconds;
++    m_quietBandSeconds = config.quietBandSeconds;
++    m_targetHeardFreshSeconds = config.targetHeardFreshSeconds;
++    m_crossBandVerifySeconds = config.crossBandVerifySeconds;
++    m_bandSwitchCooldownSeconds = config.bandSwitchCooldownSeconds;
++    m_persistNewDxccWhileHeard = config.persistNewDxccWhileHeard;
++    m_persistNewBandSlotWhileHeard = config.persistNewBandSlotWhileHeard;
+     m_scarceTargetThreshold = config.scarceThreshold;
+     m_atnoChaseType = static_cast<ATNOChaseType>(config.atnoChaseType);
+     m_bandManager->loadSettings(settingsPath);
+@@ -309,16 +359,31 @@ void AutoDxerCore::loadRuntimeConfig(const QString &settingsPath)
+         m_runtimeDxClusterServerCount = m_spotAggregator->dxClusterClient()->totalServerCount();
+     }
+ 
+-    emit debugMessage(QString("AUTODX-RUNTIME-CONFIG: modes=%1 bands=%2 switch=%3 RBN=%4 PSKR=%5 DXC=%6 USOnly=%7")
++    emit debugMessage(QString("AUTODX-RUNTIME-CONFIG: modes=%1 bands=%2 switch=%3 call=%4s quiet=%5s heard=%6s verify=%7s cooldown=%8s RBN=%9 PSKR=%10 DXC=%11 USOnly=%12")
+                       .arg(m_autoDxModes.join(","))
+                       .arg(m_bandManager->getEnabledBands().size())
+                       .arg(m_bandSwitchingEnabled ? "on" : "off")
++                      .arg(m_normalCallSeconds).arg(m_quietBandSeconds)
++                      .arg(m_targetHeardFreshSeconds).arg(m_crossBandVerifySeconds)
++                      .arg(m_bandSwitchCooldownSeconds)
+                       .arg(m_runtimeRbnEnabled ? "on" : "off")
+                       .arg(m_runtimePskrEnabled ? "on" : "off")
+                       .arg(m_runtimeDxClusterEnabled ? "on" : "off")
+                       .arg(m_runtimeUsOnly ? "on" : "off"));
+ }
+ 
++void AutoDxerCore::reloadRuntimeConfig()
++{
++    const bool wasEffective = m_enabled;
++    loadRuntimeConfig(m_settingsPath);
++    setEnabled(m_desiredEnabled);
++    if (wasEffective && m_enabled && m_spotAggregator) {
++        m_spotAggregator->stop();
++        m_spotAggregator->start();
++    }
++    resetQuietBandTimer();
++}
++
+ QJsonObject AutoDxerCore::runtimeConfigStatus() const
+ {
+     QJsonArray modes;
+@@ -377,6 +442,31 @@ QJsonObject AutoDxerCore::runtimeConfigStatus() const
+     result["mode_allowed"] = isConfiguredMode(m_currentMode);
+     result["auto_dx_modes"] = modes;
+     result["band_switching_enabled"] = m_bandSwitchingEnabled;
++    QJsonObject timing;
++    timing["normal_call_seconds"] = m_normalCallSeconds;
++    timing["quiet_band_seconds"] = m_quietBandSeconds;
++    timing["target_heard_fresh_seconds"] = m_targetHeardFreshSeconds;
++    timing["cross_band_verify_seconds"] = m_crossBandVerifySeconds;
++    timing["band_switch_cooldown_seconds"] = m_bandSwitchCooldownSeconds;
++    timing["persist_new_dxcc_while_heard"] = m_persistNewDxccWhileHeard;
++    timing["persist_new_band_slot_while_heard"] = m_persistNewBandSlotWhileHeard;
++    result["automation_timing"] = timing;
++    QJsonObject schedules;
++    if (m_bandManager) {
++        const QList<int> supported = QList<int>() << 3 << 4 << 6 << 7 << 8
++                                                  << 9 << 10 << 11 << 12 << 14;
++        for (int band : supported) {
++            const BandSchedule schedule = m_bandManager->bandSchedule(band);
++            QJsonObject item;
++            item["band"] = m_bandManager->bandName(band);
++            item["restricted"] = schedule.restricted;
++            item["start"] = schedule.start.toString("HH:mm");
++            item["end"] = schedule.end.toString("HH:mm");
++            item["open_now"] = m_bandManager->isBandOpenNow(band);
++            schedules[QString::number(band)] = item;
++        }
++    }
++    result["band_schedules"] = schedules;
+     result["enabled_bands"] = bands;
+     result["callsign"] = m_myCallsign;
+     result["grid"] = m_myGrid;
+@@ -388,9 +478,325 @@ QJsonObject AutoDxerCore::runtimeConfigStatus() const
+     result["atno_chase_type"] = static_cast<int>(m_atnoChaseType);
+     result["scarce_threshold"] = m_scarceTargetThreshold;
+     result["spot_sources"] = sources;
++    result["historical_novelty_allowed"] = m_historicalNoveltyAllowed;
++    result["history_authority_status"] = m_historyAuthorityStatus;
++    result["acknowledged_history_deltas"] = m_appliedHistoryDeltaKeys.size();
+     return result;
+ }
+ 
++void AutoDxerCore::refreshWavelogHistory()
++{
++    if (m_historyRequestPending || !m_historyNetwork) return;
++    QString base = QString::fromUtf8(qgetenv("OM0RX_API_BASE"));
++    if (base.isEmpty()) base = "http://127.0.0.1:8080";
++    QNetworkRequest request(QUrl(base + "/api/digital/mshv-history"));
++    request.setRawHeader("X-OM0RX-Control-Token", qgetenv("OM0RX_CONTROL_TOKEN"));
++    m_historyRequestPending = true;
++    QNetworkReply *reply = m_historyNetwork->get(request);
++    QTimer::singleShot(4000, reply, [reply]() {
++        if (reply->isRunning()) reply->abort();
++    });
++    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
++        applyWavelogHistoryReply(reply);
++        reply->deleteLater();
++    });
++}
++
++void AutoDxerCore::applyWavelogHistoryReply(QNetworkReply *reply)
++{
++    m_historyRequestPending = false;
++    bool allowed = false;
++    QString status = "unavailable";
++    QJsonObject payload;
++    if (reply && reply->error() == QNetworkReply::NoError) {
++        QJsonParseError error;
++        const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &error);
++        if (error.error == QJsonParseError::NoError && document.isObject()) {
++            payload = document.object();
++            allowed = payload.value("historical_novelty_allowed").toBool(false);
++            status = payload.value("status").toString("invalid");
++            const QDateTime generated = QDateTime::fromString(
++                payload.value("generated_at").toString(), Qt::ISODate);
++            const int maxAge = payload.value("max_age_seconds").toInt(0);
++            const qint64 age = generated.isValid()
++                ? generated.secsTo(QDateTime::currentDateTimeUtc()) : -1;
++            if (!generated.isValid() || maxAge <= 0 || maxAge > 30 || age < 0 || age > maxAge) {
++                allowed = false;
++                status = "stale-history-response";
++            }
++        } else {
++            status = "invalid-json";
++        }
++    }
++    if (status != m_historyAuthorityStatus) {
++        emit debugMessage(QString("WAVELOG-HISTORY-SYNC: status=%1 delta-sync=%2")
++                          .arg(status).arg(allowed ? "available" : "deferred"));
++    }
++    m_historyAuthorityStatus = status;
++    if (!allowed) {
++        revokeHistoricalNovelty(status);
++        return;
++    }
++    const QJsonObject deltasObject = payload.value("deltas").toObject();
++    QSet<QString> pendingCalls;
++    const QJsonArray pendingRecords = deltasObject.value("pending_records").toArray();
++    for (const QJsonValue &value : pendingRecords) {
++        if (!value.isObject()) {
++            revokeHistoricalNovelty("invalid-pending-wavelog-row");
++            return;
++        }
++        const QString call = value.toObject().value("call").toString().trimmed().toUpper();
++        if (call.isEmpty()) {
++            revokeHistoricalNovelty("invalid-pending-wavelog-row");
++            return;
++        }
++        pendingCalls.insert(call);
++    }
++    if (!m_hvDxccTracker) {
++        revokeHistoricalNovelty("tracker-unavailable");
++        return;
++    }
++
++    const QString generation = payload.value("snapshot").toObject().value("generation").toString();
++    if (generation.isEmpty()) {
++        revokeHistoricalNovelty("missing-snapshot-generation");
++        return;
++    }
++    if (m_historySnapshotGeneration.isEmpty()) m_historySnapshotGeneration = generation;
++    if (m_historySnapshotGeneration != generation) {
++        revokeHistoricalNovelty("snapshot-generation-mismatch");
++        return;
++    }
++    const QJsonArray records = deltasObject.value("acknowledged_records").toArray();
++    const int baseSequence = deltasObject.value("base_sequence").toInt(0);
++    if (m_appliedHistoryDeltaKeys.isEmpty() && m_historyLastSequence == 0 && baseSequence > 0) {
++        m_historyLastSequence = baseSequence;
++        if (!persistWavelogDeltaState()) {
++            revokeHistoricalNovelty("delta-base-state-persist-failed");
++            return;
++        }
++    }
++    for (const QJsonValue &value : records) {
++        if (!value.isObject()) {
++            revokeHistoricalNovelty("invalid-delta-row");
++            return;
++        }
++        const QJsonObject row = value.toObject();
++        const QString key = row.value("key").toString();
++        if (key.size() != 64) {
++            revokeHistoricalNovelty("invalid-delta-key");
++            return;
++        }
++        const int sequence = row.value("sequence").toInt(0);
++        if (m_appliedHistoryDeltaKeys.contains(key)) {
++            if (sequence > m_historyLastSequence) {
++                revokeHistoricalNovelty("delta-state-sequence-mismatch");
++                return;
++            }
++            continue;
++        }
++        if (sequence != m_historyLastSequence + 1) {
++            revokeHistoricalNovelty("delta-sequence-regression");
++            return;
++        }
++        const QString band = row.value("band").toString().toLower();
++        int bandIndex = -1;
++        if (band == "160m") bandIndex = 3; else if (band == "80m") bandIndex = 4;
++        else if (band == "40m") bandIndex = 6; else if (band == "30m") bandIndex = 7;
++        else if (band == "20m") bandIndex = 8; else if (band == "17m") bandIndex = 9;
++        else if (band == "15m") bandIndex = 10; else if (band == "12m") bandIndex = 11;
++        else if (band == "10m") bandIndex = 12; else if (band == "6m") bandIndex = 14;
++        const QString call = row.value("call").toString().toUpper();
++        const QString mode = row.value("mode").toString().toUpper();
++        const QString date = row.value("qso_date").toString();
++        if (call.isEmpty() || bandIndex < 3 || (mode != "FT8" && mode != "FT4") || date.size() != 8) {
++            revokeHistoricalNovelty("invalid-delta-identity");
++            return;
++        }
++        if (!m_hvDxccTracker->applyWavelogAcknowledgedQso(
++                key, call, row.value("grid").toString().toUpper(), bandIndex, mode, date)) {
++            revokeHistoricalNovelty("tracker-delta-apply-failed");
++            return;
++        }
++        m_appliedHistoryDeltaKeys.insert(key);
++        m_historyLastSequence = sequence;
++        if (!persistWavelogDeltaState()) {
++            revokeHistoricalNovelty("delta-state-persist-failed");
++            return;
++        }
++        emit debugMessage(QString("WAVELOG-HISTORY-DELTA: applied %1 %2 %3").arg(call, band, mode));
++    }
++    m_pendingWavelogCalls = pendingCalls;
++    if (m_targetScorer) {
++        m_targetScorer->setPendingWavelogCalls(m_pendingWavelogCalls);
++        m_targetScorer->setHistoricalNoveltyAllowed(true);
++    }
++    m_historicalNoveltyAllowed = true;
++    cancelPendingWavelogPaths();
++}
++
++bool AutoDxerCore::isPendingWavelogCall(const QString &callsign) const
++{
++    const QString candidate = callsign.trimmed();
++    if (candidate.isEmpty()) return false;
++    for (const QString &pending : m_pendingWavelogCalls) {
++        if (callsignsMatch(candidate, pending)) return true;
++    }
++    return false;
++}
++
++bool AutoDxerCore::historicalActionAllowed(const QString &callsign, bool isCallingMe) const
++{
++    if (isPendingWavelogCall(callsign)) return false;
++    return isCallingMe || m_historicalNoveltyAllowed;
++}
++
++bool AutoDxerCore::cancelPendingWavelogPaths()
++{
++    if (m_queueWidget) {
++        for (const QString &call : m_pendingWavelogCalls) {
++            const bool engagedActiveCall = m_currentTarget.isValid()
++                && (m_targetRespondedToUs || m_currentTarget.isCallingMe)
++                && callsignsMatch(call, m_currentTarget.callsign);
++            if (engagedActiveCall) continue;
++            int row = m_queueWidget->getQueueList()->FindCallOrBaseCallRow(call);
++            if (row >= 0) m_queueWidget->getQueueList()->RemoveRow(row);
++            row = m_queueWidget->getNowList()->FindCallOrBaseCallRow(call);
++            if (row >= 0) m_queueWidget->getNowList()->RemoveRow(row);
++        }
++    }
++    if (m_waitingForSlotAnalysis && isPendingWavelogCall(m_pendingSlotAnalysisTarget.callsign)) {
++        emit debugMessage("WAVELOG-PENDING: cancelled deferred slot target " + m_pendingSlotAnalysisTarget.callsign);
++        m_waitingForSlotAnalysis = false;
++        m_pendingSlotAnalysisTarget = ScoredTarget();
++    }
++    if (isPendingWavelogCall(m_pendingCrossBandCallsign)) {
++        emit debugMessage("WAVELOG-PENDING: cancelled cross-band target " + m_pendingCrossBandCallsign);
++        if (returnFromPendingCrossBandVerification("Wavelog pending identity")) return true;
++    }
++    if (isPendingWavelogCall(m_pendingNonStdCallsign)) {
++        emit debugMessage("WAVELOG-PENDING: cancelled non-standard target " + m_pendingNonStdCallsign);
++        m_pendingNonStdCallsign.clear();
++        m_pendingNonStdDialFreq = 0;
++    }
++    if (m_currentTarget.isValid() && !m_currentTarget.isCallingMe
++            && !m_targetRespondedToUs
++            && isPendingWavelogCall(m_currentTarget.callsign)) {
++        emit requestDisableAuto();
++        emit debugMessage("WAVELOG-PENDING: cancelled active target " + m_currentTarget.callsign);
++        m_currentTarget.clear();
++        m_targetAttemptTimer.invalidate();
++        m_quietBandTimer.invalidate();
++        emit targetChanged(m_currentTarget);
++        setState(Listening);
++    }
++    return false;
++}
++
++void AutoDxerCore::clearPendingCrossBandVerification()
++{
++    m_pendingCrossBandCallsign.clear();
++    m_pendingCrossBandTime = QDateTime();
++    m_pendingCrossBandBand = -1;
++    m_pendingCrossBandReturnBand = -1;
++    m_pendingCrossBandDialFreq = 0;
++    m_pendingCrossBandAudioFreq = 0;
++}
++
++bool AutoDxerCore::returnFromPendingCrossBandVerification(const QString &reason)
++{
++    const int destinationBand = m_pendingCrossBandBand;
++    const int originBand = m_pendingCrossBandReturnBand;
++    const bool safe = !m_pendingCrossBandCallsign.isEmpty()
++        && m_state == Listening && !m_currentTarget.isValid()
++        && !m_targetRespondedToUs && m_currentBandIndex == destinationBand
++        && originBand >= 3 && originBand != destinationBand;
++    if (!safe) {
++        // CAT QSY completion is asynchronous. Preserve destination and origin
++        // while the core still reports the source band so onBandChangeComplete
++        // can perform the requested return safely.
++        if (!m_pendingCrossBandCallsign.isEmpty()
++                && originBand >= 3 && destinationBand >= 3
++                && m_currentBandIndex != destinationBand) {
++            emit debugMessage("CROSSBAND-RETURN-PENDING: " + reason);
++            return true;
++        }
++        clearPendingCrossBandVerification();
++        return false;
++    }
++    clearPendingCrossBandVerification();
++
++    emit requestDisableAuto();
++    if (m_queueWidget) m_queueWidget->clearBothLists();
++    m_waitingForSlotAnalysis = false;
++    m_pendingSlotAnalysisTarget = ScoredTarget();
++    if (m_decodeCache) m_decodeCache->clearBand(destinationBand);
++    m_lastBandSwitchTime = QDateTime::currentDateTimeUtc();
++    emit debugMessage(QString("CROSSBAND-RETURN: %1; returning from %2 to %3")
++                     .arg(reason).arg(bandName(destinationBand)).arg(bandName(originBand)));
++    emit requestBandChange(originBand);
++    return true;
++}
++
++void AutoDxerCore::loadWavelogDeltaState(const QString &settingsPath)
++{
++    m_historyStatePath = QDir(settingsPath).filePath("database/wavelog_delta_state.json");
++    QFile file(m_historyStatePath);
++    if (!file.open(QIODevice::ReadOnly)) return;
++    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
++    const QJsonObject state = document.object();
++    if (state.value("schema").toInt() != 1) return;
++    m_historySnapshotGeneration = state.value("snapshot_generation").toString();
++    m_historyLastSequence = state.value("last_sequence").toInt(0);
++    for (const QJsonValue &value : state.value("applied_keys").toArray()) {
++        const QString key = value.toString();
++        if (!key.isEmpty()) m_appliedHistoryDeltaKeys.insert(key);
++    }
++}
++
++bool AutoDxerCore::persistWavelogDeltaState()
++{
++    const QString trackerPath = QFileInfo(m_historyStatePath).dir().filePath("worked.db");
++    QFile tracker(trackerPath);
++    if (!tracker.open(QIODevice::ReadOnly)) return false;
++    QCryptographicHash hash(QCryptographicHash::Sha256);
++    if (!hash.addData(&tracker)) return false;
++    QJsonArray keys;
++    QStringList ordered = m_appliedHistoryDeltaKeys.values();
++    ordered.sort();
++    for (const QString &key : ordered) keys.append(key);
++    QJsonObject state;
++    state["schema"] = 1;
++    state["snapshot_generation"] = m_historySnapshotGeneration;
++    state["last_sequence"] = m_historyLastSequence;
++    state["applied_keys"] = keys;
++    state["tracker_sha256"] = QString::fromLatin1(hash.result().toHex());
++    QSaveFile file(m_historyStatePath);
++    if (!file.open(QIODevice::WriteOnly)) return false;
++    if (file.write(QJsonDocument(state).toJson(QJsonDocument::Indented)) < 0) return false;
++    return file.commit();
++}
++
++void AutoDxerCore::revokeHistoricalNovelty(const QString &reason)
++{
++    m_historyAuthorityStatus = reason;
++    m_historicalNoveltyAllowed = false;
++    if (m_targetScorer) m_targetScorer->setHistoricalNoveltyAllowed(false);
++    cancelPendingWavelogPaths();
++    if (!m_pendingCrossBandCallsign.isEmpty()
++            && m_currentBandIndex == m_pendingCrossBandBand
++            && !m_targetRespondedToUs) {
++        returnFromPendingCrossBandVerification("historical authority revoked");
++    }
++    if (m_currentTarget.isValid() && !m_targetRespondedToUs
++            && !m_currentTarget.isCallingMe
++            && (m_currentTargetIsATNO || m_currentTargetIsNewSlot
++                || m_currentTargetIsNewGrid)) {
++        abandonCurrentTarget("historical authority revoked");
++    }
++    emit debugMessage("WAVELOG-HISTORY-BLOCKED: " + reason);
++}
++
+ void AutoDxerCore::setCallsign(const QString &call)
+ {
+     m_myCallsign = call.toUpper();
+@@ -427,7 +833,8 @@ void AutoDxerCore::setCurrentBand(int bandIndex)
+         // Clear cache and restart listening on band change
+         if (m_state == Listening) {
+             m_currentTarget.clear();
+-            m_timeoutTimer->start();  // Reset timeout
++            resetQuietBandTimer();
++            m_timeoutTimer->start();
+         }
+     }
+ }
+@@ -529,7 +936,7 @@ void AutoDxerCore::onLocalDecode(QStringList decodeData)
+     // Example: "AG7TH CR2WWA -19" = CR2WWA transmitting TO AG7TH
+     //   -> extractCallsign returns "CR2WWA", so if target is CR2WWA, DO trigger
+     if (m_state == WaitingForQSO && m_currentTarget.isValid()) {
+-        bool callsignMatches = callsign.compare(m_currentTarget.callsign, Qt::CaseInsensitive) == 0;
++        bool callsignMatches = callsignsMatch(callsign, m_currentTarget.callsign);
+ 
+         if (callsignMatches) {
+             m_targetHeardThisCycle = true;
+@@ -854,8 +1261,9 @@ void AutoDxerCore::onDecodeComplete(bool busy, int decState)
+     // Reinforce CQ disabled while AutoDxer is active
+     emit requestDisableCQOnFreeSlot();
+ 
+-    // Check target activity with DEBOUNCE to avoid multiple checks per FT8 period
+-    // onDecodeComplete() fires multiple times per period - only process once per ~15s cycle
++    // Apply the explicit target policy once per FT8 period. Normal targets get
++    // one bounded attempt. Calling-me/responded targets are engaged QSOs. New
++    // DXCC/band slots persist only while a matching local decode remains fresh.
+     if (m_state == WaitingForQSO && m_currentTarget.isValid()) {
+         QDateTime now = QDateTime::currentDateTimeUtc();
+         qint64 secsSinceLastCheck = m_lastMissedCycleCheck.isValid()
+@@ -864,217 +1272,24 @@ void AutoDxerCore::onDecodeComplete(bool busy, int decState)
+         // Only process missed cycle logic if enough time has passed (debounce)
+         if (secsSinceLastCheck >= MISSED_CYCLE_DEBOUNCE_SECS) {
+             m_lastMissedCycleCheck = now;
+-
+-            // ATNO call cycle limit check - runs every cycle regardless of whether target is heard
+-            // This protects the radio from endless calling while still allowing extended persistence
+-            if ((m_currentTargetIsATNO || m_currentTargetIsNewSlot) && m_atnoChaseType != ATNOChaseDisabled) {
+-                m_atnoTotalCallCycles++;
+-
+-                // Check if we've hit the ATNO call limit
+-                if (m_atnoTotalCallCycles >= MAX_ATNO_CHASE_CYCLES) {
+-                    bool targetStillHeard = m_targetHeardThisCycle ||
+-                                            m_decodeCache->isActive(m_currentTarget.callsign, 60);
+-
+-                    if (targetStillHeard) {
+-                        // Target is still being heard but we hit limit - add to cooldown
+-                        QString upperCall = m_currentTarget.callsign.toUpper();
+-                        m_atnoCooldown.insert(upperCall);
+-                        m_atnoCooldownTimestamps.insert(upperCall, QDateTime::currentDateTimeUtc());
+-
+-                        emit debugMessage(QString("ATNO-LIMIT: %1 hit %2 cycle limit - cooldown %3 min (still heard)")
+-                                         .arg(m_currentTarget.callsign)
+-                                         .arg(MAX_ATNO_CHASE_CYCLES)
+-                                         .arg(ATNO_COOLDOWN_SECONDS / 60));
+-                    } else {
+-                        // Target disappeared AND we hit limit - no cooldown needed
+-                        emit debugMessage(QString("ATNO-LIMIT: %1 hit %2 cycle limit (target disappeared)")
+-                                         .arg(m_currentTarget.callsign)
+-                                         .arg(MAX_ATNO_CHASE_CYCLES));
+-                    }
+-
+-                    // Abandon this target
+-                    if (m_queueWidget) {
+-                        m_queueWidget->clearBothLists();
+-                    }
+-                    emit requestDisableAuto();
+-
+-                    m_currentTarget.clear();
+-                    m_currentTargetIsATNO = false;
+-                    m_currentTargetIsNewSlot = false;
+-                    m_targetMissedCycles = 0;
+-                    m_atnoTotalCallCycles = 0;
+-                    m_targetRespondedToUs = false;
+-                    m_scarceTargetMode = false;
+-                    setState(Listening);
+-
+-                    // Immediately look for next target
+-                    m_targetHeardThisCycle = false;
+-                    evaluateTargets();
+-                    return;
+-                }
+-            }
+-
+-            if (m_targetHeardThisCycle) {
+-                // Target was heard - reset missed cycle counter
+-                m_targetMissedCycles = 0;
+-            } else {
+-                // Target NOT heard this cycle
+-                m_targetMissedCycles++;
+-
+-                // CRITICAL CHECK: Is target still in local decode cache?
+-                // Spots/skimmers guide us, but we should ONLY call stations we can actually hear.
+-                // If target has expired from cache (not decoded locally in 60s), abandon immediately.
+-                bool targetInCache = m_decodeCache->isActive(m_currentTarget.callsign, 60);
+-
+-                // Debug: Show abandonment check state
+-                emit debugMessage(QString("ABANDON-CHECK: %1 missed=%2 respondedToUs=%3 inCache=%4")
+-                                 .arg(m_currentTarget.callsign)
+-                                 .arg(m_targetMissedCycles)
+-                                 .arg(m_targetRespondedToUs ? "YES" : "no")
+-                                 .arg(targetInCache ? "YES" : "no"));
+-
+-                // If target is no longer in decode cache AND hasn't responded to us, abandon NOW
+-                // Scarce mode only applies when we CAN still hear the target
+-                if (!targetInCache && !m_targetRespondedToUs) {
+-                    emit debugMessage(QString("TARGET-EXPIRED: %1 not in local decode cache (60s) - abandoning")
+-                                     .arg(m_currentTarget.callsign));
+-
+-                    // Clear this target from MSHV queue
+-                    if (m_queueWidget) {
+-                        m_queueWidget->clearBothLists();
+-                    }
+-                    emit requestDisableAuto();
+-
+-                    m_currentTarget.clear();
+-                    m_currentTargetIsATNO = false;
+-                    m_currentTargetIsNewSlot = false;
+-                    m_targetMissedCycles = 0;
+-                    m_targetRespondedToUs = false;
+-                    m_scarceTargetMode = false;
+-                    setState(Listening);
+-
+-                    // Immediately look for next target
+-                    m_targetHeardThisCycle = false;
+-                    evaluateTargets();
+-                    return;
+-                }
+-
+-                // CRITICAL: If target has already responded TO US with a signal report,
+-                // NEVER abandon! They're waiting for our reply and won't transmit again
+-                // until they hear us. MSHV handles the QSO completion via onMSHVQsoLogged.
+-                if (m_targetRespondedToUs) {
+-                    // Don't abandon - QSO is engaged, just waiting for exchange to complete
+-                    // Reset missed cycles since we're in active QSO
+-                    m_targetMissedCycles = 0;
+-                } else {
+-                    // Determine abandonment threshold based on mode and target type
+-                    int abandonmentThreshold = MAX_MISSED_CYCLES;  // Default: 2 cycles (~30 sec)
+-                    QString thresholdReason = "normal";
+-
+-                    // Scarce Mode OFF (Marathon): Quick cycling, no extended persistence
+-                    // Scarce Mode ON (Chaser): Extended persistence based on scarcity + rarity
+-                    if (m_scarceModeEnabled) {
+-                        // Check if this is an ATNO/NewSlot target with chase mode enabled
+-                        bool isAtnoTarget = false;
+-                        QString atnoType;
+-                        if (m_atnoChaseType != ATNOChaseDisabled) {
+-                            if (m_currentTargetIsATNO &&
+-                                (m_atnoChaseType == ATNOChaseAllTime || m_atnoChaseType == ATNOChaseBoth)) {
+-                                isAtnoTarget = true;
+-                                atnoType = "ATNO";
+-                            } else if (m_currentTargetIsNewSlot &&
+-                                       (m_atnoChaseType == ATNOChaseBandSlot || m_atnoChaseType == ATNOChaseBoth)) {
+-                                isAtnoTarget = true;
+-                                atnoType = "NewSlot";
+-                            }
+-                        }
+-
+-                        // ATNO extended calling ONLY when few other targets available (scarce)
+-                        // This prevents getting stuck calling one station when better options exist
+-                        // Note: MAX_ATNO_CHASE_CYCLES limit (above) provides the hard cap for total cycles
+-                        bool isScarce = isScarcePriorityTarget();
+-                        if (isAtnoTarget && isScarce) {
+-                            // Extended persistence - but still capped by MAX_ATNO_CHASE_CYCLES above
+-                            // This threshold is for missed cycles; total cycle limit is enforced separately
+-                            abandonmentThreshold = MAX_ATNO_CHASE_CYCLES;
+-                            thresholdReason = QString("%1 extended (scarce, max %2)").arg(atnoType).arg(MAX_ATNO_CHASE_CYCLES);
+-                            emit debugMessage(QString("ATNO-MODE: %1 - extended calling (%2, scarce, max %3 cycles)")
+-                                             .arg(m_currentTarget.callsign)
+-                                             .arg(atnoType)
+-                                             .arg(MAX_ATNO_CHASE_CYCLES));
+-                        } else if (isAtnoTarget || m_scarceTargetMode || isScarce) {
+-                            // ATNO with other targets available, OR scarce mode
+-                            // Use rarity-scaled persistence (not unlimited)
+-                            double rarityMult = 1.0;
+-                            if (m_targetScorer && !m_currentTarget.dxccEntity.isEmpty()) {
+-                                int rank = m_targetScorer->getMostWantedRank(m_currentTarget.dxccEntity);
+-                                rarityMult = TargetScorer::getRarityMultiplier(rank);
+-                            }
+-
+-                            // Apply rarity multiplier to scarce threshold
+-                            // Base: 10 cycles. Rare entities get up to 50 cycles (5.0x * 10)
+-                            abandonmentThreshold = static_cast<int>(MAX_MISSED_CYCLES_SCARCE * rarityMult);
+-
+-                            if (!m_scarceTargetMode) {
+-                                m_scarceTargetMode = true;
+-                                if (isAtnoTarget) {
+-                                    emit debugMessage(QString("ATNO-PERSISTENCE: %1 (%2, %3x) - threshold %4 cycles (other targets available)")
+-                                                     .arg(m_currentTarget.callsign)
+-                                                     .arg(atnoType)
+-                                                     .arg(rarityMult, 0, 'f', 1)
+-                                                     .arg(abandonmentThreshold));
+-                                } else {
+-                                    emit debugMessage(QString("RARITY-PERSISTENCE: %1 (%2x) - threshold %3 cycles")
+-                                                     .arg(m_currentTarget.callsign)
+-                                                     .arg(rarityMult, 0, 'f', 1)
+-                                                     .arg(abandonmentThreshold));
+-                                }
+-                            }
+-                            thresholdReason = QString("rarity %1x").arg(rarityMult, 0, 'f', 1);
+-                        }
+-                    }
+-                    // When m_scarceModeEnabled is false (Marathon mode), abandonmentThreshold
+-                    // stays at MAX_MISSED_CYCLES (2) for quick cycling
+-
+-                    if (m_targetMissedCycles >= abandonmentThreshold) {
+-                        emit debugMessage(QString("TARGET-ABANDONED: %1 not heard for %2 cycles (%3)")
+-                                         .arg(m_currentTarget.callsign)
+-                                         .arg(m_targetMissedCycles)
+-                                         .arg(thresholdReason));
+-
+-                        // Clear this target from MSHV queue
+-                        if (m_queueWidget) {
+-                            m_queueWidget->clearBothLists();
+-                        }
+-                        emit requestDisableAuto();
+-
+-                        m_currentTarget.clear();
+-                        m_currentTargetIsATNO = false;
+-                        m_currentTargetIsNewSlot = false;
+-                        m_targetMissedCycles = 0;
+-                        m_targetRespondedToUs = false;
+-                        setState(Listening);
+-
+-                        // Keep scarce mode active briefly to suppress immediate band switch
+-                        // This allows time to potentially re-spot the target
+-                        if (m_scarceTargetMode) {
+-                            QTimer::singleShot(30000, this, [this]() {
+-                                if (m_state == Listening && m_scarceTargetMode) {
+-                                    m_scarceTargetMode = false;
+-                                    emit debugMessage("PERSISTENCE-MODE: Cooldown complete, normal mode resumed");
+-                                }
+-                            });
+-                        }
+-
+-                        // Immediately look for next target
+-                        m_targetHeardThisCycle = false;
++            if (!m_targetRespondedToUs && !m_currentTarget.isCallingMe) {
++                if (currentTargetPersistsWhileHeard()) {
++                    if (!targetLocallyFresh(m_currentTarget.callsign, m_currentTarget.bandIndex,
++                                            m_targetHeardFreshSeconds)) {
++                        abandonCurrentTarget(QString("not heard locally for %1 seconds")
++                                             .arg(m_targetHeardFreshSeconds));
+                         evaluateTargets();
+                         return;
+                     }
++                // Boundary: m_targetAttemptTimer.elapsed() >= m_normalCallSeconds * 1000
++                } else if (m_targetAttemptTimer.isValid()
++                           && AutoDxTimingPolicy::normalAttemptExpired(
++                               m_targetAttemptTimer.elapsed(), m_normalCallSeconds)) {
++                    abandonCurrentTarget(QString("no reply after %1 seconds").arg(m_normalCallSeconds));
++                    evaluateTargets();
++                    return;
+                 }
+             }
+-
+-            // Reset flag for next decode cycle (only after we've processed it)
+             m_targetHeardThisCycle = false;
+         }
+     } else {
+@@ -1113,6 +1328,7 @@ void AutoDxerCore::processListeningState()
+ 
+ void AutoDxerCore::evaluateTargets()
+ {
++    if (cancelPendingWavelogPaths()) return;
+     // Get local decodes from cache
+     QList<CachedDecode> activeStations = m_decodeCache->getActiveDecodes(m_currentBandIndex, 60);
+     int localCount = activeStations.size();
+@@ -1123,18 +1339,36 @@ void AutoDxerCore::evaluateTargets()
+         int elapsedSecs = m_pendingCrossBandTime.secsTo(QDateTime::currentDateTimeUtc());
+ 
+         // Check timeout
+-        if (elapsedSecs > CROSSBAND_VERIFY_TIMEOUT_SECS) {
++        if (AutoDxTimingPolicy::verificationExpired(
++                elapsedSecs, m_crossBandVerifySeconds)) {
+             emit debugMessage(QString("CROSSBAND-TIMEOUT: %1 not heard locally after %2 seconds - cancelling")
+                 .arg(m_pendingCrossBandCallsign).arg(elapsedSecs));
++            const QDateTime now = QDateTime::currentDateTimeUtc();
++            const int timedOutBand = m_pendingCrossBandBand;
++            const int returnBand = m_pendingCrossBandReturnBand;
+             int savedCrossBandDialFreq = m_pendingCrossBandDialFreq;
+-            m_pendingCrossBandCallsign.clear();
+-            m_pendingCrossBandBand = -1;
+-            m_pendingCrossBandDialFreq = 0;
+-            m_pendingCrossBandAudioFreq = 0;
++            const bool safeToReturn = m_state == Listening
++                && !m_currentTarget.isValid()
++                && !m_targetRespondedToUs
++                && m_currentBandIndex == timedOutBand;
++            clearPendingCrossBandVerification();
+ 
+-            // CRITICAL: Return to standard dial frequency if we were on a non-standard freq
+-            // This ensures we go back to where the activity is if DXpedition wasn't heard
+-            if (m_bandManager) {
++            if (safeToReturn && returnBand >= 3 && returnBand != timedOutBand) {
++                emit requestDisableAuto();
++                if (m_queueWidget) m_queueWidget->clearBothLists();
++                m_waitingForSlotAnalysis = false;
++                m_pendingSlotAnalysisTarget = ScoredTarget();
++                if (m_decodeCache) m_decodeCache->clearBand(timedOutBand);
++                m_lastBandSwitchTime = now;
++                emit debugMessage(QString("CROSSBAND-TIMEOUT-RETURN: Returning from %1 to originating band %2")
++                    .arg(bandName(timedOutBand)).arg(bandName(returnBand)));
++                emit requestBandChange(returnBand);
++                return;
++            }
++
++            // Backward-compatible fallback for pending state created without a valid
++            // origin: restore only while it is still safe to change frequency.
++            if (safeToReturn && m_bandManager) {
+                 const int NON_STD_FREQ_THRESHOLD_HZ = 3000;  // 3 kHz threshold for "non-standard" dial
+                 int standardDial = m_bandManager->bandFrequencyHz(m_currentBandIndex);
+                 if (standardDial > 0 && qAbs(m_currentDialFrequencyHz - standardDial) > NON_STD_FREQ_THRESHOLD_HZ) {
+@@ -1160,15 +1394,12 @@ void AutoDxerCore::evaluateTargets()
+             if (foundLocally) {
+                 emit debugMessage(QString("CROSSBAND-VERIFIED: %1 confirmed in local decodes - proceeding")
+                     .arg(m_pendingCrossBandCallsign));
+-                m_pendingCrossBandCallsign.clear();
+-                m_pendingCrossBandBand = -1;
+-                m_pendingCrossBandDialFreq = 0;
+-                m_pendingCrossBandAudioFreq = 0;
++                clearPendingCrossBandVerification();
+                 // Continue with normal evaluation - target is verified locally
+             } else {
+                 // Target not yet heard locally - DO NOT call anything until verified or timeout
+                 emit debugMessage(QString("CROSSBAND-WAITING: %1 not yet in local decodes (%2s elapsed, %3s timeout)")
+-                    .arg(m_pendingCrossBandCallsign).arg(elapsedSecs).arg(CROSSBAND_VERIFY_TIMEOUT_SECS));
++                    .arg(m_pendingCrossBandCallsign).arg(elapsedSecs).arg(m_crossBandVerifySeconds));
+                 return;  // Block all calls until verified or timeout
+             }
+         }
+@@ -1224,6 +1455,14 @@ void AutoDxerCore::evaluateTargets()
+         }
+     }
+ 
++    // Band schedules are hard eligibility boundaries for new targets, but the
++    // verification blocks above must be allowed to finish or time out first.
++    if (m_bandManager && !m_bandManager->isBandOpenNow(m_currentBandIndex)) {
++        emit debugMessage(QString("SCHEDULE-CLOSED: %1 cannot start a new target now")
++                         .arg(bandName(m_currentBandIndex)));
++        return;
++    }
++
+     // Also get external spots from RBN/PSKReporter for awareness
+     QList<ExternalSpot> externalSpots = m_spotAggregator->getSpots(m_currentBandIndex, 120);
+     int externalCount = 0;
+@@ -1305,6 +1544,11 @@ void AutoDxerCore::evaluateTargets()
+     ScoredTarget best = m_targetScorer->getBestTarget(localStations);
+ 
+     if (best.priority > 0) {
++        resetQuietBandTimer();
++        if (!historicalActionAllowed(best.callsign, best.isCallingMe)) {
++            emit debugMessage("SELECT-BLOCKED: Wavelog authority/pending guard for " + best.callsign);
++            return;
++        }
+         // Debug: Verify target source and cache status
+         bool foundInLocal = false;
+         bool foundInExternal = false;
+@@ -1347,8 +1591,22 @@ void AutoDxerCore::evaluateTargets()
+     }
+ }
+ 
+-void AutoDxerCore::feedToQueue(const ScoredTarget &target)
++void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt)
+ {
++    if (newAttempt && m_bandManager
++            && !m_bandManager->isBandOpenNow(m_currentBandIndex)) {
++        emit debugMessage(QString("QUEUE-BLOCKED: %1 band schedule closed")
++                         .arg(target.callsign));
++        m_waitingForSlotAnalysis = false;
++        m_pendingSlotAnalysisTarget = ScoredTarget();
++        setState(Listening);
++        resetQuietBandTimer();
++        return;
++    }
++    if (!historicalActionAllowed(target.callsign, target.isCallingMe)) {
++        emit debugMessage(QString("QUEUE-BLOCKED: %1 historical authority unavailable").arg(target.callsign));
++        return;
++    }
+     if (!m_queueWidget) {
+         emit debugMessage("ERROR: Queue widget not set - cannot feed target");
+         return;
+@@ -1358,7 +1616,22 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target)
+     // This check ensures no external-only spots ever get called, even if they
+     // somehow bypass earlier filtering
+     CachedDecode cacheCheck;
+-    if (!m_decodeCache->getDecode(target.callsign, cacheCheck)) {
++    bool foundCurrentBand = false;
++    const int cacheAgeSeconds = newAttempt ? m_targetHeardFreshSeconds
++        : (currentTargetPersistsWhileHeard() ? m_targetHeardFreshSeconds
++                                            : m_normalCallSeconds);
++    if (target.bandIndex == m_currentBandIndex) {
++        const QList<CachedDecode> currentBandDecodes = m_decodeCache->getActiveDecodes(
++            m_currentBandIndex, cacheAgeSeconds);
++        for (const CachedDecode &decode : currentBandDecodes) {
++            if (decode.isLocalDecode && callsignsMatch(decode.callsign, target.callsign)) {
++                cacheCheck = decode;
++                foundCurrentBand = true;
++                break;
++            }
++        }
++    }
++    if (!foundCurrentBand) {
+         emit debugMessage(QString("QUEUE-BLOCKED: %1 not in decode cache - external spot only")
+                          .arg(target.callsign));
+         return;
+@@ -1384,15 +1657,6 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target)
+         }
+     }
+ 
+-    // Check if this call is on ATNO cooldown (hit 20-cycle limit, waiting 10 min)
+-    if (m_atnoCooldown.contains(target.callsign.toUpper())) {
+-        QDateTime cooldownStart = m_atnoCooldownTimestamps.value(target.callsign.toUpper());
+-        int secsRemaining = ATNO_COOLDOWN_SECONDS - cooldownStart.secsTo(QDateTime::currentDateTimeUtc());
+-        emit debugMessage(QString("ATNO-COOLDOWN: %1 on cooldown (%2 min remaining)")
+-                         .arg(target.callsign).arg(secsRemaining / 60));
+-        return;
+-    }
+-
+     // Check if target is on non-standard dial frequency and request QSY if needed
+     // 3 kHz threshold - covers full FT8 passband, only QSY for clearly different freqs (e.g., DXpeditions)
+     const int NON_STD_FREQ_THRESHOLD_HZ = 3000;
+@@ -1436,31 +1700,24 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target)
+          << "0"                                          // [10] s
+          << "0";                                         // [11] e
+ 
+-    // Track session attempts
+-    m_sessionTargetsAttempted++;
+-
+-    // Reset target activity tracking for new target
+-    m_targetMissedCycles = 0;
+-    m_targetHeardThisCycle = true;  // Assume heard since we just saw their decode
+-    m_targetRespondedToUs = false;  // New target hasn't responded to us yet
+-    m_lastMissedCycleCheck = QDateTime();  // Reset debounce timer for new target
+-    m_scarceTargetMode = false;  // Re-evaluate scarcity for new target
+-    m_atnoTotalCallCycles = 0;    // Reset ATNO call cycle counter for new target
+-
+-    // Detect ATNO/NewSlot status for extended calling logic
+-    m_currentTargetIsATNO = false;
+-    m_currentTargetIsNewSlot = false;
+-    if (m_dxccTracker && m_atnoChaseType != ATNOChaseDisabled) {
+-        m_currentTargetIsATNO = m_dxccTracker->isNewDXCCByCall(target.callsign);
+-        if (!m_currentTargetIsATNO) {
+-            m_currentTargetIsNewSlot = m_dxccTracker->isNewBandSlotByCall(target.callsign, m_currentBandIndex);
+-        }
+-        // Log ATNO status for debugging
+-        if (m_currentTargetIsATNO) {
+-            emit debugMessage(QString("ATNO-DETECTED: %1 - all-time new DXCC, extended calling (max %2 cycles)").arg(target.callsign).arg(MAX_ATNO_CHASE_CYCLES));
+-        } else if (m_currentTargetIsNewSlot) {
+-            emit debugMessage(QString("NEW-SLOT-DETECTED: %1 - new band slot, extended calling (max %2 cycles)").arg(target.callsign).arg(MAX_ATNO_CHASE_CYCLES));
+-        }
++    if (newAttempt) {
++        m_sessionTargetsAttempted++;
++        m_targetMissedCycles = 0;
++        m_targetHeardThisCycle = true;
++        m_targetRespondedToUs = target.isCallingMe;
++        m_lastMissedCycleCheck = QDateTime();
++        m_scarceTargetMode = false;
++        m_atnoTotalCallCycles = 0;
++        m_currentTargetIsATNO = target.isNewDXCC;
++        m_currentTargetIsNewSlot = target.isNewBandSlot;
++        m_currentTargetIsNewGrid = target.isNewGrid;
++        m_targetAttemptTimer.restart();
++        m_quietBandTimer.invalidate();
++        emit debugMessage(QString("TARGET-POLICY: %1 normal=%2s ATNO=%3 slot=%4 calling-me=%5")
++                         .arg(target.callsign).arg(m_normalCallSeconds)
++                         .arg(m_currentTargetIsATNO ? "yes" : "no")
++                         .arg(m_currentTargetIsNewSlot ? "yes" : "no")
++                         .arg(target.isCallingMe ? "yes" : "no"));
+     }
+ 
+     // Insert into MSHV's queue - MSHV handles everything from here
+@@ -1499,6 +1756,7 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target)
+     m_currentTarget.audioFrequency = target.audioFrequency;
+     m_currentTarget.dialFrequencyHz = target.dialFrequencyHz;
+     m_currentTarget.priority = target.priority;
++    m_currentTarget.isCallingMe = target.isCallingMe;
+ 
+     emit targetChanged(m_currentTarget);
+     setState(WaitingForQSO);
+@@ -1513,6 +1771,7 @@ void AutoDxerCore::checkQueueStatus()
+             .arg(m_currentTarget.callsign).arg(m_currentTarget.bandIndex));
+         m_currentTarget.clear();
+         setState(Listening);
++        resetQuietBandTimer();
+         return;
+     }
+ 
+@@ -1526,33 +1785,17 @@ void AutoDxerCore::checkQueueStatus()
+         emit debugMessage(QString("QUEUE-MISSING: %1 not found in queue or now list (was in WaitingForQSO)")
+             .arg(targetCall));
+ 
+-        // Determine if we should re-insert based on persistence rules:
+-        // 1. Target responded to us (active QSO) - always re-insert
+-        // 2. Scarce mode enabled AND (scarce target mode OR ATNO with few other targets)
+-        bool shouldReinsert = m_targetRespondedToUs;
+-        QString reinsertReason = m_targetRespondedToUs ? "responded" : "";
+-
+-        if (!shouldReinsert && m_scarceModeEnabled) {
+-            // Check if ATNO/NewSlot with scarce conditions (few other targets)
+-            bool isAtnoTarget = false;
+-            if (m_atnoChaseType != ATNOChaseDisabled) {
+-                if (m_currentTargetIsATNO &&
+-                    (m_atnoChaseType == ATNOChaseAllTime || m_atnoChaseType == ATNOChaseBoth)) {
+-                    isAtnoTarget = true;
+-                } else if (m_currentTargetIsNewSlot &&
+-                           (m_atnoChaseType == ATNOChaseBandSlot || m_atnoChaseType == ATNOChaseBoth)) {
+-                    isAtnoTarget = true;
+-                }
+-            }
+-
+-            if (m_scarceTargetMode) {
+-                shouldReinsert = true;
+-                reinsertReason = "scarce";
+-            } else if (isAtnoTarget && isScarcePriorityTarget()) {
+-                shouldReinsert = true;
+-                reinsertReason = "ATNO+scarce";
+-            }
+-        }
++        const bool fresh = targetLocallyFresh(targetCall, m_currentTarget.bandIndex,
++                                               m_targetHeardFreshSeconds);
++        const bool persistent = currentTargetPersistsWhileHeard() && fresh;
++        const bool normalAttemptActive = !currentTargetPersistsWhileHeard()
++            && m_targetAttemptTimer.isValid()
++            && !AutoDxTimingPolicy::normalAttemptExpired(
++                m_targetAttemptTimer.elapsed(), m_normalCallSeconds);
++        const bool shouldReinsert = m_targetRespondedToUs || m_currentTarget.isCallingMe
++            || persistent || normalAttemptActive;
++        QString reinsertReason = m_targetRespondedToUs || m_currentTarget.isCallingMe
++            ? "engaged" : (persistent ? "needed+heard" : "normal-attempt");
+ 
+         if (shouldReinsert) {
+             emit debugMessage(QString("QUEUE-REINSERT: %1 removed by MSHV, re-adding (reason=%2)")
+@@ -1561,7 +1804,19 @@ void AutoDxerCore::checkQueueStatus()
+ 
+             // Re-insert into queue using cached target data
+             CachedDecode decode;
+-            if (m_decodeCache->getDecode(targetCall, decode)) {
++            bool foundCurrentBand = false;
++            const int reinsertAgeSeconds = currentTargetPersistsWhileHeard()
++                ? m_targetHeardFreshSeconds : m_normalCallSeconds;
++            const QList<CachedDecode> currentBandDecodes = m_decodeCache->getActiveDecodes(
++                m_currentBandIndex, reinsertAgeSeconds);
++            for (const CachedDecode &candidate : currentBandDecodes) {
++                if (candidate.isLocalDecode && callsignsMatch(candidate.callsign, targetCall)) {
++                    decode = candidate;
++                    foundCurrentBand = true;
++                    break;
++                }
++            }
++            if (foundCurrentBand) {
+                 // Save state before feedToQueue (it resets m_scarceTargetMode)
+                 bool wasScarce = m_scarceTargetMode;
+                 bool hadResponded = m_targetRespondedToUs;
+@@ -1570,67 +1825,87 @@ void AutoDxerCore::checkQueueStatus()
+                 reinsert.callsign = decode.callsign;
+                 reinsert.grid = decode.grid;
+                 reinsert.dxccEntity = decode.dxccEntity;
++                reinsert.bandIndex = m_currentTarget.bandIndex;
+                 reinsert.audioFrequency = decode.audioFrequency;
++                reinsert.dialFrequencyHz = decode.dialFrequencyHz;
+                 reinsert.snr = decode.snr;
+                 reinsert.priority = m_currentTarget.priority;
+-                reinsert.priorityReason = "Re-inserted (persistence mode)";
+-                feedToQueue(reinsert);
++                reinsert.isNewDXCC = m_currentTargetIsATNO;
++                reinsert.isNewBandSlot = m_currentTargetIsNewSlot;
++                reinsert.isCallingMe = m_currentTarget.isCallingMe;
++                reinsert.priorityReason = "Re-inserted by active target policy";
++                feedToQueue(reinsert, false);
+ 
+-                // Restore persistence state - feedToQueue resets these
+                 m_scarceTargetMode = wasScarce;
+                 m_targetRespondedToUs = hadResponded;
+                 return;  // Stay in WaitingForQSO state
+             }
+             // If not in cache anymore, fall through to normal abandonment
+             emit debugMessage(QString("QUEUE-REINSERT: %1 not in cache, cannot re-add").arg(targetCall));
++            if (m_targetRespondedToUs || m_currentTarget.isCallingMe) {
++                emit debugMessage(QString("QSO-ENGAGED: %1 remains active pending log completion")
++                                 .arg(targetCall));
++                return;
++            }
+         }
+ 
+-        // Normal mode: target removed from queue, give up
+-        emit debugMessage(QString("QUEUE-REMOVED: %1 no longer in MSHV queue").arg(targetCall));
+-        m_currentTarget.clear();
+-        setState(Listening);
++        abandonCurrentTarget(QString("removed from MSHV queue"));
+     }
+ }
+ 
+ void AutoDxerCore::checkTimeout()
+ {
+-    // Automatic band rotation disabled for elite chasers
+-    // Band changes now only occur via:
+-    // 1. Cross-band alerts (New DXCC spotted on another band)
+-    // 2. User manual band change
+-    // The old 60-second rotation was counterproductive when few targets exist
+-    Q_UNUSED(this);
+-    return;
+-}
++    // The quiet timer measures continuous idle time with no eligible local
++    // target. Never move the radio while a QSO, verification, or deferred slot
++    // selection is in progress.
++    if (!m_enabled || !m_bandSwitchingEnabled || m_state != Listening
++            || m_currentTarget.isValid() || m_targetRespondedToUs
++            || !m_pendingCrossBandCallsign.isEmpty()
++            || !m_pendingNonStdCallsign.isEmpty() || m_waitingForSlotAnalysis) {
++        return;
++    }
+ 
+-void AutoDxerCore::switchBand()
+-{
+-    // Find next band that passes propagation check
+-    // Loop through enabled bands starting from next in rotation
+-    int nextBand = m_bandManager->getNextBand();
+-    int startBand = nextBand;
+-    int attempts = 0;
+-    const int maxAttempts = m_bandManager->getEnabledBands().count();
++    // Once idle, leave a closed local-time window immediately. Active QSO and
++    // verification/deferred states are protected by the guard above.
++    if (m_bandManager && !m_bandManager->isBandOpenNow(m_currentBandIndex)) {
++        emit debugMessage(QString("SCHEDULE-CLOSED: Leaving %1 immediately")
++                         .arg(bandName(m_currentBandIndex)));
++        switchBand();
++        return;
++    }
+ 
+-    while (attempts < maxAttempts) {
+-        if (nextBand >= 0 && nextBand != m_currentBandIndex && m_bandManager->isBandOpenNow(nextBand)) {
+-            // Found a propagation-open band
+-            break;
+-        }
++    if (!m_quietBandTimer.isValid()) {
++        m_quietBandTimer.start();
++        return;
++    }
+ 
+-        // Try next band in rotation
+-        nextBand = m_bandManager->getNextBandAfter(nextBand);
+-        attempts++;
++    // A currently eligible local target means the band is not quiet even if
++    // another decode-complete callback has not selected it yet.
++    const QList<CachedDecode> local = m_decodeCache->getActiveDecodes(
++        m_currentBandIndex, m_targetHeardFreshSeconds);
++    if (!local.isEmpty() && m_targetScorer->getBestTarget(local).priority > 0) {
++        m_quietBandTimer.restart();
++        return;
++    }
+ 
+-        // If we've looped back to start, no bands are open
+-        if (nextBand == startBand) {
+-            emit debugMessage("AutoDxerCore: No bands currently open (propagation check)");
+-            return;
+-        }
++    if (!AutoDxTimingPolicy::quietBandExpired(
++            m_quietBandTimer.elapsed(), m_quietBandSeconds)) return;
++    if (m_lastBandSwitchTime.isValid()
++            && m_lastBandSwitchTime.secsTo(QDateTime::currentDateTimeUtc())
++                   < m_bandSwitchCooldownSeconds) {
++        return;
+     }
+ 
++    switchBand();
++}
++
++void AutoDxerCore::switchBand()
++{
++    const int nextBand = bestBandForSwitch();
++
+     if (nextBand < 0 || nextBand == m_currentBandIndex) {
+-        emit debugMessage("AutoDxerCore: No other bands to switch to");
++        emit debugMessage("QUIET-BAND: No other enabled band is open now");
++        m_quietBandTimer.restart();
+         return;
+     }
+ 
+@@ -1643,18 +1918,119 @@ void AutoDxerCore::switchBand()
+ 
+     // Clear current target
+     m_currentTarget.clear();
++    m_targetAttemptTimer.invalidate();
++    m_quietBandTimer.invalidate();
+ 
+     // Clear decode cache for old band - we only want local decodes on new band
+     if (m_decodeCache) {
+         m_decodeCache->clearBand(m_currentBandIndex);
+     }
+ 
+-    emit debugMessage(QString("AutoDxerCore: Requesting band change to %1 (propagation-aware)")
+-                     .arg(m_bandManager->bandName(nextBand)));
++    m_lastBandSwitchTime = QDateTime::currentDateTimeUtc();
++    if (m_bandManager->isBandOpenNow(m_currentBandIndex)) {
++        emit debugMessage(QString("QUIET-BAND: %1 seconds without an eligible target; switching to %2")
++                         .arg(m_quietBandSeconds).arg(m_bandManager->bandName(nextBand)));
++    } else {
++        emit debugMessage(QString("SCHEDULE-CLOSED: Switching to open band %1")
++                         .arg(m_bandManager->bandName(nextBand)));
++    }
+ 
+     emit requestBandChange(nextBand);
+ }
+ 
++int AutoDxerCore::bestBandForSwitch()
++{
++    if (!m_bandManager) return -1;
++
++    int bestBand = -1;
++    int bestOpportunity = -1;
++    int bestActivity = -1;
++    const QList<int> enabled = m_bandManager->getEnabledBands();
++    for (int band : enabled) {
++        if (band == m_currentBandIndex || !m_bandManager->isBandOpenNow(band)) continue;
++
++        int opportunity = 0;
++        int activity = 0;
++        const QList<ExternalSpot> spots = m_spotAggregator->getSpots(band, 120);
++        for (const ExternalSpot &spot : spots) {
++            if (spot.source != "LOCAL" && !AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)) continue;
++            ++activity;
++            if (!historicalActionAllowed(spot.callsign, false)) continue;
++            const ScoredTarget scored = m_targetScorer->scoreTarget(spotToCachedDecode(spot));
++            opportunity = qMax(opportunity, scored.priority);
++        }
++
++        if (opportunity > bestOpportunity
++                || (opportunity == bestOpportunity && activity > bestActivity)) {
++            bestBand = band;
++            bestOpportunity = opportunity;
++            bestActivity = activity;
++        }
++    }
++
++    // With no fresh activity evidence, keep deterministic round-robin behavior
++    // across only the bands that are enabled and currently inside schedule.
++    if (bestOpportunity <= 0 && bestActivity <= 0) {
++        int candidate = m_bandManager->getNextBand();
++        for (int attempts = 0; attempts < enabled.size(); ++attempts) {
++            if (candidate >= 0 && candidate != m_currentBandIndex
++                    && m_bandManager->isBandOpenNow(candidate)) return candidate;
++            candidate = m_bandManager->getNextBandAfter(candidate);
++        }
++    }
++    return bestBand;
++}
++
++bool AutoDxerCore::targetLocallyFresh(const QString &callsign, int bandIndex,
++                                      int maxAgeSeconds) const
++{
++    if (!m_decodeCache || bandIndex < 3) return false;
++    const QList<CachedDecode> decodes = m_decodeCache->getActiveDecodes(bandIndex, maxAgeSeconds);
++    for (const CachedDecode &decode : decodes) {
++        if (decode.isLocalDecode && callsignsMatch(decode.callsign, callsign)) return true;
++    }
++    return false;
++}
++
++bool AutoDxerCore::currentTargetPersistsWhileHeard() const
++{
++    return AutoDxTimingPolicy::noveltyPersists(
++        m_currentTargetIsATNO, m_currentTargetIsNewSlot, true,
++        m_persistNewDxccWhileHeard, m_persistNewBandSlotWhileHeard,
++        static_cast<int>(m_atnoChaseType));
++}
++
++void AutoDxerCore::abandonCurrentTarget(const QString &reason)
++{
++    if (m_currentTarget.isValid()) {
++        emit debugMessage(QString("TARGET-STOP: %1 (%2)")
++                         .arg(m_currentTarget.callsign).arg(reason));
++    }
++    emit requestDisableAuto();
++    if (m_queueWidget) m_queueWidget->clearBothLists();
++    m_currentTarget.clear();
++    m_targetRespondedToUs = false;
++    m_currentTargetIsATNO = false;
++    m_currentTargetIsNewSlot = false;
++    m_currentTargetIsNewGrid = false;
++    m_scarceTargetMode = false;
++    m_targetAttemptTimer.invalidate();
++    setState(Listening);
++    resetQuietBandTimer();
++    emit targetChanged(m_currentTarget);
++}
++
++void AutoDxerCore::resetQuietBandTimer()
++{
++    if (m_enabled && m_state == Listening && !m_currentTarget.isValid()
++            && !m_targetRespondedToUs && m_pendingCrossBandCallsign.isEmpty()
++            && m_pendingNonStdCallsign.isEmpty() && !m_waitingForSlotAnalysis) {
++        m_quietBandTimer.restart();
++    } else {
++        m_quietBandTimer.invalidate();
++    }
++}
++
+ void AutoDxerCore::onBandChanged(int bandIndex)
+ {
+     setCurrentBand(bandIndex);
+@@ -1694,10 +2070,7 @@ void AutoDxerCore::onBandChangedExternally(int bandIndex)
+             .arg(m_bandManager->bandName(bandIndex))
+             .arg(m_pendingCrossBandCallsign)
+             .arg(m_bandManager->bandName(m_pendingCrossBandBand)));
+-        m_pendingCrossBandCallsign.clear();
+-        m_pendingCrossBandBand = -1;
+-        m_pendingCrossBandDialFreq = 0;
+-        m_pendingCrossBandAudioFreq = 0;
++        clearPendingCrossBandVerification();
+     }
+ 
+     // Clear decode cache for old band - we only want local decodes on new band
+@@ -1716,6 +2089,28 @@ void AutoDxerCore::onBandChangeComplete(int bandIndex)
+ 
+     setCurrentBand(bandIndex);
+ 
++    if (!m_pendingCrossBandCallsign.isEmpty() && m_bandManager
++            && !m_bandManager->isBandOpenNow(bandIndex)) {
++        emit debugMessage("CROSSBAND-CANCELLED: destination schedule closed during band QSY");
++        returnFromPendingCrossBandVerification("destination schedule closed during QSY");
++        setState(Listening);
++        return;
++    }
++
++    // The band change is asynchronous.  Wavelog authority may have been
++    // revoked, or this exact call may have entered the durable pending set,
++    // while the radio was changing bands.  Revalidate at the last action
++    // boundary before emitting either dial or TX-frequency changes.
++    if (!m_pendingCrossBandCallsign.isEmpty()
++            && !historicalActionAllowed(m_pendingCrossBandCallsign, false)) {
++        emit debugMessage("CROSSBAND-CANCELLED: Wavelog authority/pending state changed during band QSY for "
++                          + m_pendingCrossBandCallsign);
++        returnFromPendingCrossBandVerification("historical authority changed during QSY");
++        m_pendingCrossBandCallsign.clear();
++        setState(Listening);
++        return;
++    }
++
+     // If cross-band QSY to a non-standard frequency, tune dial AFTER band change is confirmed
+     if (m_pendingCrossBandDialFreq > 0 && !m_pendingCrossBandCallsign.isEmpty()) {
+         emit debugMessage(QString("CROSSBAND-DIALQSY: Tuning to non-standard dial %1 Hz for %2")
+@@ -1743,6 +2138,8 @@ void AutoDxerCore::onQSOComplete(bool success, const QString &callsign)
+     // This method is deprecated - QSO completion is now handled by onMSHVQsoLogged
+     m_currentTarget.clear();
+     setState(Listening);
++    m_targetAttemptTimer.invalidate();
++    resetQuietBandTimer();
+ }
+ 
+ void AutoDxerCore::onWordsChanged(QStringList words, int cq, int type)
+@@ -1828,8 +2225,9 @@ void AutoDxerCore::onMSHVQsoLogged(QStringList qsoData)
+     QString entity = m_cty ? m_cty->FindCountry(callsign, false) : "Unknown";
+     if (entity.isEmpty()) entity = "Unknown";
+ 
+-    // Record the QSO in our tracker
+-    m_dxccTracker->recordQSO(callsign, entity, bandIndex, grid);
++    // Do not mutate worked.db here. This local log event precedes Wavelog
++    // acknowledgement; the history poll applies the delta only after the
++    // canonical Wavelog write or verified duplicate is authoritative.
+ 
+     // Add to recently-worked blacklist to prevent immediate re-selection
+     m_recentlyWorked.insert(callsign);
+@@ -1858,23 +2256,25 @@ void AutoDxerCore::onMSHVQsoLogged(QStringList qsoData)
+     // Check if this was our target
+     if (m_state == WaitingForQSO &&
+         m_currentTarget.isValid() &&
+-        callsign.compare(m_currentTarget.callsign, Qt::CaseInsensitive) == 0) {
++        callsignsMatch(callsign, m_currentTarget.callsign)) {
+ 
+         emit qsoCompleted(callsign, entity, bandIndex);
+ 
+         m_currentTarget.clear();
+         m_targetRespondedToUs = false;  // Reset for next target
+         setState(Listening);
++        m_targetAttemptTimer.invalidate();
++        m_currentTargetIsATNO = false;
++        m_currentTargetIsNewSlot = false;
++        m_currentTargetIsNewGrid = false;
++        resetQuietBandTimer();
+ 
+         // Clear pending cross-band and non-standard frequency targets
+         // These were set for this QSO - don't carry them forward
+         if (!m_pendingCrossBandCallsign.isEmpty()) {
+             emit debugMessage(QString("QSO-COMPLETE: Clearing pending cross-band target %1")
+                 .arg(m_pendingCrossBandCallsign));
+-            m_pendingCrossBandCallsign.clear();
+-            m_pendingCrossBandDialFreq = 0;
+-            m_pendingCrossBandAudioFreq = 0;
+-            m_pendingCrossBandBand = -1;
++            clearPendingCrossBandVerification();
+         }
+         if (!m_pendingNonStdCallsign.isEmpty()) {
+             emit debugMessage(QString("QSO-COMPLETE: Clearing pending non-std freq target %1")
+@@ -2006,6 +2406,10 @@ bool AutoDxerCore::containsCallsign(const QList<CachedDecode> &list, const QStri
+ 
+ void AutoDxerCore::checkCrossBandAlerts()
+ {
++    if (!m_historicalNoveltyAllowed) {
++        emit debugMessage("CROSSBAND-BLOCKED: Wavelog history authority unavailable");
++        return;
++    }
+     // Cross-band alerts are opt-in.  Loading enabled bands alone must never
+     // permit a background QSY; the explicit runtime gate is authoritative.
+     if (!m_bandSwitchingEnabled) {
+@@ -2015,13 +2419,16 @@ void AutoDxerCore::checkCrossBandAlerts()
+     // Don't interrupt active QSO for cross-band alerts
+     // Check both state AND m_targetRespondedToUs - the flag persists even when
+     // MSHV removes target from queue (which may reset state to Listening)
+-    if (!m_enabled || m_state == WaitingForQSO || m_targetRespondedToUs) {
++    if (!m_enabled || m_state == WaitingForQSO || m_targetRespondedToUs
++            || !m_pendingCrossBandCallsign.isEmpty()
++            || !m_pendingNonStdCallsign.isEmpty() || m_waitingForSlotAnalysis) {
+         return;
+     }
+ 
+-    // Cooldown: Don't switch bands within 2 minutes of a previous switch
++    // Configurable cooldown prevents ping-pong between otherwise attractive bands.
+     if (m_lastBandSwitchTime.isValid() &&
+-        m_lastBandSwitchTime.secsTo(QDateTime::currentDateTimeUtc()) < 120) {
++        m_lastBandSwitchTime.secsTo(QDateTime::currentDateTimeUtc())
++            < m_bandSwitchCooldownSeconds) {
+         return;
+     }
+ 
+@@ -2060,6 +2467,7 @@ void AutoDxerCore::checkCrossBandAlerts()
+ 
+         QList<ExternalSpot> spots = m_spotAggregator->getSpots(band, 120);
+         for (const ExternalSpot &spot : spots) {
++            if (!historicalActionAllowed(spot.callsign, false)) continue;
+             // Network spots may move the radio only with explicit FT8 source
+             // evidence.  Frequency proximity alone is never a mode signal.
+             if (spot.source != "LOCAL" && !AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)) continue;
+@@ -2141,6 +2549,7 @@ void AutoDxerCore::checkCrossBandAlerts()
+                 m_pendingCrossBandCallsign = spot.callsign.toUpper();
+                 m_pendingCrossBandTime = QDateTime::currentDateTimeUtc();
+                 m_pendingCrossBandBand = band;
++                m_pendingCrossBandReturnBand = m_currentBandIndex;
+                 m_pendingCrossBandDialFreq = spotDialFreq;  // 0 = standard, >0 = non-standard
+ 
+                 // Calculate target's audio frequency for TX slot positioning
+@@ -2188,12 +2597,21 @@ void AutoDxerCore::checkCrossBandAlerts()
+ 
+ void AutoDxerCore::checkSameBandNonStdFreqAlerts()
+ {
++    if (m_bandManager && !m_bandManager->isBandOpenNow(m_currentBandIndex)) {
++        return;
++    }
++
++    if (!m_historicalNoveltyAllowed) {
++        emit debugMessage("NONSTD-BLOCKED: Wavelog history authority unavailable");
++        return;
++    }
+     // Check for NEW DXCC entities spotted on non-standard frequencies on the CURRENT band
+     // If found, QSY to that frequency to attempt local decode and calling
+     // This is basic human FT8 operating logic - if you see rare DX on a split frequency, you QSY!
+ 
+     // Don't interrupt active QSO
+-    if (!m_enabled || m_state == WaitingForQSO || m_targetRespondedToUs) {
++    if (!m_enabled || m_state == WaitingForQSO || m_targetRespondedToUs
++            || m_waitingForSlotAnalysis) {
+         return;
+     }
+ 
+@@ -2227,6 +2645,7 @@ void AutoDxerCore::checkSameBandNonStdFreqAlerts()
+     QList<ExternalSpot> spots = m_spotAggregator->getSpots(m_currentBandIndex, 120);
+ 
+     for (const ExternalSpot &spot : spots) {
++        if (!historicalActionAllowed(spot.callsign, false)) continue;
+         if (spot.source != "LOCAL" && !AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)) continue;
+         // Check if this is needed (ATNO or new band slot) - same logic as standard freq chasing
+         bool isNewDxcc = m_targetScorer->priorityDXCCEnabled() &&
+@@ -2390,23 +2809,6 @@ void AutoDxerCore::cleanupRecentlyWorked()
+         }
+     }
+ 
+-    // Also clean up ATNO cooldowns using same timer
+-    cleanupAtnoCooldown();
+-}
+-
+-void AutoDxerCore::cleanupAtnoCooldown()
+-{
+-    QDateTime now = QDateTime::currentDateTimeUtc();
+-    QMutableHashIterator<QString, QDateTime> it(m_atnoCooldownTimestamps);
+-    while (it.hasNext()) {
+-        it.next();
+-        if (it.value().secsTo(now) > ATNO_COOLDOWN_SECONDS) {
+-            QString call = it.key();
+-            m_atnoCooldown.remove(call);
+-            it.remove();
+-            emit debugMessage(QString("ATNO-COOLDOWN-EXPIRED: %1 now eligible for retry").arg(call));
+-        }
+-    }
+ }
+ 
+ // ============================================================================
+@@ -2424,6 +2826,34 @@ void AutoDxerCore::onSlotAnalysisReady(SlotAnalysis analysis)
+     if (!m_enabled) {
+         emit debugMessage("SLOT-ANALYSIS: Ignoring - AutoDxer disabled");
+         m_waitingForSlotAnalysis = false;  // Clear pending state
++        m_pendingSlotAnalysisTarget = ScoredTarget();
++        return;
++    }
++
++    if (m_waitingForSlotAnalysis && m_bandManager
++            && !m_bandManager->isBandOpenNow(m_currentBandIndex)) {
++        emit debugMessage("SLOT-ANALYSIS: Band schedule closed; deferred target cancelled");
++        m_waitingForSlotAnalysis = false;
++        m_pendingSlotAnalysisTarget = ScoredTarget();
++        setState(Listening);
++        resetQuietBandTimer();
++        checkTimeout();
++        return;
++    }
++
++    if (m_waitingForSlotAnalysis && !m_historicalNoveltyAllowed &&
++        !m_pendingSlotAnalysisTarget.isCallingMe) {
++        emit debugMessage("SLOT-ANALYSIS: Historical authority revoked; deferred target cancelled");
++        m_waitingForSlotAnalysis = false;
++        m_pendingSlotAnalysisTarget = ScoredTarget();
++        return;
++    }
++    if (m_waitingForSlotAnalysis
++            && !historicalActionAllowed(m_pendingSlotAnalysisTarget.callsign,
++                                        m_pendingSlotAnalysisTarget.isCallingMe)) {
++        emit debugMessage("SLOT-ANALYSIS: Pending Wavelog QSO; deferred target cancelled");
++        m_waitingForSlotAnalysis = false;
++        m_pendingSlotAnalysisTarget = ScoredTarget();
+         return;
+     }
+ 
+@@ -2436,6 +2866,10 @@ void AutoDxerCore::onSlotAnalysisReady(SlotAnalysis analysis)
+     // CRITICAL: If we have a pending DXpedition target, set TX near their frequency
+     // Don't use random slot finder suggestions when chasing a specific DXpedition
+     if (!m_pendingCrossBandCallsign.isEmpty() && m_pendingCrossBandAudioFreq > 0) {
++        if (isPendingWavelogCall(m_pendingCrossBandCallsign)) {
++            cancelPendingWavelogPaths();
++            return;
++        }
+         // TX about 1000 Hz above target's TX frequency (common DXpedition split)
+         // Constrain to reasonable FT8 range (300-2700 Hz)
+         int targetTx = qBound(300, m_pendingCrossBandAudioFreq + 1000, 2700);
+@@ -2449,6 +2883,10 @@ void AutoDxerCore::onSlotAnalysisReady(SlotAnalysis analysis)
+ 
+     // Same for same-band non-std freq targets
+     if (!m_pendingNonStdCallsign.isEmpty()) {
++        if (isPendingWavelogCall(m_pendingNonStdCallsign)) {
++            cancelPendingWavelogPaths();
++            return;
++        }
+         // For non-std freq targets, check if it's a DXpedition for proper TX offset
+         int targetAudio = isRareDXCallsign(m_pendingNonStdCallsign) ? 1000 : 1500;
+         int targetTx = qBound(300, targetAudio + 1000, 2700);
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.h b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+index 07525b6..c968fbc 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+@@ -13,6 +13,9 @@
+ #include <QSet>
+ #include <QHash>
+ #include <QJsonObject>
++#include <QNetworkAccessManager>
++#include <QNetworkReply>
++#include <QElapsedTimer>
+ #include "decodecache.h"
+ #include "dxcctracker.h"
+ #include "targetscorer.h"
+@@ -37,10 +40,11 @@ struct DxTarget
+     int priority;
+     int listenCycles;
+     int callCycles;
++    bool isCallingMe;
+ 
+-    DxTarget() : bandIndex(-1), audioFrequency(0), dialFrequencyHz(0), priority(0), listenCycles(0), callCycles(0) {}
++    DxTarget() : bandIndex(-1), audioFrequency(0), dialFrequencyHz(0), priority(0), listenCycles(0), callCycles(0), isCallingMe(false) {}
+     void clear() { callsign.clear(); grid.clear(); dxccEntity.clear(); bandIndex = -1;
+-                   audioFrequency = 0; dialFrequencyHz = 0; priority = 0; listenCycles = 0; callCycles = 0; }
++                   audioFrequency = 0; dialFrequencyHz = 0; priority = 0; listenCycles = 0; callCycles = 0; isCallingMe = false; }
+     bool isValid() const { return !callsign.isEmpty() && bandIndex >= 3; }
+ };
+ 
+@@ -75,6 +79,7 @@ public:
+     State state() const { return m_state; }
+     QString stateString() const;
+     QJsonObject runtimeConfigStatus() const;
++    void reloadRuntimeConfig();
+     
+     // Configuration
+     void setCallsign(const QString &call);
+@@ -177,9 +182,14 @@ private:
+     void setState(State newState);
+     void startListening();
+     void evaluateTargets();
+-    void feedToQueue(const ScoredTarget &target);
++    void feedToQueue(const ScoredTarget &target, bool newAttempt = true);
+     void checkQueueStatus();
+     void switchBand();
++    int bestBandForSwitch();
++    bool targetLocallyFresh(const QString &callsign, int bandIndex, int maxAgeSeconds) const;
++    bool currentTargetPersistsWhileHeard() const;
++    void abandonCurrentTarget(const QString &reason);
++    void resetQuietBandTimer();
+     void parseDecodeMessage(const QStringList &data, QString &callsign, QString &grid,
+                             int &snr, int &freq, bool &isCQ);
+     QString extractCallsign(const QString &msg);
+@@ -188,6 +198,16 @@ private:
+     bool isCQMessage(const QString &msg);
+     void loadRuntimeConfig(const QString &settingsPath);
+     bool isConfiguredMode(const QString &mode) const;
++    void refreshWavelogHistory();
++    void applyWavelogHistoryReply(QNetworkReply *reply);
++    void loadWavelogDeltaState(const QString &settingsPath);
++    bool persistWavelogDeltaState();
++    void revokeHistoricalNovelty(const QString &reason);
++    bool isPendingWavelogCall(const QString &callsign) const;
++    bool historicalActionAllowed(const QString &callsign, bool isCallingMe) const;
++    bool cancelPendingWavelogPaths();
++    void clearPendingCrossBandVerification();
++    bool returnFromPendingCrossBandVerification(const QString &reason);
+ 
+     // Spot integration helpers
+     CachedDecode spotToCachedDecode(const ExternalSpot &spot);
+@@ -218,6 +238,14 @@ private:
+     QString m_currentMode;
+     QStringList m_autoDxModes;
+     bool m_bandSwitchingEnabled;
++    QString m_settingsPath;
++    int m_normalCallSeconds;
++    int m_quietBandSeconds;
++    int m_targetHeardFreshSeconds;
++    int m_crossBandVerifySeconds;
++    int m_bandSwitchCooldownSeconds;
++    bool m_persistNewDxccWhileHeard;
++    bool m_persistNewBandSlotWhileHeard;
+     bool m_runtimeRbnEnabled;
+     bool m_runtimePskrEnabled;
+     bool m_runtimeDxClusterEnabled;
+@@ -239,6 +267,18 @@ private:
+     TwilioSmsNotifier *m_smsNotifier; // SMS notifications for TX/QSO events
+     
+     QTimer *m_timeoutTimer;
++    QElapsedTimer m_targetAttemptTimer;
++    QElapsedTimer m_quietBandTimer;
++    QTimer *m_historyTimer;
++    QNetworkAccessManager *m_historyNetwork;
++    bool m_historyRequestPending;
++    bool m_historicalNoveltyAllowed;
++    QString m_historyAuthorityStatus;
++    QString m_historySnapshotGeneration;
++    QString m_historyStatePath;
++    int m_historyLastSequence;
++    QSet<QString> m_appliedHistoryDeltaKeys;
++    QSet<QString> m_pendingWavelogCalls;
+     
+     // Statistics (all-time)
+     int m_qsoCount;
+@@ -262,10 +302,6 @@ private:
+     bool m_targetHeardThisCycle;
+     bool m_targetRespondedToUs;  // True when target sent US a signal report - never abandon!
+     QDateTime m_lastMissedCycleCheck;  // Debounce: only check once per actual FT8 period
+-    static const int MAX_MISSED_CYCLES = 2;
+-    static const int MAX_MISSED_CYCLES_SCARCE = 10;    // ~3 min for scarce targets (elite chasers)
+-    static const int MAX_ATNO_CHASE_CYCLES = 20;       // ~5 min max for ATNO targets (protects radio)
+-    static const int ATNO_COOLDOWN_SECONDS = 600;      // 10 min cooldown before retrying ATNO after hitting limit
+     static const int DEFAULT_SCARCE_TARGET_THRESHOLD = 5;  // Default: trigger scarce mode when <= 5 other needed targets
+     static const int MISSED_CYCLE_DEBOUNCE_SECS = 12;  // FT8 period is ~15s, use 12s debounce
+ 
+@@ -279,9 +315,9 @@ private:
+     QString m_pendingCrossBandCallsign;   // Callsign we're waiting to verify locally
+     QDateTime m_pendingCrossBandTime;     // When we started waiting
+     int m_pendingCrossBandBand;           // Band we switched to for this target
++    int m_pendingCrossBandReturnBand;     // Originating band to restore after an unverified QSY
+     int m_pendingCrossBandDialFreq;       // Dial frequency to tune to (0 = use standard)
+     int m_pendingCrossBandAudioFreq;      // Target's TX audio frequency (for TX slot setting)
+-    static const int CROSSBAND_VERIFY_TIMEOUT_SECS = 60;  // Give up if not heard locally in 60s
+ 
+     // Non-standard frequency verification - wait for local decode after QSY to DXpedition freq
+     QString m_pendingNonStdCallsign;   // Callsign we're waiting to verify locally
+@@ -296,6 +332,7 @@ private:
+     ATNOChaseType m_atnoChaseType;
+     bool m_currentTargetIsATNO;      // Current target is all-time new DXCC
+     bool m_currentTargetIsNewSlot;   // Current target is new band slot
++    bool m_currentTargetIsNewGrid;   // Current target is a new grid
+     int m_atnoTotalCallCycles;       // Total cycles spent calling current ATNO target
+ 
+     // Slot analysis pending target - wait for TX slot analysis before queueing after band switch
+@@ -309,11 +346,6 @@ private:
+     QTimer *m_recentlyWorkedCleanupTimer;  // 24/7 stability: periodic cleanup
+     void cleanupRecentlyWorked();
+ 
+-    // ATNO cooldown - prevents immediate retry after hitting 20-cycle limit
+-    // Only applies when target is still being heard (not when they disappeared)
+-    QSet<QString> m_atnoCooldown;
+-    QHash<QString, QDateTime> m_atnoCooldownTimestamps;
+-    void cleanupAtnoCooldown();
+ };
+ 
+ #endif // AUTODXERCORE_H
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp b/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
+index bc0bea0..bf6c818 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
+@@ -343,18 +343,12 @@ void AutoDxerPanel::setupUI()
+     snrLayout->addStretch();
+     settingsLayout->addLayout(snrLayout);
+ 
+-    QHBoxLayout *scarceLayout = new QHBoxLayout();
+-    scarceLayout->addWidget(new QLabel("Scarce Threshold:"));
+-    m_scarceThresholdSpin = new QSpinBox();
++    // Preserve the legacy value for config migration, but hide the obsolete
++    // control because scarcity no longer changes target abandonment.
++    m_scarceThresholdSpin = new QSpinBox(this);
+     m_scarceThresholdSpin->setRange(0, 20);
+     m_scarceThresholdSpin->setValue(5);
+-    m_scarceThresholdSpin->setToolTip("Extended persistence (10 cycles) when <= N other needed targets.\n"
+-                                       "Lower = more aggressive (scarce mode triggers less often).\n"
+-                                       "Higher = more patient (scarce mode triggers more often).");
+-    connect(m_scarceThresholdSpin, SIGNAL(valueChanged(int)), this, SLOT(onScarceThresholdChanged(int)));
+-    scarceLayout->addWidget(m_scarceThresholdSpin);
+-    scarceLayout->addStretch();
+-    settingsLayout->addLayout(scarceLayout);
++    m_scarceThresholdSpin->hide();
+ 
+     // ATNO Chase Mode selection
+     QHBoxLayout *atnoLayout = new QHBoxLayout();
+@@ -365,11 +359,11 @@ void AutoDxerPanel::setupUI()
+     m_atnoChaseCombo->addItem("Band Slots", AutoDxerCore::ATNOChaseBandSlot);
+     m_atnoChaseCombo->addItem("Both (Recommended)", AutoDxerCore::ATNOChaseBoth);
+     m_atnoChaseCombo->setCurrentIndex(3);  // Default: Both
+-    m_atnoChaseCombo->setToolTip("Extended calling for rare targets (max 20 cycles / ~5 min):\n"
+-                                  "- ATNO: All-time new DXCC entities\n"
+-                                  "- Band Slots: Entities not worked on current band\n"
+-                                  "- Both: Extended calling for both types\n"
+-                                  "If limit hit while target still heard, 10 min cooldown before retry");
++    m_atnoChaseCombo->setToolTip("Select which needed-target classes may persist while heard locally:\n"
++                                  "- Disabled: use normal call duration\n"
++                                  "- ATNO: persist all-time new DXCC while heard\n"
++                                  "- Band Slots: persist new band slots while heard\n"
++                                  "- Both: persist either class while heard");
+     connect(m_atnoChaseCombo, SIGNAL(currentIndexChanged(int)), this, SLOT(onATNOChaseChanged(int)));
+     atnoLayout->addWidget(m_atnoChaseCombo);
+     atnoLayout->addStretch();
+@@ -740,7 +734,7 @@ void AutoDxerPanel::onScarceThresholdChanged(int value)
+         settings.sync();
+     }
+ 
+-    m_core->appendDebugMessage(QString("Scarce threshold set to %1 - extended persistence when <= %1 other needed targets").arg(value));
++    m_core->appendDebugMessage(QString("Legacy scarce threshold retained at %1 (inactive)").arg(value));
+ }
+ 
+ void AutoDxerPanel::onATNOChaseChanged(int index)
+@@ -980,6 +974,7 @@ void AutoDxerPanel::onOpenSettings()
+         m_core->bandManager(),
+         m_core->spotAggregator()
+     );
++    m_settingsDialog->setAutoDxerCore(m_core);
+ 
+     // Load settings from file
+     if (!m_appPath.isEmpty()) {
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+index 1d2d85d..e4348b8 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+@@ -5,6 +5,33 @@
+ #include <QStringList>
+ #include <QRegExp>
+ 
++namespace AutoDxTimingPolicy {
++inline bool normalAttemptExpired(qint64 elapsedMilliseconds, int limitSeconds)
++{
++    return elapsedMilliseconds >= static_cast<qint64>(limitSeconds) * 1000;
++}
++
++inline bool quietBandExpired(qint64 elapsedMilliseconds, int limitSeconds)
++{
++    return elapsedMilliseconds >= static_cast<qint64>(limitSeconds) * 1000;
++}
++
++inline bool verificationExpired(int elapsedSeconds, int limitSeconds)
++{
++    return elapsedSeconds >= limitSeconds;
++}
++
++inline bool noveltyPersists(bool newDxcc, bool newBandSlot, bool heardFresh,
++                            bool persistDxcc, bool persistSlot, int chaseType)
++{
++    if (!heardFresh) return false;
++    const bool dxccAllowed = chaseType == 1 || chaseType == 3;
++    const bool slotAllowed = chaseType == 2 || chaseType == 3;
++    return (newDxcc && persistDxcc && dxccAllowed)
++        || (newBandSlot && persistSlot && slotAllowed);
++}
++}
++
+ // Side-effect-free loader shared by the active core and native fixtures.  It
+ // deliberately contains no widgets and opens no network connections.
+ struct AutoDxRuntimeConfig
+@@ -12,6 +39,13 @@ struct AutoDxRuntimeConfig
+     bool desiredEnabled;
+     QStringList modes;
+     bool bandSwitchingEnabled;
++    int normalCallSeconds;
++    int quietBandSeconds;
++    int targetHeardFreshSeconds;
++    int crossBandVerifySeconds;
++    int bandSwitchCooldownSeconds;
++    bool persistNewDxccWhileHeard;
++    bool persistNewBandSlotWhileHeard;
+     int atnoChaseType;
+     int scarceThreshold;
+     int newDxccWeight;
+@@ -70,6 +104,13 @@ struct AutoDxRuntimeConfig
+         // expand effective automation merely by editing the INI.
+         if (!modesConfigured || requested.contains("FT8")) c.modes << "FT8";
+         c.bandSwitchingEnabled = settings.value("BandSwitching/Enabled", false).toBool();
++        c.normalCallSeconds = qBound(30, settings.value("AutomationTiming/NormalCallSeconds", 120).toInt(), 1800);
++        c.quietBandSeconds = qBound(60, settings.value("AutomationTiming/QuietBandSeconds", 300).toInt(), 3600);
++        c.targetHeardFreshSeconds = qBound(15, settings.value("AutomationTiming/TargetHeardFreshSeconds", 60).toInt(), 300);
++        c.crossBandVerifySeconds = qBound(15, settings.value("AutomationTiming/CrossBandVerifySeconds", 60).toInt(), 300);
++        c.bandSwitchCooldownSeconds = qBound(0, settings.value("AutomationTiming/BandSwitchCooldownSeconds", 120).toInt(), 1800);
++        c.persistNewDxccWhileHeard = settings.value("AutomationTiming/PersistNewDxccWhileHeard", true).toBool();
++        c.persistNewBandSlotWhileHeard = settings.value("AutomationTiming/PersistNewBandSlotWhileHeard", true).toBool();
+         c.atnoChaseType = qBound(0, settings.value("AutoDx/ATNOChaseType", 3).toInt(), 3);
+         c.scarceThreshold = qBound(0, settings.value("AutoDx/ScarceThreshold", 5).toInt(), 20);
+         c.newDxccWeight = qMax(0, settings.value("TargetPriority/NewDxcc", 10000).toInt());
+diff --git a/MSHV_2762/src/HvAutoDxer/bandmanager.cpp b/MSHV_2762/src/HvAutoDxer/bandmanager.cpp
+index 199bd8e..c6b9acd 100644
+--- a/MSHV_2762/src/HvAutoDxer/bandmanager.cpp
++++ b/MSHV_2762/src/HvAutoDxer/bandmanager.cpp
+@@ -42,6 +42,8 @@ BandManager::BandManager(QObject *parent)
+     // Propagation awareness will automatically exclude low bands during day
+     // and high bands at night via isBandOpenNow()
+     m_enabledBands << 3 << 4 << 6 << 7 << 8 << 9 << 10 << 11 << 12;
++    m_bandSchedules.insert(3, BandSchedule(true, QTime(18, 0), QTime(6, 0)));
++    m_bandSchedules.insert(4, BandSchedule(true, QTime(18, 0), QTime(6, 0)));
+ }
+ 
+ BandManager::~BandManager()
+@@ -99,8 +101,7 @@ void BandManager::loadSettings(const QString& settingsPath)
+     QSettings settings(settingsPath + "/autodx.ini", QSettings::IniFormat);
+ 
+     // Load enabled bands - default to all HF bands (no 6m)
+-    const QVariant bandValue = settings.value(
+-        "BandSelection/EnabledBands", "3,4,6,7,8,9,10,11,12");
++    const QVariant bandValue = settings.value("BandSelection/EnabledBands", "3,4,6,7,8,9,10,11,12");
+     const QString bandStr = bandValue.type() == QVariant::StringList
+         ? bandValue.toStringList().join(",")
+         : bandValue.toString();
+@@ -114,6 +115,18 @@ void BandManager::loadSettings(const QString& settingsPath)
+         }
+     }
+ 
++    const QList<int> supported = QList<int>() << 3 << 4 << 6 << 7 << 8 << 9 << 10 << 11 << 12 << 14;
++    for (int bandIndex : supported) {
++        const bool defaultRestricted = bandIndex == 3 || bandIndex == 4;
++        const QString prefix = QString("BandSchedules/Band%1").arg(bandIndex);
++        const bool restricted = settings.value(prefix + "Restricted", defaultRestricted).toBool();
++        QTime start = QTime::fromString(settings.value(prefix + "Start", "18:00").toString(), "HH:mm");
++        QTime end = QTime::fromString(settings.value(prefix + "End", "06:00").toString(), "HH:mm");
++        if (!start.isValid()) start = QTime(18, 0);
++        if (!end.isValid()) end = QTime(6, 0);
++        m_bandSchedules.insert(bandIndex, BandSchedule(restricted, start, end));
++    }
++
+     emit debugMessage(QString("BandManager: Loaded %1 enabled bands from settings").arg(m_enabledBands.count()));
+ }
+ 
+@@ -244,17 +257,20 @@ bool BandManager::isBandOpenNow(int bandIndex) const
+         return false;
+     }
+ 
+-    // 160m and 80m excluded during daytime (6am-6pm local)
+-    // D-layer absorption makes low bands unusable during daylight
+-    if ((bandIndex == 3 || bandIndex == 4) && isLowBandHours()) {
+-        return false;
+-    }
++    return isBandOpenAt(bandIndex, QDateTime::currentDateTime().time());
++}
+ 
+-    // NOTE: 10m/12m nighttime restriction REMOVED
+-    // During high solar activity (SFI > 120), these bands can stay open late
+-    // Operator decides via band enable/disable settings
++BandSchedule BandManager::bandSchedule(int bandIndex) const
++{
++    return m_bandSchedules.value(bandIndex, BandSchedule());
++}
+ 
+-    // Band passes propagation check, return whether it's enabled
+-    // Note: 6m is now user-controllable via settings (sporadic E season)
+-    return isBandEnabled(bandIndex);
++bool BandManager::isBandOpenAt(int bandIndex, const QTime &localTime) const
++{
++    if (!isValidBand(bandIndex) || !isBandEnabled(bandIndex) || !localTime.isValid()) return false;
++    const BandSchedule schedule = bandSchedule(bandIndex);
++    if (!schedule.restricted || schedule.start == schedule.end) return true;
++    if (schedule.start < schedule.end)
++        return localTime >= schedule.start && localTime < schedule.end;
++    return localTime >= schedule.start || localTime < schedule.end;
+ }
+diff --git a/MSHV_2762/src/HvAutoDxer/bandmanager.h b/MSHV_2762/src/HvAutoDxer/bandmanager.h
+index bb10cfd..40ca893 100644
+--- a/MSHV_2762/src/HvAutoDxer/bandmanager.h
++++ b/MSHV_2762/src/HvAutoDxer/bandmanager.h
+@@ -8,6 +8,18 @@
+ #include <QObject>
+ #include <QList>
+ #include <QString>
++#include <QHash>
++#include <QTime>
++
++struct BandSchedule
++{
++    bool restricted;
++    QTime start;
++    QTime end;
++    BandSchedule(bool limited = false, const QTime &from = QTime(0, 0),
++                 const QTime &to = QTime(0, 0))
++        : restricted(limited), start(from), end(to) {}
++};
+ 
+ class BandManager : public QObject
+ {
+@@ -51,6 +63,8 @@ public:
+     void setLocalTimeOffset(int hoursFromUTC);  // e.g., -6 for CST
+     int localTimeOffset() const { return m_utcOffset; }
+     bool isBandOpenNow(int bandIndex) const;  // Combined check: enabled + propagation
++    bool isBandOpenAt(int bandIndex, const QTime &localTime) const;
++    BandSchedule bandSchedule(int bandIndex) const;
+ 
+     // Time-of-day helpers (local time)
+     bool isLowBandHours() const;   // True during 6am-6pm local (low bands closed)
+@@ -64,6 +78,7 @@ private:
+     int m_currentBand;
+     int m_utcOffset;  // Hours offset from UTC for local time (e.g., -6 for CST)
+     QList<int> m_enabledBands;
++    QHash<int, BandSchedule> m_bandSchedules;
+ 
+     static const char* s_bandNames[];
+     static const int s_ft8Frequencies[];
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+index 8472776..1d6dc90 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+@@ -157,6 +157,7 @@ TargetScorer::TargetScorer(DxccTracker *tracker, HvCty *cty, QObject *parent)
+     , m_priorityDXCC(true)
+     , m_priorityBandSlot(true)
+     , m_priorityGrid(true)
++    , m_historicalNoveltyAllowed(false)
+     , m_usGridOnly(true)  // Default: only chase US territory grids
+     , m_weightNewDXCC(TargetPriority::NewDXCC)
+     , m_weightNewBandSlot(TargetPriority::NewBandSlot)
+@@ -173,6 +174,32 @@ TargetScorer::~TargetScorer()
+ {
+ }
+ 
++QString TargetScorer::baseCallsign(const QString &call)
++{
++    const QString normalized = call.trimmed().toUpper();
++    const QStringList parts = normalized.split('/', Qt::SkipEmptyParts);
++    QString base;
++    for (const QString &part : parts) {
++        if (part.length() > base.length()) base = part;
++    }
++    return base.isEmpty() ? normalized : base;
++}
++
++bool TargetScorer::callsignsMatch(const QString &left, const QString &right)
++{
++    if (left.trimmed().isEmpty() || right.trimmed().isEmpty()) return false;
++    if (left.trimmed().compare(right.trimmed(), Qt::CaseInsensitive) == 0) return true;
++    return baseCallsign(left).compare(baseCallsign(right), Qt::CaseInsensitive) == 0;
++}
++
++bool TargetScorer::isPendingWavelogCall(const QString &call) const
++{
++    for (const QString &pending : m_pendingWavelogCalls) {
++        if (callsignsMatch(call, pending)) return true;
++    }
++    return false;
++}
++
+ QString TargetScorer::lookupDXCC(const QString &callsign)
+ {
+     if (!m_cty || callsign.isEmpty()) return QString();
+@@ -267,6 +294,14 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+ 
+     const QString firstToken = decode.originalMessage.simplified().section(' ', 0, 0).toUpper();
+     target.isCallingMe = m_weightCallingMe > 0 && !m_myCallsign.isEmpty() && firstToken == m_myCallsign;
++
++    // A completed QSO waiting in the Wavelog outbox is not authoritative
++    // worked history yet, but it is negative-only evidence: never select the
++    // same call again while acknowledgement is pending.
++    if (isPendingWavelogCall(decode.callsign)) {
++        target.priorityReason = "Wavelog acknowledgement pending";
++        return target;
++    }
+     
+     // Skip if below minimum SNR
+     if (decode.snr < m_minSNR) {
+@@ -295,7 +330,7 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     int dxccScore = 0;
+     
+     // Use callsign-based lookup to avoid entity name abbreviation mismatch (EU Russia vs European Russia)
+-    if (!ownCountry && m_priorityDXCC && m_tracker && m_tracker->isNewDXCCByCall(decode.callsign)) {
++    if (m_historicalNoveltyAllowed && !ownCountry && m_priorityDXCC && m_tracker && m_tracker->isNewDXCCByCall(decode.callsign)) {
+         // Apply rarity multiplier based on Club Log Most Wanted rankings
+         int rank = getMostWantedRank(entity);
+         double multiplier = getRarityMultiplier(rank);
+@@ -314,11 +349,11 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+             reasons << "New DXCC";
+         }
+     }
+-    if (m_priorityBandSlot && m_tracker && m_tracker->isNewBandSlotByCall(decode.callsign, decode.bandIndex)) {
++    if (m_historicalNoveltyAllowed && m_priorityBandSlot && m_tracker && m_tracker->isNewBandSlotByCall(decode.callsign, decode.bandIndex)) {
+         target.isNewBandSlot = true;
+         reasons << "New Band Slot";
+     }
+-    if (m_priorityGrid && !decode.grid.isEmpty() && m_tracker && m_tracker->isNewGrid(decode.grid)) {
++    if (m_historicalNoveltyAllowed && m_priorityGrid && !decode.grid.isEmpty() && m_tracker && m_tracker->isNewGrid(decode.grid)) {
+         // Grid eligibility is independent of DXCC/band-slot state. The prior
+         // else-if/country-worked coupling made new-grid chase unreachable for
+         // exactly the calls that also had a new band slot.
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.h b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+index 5f30b6e..2908b2a 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.h
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+@@ -9,6 +9,7 @@
+ #include <QString>
+ #include <QList>
+ #include <QMap>
++#include <QSet>
+ #include "decodecache.h"
+ 
+ class DxccTracker;
+@@ -68,6 +69,10 @@ public:
+     void setPriorityDXCC(bool enabled) { m_priorityDXCC = enabled; }
+     void setPriorityBandSlot(bool enabled) { m_priorityBandSlot = enabled; }
+     void setPriorityGrid(bool enabled) { m_priorityGrid = enabled; }
++    void setHistoricalNoveltyAllowed(bool allowed) { m_historicalNoveltyAllowed = allowed; }
++    bool historicalNoveltyAllowed() const { return m_historicalNoveltyAllowed; }
++    void setPendingWavelogCalls(const QSet<QString> &calls) { m_pendingWavelogCalls = calls; }
++    bool isPendingWavelogCall(const QString &call) const;
+     bool priorityDXCCEnabled() const { return m_priorityDXCC; }
+     bool priorityBandSlotEnabled() const { return m_priorityBandSlot; }
+     bool priorityGridEnabled() const { return m_priorityGrid; }
+@@ -104,6 +109,8 @@ signals:
+     void debugMessage(QString msg);
+ 
+ private:
++    static QString baseCallsign(const QString &call);
++    static bool callsignsMatch(const QString &left, const QString &right);
+     QString lookupDXCC(const QString &callsign);
+     bool isUSGrid(const QString &grid) const;  // Check if grid is within US territory
+     DxccTracker *m_tracker;
+@@ -112,6 +119,8 @@ private:
+     bool m_priorityDXCC;
+     bool m_priorityBandSlot;
+     bool m_priorityGrid;
++    bool m_historicalNoveltyAllowed;
++    QSet<QString> m_pendingWavelogCalls;
+     bool m_usGridOnly;    // Only chase grids within US territory
+     QString m_myCountry;  // Own country to filter out
+     QString m_myCallsign;
+diff --git a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp
+index 19cb502..eea61e8 100644
+--- a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp
++++ b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp
+@@ -276,6 +276,12 @@ bool HvDxccTracker::createTables()
+         return false;
+     }
+ 
++    if (!query.exec("CREATE TABLE IF NOT EXISTS wavelog_applied_deltas ("
++                    "delta_key TEXT PRIMARY KEY, applied_utc TEXT NOT NULL)")) {
++        emit databaseError("Failed to create Wavelog delta ledger: " + query.lastError().text());
++        return false;
++    }
++
+     // Create indices for fast lookup (3-part indexes matching UNIQUE/ON CONFLICT clauses)
+     query.exec("CREATE INDEX IF NOT EXISTS idx_dxcc_entity_band_mode ON worked_dxcc(entity_number, band_index, mode)");
+     query.exec("CREATE INDEX IF NOT EXISTS idx_grid_band_mode ON worked_grids(grid4, band_index, mode)");
+@@ -394,10 +400,10 @@ bool HvDxccTracker::loadDxccNumberMapping()
+         return true;
+     }
+ 
+-    QTextStream in(&file);
+-    QMap<int, int> remap;
+-    const auto originalPrefixes = m_prefixToEntity;
+-    while (!in.atEnd()) {
++    QTextStream in(&file);
++    QMap<int, int> remap;
++    const auto originalPrefixes = m_prefixToEntity;
++    while (!in.atEnd()) {
+         QString line = in.readLine().trimmed();
+         if (line.isEmpty() || line.startsWith('#')) continue;
+ 
+@@ -407,30 +413,30 @@ bool HvDxccTracker::loadDxccNumberMapping()
+             int dxccNum = parts.at(1).trimmed().toInt();
+ 
+             // Update entity number for this prefix
+-            if (originalPrefixes.contains(prefix) && dxccNum > 0) {
+-                remap[originalPrefixes[prefix].entityNumber] = dxccNum;
++            if (originalPrefixes.contains(prefix) && dxccNum > 0) {
++                remap[originalPrefixes[prefix].entityNumber] = dxccNum;
+             }
+         }
+     }
+ 
+-    file.close();
+-    // Rebuild from the original maps: official IDs can overlap sequential IDs.
+-    // Also update every alias and exact callsign, not only the primary prefix.
+-    const auto originalEntities = m_entityById;
+-    m_entityById.clear();
+-    for (auto it = originalEntities.constBegin(); it != originalEntities.constEnd(); ++it) {
+-        DxccEntity entity = it.value();
+-        entity.entityNumber = remap.value(entity.entityNumber, 10000 + entity.entityNumber);
+-        m_entityById[entity.entityNumber] = entity;
+-    }
+-    for (auto it = m_prefixToEntity.begin(); it != m_prefixToEntity.end(); ++it) {
+-        it.value().entityNumber = remap.value(it.value().entityNumber, 10000 + it.value().entityNumber);
+-    }
+-    for (auto it = m_callPrefixToEntity.begin(); it != m_callPrefixToEntity.end(); ++it) {
+-        it.value() = remap.value(it.value(), 10000 + it.value());
+-    }
+-    return true;
+-}
++    file.close();
++    // Rebuild from the original maps: official IDs can overlap sequential IDs.
++    // Also update every alias and exact callsign, not only the primary prefix.
++    const auto originalEntities = m_entityById;
++    m_entityById.clear();
++    for (auto it = originalEntities.constBegin(); it != originalEntities.constEnd(); ++it) {
++        DxccEntity entity = it.value();
++        entity.entityNumber = remap.value(entity.entityNumber, 10000 + entity.entityNumber);
++        m_entityById[entity.entityNumber] = entity;
++    }
++    for (auto it = m_prefixToEntity.begin(); it != m_prefixToEntity.end(); ++it) {
++        it.value().entityNumber = remap.value(it.value().entityNumber, 10000 + it.value().entityNumber);
++    }
++    for (auto it = m_callPrefixToEntity.begin(); it != m_callPrefixToEntity.end(); ++it) {
++        it.value() = remap.value(it.value(), 10000 + it.value());
++    }
++    return true;
++}
+ 
+ void HvDxccTracker::loadMostWantedRankings()
+ {
+@@ -1109,6 +1115,126 @@ void HvDxccTracker::onQsoLogged(const QString& callsign, const QString& grid,
+                                  int bandIndex, const QString& mode, const QString& date)
+ {
+     QMutexLocker locker(&m_mutex);
++    recordQsoUnlocked(callsign, grid, bandIndex, mode, date);
++}
++
++bool HvDxccTracker::applyWavelogAcknowledgedQso(
++    const QString& deltaKey, const QString& callsign, const QString& grid,
++    int bandIndex, const QString& mode, const QString& date)
++{
++    if (deltaKey.isEmpty()) return false;
++    QMutexLocker locker(&m_mutex);
++    if (!m_db.transaction()) return false;
++    QSqlQuery ledger(m_db);
++    ledger.prepare("INSERT OR IGNORE INTO wavelog_applied_deltas (delta_key, applied_utc) VALUES (?, ?)");
++    ledger.addBindValue(deltaKey);
++    ledger.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
++    if (!ledger.exec()) {
++        m_db.rollback();
++        return false;
++    }
++    if (ledger.numRowsAffected() == 0) {
++        m_db.rollback();
++        return true;
++    }
++
++    // Write the complete worked-state transition in this same transaction.
++    // In-memory sets and signals are updated only after commit, so a failed
++    // statement or rollback cannot advertise a QSO the database did not keep.
++    const int entityNum = getDxccNumber(callsign);
++    const QString call = extractBaseCall(callsign);
++    const QString g = normalizeGrid(grid);
++    const bool newDxcc = entityNum > 0 && !m_workedDxccAllTime.contains(QString::number(entityNum));
++    const bool newGrid = g.length() >= 4 && !m_workedGridsAllTime.contains(g.left(4));
++
++    if (entityNum > 0) {
++        QSqlQuery dxcc(m_db);
++        dxcc.prepare("INSERT INTO worked_dxcc (entity_number, band_index, mode, first_qso_date, first_callsign) "
++                     "VALUES (?, ?, ?, ?, ?) "
++                     "ON CONFLICT(entity_number, band_index, mode) DO UPDATE SET qso_count = qso_count + 1");
++        dxcc.addBindValue(entityNum);
++        dxcc.addBindValue(bandIndex);
++        dxcc.addBindValue(mode);
++        dxcc.addBindValue(date);
++        dxcc.addBindValue(call);
++        if (!dxcc.exec()) {
++            m_db.rollback();
++            emit databaseError("Wavelog delta DXCC write failed: " + dxcc.lastError().text());
++            return false;
++        }
++    }
++    if (g.length() >= 4) {
++        QSqlQuery gridQuery(m_db);
++        gridQuery.prepare("INSERT INTO worked_grids (grid4, grid6, band_index, mode, first_qso_date, first_callsign) "
++                          "VALUES (?, ?, ?, ?, ?, ?) "
++                          "ON CONFLICT(grid4, band_index, mode) DO UPDATE SET qso_count = qso_count + 1");
++        gridQuery.addBindValue(g.left(4));
++        gridQuery.addBindValue(g.length() >= 6 ? g.left(6) : "");
++        gridQuery.addBindValue(bandIndex);
++        gridQuery.addBindValue(mode);
++        gridQuery.addBindValue(date);
++        gridQuery.addBindValue(call);
++        if (!gridQuery.exec()) {
++            m_db.rollback();
++            emit databaseError("Wavelog delta grid write failed: " + gridQuery.lastError().text());
++            return false;
++        }
++    }
++    QSqlQuery workedCall(m_db);
++    workedCall.prepare("INSERT OR IGNORE INTO worked_calls (callsign, band_index, mode, qso_date) VALUES (?, ?, ?, ?)");
++    workedCall.addBindValue(call);
++    workedCall.addBindValue(bandIndex);
++    workedCall.addBindValue(mode);
++    workedCall.addBindValue(date);
++    if (!workedCall.exec()) {
++        m_db.rollback();
++        emit databaseError("Wavelog delta callsign write failed: " + workedCall.lastError().text());
++        return false;
++    }
++    if (!m_db.commit()) {
++        m_db.rollback();
++        return false;
++    }
++
++    if (entityNum > 0) {
++        m_workedDxccAllTime.insert(QString::number(entityNum));
++        m_workedDxccByBand.insert(QString("%1_%2").arg(entityNum).arg(bandIndex));
++        m_workedDxccByBandMode.insert(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
++    }
++    if (g.length() >= 4) {
++        m_workedGridsAllTime.insert(g.left(4));
++        m_workedGridsByBand.insert(QString("%1_%2").arg(g.left(4)).arg(bandIndex));
++    }
++    m_workedCalls.insert(QString("%1_%2_%3").arg(call).arg(bandIndex).arg(mode));
++    if (newDxcc) emit newDxccWorked(entityNum, getDxccName(call), bandIndex);
++    if (newGrid) emit newGridWorked(g.left(4), bandIndex);
++    emit workedStatusChanged();
++    return true;
++}
++
++void HvDxccTracker::recordQsoUnlocked(const QString& callsign, const QString& grid,
++                                      int bandIndex, const QString& mode, const QString& date)
++{
++
++    const QSet<QString> beforeDxccAll = m_workedDxccAllTime;
++    const QSet<QString> beforeDxccBand = m_workedDxccByBand;
++    const QSet<QString> beforeDxccMode = m_workedDxccByBandMode;
++    const QSet<QString> beforeGridAll = m_workedGridsAllTime;
++    const QSet<QString> beforeGridBand = m_workedGridsByBand;
++    const QSet<QString> beforeCalls = m_workedCalls;
++    const auto rollback = [&]() {
++        m_db.rollback();
++        m_workedDxccAllTime = beforeDxccAll;
++        m_workedDxccByBand = beforeDxccBand;
++        m_workedDxccByBandMode = beforeDxccMode;
++        m_workedGridsAllTime = beforeGridAll;
++        m_workedGridsByBand = beforeGridBand;
++        m_workedCalls = beforeCalls;
++    };
++    if (!m_db.transaction()) {
++        emit databaseError("QSO tracker transaction could not start: " + m_db.lastError().text());
++        return;
++    }
+ 
+     // IMPORTANT: Get entity from FULL callsign (e.g., 6W/DB1RUL -> Senegal)
+     // getDxccNumber handles portable prefixes correctly via lookupDxcc
+@@ -1131,7 +1257,11 @@ void HvDxccTracker::onQsoLogged(const QString& callsign, const QString& grid,
+         if (!isDxccWorkedAllTime(entityNum)) {
+             newDxcc = true;
+         }
+-        addWorkedDxcc(entityNum, bandIndex, mode, call, date);
++        if (!addWorkedDxcc(entityNum, bandIndex, mode, call, date)) {
++            rollback();
++            emit databaseError("QSO tracker DXCC write failed");
++            return;
++        }
+     }
+ 
+     // Add grid if valid
+@@ -1139,7 +1269,11 @@ void HvDxccTracker::onQsoLogged(const QString& callsign, const QString& grid,
+         if (!m_workedGridsAllTime.contains(g)) {
+             newGrid = true;
+         }
+-        addWorkedGrid(g, bandIndex, mode, call, date);
++        if (!addWorkedGrid(g, bandIndex, mode, call, date)) {
++            rollback();
++            emit databaseError("QSO tracker grid write failed");
++            return;
++        }
+     }
+ 
+     // Add call to worked list
+@@ -1154,7 +1288,17 @@ void HvDxccTracker::onQsoLogged(const QString& callsign, const QString& grid,
+         query.addBindValue(bandIndex);
+         query.addBindValue(mode);
+         query.addBindValue(date);
+-        query.exec();
++        if (!query.exec()) {
++            rollback();
++            emit databaseError("QSO tracker callsign write failed: " + query.lastError().text());
++            return;
++        }
++    }
++
++    if (!m_db.commit()) {
++        rollback();
++        emit databaseError("QSO tracker commit failed: " + m_db.lastError().text());
++        return;
+     }
+ 
+     // Emit signals for new entities/grids
+@@ -1274,7 +1418,7 @@ void HvDxccTracker::importFromAdifLog(const QString& logPath)
+         recordNum++;
+         if (record.trimmed().isEmpty()) continue;
+ 
+-        QString call, grid, band, mode, submode, date;
++        QString call, grid, band, mode, submode, date;
+         bool parseError = false;
+ 
+         QRegularExpressionMatchIterator it = fieldRx.globalMatch(record);
+@@ -1300,15 +1444,15 @@ void HvDxccTracker::importFromAdifLog(const QString& logPath)
+             if (field == "CALL") call = value;
+             else if (field == "GRIDSQUARE") grid = value;
+             else if (field == "BAND") band = value;
+-            else if (field == "MODE") mode = value;
+-            else if (field == "SUBMODE") submode = value;
++            else if (field == "MODE") mode = value;
++            else if (field == "SUBMODE") submode = value;
+             else if (field == "QSO_DATE") date = value;
+         }
+ 
+-        // FT4 is represented either as MODE=FT4 or MODE=MFSK/SUBMODE=FT4.
+-        mode = mode.toUpper();
+-        if (mode == "MFSK" && submode.toUpper() == "FT4") mode = "FT4";
+-        if (mode != "FT8" && mode != "FT4") {
++        // FT4 is represented either as MODE=FT4 or MODE=MFSK/SUBMODE=FT4.
++        mode = mode.toUpper();
++        if (mode == "MFSK" && submode.toUpper() == "FT4") mode = "FT4";
++        if (mode != "FT8" && mode != "FT4") {
+             skippedNonFt8++;
+             continue;
+         }
+@@ -1402,7 +1546,7 @@ void HvDxccTracker::importFromAdifLog(const QString& logPath)
+     // Single commit at end
+     m_db.exec("COMMIT");
+ 
+-    emit debugMessage(QString("[ADIF] Import complete: %1 imported, %2 skipped (non-FT8/FT4), %3 errors")
++    emit debugMessage(QString("[ADIF] Import complete: %1 imported, %2 skipped (non-FT8/FT4), %3 errors")
+         .arg(imported).arg(skippedNonFt8).arg(errors));
+ 
+     // ONE signal at end (not per record!)
+@@ -1442,8 +1586,8 @@ void HvDxccTracker::importFromEdiLog(const QString& logPath)
+         QString band = fields.count() > 5 ? fields.at(5) : "";
+ 
+         // FT8-only filtering
+-        mode = mode.toUpper();
+-        if (mode != "FT8" && mode != "FT4") {
++        mode = mode.toUpper();
++        if (mode != "FT8" && mode != "FT4") {
+             skippedNonFt8++;
+             continue;
+         }
+@@ -1561,5 +1705,5 @@ static int bandToBandIndex(const QString& band)
+     if (b == "6") return 14;
+     if (b == "2") return 17;
+ 
+-    return -1;  // Unknown bands must never silently mark a 20m slot worked.
++    return -1;  // Unknown bands must never silently mark a 20m slot worked.
+ }
+diff --git a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.h b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.h
+index e6f597e..d5f9d9c 100644
+--- a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.h
++++ b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.h
+@@ -101,6 +101,9 @@ public slots:
+     // Called when QSO is logged
+     void onQsoLogged(const QString& callsign, const QString& grid,
+                      int bandIndex, const QString& mode, const QString& date);
++    bool applyWavelogAcknowledgedQso(const QString& deltaKey, const QString& callsign,
++                                     const QString& grid, int bandIndex,
++                                     const QString& mode, const QString& date);
+ 
+     // Import from existing log
+     void importFromAdifLog(const QString& logPath);
+@@ -141,6 +144,8 @@ private:
+                        const QString& callsign, const QString& date);
+     bool addWorkedGrid(const QString& grid, int bandIndex, const QString& mode,
+                        const QString& callsign, const QString& date);
++    void recordQsoUnlocked(const QString& callsign, const QString& grid,
++                           int bandIndex, const QString& mode, const QString& date);
+ 
+     // Load worked status from database
+     void loadWorkedFromDatabase();
+diff --git a/MSHV_2762/src/HvMsPlayer/libsound/genmesage.cpp b/MSHV_2762/src/HvMsPlayer/libsound/genmesage.cpp
+index 5b23499..58bfa26 100644
+--- a/MSHV_2762/src/HvMsPlayer/libsound/genmesage.cpp
++++ b/MSHV_2762/src/HvMsPlayer/libsound/genmesage.cpp
+@@ -156,12 +156,13 @@ bool GenMessage::getblock_raws(int *buf,int size_p)//stereo out for Windows and
+     }
+     return true;
+ } //QElapsedTimer ttt;
+-bool GenMessage::getblock_rawc(unsigned char *buf,int size_p)//stereo out for Windows and Linux
++bool GenMessage::getblock_rawc(unsigned char *buf,int size_p)
+ {
+ 	int bits = 2; //qDebug()<<size_p<<ttt.elapsed(); ttt.start();
+ 	if (samplesize == 24) bits = 3;
+-	if (samplesize == 32) bits = 4; 
+-    for (int i = 0; i < size_p; i+=2*bits)
++	if (samplesize == 32) bits = 4;
++    const int channels = stereo ? 2 : 1;
++    for (int i = 0; i < size_p; i+=channels*bits)
+     {        
+         int raw_dsp = iwave[iwave_count];
+         if (mute_raw)
+@@ -174,35 +175,15 @@ bool GenMessage::getblock_rawc(unsigned char *buf,int size_p)//stereo out for Wi
+             raw_dsp = (int)data_l;
+             raw_dsp = raw_dsp*vol_win;
+         }  
+-        if (bits == 4)//little-endian-form, to char HV  
+-        {      
+-        	raw_dsp *= 256;
+-        	buf[i]   = (raw_dsp & 0xff);
+-        	buf[i+1] = ((raw_dsp >>  8) & 0xff);
+-        	buf[i+2] = ((raw_dsp >> 16) & 0xff);
+-        	buf[i+3] = ((raw_dsp >> 24) & 0xff);
+-        	buf[i+4] = (raw_dsp & 0xff);
+-        	buf[i+5] = ((raw_dsp >>  8) & 0xff); 
+-        	buf[i+6] = ((raw_dsp >> 16) & 0xff);  
+-        	buf[i+7] = ((raw_dsp >> 24) & 0xff);    	
+-       	}    
+-        else if (bits == 3)
+-        {      
+-        	buf[i]   = (raw_dsp & 0xff);
+-        	buf[i+1] = ((raw_dsp >>  8) & 0xff);
+-        	buf[i+2] = ((raw_dsp >> 16) & 0xff);
+-        	buf[i+3] = (raw_dsp & 0xff);
+-        	buf[i+4] = ((raw_dsp >>  8) & 0xff); 
+-        	buf[i+5] = ((raw_dsp >> 16) & 0xff);      	
+-       	}
+-       	else
+-       	{        	 
+-        	raw_dsp /= 256; //raw_dsp = raw_dsp >> 8;      
+-        	buf[i]   = (raw_dsp & 0xff);
+-        	buf[i+1] = ((raw_dsp >> 8) & 0xff);
+-        	buf[i+2] = (raw_dsp & 0xff);
+-        	buf[i+3] = ((raw_dsp >> 8) & 0xff);       		
+-      	}
++        if (bits == 4) raw_dsp *= 256;
++        else if (bits == 2) raw_dsp /= 256;
++
++        for (int channel = 0; channel < channels; ++channel)
++        {
++            const int offset = i + channel*bits;
++            for (int byte = 0; byte < bits; ++byte)
++                buf[offset+byte] = ((raw_dsp >> (8*byte)) & 0xff);
++        }
+         iwave_count++;
+         if (iwave_count>=iwave_size) iwave_count = 0;
+     }
+@@ -237,7 +218,9 @@ bool GenMessage::run(void)
+ }
+ bool GenMessage::testwave()
+ {
+-    stereo=1;//0 mono 1 stere
++    // OM0RX DirectSound feeds DAX TX as the same 48 kHz mono PCM format used
++    // by the known-good WSJT-Z path.  Keep TCI stereo framing unchanged.
++    stereo=ftci ? 1 : 0;//0 mono 1 stereo
+     samplesize=(int)BITS_PER_SAMPLE;
+     speed=(int)GEN_SAMPLE_RATE;
+     size =(int)10000;// triabwa da e goliamo
+diff --git a/MSHV_2762/src/HvRigControl/hvrigcontrol.cpp b/MSHV_2762/src/HvRigControl/hvrigcontrol.cpp
+index 8db172f..860ed59 100644
+--- a/MSHV_2762/src/HvRigControl/hvrigcontrol.cpp
++++ b/MSHV_2762/src/HvRigControl/hvrigcontrol.cpp
+@@ -1910,7 +1910,7 @@ void HvRigControl::SetPtt_p(bool flag,int id)//2.17 id 0=All 1=p1 2=p2
+             return;
+         }
+         // QNetworkAccessManager processes events while the authoritative
+-        // consume POST is pending.  Never let a successful but late response
++        // consume POST is pending. Never let a successful but late response
+         // resurrect TX after a re-entrant RX, Stop, QSY, invalidation or
+         // frequency change.
+         if (!Om0rxStationGate::pttRequestStillCurrent(
+diff --git a/MSHV_2762/src/main_ms.cpp b/MSHV_2762/src/main_ms.cpp
+index 5e35f3f..c3317b1 100644
+--- a/MSHV_2762/src/main_ms.cpp
++++ b/MSHV_2762/src/main_ms.cpp
+@@ -873,7 +873,7 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     // Only notify for valid HF bands (3-13), ignore VHF/UHF bands like 70 MHz (index 16)
+     QTimer::singleShot(100, this, [this]() {
+         for (int i = 0; i < ListBands.count(); ++i) {
+-            if (ListBands.at(i)->isChecked() && i >= 3 && i <= 13) {
++            if (ListBands.at(i)->isChecked() && i >= 3 && i <= 14) {
+                 m_autoDxerCore->onBandChangedExternally(i);
+                 m_autoDxerCore->appendDebugMessage(QString("INIT: Initial band set to %1").arg(i));
+                 break;
+@@ -937,36 +937,6 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+                 m_autoDxerPanel, &AutoDxerPanel::onDebugMessage);
+     }
+ 
+-    // Forward QSO logged signal to DXCC tracker
+-    // QSO format from MakeLoggedQSO: [0]=date/time, [1]=call, [2]=grid, [3]=freq(Hz), [4]=mode, ...
+-    connect(THvTxW, &HvTxW::EmitQsoLogged, [this](QStringList qsoData) {
+-        if (qsoData.size() >= 5 && m_hvDxccTracker) {
+-            QString callsign = qsoData.at(1);
+-            QString grid = qsoData.at(2);
+-            QString freqHz = qsoData.at(3);
+-            QString mode = qsoData.at(4);
+-            QString dateTime = qsoData.at(0);  // Format: "YYYY-MM-DD HH:MM:SS"
+-            QString date = dateTime.left(10).remove('-');  // Convert to YYYYMMDD
+-
+-            // Convert frequency to band index
+-            int freq = freqHz.toInt();
+-            int bandIndex = 8;  // Default 20m
+-            if (freq >= 1800000 && freq < 2000000) bandIndex = 3;       // 160m
+-            else if (freq >= 3500000 && freq < 4000000) bandIndex = 4;  // 80m
+-            else if (freq >= 5300000 && freq < 5400000) bandIndex = 5;  // 60m
+-            else if (freq >= 7000000 && freq < 7300000) bandIndex = 6;  // 40m
+-            else if (freq >= 10100000 && freq < 10150000) bandIndex = 7; // 30m
+-            else if (freq >= 14000000 && freq < 14350000) bandIndex = 8; // 20m
+-            else if (freq >= 18068000 && freq < 18168000) bandIndex = 9; // 17m
+-            else if (freq >= 21000000 && freq < 21450000) bandIndex = 10; // 15m
+-            else if (freq >= 24890000 && freq < 24990000) bandIndex = 11; // 12m
+-            else if (freq >= 28000000 && freq < 29700000) bandIndex = 12; // 10m
+-            else if (freq >= 50000000 && freq < 54000000) bandIndex = 14; // 6m (index 14 in MSHV)
+-
+-            m_hvDxccTracker->onQsoLogged(callsign, grid, bandIndex, mode, date);
+-        }
+-    });
+-
+     // Show the DXCC Chaser window
+     m_dxccChaserWindow->show();
+     // ===== End DXCC Chaser Integration =====
+@@ -2879,7 +2849,7 @@ void Main_Ms::BandChanged(bool)
+             W_band_bt_sw->SetActiveBt(i);
+ 
+             // Notify Auto DXer of band change (only for HF bands 3-13)
+-            if (m_autoDxerCore && i >= 3 && i <= 13) {
++            if (m_autoDxerCore && i >= 3 && i <= 14) {
+                 m_autoDxerCore->onBandChangedExternally(i);
+             }
+             break;

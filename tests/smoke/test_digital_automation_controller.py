@@ -24,6 +24,16 @@ from services.digital_automation import (
 from services.wsjtx import WSJTXService, register_wsjtx_endpoints
 
 
+@pytest.fixture(autouse=True)
+def _use_explicit_wsjtz_provider_for_planner_tests(tmp_path, monkeypatch):
+    """Planner unit tests must not inherit the operator's live provider."""
+    import services.digital_engine as digital_engine
+
+    state_path = tmp_path / "digital_engine.json"
+    digital_engine.atomic_write_json(state_path, {"provider": "wsjtz"})
+    monkeypatch.setattr(digital_engine, "STATE_PATH", state_path)
+
+
 def test_clean_rebuild_defaults_to_wsjtz_as_dial_frequency_owner():
     settings = DigitalAutomationSettings.from_operator_settings({})
 

@@ -1,0 +1,79 @@
+<section id="station-path-dashboard" class="station-path-dashboard" data-state="unknown" aria-labelledby="station-path-title">
+    <header class="station-path-header">
+        <div>
+            <span class="station-path-eyebrow">Live read-only route</span>
+            <h2 id="station-path-title">Station RF path</h2>
+        </div>
+        <div class="station-path-summary" aria-live="polite">
+            <span class="station-path-state state-unknown" data-path-role="overall-state">Unknown</span>
+            <span class="station-path-age" data-path-role="age">Waiting for telemetry</span>
+        </div>
+    </header>
+
+    <p class="station-path-route-label" data-path-role="route-label">FLEX → KPA500 → KAT500 → antenna</p>
+
+    <div class="station-path-grid">
+        <article class="station-path-node state-unknown" data-path-segment="flex">
+            <div class="station-path-node-head">
+                <span class="station-path-step">1</span>
+                <span class="station-path-device">FLEX-8400</span>
+                <span class="station-path-node-state" data-path-role="state">Unknown</span>
+            </div>
+            <strong class="station-path-primary" data-path-role="primary">— MHz</strong>
+            <span class="station-path-secondary" data-path-role="secondary">Waiting for radio</span>
+            <dl class="station-path-values">
+                <div><dt>Mode</dt><dd data-path-value="mode">—</dd></div>
+                <div><dt>RF power</dt><dd data-path-value="rf-power">—</dd></div>
+                <div><dt>TX port</dt><dd data-path-value="tx-port">—</dd></div>
+                <div><dt>Interlock</dt><dd data-path-value="interlock">—</dd></div>
+            </dl>
+        </article>
+
+        <article class="station-path-node state-unknown" data-path-segment="kpa500">
+            <div class="station-path-node-head">
+                <span class="station-path-step">2</span>
+                <span class="station-path-device">KPA500</span>
+                <span class="station-path-node-state" data-path-role="state">Unknown</span>
+            </div>
+            <strong class="station-path-primary" data-path-role="primary">Waiting for amplifier</strong>
+            <span class="station-path-secondary" data-path-role="secondary">No fresh readback</span>
+            <dl class="station-path-values">
+                <div><dt>Output</dt><dd data-path-value="output">—</dd></div>
+                <div><dt>SWR</dt><dd data-path-value="swr">—</dd></div>
+                <div><dt>PA</dt><dd data-path-value="pa">—</dd></div>
+            </dl>
+        </article>
+
+        <article class="station-path-node state-unknown" data-path-segment="kat500">
+            <div class="station-path-node-head">
+                <span class="station-path-step">3</span>
+                <span class="station-path-device">KAT500</span>
+                <span class="station-path-node-state" data-path-role="state">Unknown</span>
+            </div>
+            <strong class="station-path-primary" data-path-role="primary">Waiting for tuner</strong>
+            <span class="station-path-secondary" data-path-role="secondary">No fresh readback</span>
+            <dl class="station-path-values">
+                <div><dt>Mode</dt><dd data-path-value="mode">—</dd></div>
+                <div><dt>SWR</dt><dd data-path-value="swr">—</dd></div>
+                <div><dt>Tune</dt><dd data-path-value="tune">—</dd></div>
+            </dl>
+        </article>
+
+        <article class="station-path-node state-unknown" data-path-segment="antenna">
+            <div class="station-path-node-head">
+                <span class="station-path-step">4</span>
+                <span class="station-path-device">KAT antenna</span>
+                <span class="station-path-node-state" data-path-role="state">Unknown</span>
+            </div>
+            <strong class="station-path-primary" data-path-role="primary">Unknown antenna</strong>
+            <span class="station-path-secondary" data-path-role="secondary">No output selected</span>
+            <dl class="station-path-values">
+                <div><dt>Output</dt><dd data-path-value="output">—</dd></div>
+                <div><dt>Band</dt><dd data-path-value="band">—</dd></div>
+                <div><dt>Route</dt><dd data-path-value="route">Unconfirmed</dd></div>
+            </dl>
+        </article>
+    </div>
+
+    <p class="station-path-message" data-path-role="message">The route will remain unknown until fresh device readback is available.</p>
+</section>

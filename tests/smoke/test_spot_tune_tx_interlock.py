@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import _bootstrap  # noqa: F401
 
 from backend.api.spots import SpotTuneRequest, add_spot_to_radio, tune_to_spot
+import services.radio as radio_module
 import services.websocket as websocket_module
 import services.wsjtx as wsjtx_module
 
@@ -52,8 +53,16 @@ def test_spot_qsy_halts_wsjtx_and_dekeys_radio_before_tuning(monkeypatch):
     async def fake_broadcast(payload):
         events.append(("broadcast", payload))
 
+    async def safe_route(_reason, operation, **_kwargs):
+        return operation()
+
     monkeypatch.setattr(wsjtx_module, "get_wsjtx_service", lambda: FakeWsjtx())
     monkeypatch.setattr(websocket_module, "broadcast_status", fake_broadcast)
+    monkeypatch.setattr(
+        radio_module.radio_control_state,
+        "station_route_handler",
+        safe_route,
+    )
 
     result = asyncio.run(
         tune_to_spot(

@@ -1,0 +1,172 @@
+<section id="station-training-preview" class="station-training-preview" data-state="loading" data-erase-preview="false" aria-labelledby="station-training-title">
+    <header class="station-training-header">
+        <div>
+            <span class="station-training-eyebrow">ATU workspace · guarded RF workflow</span>
+            <h2 id="station-training-title">ATU Auto Setup</h2>
+            <p>Build and inspect a plan first. Starting training is a separate, confirmed action that keys the radio at low power and may change KAT500 memories.</p>
+        </div>
+        <span class="station-training-badge" data-training-role="mode-badge">Plan first</span>
+    </header>
+
+    <div class="station-training-layout">
+        <form class="station-training-controls" data-training-role="form">
+            <fieldset>
+                <legend>Bands <span>Choose one or several</span></legend>
+                <div class="station-training-selection-tools">
+                    <button type="button" data-training-role="bands-all">Select all bands</button>
+                    <button type="button" data-training-role="bands-none">Clear bands</button>
+                </div>
+                <div class="station-training-check-grid station-training-band-grid">
+                    <label><input type="checkbox" name="training-band" value="160m">160 m</label>
+                    <label><input type="checkbox" name="training-band" value="80m">80 m</label>
+                    <label><input type="checkbox" name="training-band" value="60m">60 m</label>
+                    <label><input type="checkbox" name="training-band" value="40m">40 m</label>
+                    <label><input type="checkbox" name="training-band" value="30m">30 m</label>
+                    <label><input type="checkbox" name="training-band" value="20m" checked>20 m</label>
+                    <label><input type="checkbox" name="training-band" value="17m">17 m</label>
+                    <label><input type="checkbox" name="training-band" value="15m">15 m</label>
+                    <label><input type="checkbox" name="training-band" value="12m">12 m</label>
+                    <label><input type="checkbox" name="training-band" value="10m">10 m</label>
+                    <label><input type="checkbox" name="training-band" value="6m">6 m</label>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Band portions <span>Representative memory points</span></legend>
+                <div class="station-training-check-grid station-training-portion-grid">
+                    <label><input type="checkbox" name="training-portion" value="cw" checked><span><strong>CW</strong><small>Lower band</small></span></label>
+                    <label><input type="checkbox" name="training-portion" value="data" checked><span><strong>Data</strong><small>Digital modes</small></span></label>
+                    <label><input type="checkbox" name="training-portion" value="ssb" checked><span><strong>SSB</strong><small>Phone segment</small></span></label>
+                </div>
+            </fieldset>
+
+            <label class="station-training-coverage">
+                <span><strong>Coverage</strong><small>Use one point per portion, or review every KAT500 memory bin that overlaps it.</small></span>
+                <select data-training-role="coverage">
+                    <option value="representative" selected>Representative points</option>
+                    <option value="full_bins">Every tuner memory bin</option>
+                </select>
+            </label>
+
+            <label class="station-training-erase">
+                <input type="checkbox" data-training-role="erase">
+                <span><strong>Erase selected ATU memories before training</strong><small>Build plan only previews the erase scope. Start training can perform it after the extra backup confirmation below.</small></span>
+            </label>
+
+            <div class="station-training-build-row">
+                <button class="station-training-build" type="submit" data-training-role="build">Build plan</button>
+                <span>Preview only · does not produce RF</span>
+            </div>
+            <p class="station-training-form-error" data-training-role="form-error" role="alert" hidden></p>
+
+            <section class="station-training-execution" data-training-role="execution" aria-labelledby="station-training-execution-title">
+                <div class="station-training-execution-heading">
+                    <div>
+                        <span class="station-training-rf-label">RF transmission</span>
+                        <h3 id="station-training-execution-title">Measure or train</h3>
+                    </div>
+                    <strong class="station-training-job-state" data-training-role="job-state">Not running</strong>
+                </div>
+                <p class="station-training-rf-warning"><strong>This action produces RF.</strong> It keys the radio at the planned tune power, operates the tuner, and can overwrite selected tuner memories. Monitor the station throughout.</p>
+
+                <div class="station-training-preflight" data-training-role="preflight" role="status">
+                    <strong>Execution prerequisites</strong>
+                    <ul data-training-role="blockers"><li>Build a plan to check execution availability.</li></ul>
+                    <div class="station-training-preflight-actions">
+                        <button type="button" data-training-role="stop-digital" hidden>Stop digital engine &amp; release radio</button>
+                        <button type="button" data-training-role="recheck">Recheck safety status</button>
+                    </div>
+                    <small data-training-role="preflight-note">Safety status refreshes automatically while a plan is blocked.</small>
+                </div>
+
+                <div class="station-training-confirmations">
+                    <label><input type="checkbox" data-training-role="approved-load">I confirm the selected antenna/load and RF path are approved for low-power tuning.</label>
+                    <label><input type="checkbox" data-training-role="digital-inhibit">I confirm the external digital engine is inhibited and cannot key the radio.</label>
+                    <label><input type="checkbox" data-training-role="legal-operation">I confirm this transmission is legal and I am authorized to operate on every planned frequency.</label>
+                    <label class="station-training-backup-confirmation" data-training-role="backup-row" hidden><input type="checkbox" data-training-role="vendor-backup">I made and verified a current vendor backup of the KAT500 memories.</label>
+                </div>
+
+                <div class="station-training-execution-actions">
+                    <button class="station-training-survey" type="button" data-training-role="survey" disabled>Run SWR survey — produces RF</button>
+                    <button class="station-training-start" type="button" data-training-role="start" disabled>Start training — produces RF</button>
+                    <button class="station-training-cancel" type="button" data-training-role="cancel" hidden>Cancel active job</button>
+                </div>
+                <p class="station-training-survey-note">Survey recalls each existing KAT500 memory in MAN mode and measures it at low power. It does not tune, erase, or store tuner memory.</p>
+                <div class="station-training-progress" data-training-role="progress-wrap" hidden>
+                    <div><span data-training-role="progress-label">Preparing…</span><strong data-training-role="progress-count">0 / 0</strong></div>
+                    <progress data-training-role="progress" value="0" max="1">0%</progress>
+                </div>
+                <p class="station-training-execution-message" data-training-role="execution-message" role="alert">Build a plan before starting training.</p>
+                <details class="station-training-diagnostics" data-training-role="diagnostics" hidden>
+                    <summary data-training-role="diagnostics-summary">Training diagnostics</summary>
+                    <pre data-training-role="diagnostics-body"></pre>
+                </details>
+
+                <section class="station-training-recommendation" data-training-role="survey-recommendation" hidden>
+                    <div>
+                        <strong>Survey-based training</strong>
+                        <p data-training-role="survey-recommendation-text">Measured points above the threshold can become a focused training plan.</p>
+                    </div>
+                    <label>Train above <input type="number" min="1.1" max="2.9" step="0.05" value="1.50" data-training-role="survey-threshold" aria-label="SWR threshold"> SWR</label>
+                    <button type="button" data-training-role="train-recommended">Build focused training plan</button>
+                </section>
+            </section>
+        </form>
+
+        <div class="station-training-preview-pane">
+            <div class="station-training-summary" aria-label="Plan summary">
+                <span><small>Planned</small><strong data-training-role="point-count">—</strong></span>
+                <span><small>Eligible</small><strong data-training-role="eligible">—</strong></span>
+                <span><small>Blocked</small><strong data-training-role="blocked">—</strong></span>
+                <span><small>Worst case</small><strong data-training-role="duration">—</strong></span>
+                <span><small>Tune power</small><strong data-training-role="power">—</strong></span>
+            </div>
+
+            <figure class="station-training-chart">
+                <figcaption>
+                    <span><strong>SWR profile</strong><small>Historic or returned result points appear when supplied by the preview API.</small></span>
+                    <span class="station-training-chart-tools">
+                        <label>Profile <select data-training-role="history-profile"><option value="live">Current plan / latest run</option></select></label>
+                        <button type="button" data-training-role="history-refresh">Refresh history</button>
+                        <span class="station-training-legend" aria-hidden="true"><i class="before"></i>Before <i class="after"></i>After</span>
+                    </span>
+                </figcaption>
+                <svg data-training-role="swr-plot" viewBox="0 0 760 220" role="img" aria-label="SWR preview plot. No measured points available.">
+                    <g class="station-training-plot-grid" aria-hidden="true">
+                        <line x1="54" y1="182" x2="738" y2="182"></line>
+                        <line x1="54" y1="155" x2="738" y2="155" class="target"></line>
+                        <line x1="54" y1="128" x2="738" y2="128"></line>
+                        <line x1="54" y1="74" x2="738" y2="74" class="abort"></line>
+                        <line x1="54" y1="20" x2="738" y2="20"></line>
+                        <text x="45" y="186">1.0</text><text x="45" y="159">1.5</text><text x="45" y="132">2.0</text><text x="45" y="78">3.0</text><text x="45" y="24">4.0+</text>
+                        <text x="64" y="149" class="target-label">TARGET ≤ 1.5</text>
+                        <text x="64" y="68" class="abort-label">ABORT ≥ 3.0</text>
+                    </g>
+                    <g data-training-role="plot-points"></g>
+                    <text class="station-training-plot-empty" data-training-role="plot-empty" x="396" y="108">SWR results will be drawn here</text>
+                </svg>
+            </figure>
+        </div>
+    </div>
+
+    <div class="station-training-table-wrap">
+        <table>
+            <caption class="station-training-sr-only">Calculated ATU setup points</caption>
+            <thead><tr><th scope="col">Band</th><th scope="col">Frequency</th><th scope="col">FLEX</th><th scope="col">KAT</th><th scope="col">Before</th><th scope="col">After</th><th scope="col">Status</th></tr></thead>
+            <tbody data-training-role="points"></tbody>
+        </table>
+    </div>
+    <p class="station-training-message" data-training-role="message" aria-live="polite">Loading station defaults…</p>
+
+    <dialog class="station-training-rf-dialog" data-training-role="rf-confirm-dialog">
+        <form method="dialog">
+            <span class="station-training-rf-label">Final RF confirmation</span>
+            <h3 data-training-role="rf-confirm-title">Start RF operation?</h3>
+            <p data-training-role="rf-confirm-summary">This action produces RF. Are you sure?</p>
+            <div class="station-training-rf-dialog-actions">
+                <button type="button" class="station-training-dialog-no" data-training-role="rf-confirm-no">No, go back</button>
+                <button type="button" class="station-training-dialog-yes" data-training-role="rf-confirm-yes">Yes, start RF</button>
+            </div>
+        </form>
+    </dialog>
+</section>

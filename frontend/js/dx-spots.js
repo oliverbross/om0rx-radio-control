@@ -1183,6 +1183,10 @@ const dxSpotsMethods = {
     },
 
     async prepareWsjtxPlannerTarget(target) {
+        if ((window.om0rxDigitalEngine || 'none') !== 'wsjtz') {
+            this.showStatus(window.om0rxDigitalEngine === 'mshv_auto_dx' ? 'MSHV internal Auto DX owns target selection.' : 'Digital engines are disabled.', 'warning');
+            return;
+        }
         if (!target?.call) return;
         const payload = {
             callsign: target.call,
@@ -1259,6 +1263,10 @@ const dxSpotsMethods = {
     },
 
     async startWsjtxTargetFromSpot(spot, options = {}) {
+        if ((window.om0rxDigitalEngine || 'none') !== 'wsjtz') {
+            this.showStatus(window.om0rxDigitalEngine === 'mshv_auto_dx' ? 'MSHV internal Auto DX owns target selection.' : 'Digital engines are disabled.', 'warning');
+            return;
+        }
         if (!this.isDigitalSpotMode(spot)) {
             this.showStatus('Selected spot is not an FT8/FT4/FT2 target', 'warning');
             this.setWsjtxSpotPrepareState('blocked', 'Not a WSJT digital mode', { call: spot?.callsign || '' });

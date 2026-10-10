@@ -216,6 +216,129 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Elecraft KPA500 / KAT500 Tab -->
+                    <div v-if="activeConfigTab === 'elecraft'" class="config-form">
+                        <p style="font-size: 10px; color: #aaa; margin: 0 0 12px 0; line-height: 1.5;">
+                            The backend must own a usable endpoint for each device. With a VSPE Virtual Splitter, both Elecraft Remote and this app use the same shared virtual COM port (not the physical source port). Direct COM ports usually cannot be opened by both applications.
+                        </p>
+
+                        <div class="config-field-checkbox">
+                            <input type="checkbox" v-model="configData.ELECRAFT_FOLLOW_RADIO" id="elecraft-follow-radio">
+                            <label for="elecraft-follow-radio">Automatically follow Flex frequency and band</label>
+                        </div>
+                        <p v-if="elecraftStatus && !elecraftStatus.control_enabled" style="font-size: 10px; color: #fbbf24; margin: 8px 0 0;">
+                            Device-changing controls are locked while the station safety coordinator is being commissioned. Monitoring and route verification remain active.
+                        </p>
+
+                        <div style="display: grid; grid-template-columns: repeat(2, minmax(260px, 1fr)); gap: 12px; margin-top: 12px;">
+                            <div style="padding: 12px; border: 1px solid #444; border-radius: 5px; background: #202020;">
+                                <h4 style="margin: 0 0 10px; color: #4a9eff;">KPA500 Amplifier</h4>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.KPA500_ENABLED" id="kpa500-enabled">
+                                    <label for="kpa500-enabled">Enable KPA500</label>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 110px; gap: 8px;">
+                                    <div class="config-field">
+                                        <label>Serial Port</label>
+                                        <input type="text" v-model.trim="configData.KPA500_PORT" placeholder="COM6">
+                                    </div>
+                                    <div class="config-field">
+                                        <label>Baud</label>
+                                        <select v-model.number="configData.KPA500_BAUDRATE">
+                                            <option :value="4800">4800</option><option :value="9600">9600</option>
+                                            <option :value="19200">19200</option><option :value="38400">38400</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="config-field">
+                                    <label>Digital TX amplifier policy</label>
+                                    <select v-model="configData.DIGITAL_KPA_POLICY">
+                                        <option value="operate">Operate (amplified)</option>
+                                        <option value="standby">Standby (barefoot)</option>
+                                    </select>
+                                    <small>Station readiness requires the live KPA state to match exactly.</small>
+                                </div>
+                                <div v-if="elecraftStatus?.kpa500" style="font-size: 10px; line-height: 1.6; color: #bbb; margin: 6px 0 10px;">
+                                    <div><strong>Status:</strong> <span :style="{color: elecraftStatus.kpa500.connected ? '#22c55e' : '#ff6b6b'}">{{ elecraftStatus.kpa500.connected ? 'Connected' : 'Disconnected' }}</span></div>
+                                    <div><strong>Power:</strong> {{ elecraftStatus.kpa500.power ? 'On' : 'Off' }} · <strong>State:</strong> {{ elecraftStatus.kpa500.operate ? 'OPERATE' : 'STANDBY' }}</div>
+                                    <div><strong>Band:</strong> {{ elecraftStatus.kpa500.band || '—' }} · <strong>Output:</strong> {{ elecraftStatus.kpa500.output_power_w ?? '—' }} W · <strong>SWR:</strong> {{ elecraftStatus.kpa500.swr ?? '—' }}</div>
+                                    <div><strong>PA:</strong> {{ elecraftStatus.kpa500.temperature_c ?? '—' }} °C · {{ elecraftStatus.kpa500.voltage ?? '—' }} V · {{ elecraftStatus.kpa500.current ?? '—' }} A</div>
+                                    <div v-if="elecraftStatus.kpa500.fault && elecraftStatus.kpa500.fault !== '00'" style="color: #ff6b6b;"><strong>Fault:</strong> {{ elecraftStatus.kpa500.fault }}</div>
+                                    <div v-if="elecraftStatus.kpa500.error" style="color: #f59e0b;">{{ elecraftStatus.kpa500.error }}</div>
+                                </div>
+                                <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                                    <button class="btn-secondary" @click="elecraftAction('kpa500/power', {on: true})" :disabled="elecraftActionLoading || !elecraftStatus?.control_enabled">Power On</button>
+                                    <button class="btn-secondary" @click="elecraftAction('kpa500/power', {on: false})" :disabled="elecraftActionLoading || !elecraftStatus?.control_enabled">Power Off</button>
+                                    <button class="btn-primary" @click="elecraftAction('kpa500/operate', {operate: true})" :disabled="elecraftActionLoading || !elecraftStatus?.control_enabled">Operate</button>
+                                    <button class="btn-secondary" @click="elecraftAction('kpa500/operate', {operate: false})" :disabled="elecraftActionLoading || !elecraftStatus?.control_enabled">Standby</button>
+                                </div>
+                            </div>
+
+                            <div style="padding: 12px; border: 1px solid #444; border-radius: 5px; background: #202020;">
+                                <h4 style="margin: 0 0 10px; color: #4a9eff;">KAT500 Tuner</h4>
+                                <div class="config-field-checkbox">
+                                    <input type="checkbox" v-model="configData.KAT500_ENABLED" id="kat500-enabled">
+                                    <label for="kat500-enabled">Enable KAT500</label>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 110px; gap: 8px;">
+                                    <div class="config-field">
+                                        <label>Serial Port</label>
+                                        <input type="text" v-model.trim="configData.KAT500_PORT" placeholder="COM11">
+                                    </div>
+                                    <div class="config-field">
+                                        <label>Baud</label>
+                                        <select v-model.number="configData.KAT500_BAUDRATE">
+                                            <option :value="4800">4800</option><option :value="9600">9600</option>
+                                            <option :value="19200">19200</option><option :value="38400">38400</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div v-if="elecraftStatus?.kat500" style="font-size: 10px; line-height: 1.6; color: #bbb; margin: 6px 0 10px;">
+                                    <div><strong>Status:</strong> <span :style="{color: elecraftStatus.kat500.connected ? '#22c55e' : '#ff6b6b'}">{{ elecraftStatus.kat500.connected ? 'Connected' : 'Disconnected' }}</span></div>
+                                    <div><strong>Power:</strong> {{ elecraftStatus.kat500.power ? 'On' : 'Off' }} · <strong>Mode:</strong> {{ (elecraftStatus.kat500.mode || '—').toUpperCase() }}</div>
+                                    <div><strong>Band:</strong> {{ elecraftStatus.kat500.band || '—' }} · <strong>Antenna:</strong> {{ elecraftStatus.kat500.antenna || '—' }} · <strong>SWR:</strong> {{ elecraftStatus.kat500.swr ?? '—' }}</div>
+                                    <div><strong>Tune:</strong> {{ elecraftStatus.kat500.tuning ? 'Running' : 'Idle' }} · <strong>ATU frequency:</strong> {{ elecraftStatus.kat500.frequency_khz ? elecraftStatus.kat500.frequency_khz + ' kHz' : '—' }}</div>
+                                    <div v-if="elecraftStatus.kat500.error" style="color: #f59e0b;">{{ elecraftStatus.kat500.error }}</div>
+                                </div>
+                                <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                                    <button class="btn-secondary" @click="elecraftAction('kat500/power', {on: true})" :disabled="elecraftActionLoading || !elecraftStatus?.control_enabled">Power On</button>
+                                    <button class="btn-secondary" @click="elecraftAction('kat500/power', {on: false})" :disabled="elecraftActionLoading || !elecraftStatus?.control_enabled">Power Off</button>
+                                    <button class="btn-primary" @click="elecraftAction('kat500/tune')" :disabled="elecraftActionLoading || !elecraftStatus?.control_enabled">Tune</button>
+                                    <button class="btn-secondary" @click="elecraftAction('kat500/mode', {mode: 'auto'})" :disabled="elecraftActionLoading || !elecraftStatus?.control_enabled">Auto</button>
+                                    <button class="btn-secondary" @click="elecraftAction('kat500/mode', {mode: 'manual'})" :disabled="elecraftActionLoading || !elecraftStatus?.control_enabled">Manual</button>
+                                    <button class="btn-secondary" @click="elecraftAction('kat500/mode', {mode: 'bypass'})" :disabled="elecraftActionLoading || !elecraftStatus?.control_enabled">Bypass</button>
+                                    <button class="btn-secondary" @click="elecraftAction('kat500/antenna', {antenna: 1})" :disabled="elecraftActionLoading || !elecraftStatus?.control_enabled">ANT 1</button>
+                                    <button class="btn-secondary" @click="elecraftAction('kat500/antenna', {antenna: 2})" :disabled="elecraftActionLoading || !elecraftStatus?.control_enabled">ANT 2</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <hr style="margin: 16px 0; border: none; border-top: 1px solid #444;">
+                        <h4 style="margin: 0 0 6px; color: #4a9eff; font-size: 12px;">KAT500 Antenna by Flex Band</h4>
+                        <p style="font-size: 10px; color: #888; margin: 0 0 8px;">KAT output numbers are downstream of the FLEX antenna port. Name each physical output, then map bands to it.</p>
+                        <div style="display: grid; grid-template-columns: repeat(3, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px;">
+                            <div v-for="antenna in [1,2,3]" :key="'kat-name-' + antenna" class="config-field" style="margin: 0;">
+                                <label>KAT ANT{{ antenna }} name</label>
+                                <input type="text" v-model.trim="configData.KAT500_ANTENNA_NAMES[String(antenna)]" :placeholder="'KAT ANT' + antenna">
+                            </div>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(6, minmax(74px, 1fr)); gap: 8px;">
+                            <div v-for="band in ['160m','80m','60m','40m','30m','20m','17m','15m','12m','10m','6m']" :key="'kat-' + band" class="config-field" style="margin: 0;">
+                                <label>{{ band }}</label>
+                                <select v-model.number="configData.KAT500_ANTENNA_POLICY[band]">
+                                    <option :value="1">ANT 1</option><option :value="2">ANT 2</option><option :value="3">ANT 3</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div style="display: flex; align-items: center; gap: 8px; margin-top: 14px;">
+                            <button class="btn-secondary" @click="elecraftAction('connect')" :disabled="elecraftActionLoading">Connect / Retry</button>
+                            <button class="btn-secondary" @click="elecraftAction('disconnect')" :disabled="elecraftActionLoading">Disconnect</button>
+                            <button class="btn-secondary" @click="loadElecraftStatus" :disabled="elecraftStatusLoading">{{ elecraftStatusLoading ? 'Reading…' : 'Refresh Status' }}</button>
+                            <span v-if="elecraftStatus?.radio_band" style="font-size: 10px; color: #aaa;">Flex: {{ elecraftStatus.radio_frequency?.toFixed(6) }} MHz · {{ elecraftStatus.radio_band }} · {{ elecraftStatus.radio_mode || '—' }}</span>
+                        </div>
+                    </div>
                     
                     <!-- Rotor Tab -->
                     <div v-if="activeConfigTab === 'rotor'" class="config-form">
@@ -379,8 +502,311 @@
                     </div>
                     
                     <!-- WSJT-X Tab -->
-                    <div v-if="activeConfigTab === 'wsjtx'" class="config-form">
-                        <h4 style="margin-bottom: 12px; font-size: 12px; color: #4a9eff; font-weight: 600;">📡 WSJT-X Integration Settings</h4>
+                    <div v-if="activeConfigTab === 'wsjtx' || activeConfigTab === 'mshv'" class="config-form">
+                        <h4 style="margin-bottom: 12px; font-size: 12px; color: #4a9eff; font-weight: 600;">📡 Digital engine</h4>
+                        <div v-if="activeConfigTab === 'wsjtx'" class="wsjtx-automation-panel">
+                            <label for="digital-engine-choice">Engine</label>
+                            <select id="digital-engine-choice" v-model="digitalEngineChoice" :disabled="digitalEngineBusy">
+                                <option value="none">None — digital engines off</option>
+                                <option value="wsjtz">WSJT-Z / existing engine</option>
+                                <option value="mshv_auto_dx">MSHV Auto DX Chaser</option>
+                            </select>
+                            <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">
+                                <button type="button" @click="digitalEngineAction('select')" :disabled="digitalEngineBusy">Select engine</button>
+                                <button type="button" @click="digitalEngineAction('start')" :disabled="digitalEngineBusy || digitalEngineChoice === 'none'">Start selected</button>
+                                <button type="button" @click="digitalEngineAction('stop')" :disabled="digitalEngineBusy">Stop</button>
+                                <button type="button" @click="digitalEngineAction('restart')" :disabled="digitalEngineBusy || digitalEngineChoice === 'none'">Restart selected</button>
+                                <button type="button" @click="loadDigitalEngineStatus" :disabled="digitalEngineBusy">Refresh</button>
+                                <button type="button" @click="digitalEngineAction('halt-tx')" style="border-color:#ef4444;">Emergency Halt TX</button>
+                            </div>
+                            <p>One engine controls the radio at a time. Switching safely stops the previous engine.</p>
+                            <div v-if="digitalEngineStatus" class="wsjtx-health-metrics">
+                                <span><strong>Active:</strong> {{ digitalEngineStatus.label || digitalEngineStatus.selected_engine }}</span>
+                                <span><strong>Version:</strong> {{ digitalEngineStatus.version || 'not reported' }}</span>
+                                <span><strong>Process:</strong> {{ digitalEngineStatus.running ? 'running' : 'stopped' }}</span>
+                                <span><strong>Planner:</strong> {{ digitalEngineDisabled ? 'disabled' : (mshvOwnsDigitalPlanner ? 'MSHV internal Auto DX — OM0RX planner disabled' : 'OM0RX / WSJT-Z') }}</span>
+                                <span v-for="key in ['cat','dax','udp','logging']" :key="key"><strong>{{ key.toUpperCase() }}:</strong> {{ digitalEngineHealthText(key) }}</span>
+                            </div>
+                            <p v-if="digitalEngineMessage" role="status">{{ digitalEngineMessage }}</p>
+                            <p v-if="digitalEngineStatus && digitalEngineStatus.selected_engine === 'mshv_auto_dx'">Use MSHV's desktop window for Auto DX target selection and exchange controls. OM0RX receives decodes and logs QSOs to Wavelog.</p>
+                            <div v-if="digitalEngineStatus?.selected_engine === 'mshv_auto_dx'" class="wsjtx-health-metrics" aria-label="MSHV AutoDX status">
+                                <span><strong>AutoDX telemetry:</strong> {{ mshvAutoDxStatus().fresh ? 'live' : (mshvAutoDxStatus().reported ? 'stale' : 'not reported') }}</span>
+                                <span><strong>Target:</strong> {{ mshvTargetText() }}</span>
+                                <span><strong>Selected:</strong> {{ mshvAutoDxStatus().selection_class || '—' }} · {{ mshvAutoDxStatus().selection_reason || 'no reason reported' }} · {{ mshvAutoDxStatus().selection_score || 0 }}</span>
+                                <span><strong>Budget:</strong> {{ mshvTimeText(mshvAutoDxStatus().budget?.remaining_seconds) }} · attempt {{ mshvAutoDxStatus().attempt || 0 }}/{{ mshvAutoDxStatus().budget?.max_consecutive_windows || 0 }}</span>
+                                <span><strong>Next retry:</strong> {{ mshvTimeText(mshvAutoDxStatus().next_retry?.utc || mshvAutoDxStatus().next_retry?.remaining_seconds) }}</span>
+                                <span><strong>Band dwell:</strong> {{ mshvTimeText(mshvAutoDxStatus().band_dwell?.elapsed_seconds) }} · remaining {{ mshvTimeText(mshvAutoDxStatus().band_dwell?.remaining_seconds) }}</span>
+                                <span><strong>Next QSY:</strong> {{ mshvTimeText(mshvAutoDxStatus().band_dwell?.next_qsy_utc) }}</span>
+                                <span><strong>Schedule:</strong> {{ mshvAutoDxStatus().active_schedule?.band || '—' }} {{ mshvAutoDxStatus().active_schedule?.open_now === false ? '(closed)' : '' }}</span>
+                                <span><strong>Last directed caller:</strong> {{ mshvAutoDxStatus().last_directed_caller?.call || mshvAutoDxStatus().last_directed_caller || '—' }}</span>
+                                <span><strong>Wavelog:</strong> {{ mshvAutoDxSettings?.history_authority?.status || 'unknown' }}</span>
+                                <span><strong>Native audit:</strong> {{ mshvAutoDxStatus().audit?.last_event || 'none' }}</span>
+                                <span><strong>DXpedition catalog:</strong> {{ mshvAutoDxStatus().dxpedition_catalog?.valid ? 'valid' : 'unavailable' }} · {{ mshvAutoDxStatus().dxpedition_catalog?.entries || 0 }} entries</span>
+                                <span><strong>Cluster queue:</strong> {{ (mshvAutoDxStatus().cluster_chase?.queue || []).length }} · {{ (mshvAutoDxStatus().cluster_chase?.queue || []).slice(0,3).map(item => `${item.call} ${item.band} ${item.reason}`).join('; ') || 'empty' }}</span>
+                                <span><strong>Recent skips:</strong> {{ (mshvAutoDxStatus().skipped_reasons || []).join('; ') || 'none reported' }}</span>
+                            </div>
+                            <p v-if="digitalEngineDisabled">No digital engine may start and all digital TX/planner controls remain disarmed until an operator selects one.</p>
+                        </div>
+
+                        <div v-if="activeConfigTab === 'mshv' || digitalEngineChoice === 'mshv_auto_dx'" class="wsjtx-automation-panel" style="margin-top:12px;">
+                            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+                                <h4 style="margin:0;font-size:12px;color:#4a9eff;">MSHV Award Hunting &amp; Campaigns</h4>
+                                <button type="button" @click="loadMshvAutoDxSettings(true)" :disabled="mshvAutoDxBusy">Reload</button>
+                            </div>
+                            <p>Hunts are additive: enable any combination of DXCC, states, zones, grids, POTA, SOTA, and WWFF. A station that fills several gaps receives the combined score; enabling one campaign never disables another. Changes apply and persist automatically.</p>
+                            <fieldset v-if="mshvAutoDxSettings" :disabled="mshvAutoDxBusy || !mshvAutoDxSettings.editable" @input="queueMshvAutoDxSave" style="border:0;padding:0;margin:0;">
+                                <div class="wsjtx-health-metrics">
+                                    <span><strong>Station:</strong> {{ mshvAutoDxSettings.callsign || 'not configured' }}</span>
+                                    <span><strong>Grid:</strong> {{ mshvAutoDxSettings.grid || 'not configured' }}</span>
+                                    <span><strong>Grid chase:</strong> {{ mshvAutoDxSettings.grid_chase_enabled ? 'enabled' : 'invalid/disabled' }}</span>
+                                    <span><strong>Desired Auto DX:</strong> {{ mshvAutoDxSettings.desired?.enabled ? 'armed native preference' : 'off' }}</span>
+                                    <span><strong>Effective Auto DX:</strong> {{ mshvEffectiveAutoDxText(mshvAutoDxSettings) }}</span>
+                                    <span><strong>Runtime parity:</strong> {{ mshvRuntimeParityText(mshvAutoDxSettings) }}</span>
+                                    <span><strong>LoTW membership data:</strong> {{ mshvAutoDxSettings.lotw_membership_capability == null ? 'unknown until native runtime reports' : (mshvAutoDxSettings.lotw_membership_capability ? 'available' : 'unavailable') }}</span>
+                                    <span><strong>Confirmed DXCC data:</strong> {{ mshvAutoDxSettings.confirmed_dxcc_data_available == null ? 'unknown until native runtime reports' : (mshvAutoDxSettings.confirmed_dxcc_data_available ? 'available' : 'unavailable') }}</span>
+                                </div>
+                                <h5 style="margin:10px 0 4px;">Active runtime policy</h5>
+                                <div class="config-field-checkbox"><input id="mshv-autodx-enabled" type="checkbox" v-model="mshvAutoDxSettings.desired.enabled"><label for="mshv-autodx-enabled">Enable native Auto DX on managed start</label></div>
+                                <div class="config-field-checkbox"><input id="mshv-band-switching" type="checkbox" v-model="mshvAutoDxSettings.band_switching_enabled"><label for="mshv-band-switching">Allow Auto DX cross-band switching</label></div>
+                                <template v-if="mshvAutoDxSettings.campaign">
+                                    <h5 style="margin:12px 0 4px;color:#4a9eff;">Campaign profile</h5>
+                                    <div style="display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:8px;">
+                                        <label>Profile<select :value="mshvAutoDxSettings.campaign.profile" @input.stop @change="applyMshvCampaignProfile($event.target.value)"><option value="balanced">Balanced hunting</option><option value="dxcc-challenge">DXCC Challenge</option><option value="five-band-dxcc">5-band DXCC</option><option value="worked-all-states">Worked All States</option><option value="waz">WAZ / CQ zones</option><option value="itu-zones">ITU zones</option><option value="grids">Grid hunting</option><option value="references">POTA / SOTA / WWFF</option><option value="custom">Custom blend</option></select></label>
+                                        <label>DXCC %<input type="number" min="0" max="500" v-model.number="mshvAutoDxSettings.campaign.dxcc_weight_percent" @input="markMshvCampaignCustom"></label>
+                                        <label>US states %<input type="number" min="0" max="500" v-model.number="mshvAutoDxSettings.campaign.state_weight_percent" @input="markMshvCampaignCustom"></label>
+                                        <label>Zones / continents %<input type="number" min="0" max="500" v-model.number="mshvAutoDxSettings.campaign.zone_weight_percent" @input="markMshvCampaignCustom"></label>
+                                        <label>Grids %<input type="number" min="0" max="500" v-model.number="mshvAutoDxSettings.campaign.grid_weight_percent" @input="markMshvCampaignCustom"></label>
+                                        <label>Portable references %<input type="number" min="0" max="500" v-model.number="mshvAutoDxSettings.campaign.reference_weight_percent" @input="markMshvCampaignCustom"></label>
+                                    </div>
+                                    <small>Multipliers are ordered DXCC / states / zones / grids / references: Balanced 100/100/100/100/100; DXCC Challenge 175/75/100/75/75; 5-band DXCC 200/50/75/50/50; WAS 75/200/75/75/50; WAZ and ITU 75/50/200/50/50; Grids 75/50/50/200/50; References 75/50/50/50/200. Editing a multiplier selects Custom without changing the other values. Hunts remain additive; 0% pauses only that campaign dimension.</small>
+                                </template>
+                                <template v-if="mshvAutoDxSettings.award_hunting">
+                                    <h5 style="margin:12px 0 4px;color:#4a9eff;">Multi-award value scoring</h5>
+                                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin:6px 0;">
+                                        <label class="config-field-checkbox"><input id="mshv-awards-enabled" type="checkbox" v-model="mshvAutoDxSettings.award_hunting.enabled">Enable award-gap scoring</label>
+                                        <label class="config-field-checkbox"><input id="mshv-awards-stack" type="checkbox" v-model="mshvAutoDxSettings.award_hunting.stack_scores">Stack every gap filled by one QSO</label>
+                                    </div>
+                                    <div style="display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:8px;">
+                                        <label>New DXCC<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.award_hunting.new_dxcc_weight"></label>
+                                        <label>New DXCC band slot<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.award_hunting.new_dxcc_band_weight"></label>
+                                        <label>Unconfirmed DXCC<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.award_hunting.unconfirmed_dxcc_weight"></label>
+                                        <label>New continent<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.award_hunting.new_continent_weight"></label>
+                                        <label>New CQ / WAZ zone<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.award_hunting.new_cq_zone_weight"></label>
+                                        <label>New ITU zone<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.award_hunting.new_itu_zone_weight"></label>
+                                        <label>New grid<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.award_hunting.new_grid_weight"></label>
+                                    </div>
+                                    <small>Each non-zero weight is independent. Eligibility still follows the matrix and confirmation controls below; setting one weight to 0 pauses only that award bonus.</small>
+                                </template>
+                                <template v-if="mshvAutoDxSettings.reference_hunting">
+                                    <h5 style="margin:12px 0 4px;color:#4a9eff;">Portable reference hunting</h5>
+                                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin:6px 0;">
+                                        <label class="config-field-checkbox"><input id="mshv-references-enabled" type="checkbox" v-model="mshvAutoDxSettings.reference_hunting.enabled">Enable reference hunting</label>
+                                        <label class="config-field-checkbox"><input id="mshv-pota-enabled" type="checkbox" v-model="mshvAutoDxSettings.reference_hunting.pota_enabled">POTA</label>
+                                        <label class="config-field-checkbox"><input id="mshv-sota-enabled" type="checkbox" v-model="mshvAutoDxSettings.reference_hunting.sota_enabled">SOTA</label>
+                                        <label class="config-field-checkbox"><input id="mshv-wwff-enabled" type="checkbox" v-model="mshvAutoDxSettings.reference_hunting.wwff_enabled">WWFF</label>
+                                        <label class="config-field-checkbox"><input id="mshv-reference-local-decode" type="checkbox" v-model="mshvAutoDxSettings.reference_hunting.require_local_decode">Require a local decode before calling</label>
+                                    </div>
+                                    <div style="display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:8px;">
+                                        <label>New reference<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.reference_hunting.new_reference_weight"></label>
+                                        <label>New reference on band<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.reference_hunting.new_reference_band_weight"></label>
+                                        <label>New reference band/mode<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.reference_hunting.new_reference_band_mode_weight"></label>
+                                        <label>POTA bonus<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.reference_hunting.pota_weight"></label>
+                                        <label>SOTA bonus<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.reference_hunting.sota_weight"></label>
+                                        <label>WWFF bonus<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.reference_hunting.wwff_weight"></label>
+                                        <label>Maximum activation age (seconds)<input type="number" min="60" max="86400" v-model.number="mshvAutoDxSettings.reference_hunting.max_activation_age_seconds"></label>
+                                    </div>
+                                    <small>CQ POTA/SOTA/WWFF text and live activation feeds can contribute together. POTA, SOTA, and WWFF switches are independent and do not alter DXCC, state, zone, or grid hunting.</small>
+                                </template>
+                                <template v-if="mshvAutoDxSettings.propagation_adaptation">
+                                    <h5 style="margin:12px 0 4px;color:#4a9eff;">Live propagation adaptation</h5>
+                                    <div class="config-field-checkbox"><input id="mshv-propagation-enabled" type="checkbox" v-model="mshvAutoDxSettings.propagation_adaptation.enabled"><label for="mshv-propagation-enabled">Adapt band ranking from recent decodes and successful QSOs</label></div>
+                                    <div style="display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:8px;">
+                                        <label>Evidence window (seconds)<input type="number" min="60" max="86400" v-model.number="mshvAutoDxSettings.propagation_adaptation.window_seconds"></label>
+                                        <label>Unique decode weight<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.propagation_adaptation.unique_decode_weight"></label>
+                                        <label>Distant decode weight<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.propagation_adaptation.distant_decode_weight"></label>
+                                        <label>Successful QSO weight<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.propagation_adaptation.successful_qso_weight"></label>
+                                        <label>Maximum band boost<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.propagation_adaptation.max_band_boost"></label>
+                                    </div>
+                                    <small>Propagation evidence adjusts ranking inside your enabled bands and schedules; it does not replace those limits.</small>
+                                </template>
+                                <template v-if="mshvAutoDxSettings.pileup_strategy">
+                                    <h5 style="margin:12px 0 4px;color:#4a9eff;">Pileup retry strategy</h5>
+                                    <div class="config-field-checkbox"><input id="mshv-pileup-enabled" type="checkbox" v-model="mshvAutoDxSettings.pileup_strategy.enabled"><label for="mshv-pileup-enabled">Rotate clear TX audio positions and revisit valuable targets</label></div>
+                                    <div style="display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:8px;">
+                                        <label>Audio offsets from current TX (Hz)<input type="text" :value="mshvAudioOffsetsText()" @input.stop @change="updateMshvAudioOffsets($event.target.value) &amp;&amp; queueMshvAutoDxSave()" placeholder="0, -120, 120, -240, 240"></label>
+                                        <label>Rotate after attempts<input type="number" min="1" max="20" v-model.number="mshvAutoDxSettings.pileup_strategy.rotate_after_attempts"></label>
+                                        <label>Revisit delay (seconds)<input type="number" min="0" max="86400" v-model.number="mshvAutoDxSettings.pileup_strategy.revisit_delay_seconds"></label>
+                                    </div>
+                                </template>
+                                <template v-if="mshvAutoDxSettings.directed_callers">
+                                    <h5 style="margin:12px 0 4px;color:#4a9eff;">Directed-caller inbox</h5>
+                                    <div class="config-field-checkbox"><input id="mshv-directed-enabled" type="checkbox" v-model="mshvAutoDxSettings.directed_callers.enabled"><label for="mshv-directed-enabled">Queue fresh stations that call OM0RX while another QSO finishes</label></div>
+                                    <div style="display:grid;grid-template-columns:repeat(2,minmax(150px,1fr));gap:8px;">
+                                        <label>Inbox size<input type="number" min="1" max="100" v-model.number="mshvAutoDxSettings.directed_callers.inbox_size"></label>
+                                        <label>Caller remains fresh (seconds)<input type="number" min="15" max="3600" v-model.number="mshvAutoDxSettings.directed_callers.max_age_seconds"></label>
+                                    </div>
+                                </template>
+                                <template v-if="mshvAutoDxSettings.outcome_learning">
+                                    <h5 style="margin:12px 0 4px;color:#4a9eff;">Outcome learning</h5>
+                                    <div class="config-field-checkbox"><input id="mshv-learning-enabled" type="checkbox" v-model="mshvAutoDxSettings.outcome_learning.enabled"><label for="mshv-learning-enabled">Adjust eligible-target scores from recent completed and incomplete attempts</label></div>
+                                    <small>MSHV reads the newest 2 MiB of {{ mshvAutoDxSettings.outcome_learning.telemetry_file }} and scores each base call +75 per completed outcome and −25 per non-completed outcome, clamped from −250 to +500. New outcomes update the in-memory adjustment immediately. Learning runs only after eligibility and never overrides duplicate or safety rules.</small>
+                                </template>
+                                <h5 style="margin:10px 0 4px;">Native eligibility and attempt policy</h5>
+                                <div class="config-field-checkbox"><input id="mshv-filter-matrix" type="checkbox" v-model="mshvAutoDxSettings.filter_matrix_enabled"><label for="mshv-filter-matrix">Use the new/new-on-band filter matrix</label></div>
+                                <small v-if="!mshvAutoDxSettings.filter_matrix_enabled" style="color:#f59e0b;">Matrix filters below are saved but intentionally inactive until this switch is enabled.</small>
+                                <div class="config-field-checkbox"><input id="mshv-prefer-non-eu" type="checkbox" v-model="mshvAutoDxSettings.prefer_non_europe"><label for="mshv-prefer-non-eu">Prefer non-Europe targets</label></div>
+                                <div class="config-field-checkbox"><input id="mshv-treat73" type="checkbox" v-model="mshvAutoDxSettings.treat_73_as_cq"><label for="mshv-treat73">Treat third-party 73 as CQ</label></div>
+                                <div class="config-field-checkbox"><input id="mshv-watch-unconfirmed" type="checkbox" v-model="mshvAutoDxSettings.watch_unconfirmed_dxcc"><label for="mshv-watch-unconfirmed">Watch worked-but-unconfirmed DXCC</label></div>
+                                <div class="config-field-checkbox"><input id="mshv-lotw-only" type="checkbox" v-model="mshvAutoDxSettings.filter_lotw_only"><label for="mshv-lotw-only">LoTW members only</label></div>
+                                <small v-if="mshvAutoDxSettings.filter_lotw_only && !mshvAutoDxSettings.lotw_membership_capability" style="color:#f59e0b;">Preference stored, but this native build has not advertised LoTW-membership data; it will remain fail-closed/inactive.</small>
+                                <div style="display:grid;grid-template-columns:90px repeat(6,minmax(75px,1fr));gap:5px;align-items:center;margin:8px 0;">
+                                    <strong>Scope</strong><strong v-for="dimension in ['call','dxcc','continent','grid','cq_zone','itu_zone']" :key="`head-${dimension}`">{{ dimension.replace('_zone','').toUpperCase() }}</strong>
+                                    <span>New</span><label v-for="dimension in ['call','dxcc','continent','grid','cq_zone','itu_zone']" :key="`new-${dimension}`"><input type="checkbox" v-model="mshvAutoDxSettings.filter_new[dimension]"></label>
+                                    <span>On band</span><label v-for="dimension in ['call','dxcc','continent','grid','cq_zone','itu_zone']" :key="`band-${dimension}`"><input type="checkbox" v-model="mshvAutoDxSettings.filter_new_on_band[dimension]"></label>
+                                </div>
+                                <div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0;">
+                                    <label v-for="continent in ['EU','AF','OC','AS','SA','NA','AN']" :key="continent" class="config-field-checkbox" style="display:inline-flex;"><input type="checkbox" :value="continent" v-model="mshvAutoDxSettings.filter_continents">{{ continent }}</label>
+                                </div>
+                                <div class="config-field-checkbox"><input id="mshv-band-dxcc-continent-override" type="checkbox" v-model="mshvAutoDxSettings.allow_band_dxcc_outside_continent"><label for="mshv-band-dxcc-continent-override">Allow new DXCC band slots outside continent filter</label></div>
+                                <small>When enabled, a DXCC entity never worked on the current band may be called even when its continent is disabled. Callsigns already worked on the same band and mode remain permanently blocked.</small>
+                                <template v-if="mshvAutoDxSettings.us_states">
+                                    <h5 style="margin:12px 0 4px;color:#4a9eff;">US States chase</h5>
+                                    <div class="config-field-checkbox"><input id="mshv-us-states-enabled" type="checkbox" v-model="mshvAutoDxSettings.us_states.enabled"><label for="mshv-us-states-enabled">Chase missing US states on every selected band</label></div>
+                                    <div class="config-field-checkbox"><input id="mshv-us-states-confirm" type="checkbox" v-model="mshvAutoDxSettings.us_states.require_confirmation"><label for="mshv-us-states-confirm">Continue until at least one QSO is confirmed</label></div>
+                                    <div class="config-field-checkbox"><input id="mshv-us-states-lotw" type="checkbox" v-model="mshvAutoDxSettings.us_states.prefer_lotw"><label for="mshv-us-states-lotw">Prefer known LoTW users</label></div>
+                                    <div style="display:grid;grid-template-columns:repeat(3,minmax(170px,1fr));gap:8px;">
+                                        <label>Distinct calls per state/band<input type="number" min="1" max="10" v-model.number="mshvAutoDxSettings.us_states.minimum_worked"></label>
+                                        <label>Missing confirmation weight<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.us_states.missing_confirmation_weight"></label>
+                                        <label>Under-quota weight<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.us_states.under_quota_weight"></label>
+                                    </div>
+                                    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0;">
+                                        <label v-for="band in [{i:3,n:'160m'},{i:4,n:'80m'},{i:6,n:'40m'},{i:7,n:'30m'},{i:8,n:'20m'},{i:9,n:'17m'},{i:10,n:'15m'},{i:11,n:'12m'},{i:12,n:'10m'}]" :key="`state-${band.i}`" class="config-field-checkbox" style="display:inline-flex;"><input type="checkbox" :value="band.i" v-model="mshvAutoDxSettings.us_states.bands">{{ band.n }}</label>
+                                    </div>
+                                    <small>A state/band is complete only after three distinct stations are worked and at least one is confirmed. FT8 and FT4 share the distinct-station quota; exact call/band/mode duplicates remain blocked.</small>
+                                </template>
+                                <template v-if="mshvAutoDxSettings.cluster_chase">
+                                    <h5 style="margin:12px 0 4px;color:#4a9eff;">Cluster chase</h5>
+                                    <div class="config-field-checkbox"><input id="mshv-cluster-chase-enabled" type="checkbox" v-model="mshvAutoDxSettings.cluster_chase.enabled"><label for="mshv-cluster-chase-enabled">Queue and chase needed targets reported on other bands</label></div>
+                                    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:6px 0;">
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.cluster_chase.chase_new_dxcc">ATNO / unconfirmed DXCC</label>
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.cluster_chase.chase_band_dxcc">New DXCC band slots</label>
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.cluster_chase.chase_us_states">Needed US states</label>
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.cluster_chase.chase_dxpeditions">Active DXpeditions</label>
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.cluster_chase.chase_unconfirmed_continents">Unconfirmed continents</label>
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.cluster_chase.chase_unconfirmed_cq_zones">Unconfirmed WAZ/CQ zones</label>
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.cluster_chase.chase_unconfirmed_itu_zones">Unconfirmed ITU zones</label>
+                                    </div>
+                                    <div style="display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:8px;">
+                                        <label>Minimum spotters<input type="number" min="1" max="20" v-model.number="mshvAutoDxSettings.cluster_chase.min_spotters"></label>
+                                        <label>Consensus spotters<input type="number" min="1" max="20" v-model.number="mshvAutoDxSettings.cluster_chase.consensus_spotters"></label>
+                                        <label>Visible queue size<input type="number" min="1" max="50" v-model.number="mshvAutoDxSettings.cluster_chase.queue_limit"></label>
+                                    </div>
+                                    <small>Needed cluster targets override the ordinary continent filter, but never the exact call/band/mode duplicate rule. Active QSOs finish first; a QSY is followed by a required local FT8 decode before calling.</small>
+                                </template>
+                                <template v-if="mshvAutoDxSettings.dxpedition">
+                                    <h5 style="margin:12px 0 4px;color:#4a9eff;">DXpedition chase</h5>
+                                    <div style="display:flex;gap:10px;flex-wrap:wrap;margin:6px 0;">
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.dxpedition.enabled">Enabled</label>
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.dxpedition.allow_same_band_off_standard_qsy">Same-band off-frequency QSY</label>
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.dxpedition.allow_cross_band_qsy">Cross-band QSY</label>
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.dxpedition.return_to_standard">Return to standard FT8 frequency</label>
+                                    </div>
+                                    <div style="display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:8px;">
+                                        <label>Scope<select v-model="mshvAutoDxSettings.dxpedition.chase_scope"><option value="needed-only">Needed only</option><option value="any-active">Any active, no exact-band duplicate</option></select></label>
+                                        <label>Minimum spotters<input type="number" min="1" max="20" v-model.number="mshvAutoDxSettings.dxpedition.min_spotters"></label>
+                                        <label>Spot age (seconds)<input type="number" min="15" max="1800" v-model.number="mshvAutoDxSettings.dxpedition.max_spot_age_seconds"></label>
+                                        <label>Expected RX audio (Hz)<input type="number" min="300" max="2700" v-model.number="mshvAutoDxSettings.dxpedition.rx_audio_hz"></label>
+                                        <label>TX offset from DX (Hz)<input type="number" min="0" max="2400" v-model.number="mshvAutoDxSettings.dxpedition.tx_offset_hz"></label>
+                                    </div>
+                                    <small>For a non-standard reported RF frequency, MSHV computes dial = reported RF − expected RX audio, listens locally, and only transmits after decoding the target.</small>
+                                </template>
+                                <div style="display:grid;grid-template-columns:repeat(3,minmax(180px,1fr));gap:8px;">
+                                    <label>Call window<select v-model.number="mshvAutoDxSettings.call_window_seconds"><option :value="120">120 seconds</option><option :value="240">240 seconds</option></select></label>
+                                    <label>Consecutive windows<input type="number" min="1" max="20" v-model.number="mshvAutoDxSettings.max_consecutive_windows"></label>
+                                    <label>Same-target retry (seconds)<input type="number" min="0" max="86400" v-model.number="mshvAutoDxSettings.same_target_revisit_delay_seconds"></label>
+                                    <label>Recent-QSO cooldown (seconds)<input type="number" min="0" max="86400" v-model.number="mshvAutoDxSettings.recent_qso_cooldown_seconds"></label>
+                                    <label>Minimum band dwell (seconds)<input type="number" min="0" max="7200" v-model.number="mshvAutoDxSettings.min_band_dwell_seconds"></label>
+                                    <label>Engaged completion grace (seconds)<input type="number" min="15" max="120" step="15" v-model.number="mshvAutoDxSettings.engaged_completion_grace_seconds"></label>
+                                </div>
+                                <small>Recent-QSO cooldown prevents immediately selecting the same station after a completed QSO; set 0 to disable that cooldown.</small>
+                                <small>Once a target has replied, native AutoDxerCore may finish the exchange for this extra slot-aligned grace period. The absolute cap is the normal attempt budget plus this grace.</small>
+                                <label>Selection order<select v-model="mshvAutoDxSettings.selection_order"><option value="score">Highest score</option><option value="last">Most recently decoded</option></select></label>
+                                <div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0;">
+                                    <label v-for="band in [{i:3,n:'160m'},{i:4,n:'80m'},{i:6,n:'40m'},{i:7,n:'30m'},{i:8,n:'20m'},{i:9,n:'17m'},{i:10,n:'15m'},{i:11,n:'12m'},{i:12,n:'10m'},{i:14,n:'6m'}]" :key="band.i" class="config-field-checkbox" style="display:inline-flex;">
+                                        <input type="checkbox" :value="band.i" v-model="mshvAutoDxSettings.enabled_bands">{{ band.n }}
+                                    </label>
+                                </div>
+                                 <p style="font-size:10px;color:#aaa;">60 m and 40 MHz are structurally prohibited. Phase 1 automation mode is fixed to FT8; other native modes remain manual.</p>
+                                 <template v-if="mshvAutoDxSettings.automation_timing && mshvAutoDxSettings.band_schedules">
+                                     <h5 style="margin:14px 0 4px;color:#4a9eff;">Automation Timing &amp; Band Schedules</h5>
+                                     <p style="font-size:10px;color:#aaa;margin:0 0 7px;">These limits are enforced by native AutoDxerCore. Band windows use the MSHV computer's local time; a start later than its end is an overnight window.</p>
+                                     <div style="display:grid;grid-template-columns:repeat(3,minmax(145px,1fr));gap:8px;">
+                                         <span><strong>Total attempt budget:</strong> {{ mshvTimeText(mshvAutoDxSettings.call_window_seconds * mshvAutoDxSettings.max_consecutive_windows) }} (derived)</span>
+                                         <label>Quiet band before change (seconds)<input type="number" min="60" max="3600" v-model.number="mshvAutoDxSettings.automation_timing.quiet_band_seconds"></label>
+                                         <label>Heard target remains fresh (seconds)<input type="number" min="15" max="300" v-model.number="mshvAutoDxSettings.automation_timing.target_heard_fresh_seconds"></label>
+                                         <label>Verify cross-band target (seconds)<input type="number" min="15" max="300" v-model.number="mshvAutoDxSettings.automation_timing.cross_band_verify_seconds"></label>
+                                         <label>Band-change cooldown (seconds)<input type="number" min="0" max="1800" v-model.number="mshvAutoDxSettings.automation_timing.band_switch_cooldown_seconds"></label>
+                                     </div>
+                                     <div class="config-field-checkbox"><input id="mshv-persist-dxcc" type="checkbox" v-model="mshvAutoDxSettings.automation_timing.persist_new_dxcc_while_heard"><label for="mshv-persist-dxcc">Keep calling a new DXCC while it is still heard</label></div>
+                                     <div class="config-field-checkbox"><input id="mshv-persist-band-slot" type="checkbox" v-model="mshvAutoDxSettings.automation_timing.persist_new_band_slot_while_heard"><label for="mshv-persist-band-slot">Keep calling a new band slot while it is still heard</label></div>
+                                     <div style="display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:7px;margin:8px 0;">
+                                         <div v-for="band in [{i:3,n:'160m'},{i:4,n:'80m'},{i:6,n:'40m'},{i:7,n:'30m'},{i:8,n:'20m'},{i:9,n:'17m'},{i:10,n:'15m'},{i:11,n:'12m'},{i:12,n:'10m'},{i:14,n:'6m'}]" :key="`schedule-${band.i}`" style="display:grid;grid-template-columns:70px 1fr 1fr;gap:6px;align-items:end;padding:6px;border:1px solid #334155;border-radius:4px;">
+                                             <label class="config-field-checkbox" style="align-self:center;"><input type="checkbox" v-model="mshvAutoDxSettings.band_schedules[band.i].restricted">{{ band.n }}</label>
+                                             <label>Start local<input type="time" v-model="mshvAutoDxSettings.band_schedules[band.i].start" :disabled="!mshvAutoDxSettings.band_schedules[band.i].restricted"></label>
+                                             <label>End local<input type="time" v-model="mshvAutoDxSettings.band_schedules[band.i].end" :disabled="!mshvAutoDxSettings.band_schedules[band.i].restricted"></label>
+                                         </div>
+                                     </div>
+                                 </template>
+                                 <div style="display:grid;grid-template-columns:minmax(160px,320px);gap:8px;">
+                                    <label>ATNO persistence
+                                        <select v-model.number="mshvAutoDxSettings.atno_chase_type">
+                                            <option :value="0">Disabled</option><option :value="1">ATNO only</option>
+                                            <option :value="2">New band slots</option><option :value="3">ATNO + band slots</option>
+                                        </select>
+                                    </label>
+                                </div>
+                                <div style="display:grid;grid-template-columns:repeat(3,minmax(135px,1fr));gap:8px;">
+                                    <label>Non-Europe boost<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.target_priority.non_europe"></label>
+                                    <label>New DXCC<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.target_priority.new_dxcc"></label>
+                                    <label>New band slot<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.target_priority.new_band_slot"></label>
+                                    <label>New grid<input type="number" min="1" max="100000" v-model.number="mshvAutoDxSettings.target_priority.new_grid"></label>
+                                    <label>Calling me<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.target_priority.calling_me"></label>
+                                    <label>CQ bonus<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.target_priority.cq"></label>
+                                    <label>SNR per dB<input type="number" min="0" max="100000" v-model.number="mshvAutoDxSettings.target_priority.snr_per_db"></label>
+                                    <label>Minimum SNR<input type="number" min="-30" max="0" v-model.number="mshvAutoDxSettings.min_snr"></label>
+                                </div>
+                                <div class="config-field-checkbox"><input id="mshv-grid-us-only" type="checkbox" v-model="mshvAutoDxSettings.grid_chase_us_only"><label for="mshv-grid-us-only">US-only grid chase</label></div>
+                                <template v-if="mshvAutoDxSettings.spot_sources">
+                                    <h5 style="margin:10px 0 4px;">Spot sources used by AutoDxerCore</h5>
+                                    <div class="config-field-checkbox"><input id="mshv-runtime-us-only" type="checkbox" v-model="mshvAutoDxSettings.spot_sources.us_only"><label for="mshv-runtime-us-only">Prefer US spotters (rare-DX exceptions)</label></div>
+                                    <small>When enabled, ordinary external spots require US spotters; the upstream rare-DX list remains eligible from non-US spotters.</small>
+                                    <div style="display:grid;grid-template-columns:repeat(3,minmax(150px,1fr));gap:8px;">
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.spot_sources.rbn.enabled">RBN</label>
+                                        <label>RBN host<input type="text" v-model.trim="mshvAutoDxSettings.spot_sources.rbn.host"></label>
+                                        <label>RBN port<input type="number" min="1" max="65535" v-model.number="mshvAutoDxSettings.spot_sources.rbn.port"></label>
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.spot_sources.psk_reporter.enabled">PSK Reporter</label>
+                                        <label>PSK poll seconds<input type="number" min="60" max="600" v-model.number="mshvAutoDxSettings.spot_sources.psk_reporter.poll_interval_seconds"></label>
+                                        <label class="config-field-checkbox"><input type="checkbox" v-model="mshvAutoDxSettings.spot_sources.dx_cluster.enabled">DX Cluster</label>
+                                    </div>
+                                    <div class="config-field-checkbox"><input id="mshv-default-clusters" type="checkbox" v-model="mshvAutoDxSettings.spot_sources.dx_cluster.use_default_servers"><label for="mshv-default-clusters">Use native default DX Cluster servers</label></div>
+                                    <div v-if="!mshvAutoDxSettings.spot_sources.dx_cluster.use_default_servers">
+                                        <div v-for="(server,index) in mshvAutoDxSettings.spot_sources.dx_cluster.servers" :key="index" style="display:grid;grid-template-columns:1fr 1.4fr 90px 80px auto;gap:6px;align-items:end;margin:5px 0;">
+                                            <label>Name<input type="text" v-model.trim="server.name"></label>
+                                            <label>Host<input type="text" v-model.trim="server.host"></label>
+                                            <label>Port<input type="number" min="1" max="65535" v-model.number="server.port"></label>
+                                            <label class="config-field-checkbox"><input type="checkbox" v-model="server.enabled">Enabled</label>
+                                            <button type="button" @click="removeMshvDxClusterServer(index)">Remove</button>
+                                        </div>
+                                        <button type="button" @click="addMshvDxClusterServer">Add DX Cluster server</button>
+                                    </div>
+                                </template>
+                                <button type="button" @click="saveMshvAutoDxSettings" :disabled="mshvAutoDxBusy || !mshvAutoDxSettings.editable">Apply now</button>
+                            </fieldset>
+                             <p v-if="mshvAutoDxSettings && !mshvAutoDxSettings.editable" style="color:#f59e0b;">This runtime does not currently accept settings updates.</p>
+                            <p v-if="mshvAutoDxDirty" style="color:#f59e0b;">Applying and persisting the latest hunting changes…</p>
+                            <p style="font-size:10px;color:#aaa;">New DXCC, new band slot, new grid, or a station explicitly calling OM0RX are eligible. CQ and SNR only rank eligible stations; common/random already-worked calls are never enabled by these bonuses. New-grid weight must stay above zero.</p>
+                            <p v-if="mshvAutoDxMessage" role="status">{{ mshvAutoDxMessage }}</p>
+                        </div>
                         
                         <!-- Master Enable -->
                         <div class="config-field-checkbox">
@@ -391,7 +817,7 @@
                         <hr style="margin: 12px 0; border: none; border-top: 1px solid #444;">
 
                         <!-- Engine Diagnostics -->
-                        <div style="margin-bottom: 12px; padding: 10px; border: 1px solid #334155; border-radius: 6px; background: rgba(15, 23, 42, 0.82);">
+                        <div v-if="wsjtzOwnsDigitalPlanner" style="margin-bottom: 12px; padding: 10px; border: 1px solid #334155; border-radius: 6px; background: rgba(15, 23, 42, 0.82);">
                             <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
                                 <label style="font-size: 11px; color: #4a9eff; font-weight: 600;">WSJT Engine Health</label>
                                 <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">

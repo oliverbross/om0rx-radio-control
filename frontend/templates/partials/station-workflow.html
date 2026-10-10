@@ -1,0 +1,58 @@
+<section id="station-workflow-panel" class="station-workflow-panel" data-state="unavailable" aria-labelledby="station-workflow-title">
+    <header class="station-workflow-header">
+        <div>
+            <span class="station-workflow-eyebrow">Commissioning-guarded coordinator</span>
+            <h2 id="station-workflow-title">Station workflow</h2>
+        </div>
+        <div class="station-workflow-badges">
+            <span class="station-workflow-alarm-badge" title="Active station alarms"><span data-workflow-role="alarm-count">0</span> alarms</span>
+            <span class="station-workflow-state state-unavailable" data-workflow-role="state" aria-live="polite">Unavailable</span>
+        </div>
+    </header>
+
+    <div class="station-workflow-layout">
+        <div class="station-workflow-summary">
+            <div>
+                <span>Selected route</span>
+                <strong data-workflow-role="route">No coordinator state</strong>
+            </div>
+            <div>
+                <span>Coordinator</span>
+                <strong data-workflow-role="coordinator">Unavailable</strong>
+            </div>
+            <div>
+                <span>Authorization</span>
+                <strong data-workflow-role="authorization">Locked</strong>
+            </div>
+        </div>
+
+        <div class="station-workflow-actions" aria-label="Station coordinator actions">
+            <button type="button" data-station-action="prepare-route" disabled>Prepare Route</button>
+            <button type="button" data-station-action="standby" disabled>Amplifier Standby</button>
+            <button type="button" data-station-action="operate" disabled>Amplifier Operate</button>
+            <button type="button" class="station-workflow-tune" data-station-action="tune" disabled>Tune</button>
+            <button type="button" class="station-workflow-cancel" data-station-action="cancel" disabled>Cancel</button>
+            <button type="button" class="station-workflow-maintenance" data-station-maintenance="enter" disabled>Enter Maintenance</button>
+            <button type="button" class="station-workflow-maintenance-exit" data-station-maintenance="exit" disabled>Exit Maintenance</button>
+        </div>
+    </div>
+
+    <div class="station-workflow-transaction" data-workflow-role="transaction">
+        <div class="station-workflow-transaction-head">
+            <strong data-workflow-role="transaction-label">No active transaction</strong>
+            <span data-workflow-role="transaction-state">Idle</span>
+        </div>
+        <progress data-workflow-role="transaction-progress" max="100" value="0">0%</progress>
+        <p data-workflow-role="transaction-detail">Coordinator progress will appear here.</p>
+    </div>
+
+    <div class="station-workflow-footer">
+        <p class="station-workflow-lock" data-workflow-role="lock" role="status">
+            <span aria-hidden="true">🔒</span>
+            Commissioning lock active. All station actions are disabled.
+        </p>
+        <ul class="station-workflow-issues" data-workflow-role="issues" aria-label="Station workflow issues">
+            <li>Coordinator endpoint has not been detected.</li>
+        </ul>
+    </div>
+</section>

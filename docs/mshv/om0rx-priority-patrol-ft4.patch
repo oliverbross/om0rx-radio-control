@@ -1,0 +1,931 @@
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+index b875b27..daec9ec 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -68,7 +68,7 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     , m_currentBandIndex(-1)
+     , m_currentDialFrequencyHz(0)
+     , m_currentMode("FT8")
+-    , m_autoDxModes(QStringList() << "FT8")
++    , m_autoDxModes(QStringList() << "FT8" << "FT4")
+     , m_bandSwitchingEnabled(false)
+     , m_settingsPath(settingsPath)
+     , m_normalCallSeconds(120)
+@@ -376,6 +376,7 @@ void AutoDxerCore::setEnabled(bool enabled)
+         resetQuietBandTimer();
+         if (!m_patrolTimer.isValid()) m_patrolTimer.start();
+         if (m_patrolCursorBand < 0) m_patrolCursorBand = m_currentBandIndex;
++        resetPriorityPatrolCycle();
+         m_timeoutTimer->start();
+     } else {
+         m_spotAggregator->stop();
+@@ -392,6 +393,8 @@ void AutoDxerCore::setEnabled(bool enabled)
+         m_lastTargetProgressUtc = QDateTime();
+         m_patrolTimer.invalidate();
+         m_patrolBandChangePending = false;
++        m_priorityPatrolCheckedBands.clear();
++        m_priorityPatrolOpenBands.clear();
+         clearSuspendedTarget();
+         // OFF/mode exit cancels every queued operator request.  Never retain a
+         // decode-backed manual target across a later re-enable.
+@@ -414,11 +417,57 @@ bool AutoDxerCore::isConfiguredMode(const QString &mode) const
+ void AutoDxerCore::setCurrentMode(const QString &mode)
+ {
+     const QString normalized = mode.trimmed().toUpper();
++    if (normalized != "FT8" && normalized != "FT4") return;
++    const bool changed = normalized != m_currentMode;
++    if (changed) {
++        // Decodes and deferred work do not carry a mode field. Never allow an
++        // FT8 observation or queue entry to be chased after changing to FT4,
++        // or vice versa. MSHV owns the physical mode transition; this only
++        // atomically resets Auto DX's mode-scoped decision state.
++        if (m_decodeCache) m_decodeCache->clear();
++        if (m_spotAggregator) m_spotAggregator->clearSpots();
++        if (m_slotFinder) m_slotFinder->clearData();
++        if (m_queueWidget) m_queueWidget->clearBothLists();
++        clearPendingCrossBandVerification();
++        m_pendingNonStdCallsign.clear();
++        m_pendingNonStdDialFreq = 0;
++        m_pendingNonStdTime = QDateTime();
++        m_waitingForSlotAnalysis = false;
++        m_pendingSlotAnalysisTarget = ScoredTarget();
++        m_manualTarget = ScoredTarget();
++        clearSuspendedTarget();
++        m_directedCallerInbox.clear();
++        m_directedCallerInboxAt.clear();
++        m_currentTarget.clear();
++        emit targetChanged(m_currentTarget);
++        m_targetAttemptTimer.invalidate();
++        m_targetAttemptElapsedOffsetMs = 0;
++        m_lastTargetProgressUtc = QDateTime();
++        m_lastMissedCycleCheck = QDateTime();
++        m_lastSlotFinderPeriodEnd = QDateTime();
++        resetPriorityPatrolCycle();
++        if (m_enabled) {
++            setState(Listening);
++            resetQuietBandTimer();
++        }
++    }
+     m_currentMode = normalized;
++    if (m_bandManager) m_bandManager->setMode(normalized);
++    if (m_localSpotBridge) m_localSpotBridge->setMode(normalized);
++    if (m_spotAggregator) m_spotAggregator->setMode(normalized);
++    if (m_targetScorer) m_targetScorer->setCurrentMode(normalized);
+     if (m_hvDxccTracker) m_hvDxccTracker->setCurrentMode(normalized);
++    if (changed) reloadDxpeditionWatch(true);
+     setEnabled(m_desiredEnabled);
+ }
+ 
++int AutoDxerCore::decodePeriodDebounceSeconds() const
++{
++    // Decode-complete may fire more than once per period. Keep one scheduler
++    // transition per native slot while respecting FT4's 7.5-second cadence.
++    return m_currentMode == "FT4" ? 6 : 12;
++}
++
+ void AutoDxerCore::loadRuntimeConfig(const QString &settingsPath)
+ {
+     const AutoDxRuntimeConfig config = AutoDxRuntimeConfig::load(settingsPath);
+@@ -730,12 +779,12 @@ void AutoDxerCore::reloadDxpeditionWatch(bool force)
+                 const QJsonObject entry = value.toObject();
+                 if (entry.value("status").toString().toUpper() != "ACTIVE") continue;
+                 const QJsonArray modes = entry.value("modes").toArray();
+-                bool ft8Allowed = modes.isEmpty();
++                bool modeAllowed = modes.isEmpty();
+                 for (const QJsonValue &mode : modes) {
+-                    if (mode.toString().compare("FT8", Qt::CaseInsensitive) == 0)
+-                        ft8Allowed = true;
++                    if (mode.toString().compare(m_currentMode, Qt::CaseInsensitive) == 0)
++                        modeAllowed = true;
+                 }
+-                if (!ft8Allowed) continue;
++                if (!modeAllowed) continue;
+                 const QDateTime start = QDateTime::fromString(
+                     entry.value("start_utc").toString(), Qt::ISODate).toUTC();
+                 const QDateTime end = QDateTime::fromString(
+@@ -979,6 +1028,22 @@ QJsonObject AutoDxerCore::runtimeConfigStatus() const
+         0, m_quietBandSeconds - static_cast<int>(patrolElapsed / 1000));
+     patrolState["cursor_band_index"] = m_patrolCursorBand;
+     patrolState["band_change_pending"] = m_patrolBandChangePending;
++    QJsonArray openPatrolBandArray;
++    const QSet<int> openBands = openPatrolBands();
++    QList<int> sortedOpenBands = openBands.values();
++    std::sort(sortedOpenBands.begin(), sortedOpenBands.end());
++    for (int band : sortedOpenBands) openPatrolBandArray.append(band);
++    patrolState["open_band_indices"] = openPatrolBandArray;
++    QJsonArray checkedPatrolBandArray;
++    QList<int> sortedCheckedBands = m_priorityPatrolCheckedBands.values();
++    std::sort(sortedCheckedBands.begin(), sortedCheckedBands.end());
++    for (int band : sortedCheckedBands) checkedPatrolBandArray.append(band);
++    patrolState["checked_band_indices"] = checkedPatrolBandArray;
++    patrolState["priority_cycle_complete"] = priorityPatrolComplete();
++    patrolState["eligible_priority_opportunity_pending"] =
++        hasEligiblePriorityOpportunity();
++    patrolState["ordinary_new_call_fallback_available"] =
++        ordinaryNewCallFallbackAllowed();
+     result["baseline_patrol"] = patrolState;
+     QJsonObject timing;
+     timing["normal_call_seconds"] = m_normalCallSeconds;
+@@ -2234,7 +2299,7 @@ void AutoDxerCore::onDecodeComplete(bool busy, int decState)
+         qint64 secsSinceLastSlotPeriod = m_lastSlotFinderPeriodEnd.isValid()
+             ? m_lastSlotFinderPeriodEnd.secsTo(now) : 999;
+ 
+-        if (secsSinceLastSlotPeriod >= MISSED_CYCLE_DEBOUNCE_SECS) {
++        if (secsSinceLastSlotPeriod >= decodePeriodDebounceSeconds()) {
+             m_lastSlotFinderPeriodEnd = now;
+             m_slotFinder->onPeriodEnd();
+         }
+@@ -2252,7 +2317,7 @@ void AutoDxerCore::onDecodeComplete(bool busy, int decState)
+             ? m_lastMissedCycleCheck.secsTo(now) : 999;
+ 
+         // Only process missed cycle logic if enough time has passed (debounce)
+-        if (secsSinceLastCheck >= MISSED_CYCLE_DEBOUNCE_SECS) {
++        if (secsSinceLastCheck >= decodePeriodDebounceSeconds()) {
+             m_lastMissedCycleCheck = now;
+             // The configured aggregate window is an absolute ownership
+             // boundary. A stale legacy AUTO/QSO flag cannot retain queue/PTT
+@@ -2318,6 +2383,12 @@ void AutoDxerCore::processListeningState()
+ void AutoDxerCore::evaluateTargets()
+ {
+     expireTransientHistoryGrace();
++    refreshPriorityPatrolSchedule();
++    if (!m_bandSwitchingEnabled && m_patrolTimer.isValid()
++            && AutoDxTimingPolicy::quietBandExpired(
++                m_patrolTimer.elapsed(), m_quietBandSeconds)) {
++        markPriorityPatrolBandChecked(m_currentBandIndex);
++    }
+     // Preserve decode evidence and all verification clocks while a native
+     // band change/return owns CAT. History's independent absolute safety
+     // deadline above still runs and remains irrevocable.
+@@ -2543,6 +2614,62 @@ void AutoDxerCore::evaluateTargets()
+     if (best.priority <= 0) best = m_targetScorer->getBestTarget(localStations);
+ 
+     if (best.priority > 0) {
++        const bool selectedByManualRequest = !m_manualTarget.callsign.isEmpty()
++            && callsignsMatch(best.callsign, m_manualTarget.callsign);
++        const bool ordinaryNewCall = best.isOrdinaryNewCallFallback
++            && !best.isCallingMe
++            && !selectedByManualRequest
++            && !isDxpeditionTarget(best.callsign, best.bandIndex);
++        if (ordinaryNewCall) {
++            // "Newest decoded" is a tie-breaking preference, not permission
++            // for an NC to hide a locally decoded need. Find the strongest
++            // non-fallback local candidate before consulting network alerts.
++            ScoredTarget localPriority;
++            for (const CachedDecode &decode : localStations) {
++                const ScoredTarget candidate = m_targetScorer->scoreTarget(decode);
++                if (candidate.priority <= 0 || candidate.isOrdinaryNewCallFallback) continue;
++                if (localPriority.priority <= 0
++                        || candidate.preferredTo(localPriority, false)) {
++                    localPriority = candidate;
++                }
++            }
++            if (localPriority.priority > 0) {
++                best = localPriority;
++            }
++        }
++        const bool fallbackStillSelected = best.isOrdinaryNewCallFallback
++            && !best.isCallingMe
++            && !selectedByManualRequest
++            && !isDxpeditionTarget(best.callsign, best.bandIndex);
++        if (fallbackStillSelected) {
++            // Same-band off-standard DXpeditions must get the first chance to
++            // establish local verification ownership; otherwise an NC can
++            // move the state to WaitingForQSO before this path is evaluated.
++            checkSameBandNonStdFreqAlerts();
++            if (!m_pendingNonStdCallsign.isEmpty() || m_state != Listening) return;
++            // Rebuild and, when possible, act on the cross-band priority
++            // queue before admitting the lowest-value local fallback. This
++            // closes the one-decode-cycle race in which a fresh cluster or
++            // DXpedition opportunity could otherwise lose to a local NC.
++            checkCrossBandAlerts();
++            if (catTransitionPending() || !m_pendingCrossBandCallsign.isEmpty()
++                    || m_state != Listening) {
++                return;
++            }
++            if (!ordinaryNewCallFallbackAllowed()) {
++                QJsonObject fields;
++                fields["call"] = best.callsign;
++                fields["target_class"] = best.eligibilityClass;
++                fields["reason"] = hasEligiblePriorityOpportunity()
++                    ? "eligible-priority-opportunity-pending"
++                    : "priority-band-patrol-incomplete";
++                fields["open_band_count"] = openPatrolBands().size();
++                fields["checked_band_count"] = m_priorityPatrolCheckedBands.size();
++                noteSkipped(fields["reason"].toString() + ":" + best.callsign);
++                auditEvent("new-call-fallback-deferred", fields);
++                return;
++            }
++        }
+         if (!historicalActionAllowed(best.callsign, best.isCallingMe)) {
+             emit debugMessage("SELECT-BLOCKED: Wavelog authority/pending guard for " + best.callsign);
+             return;
+@@ -2995,6 +3122,11 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+          << "0";                                         // [11] e
+ 
+     if (newAttempt) {
++        // Every accepted target, including a directed caller, starts a fresh
++        // priority patrol. Ordinary NC fallback cannot become eligible again
++        // until all currently scheduled/open bands have been checked without
++        // yielding a more valuable opportunity.
++        resetPriorityPatrolCycle();
+         ++m_attemptSequence;
+         m_activeAttempt = m_attemptSequence;
+         m_selectionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+@@ -3063,7 +3195,7 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+ 
+     // Send SMS notification for TX start (if "Every TX" mode enabled)
+     if (m_smsNotifier) {
+-        m_smsNotifier->onTxStarted(target.callsign, "FT8", m_currentBandIndex);
++        m_smsNotifier->onTxStarted(target.callsign, m_currentMode, m_currentBandIndex);
+     }
+ 
+     // Enable AUTO mode so MSHV starts processing the queue
+@@ -3198,6 +3330,7 @@ void AutoDxerCore::checkQueueStatus()
+ 
+ void AutoDxerCore::checkTimeout()
+ {
++    refreshPriorityPatrolSchedule();
+     // The quiet timer measures continuous idle time with no eligible local
+     // target. Never move the radio while a QSO, verification, or deferred slot
+     // selection is in progress.
+@@ -3260,6 +3393,11 @@ void AutoDxerCore::switchBand()
+     }
+     const int nextBand = nextPatrolBand();
+ 
++    // Reaching this point means the current band completed its full quiet
++    // dwell and the final selection pass found no priorities 1-5. Count the
++    // departing band as checked before advancing the round-robin cursor.
++    markPriorityPatrolBandChecked(m_currentBandIndex);
++
+     if (nextBand < 0 || nextBand == m_currentBandIndex) {
+         emit debugMessage("QUIET-BAND: No other enabled band is open now");
+         m_quietBandTimer.restart();
+@@ -3316,6 +3454,109 @@ int AutoDxerCore::nextPatrolBand() const
+     return -1;
+ }
+ 
++QSet<int> AutoDxerCore::openPatrolBands() const
++{
++    QSet<int> result;
++    if (!m_bandManager) return result;
++    if (!m_bandSwitchingEnabled) {
++        if (m_bandManager->isBandOpenNow(m_currentBandIndex))
++            result.insert(m_currentBandIndex);
++        return result;
++    }
++    const QList<int> enabled = m_bandManager->getEnabledBands();
++    for (int band : enabled) {
++        if (m_bandManager->isBandOpenNow(band)) result.insert(band);
++    }
++    return result;
++}
++
++bool AutoDxerCore::priorityPatrolComplete() const
++{
++    const QSet<int> openBands = openPatrolBands();
++    if (openBands.isEmpty()) return false;
++    // A band that opened since the last scheduler refresh has not been
++    // checked in this schedule window, even if its identifier remains from
++    // an older cycle.
++    for (int band : openBands) {
++        if (!m_priorityPatrolOpenBands.contains(band)) return false;
++    }
++    for (int band : openBands) {
++        if (!m_priorityPatrolCheckedBands.contains(band)) return false;
++    }
++    return true;
++}
++
++bool AutoDxerCore::hasEligiblePriorityOpportunity() const
++{
++    // checkCrossBandAlerts() populates this queue only after all history,
++    // schedule, mode, source-confidence, duplicate and scope gates pass.
++    // Any row therefore outranks ordinary new-call fallback; DXpeditions are
++    // included and retain their configured score boost.
++    return !m_clusterChaseQueue.isEmpty() || hasEligibleDxpeditionOpportunity();
++}
++
++bool AutoDxerCore::hasEligibleDxpeditionOpportunity() const
++{
++    if (!m_dxpeditionChaseEnabled || !m_spotAggregator || !m_bandManager) return false;
++    const QList<int> enabled = m_bandManager->getEnabledBands();
++    for (int band : enabled) {
++        if (!m_bandManager->isBandOpenNow(band)) continue;
++        const QList<ExternalSpot> spots = m_spotAggregator->getSpots(
++            band, m_dxpeditionMaxSpotAgeSeconds);
++        for (const ExternalSpot &spot : spots) {
++            if (!isDxpeditionTarget(spot.callsign, band)) continue;
++            if (!historicalActionAllowed(spot.callsign, false)) continue;
++            if (spot.source != "LOCAL"
++                    && (!AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)
++                        || spot.mode.trimmed().compare(
++                            m_currentMode, Qt::CaseInsensitive) != 0)) continue;
++            if (spot.spotterCount < qMax(m_clusterChaseMinSpotters,
++                                         m_dxpeditionMinSpotters)) continue;
++            const bool otherwiseNeeded = m_dxccTracker
++                && (m_dxccTracker->isNewDXCCByCall(spot.callsign)
++                    || m_dxccTracker->isNewBandSlotByCall(spot.callsign, band));
++            if (dxpeditionScopeAdmits(spot.callsign, band, otherwiseNeeded)) return true;
++        }
++    }
++    return false;
++}
++
++bool AutoDxerCore::ordinaryNewCallFallbackAllowed() const
++{
++    return priorityPatrolComplete() && !hasEligiblePriorityOpportunity();
++}
++
++void AutoDxerCore::resetPriorityPatrolCycle()
++{
++    m_priorityPatrolCheckedBands.clear();
++    m_priorityPatrolOpenBands = openPatrolBands();
++}
++
++void AutoDxerCore::refreshPriorityPatrolSchedule()
++{
++    const QSet<int> openBands = openPatrolBands();
++    bool newlyOpened = false;
++    for (int band : openBands) {
++        if (!m_priorityPatrolOpenBands.contains(band)) {
++            newlyOpened = true;
++            break;
++        }
++    }
++    if (newlyOpened) m_priorityPatrolCheckedBands.clear();
++    m_priorityPatrolCheckedBands.intersect(openBands);
++    m_priorityPatrolOpenBands = openBands;
++}
++
++void AutoDxerCore::markPriorityPatrolBandChecked(int bandIndex)
++{
++    if (bandIndex < 0) return;
++    const QSet<int> openBands = openPatrolBands();
++    if (openBands.contains(bandIndex)) m_priorityPatrolCheckedBands.insert(bandIndex);
++    // Schedules can change while a patrol is in progress. Keep telemetry and
++    // completion semantics limited to the bands that are open now.
++    m_priorityPatrolCheckedBands.intersect(openBands);
++}
++
+ void AutoDxerCore::beginBandChange(int bandIndex)
+ {
+     ++m_bandChangeRequestId;
+@@ -3350,7 +3591,10 @@ int AutoDxerCore::bestBandForSwitch()
+         int activity = 0;
+         const QList<ExternalSpot> spots = m_spotAggregator->getSpots(band, 120);
+         for (const ExternalSpot &spot : spots) {
+-            if (spot.source != "LOCAL" && !AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)) continue;
++            if (spot.source != "LOCAL"
++                    && (!AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)
++                        || spot.mode.trimmed().compare(
++                            m_currentMode, Qt::CaseInsensitive) != 0)) continue;
+             ++activity;
+             if (!historicalActionAllowed(spot.callsign, false)) continue;
+             const ScoredTarget scored = m_targetScorer->scoreTarget(spotToCachedDecode(spot));
+@@ -3524,6 +3768,7 @@ void AutoDxerCore::onBandChangedExternally(int bandIndex)
+             m_patrolCursorBand = bandIndex;
+             m_patrolTimer.invalidate();
+             m_patrolBandChangePending = false;
++            resetPriorityPatrolCycle();
+         }
+         return;
+     }
+@@ -3568,6 +3813,7 @@ void AutoDxerCore::onBandChangedExternally(int bandIndex)
+     m_patrolCursorBand = bandIndex;
+     m_patrolTimer.restart();
+     m_patrolBandChangePending = false;
++    resetPriorityPatrolCycle();
+     setState(Listening);
+ }
+ 
+@@ -4116,7 +4362,10 @@ void AutoDxerCore::checkCrossBandAlerts()
+             if (!historicalActionAllowed(spot.callsign, false)) continue;
+             // Network spots may move the radio only with explicit FT8 source
+             // evidence.  Frequency proximity alone is never a mode signal.
+-            if (spot.source != "LOCAL" && !AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)) continue;
++            if (spot.source != "LOCAL"
++                    && (!AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)
++                        || spot.mode.trimmed().compare(
++                            m_currentMode, Qt::CaseInsensitive) != 0)) continue;
+             QString entity;
+             if (m_cty) entity = m_cty->FindCountry(spot.callsign, false);
+ 
+@@ -4222,6 +4471,8 @@ void AutoDxerCore::checkCrossBandAlerts()
+             if (spotDialFreq > 0) {
+                 const bool explicitFt8Cluster =
+                     AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)
++                    && spot.mode.trimmed().compare(
++                        m_currentMode, Qt::CaseInsensitive) == 0
+                     && (spot.source == "RBN" || spot.source.startsWith("DxCluster:"));
+                 if (!explicitFt8Cluster) {
+                     noteSkipped("off-standard-qsy-needs-explicit-ft8-cluster:"
+@@ -4263,7 +4514,8 @@ void AutoDxerCore::checkCrossBandAlerts()
+             // Once the independent baseline deadline is due, a lower-class
+             // band-slot alert waits for patrol. An all-time-new DXCC remains
+             // urgent and may interrupt without resetting patrol progress.
+-            if (baselinePatrolDue && candidate.priority < 2) {
++            if (baselinePatrolDue && candidate.priority < 2
++                    && !candidate.dxpedition) {
+                 noteSkipped("baseline-patrol-due:" + spot.callsign);
+                 continue;
+             }
+@@ -4450,6 +4702,8 @@ void AutoDxerCore::checkSameBandNonStdFreqAlerts()
+         // a QSY destination; RBN and native DX-cluster records carry an RF
+         // frequency and explicit mode and are re-verified after tuning.
+         const bool explicitFt8Cluster = AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)
++            && spot.mode.trimmed().compare(
++                m_currentMode, Qt::CaseInsensitive) == 0
+             && (spot.source == "RBN" || spot.source.startsWith("DxCluster:"));
+         if (!explicitFt8Cluster) continue;
+         // Check if this is needed (ATNO or new band slot) - same logic as standard freq chasing
+@@ -4494,7 +4748,7 @@ void AutoDxerCore::checkSameBandNonStdFreqAlerts()
+         const bool baselinePatrolDue = m_patrolTimer.isValid()
+             && AutoDxTimingPolicy::quietBandExpired(
+                 m_patrolTimer.elapsed(), m_quietBandSeconds);
+-        if (baselinePatrolDue && !isNewDxcc) {
++        if (baselinePatrolDue && !isNewDxcc && !dxpedition) {
+             noteSkipped(QString("baseline-patrol-due:%1").arg(spot.callsign));
+             continue;
+         }
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.h b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+index 7ea5787..e90b39d 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+@@ -197,6 +197,7 @@ private slots:
+ 
+ private:
+     void setState(State newState);
++    int decodePeriodDebounceSeconds() const;
+     void startListening();
+     void evaluateTargets();
+     void feedToQueue(const ScoredTarget &target, bool newAttempt = true,
+@@ -210,6 +211,14 @@ private:
+     void beginBandChange(int bandIndex);
+     void switchBand();
+     int nextPatrolBand() const;
++    QSet<int> openPatrolBands() const;
++    bool priorityPatrolComplete() const;
++    bool hasEligiblePriorityOpportunity() const;
++    bool hasEligibleDxpeditionOpportunity() const;
++    bool ordinaryNewCallFallbackAllowed() const;
++    void resetPriorityPatrolCycle();
++    void refreshPriorityPatrolSchedule();
++    void markPriorityPatrolBandChecked(int bandIndex);
+     int bestBandForSwitch();
+     bool targetLocallyFresh(const QString &callsign, int bandIndex, int maxAgeSeconds) const;
+     bool currentTargetPersistsWhileHeard() const;
+@@ -451,7 +460,6 @@ private:
+     QDateTime m_lastTargetProgressUtc;  // Renewable completion lease; refreshed by every directed reply
+     QDateTime m_lastMissedCycleCheck;  // Debounce: only check once per actual FT8 period
+     static const int DEFAULT_SCARCE_TARGET_THRESHOLD = 5;  // Default: trigger scarce mode when <= 5 other needed targets
+-    static const int MISSED_CYCLE_DEBOUNCE_SECS = 12;  // FT8 period is ~15s, use 12s debounce
+ 
+     // Slot finder debounce - only call onPeriodEnd once per FT8 period
+     QDateTime m_lastSlotFinderPeriodEnd;
+@@ -461,6 +469,8 @@ private:
+     int m_crossBandAlertCursorBand;
+     int m_patrolCursorBand;
+     bool m_patrolBandChangePending;
++    QSet<int> m_priorityPatrolCheckedBands;
++    QSet<int> m_priorityPatrolOpenBands;
+     bool m_bandChangePending;
+     int m_requestedBandIndex;
+     quint64 m_bandChangeRequestId;
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+index 550689a..e4486bc 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+@@ -143,7 +143,8 @@ struct AutoDxRuntimeConfig
+ 
+     static bool acceptsExternalMode(const QString &mode)
+     {
+-        return mode.trimmed().compare("FT8", Qt::CaseInsensitive) == 0;
++        const QString normalized = mode.trimmed().toUpper();
++        return normalized == "FT8" || normalized == "FT4";
+     }
+ 
+     static QString explicitDigitalMode(const QString &text)
+@@ -160,11 +161,13 @@ struct AutoDxRuntimeConfig
+         c.desiredEnabled = settings.value("AutoDx/Enabled", false).toBool();
+         c.modes.clear();
+         const bool modesConfigured = settings.contains("AutoDx/Modes");
+-        const QStringList requested = settings.value("AutoDx/Modes", "FT8")
++        const QStringList requested = settings.value("AutoDx/Modes", "FT8,FT4")
+             .toString().toUpper().split(",", Qt::SkipEmptyParts);
+-        // Phase 1 supports the proven FT8 core only; unknown/FT4 values cannot
+-        // expand effective automation merely by editing the INI.
+-        if (!modesConfigured || requested.contains("FT8")) c.modes << "FT8";
++        const QStringList supported = QStringList() << "FT8" << "FT4";
++        for (const QString &mode : supported) {
++            if ((!modesConfigured || requested.contains(mode)) && !c.modes.contains(mode))
++                c.modes << mode;
++        }
+         c.bandSwitchingEnabled = settings.value("BandSwitching/Enabled", false).toBool();
+         c.normalCallSeconds = qBound(30, settings.value("AutomationTiming/NormalCallSeconds", 120).toInt(), 1800);
+         c.quietBandSeconds = qBound(60, settings.value("AutomationTiming/QuietBandSeconds", 300).toInt(), 3600);
+diff --git a/MSHV_2762/src/HvAutoDxer/bandmanager.cpp b/MSHV_2762/src/HvAutoDxer/bandmanager.cpp
+index c6b9acd..11e65c8 100644
+--- a/MSHV_2762/src/HvAutoDxer/bandmanager.cpp
++++ b/MSHV_2762/src/HvAutoDxer/bandmanager.cpp
+@@ -29,10 +29,18 @@ const int BandManager::s_ft8Frequencies[] = {
+     50313000   // 6m   - 50.313 MHz (index 14)
+ };
+ 
++const int BandManager::s_ft4Frequencies[] = {
++    0, 0, 0,
++    1840000, 3575000, 0, 7047000, 10140000,
++    14080000, 18104000, 21140000, 24919000, 28180000,
++    0, 50318000
++};
++
+ BandManager::BandManager(QObject *parent)
+     : QObject(parent)
+     , m_currentBand(-1)
+     , m_utcOffset(-6)  // Default to CST (UTC-6)
++    , m_mode("FT8")
+ {
+     // Default enabled bands: All DXCC-eligible HF bands (excluding 60m and 6m)
+     // 160m=3, 80m=4, 40m=6, 30m=7, 20m=8, 17m=9, 15m=10, 12m=11, 10m=12
+@@ -167,7 +175,8 @@ QString BandManager::bandName(int bandIndex) const
+ int BandManager::bandFrequencyHz(int bandIndex) const
+ {
+     if (bandIndex >= 0 && bandIndex <= 14) {
+-        return s_ft8Frequencies[bandIndex];
++        return m_mode == "FT4" ? s_ft4Frequencies[bandIndex]
++                               : s_ft8Frequencies[bandIndex];
+     }
+     return 0;
+ }
+diff --git a/MSHV_2762/src/HvAutoDxer/bandmanager.h b/MSHV_2762/src/HvAutoDxer/bandmanager.h
+index 40ca893..6904ec2 100644
+--- a/MSHV_2762/src/HvAutoDxer/bandmanager.h
++++ b/MSHV_2762/src/HvAutoDxer/bandmanager.h
+@@ -55,6 +55,8 @@ public:
+     // Band names and frequencies
+     QString bandName(int bandIndex) const;
+     int bandFrequencyHz(int bandIndex) const;  // Dial frequency for FT8
++    void setMode(const QString &mode) { m_mode = mode.trimmed().toUpper(); }
++    QString mode() const { return m_mode; }
+     
+     // Check if band has propagation (based on time of day, basic heuristics)
+     bool isLikelyOpen(int bandIndex) const;
+@@ -79,9 +81,11 @@ private:
+     int m_utcOffset;  // Hours offset from UTC for local time (e.g., -6 for CST)
+     QList<int> m_enabledBands;
+     QHash<int, BandSchedule> m_bandSchedules;
++    QString m_mode;
+ 
+     static const char* s_bandNames[];
+     static const int s_ft8Frequencies[];
++    static const int s_ft4Frequencies[];
+ };
+ 
+ #endif // BANDMANAGER_H
+diff --git a/MSHV_2762/src/HvAutoDxer/dxcctracker.cpp b/MSHV_2762/src/HvAutoDxer/dxcctracker.cpp
+index e4831a5..4b3bc8d 100644
+--- a/MSHV_2762/src/HvAutoDxer/dxcctracker.cpp
++++ b/MSHV_2762/src/HvAutoDxer/dxcctracker.cpp
+@@ -38,7 +38,9 @@ void DxccTracker::recordQSO(const QString &callsign, const QString &entity, int
+     if (!m_hvDxccTracker || callsign.isEmpty() || bandIndex < 3) return;
+ 
+     // Delegate to HvDxccTracker
+-    m_hvDxccTracker->onQsoLogged(callsign, grid, bandIndex, "FT8",
++    const QString mode = m_hvDxccTracker->getCurrentMode().trimmed().toUpper();
++    m_hvDxccTracker->onQsoLogged(callsign, grid, bandIndex,
++                                  mode == "FT4" ? "FT4" : "FT8",
+                                   QDate::currentDate().toString("yyyyMMdd"));
+ }
+ 
+diff --git a/MSHV_2762/src/HvAutoDxer/dxclusterclient.cpp b/MSHV_2762/src/HvAutoDxer/dxclusterclient.cpp
+index 6be47bd..da2eb9a 100644
+--- a/MSHV_2762/src/HvAutoDxer/dxclusterclient.cpp
++++ b/MSHV_2762/src/HvAutoDxer/dxclusterclient.cpp
+@@ -9,6 +9,7 @@
+ DxClusterClient::DxClusterClient(QObject *parent)
+     : QObject(parent)
+     , m_ft8Only(true)
++    , m_mode("FT8")
+     , m_running(false)
+ {
+     m_reconnectTimer = new QTimer(this);
+@@ -73,6 +74,20 @@ void DxClusterClient::clearServers()
+     m_servers.clear();
+ }
+ 
++void DxClusterClient::setMode(const QString &mode)
++{
++    const QString normalized = mode.trimmed().toUpper();
++    if (normalized != "FT8" && normalized != "FT4") return;
++    if (m_mode == normalized) return;
++    m_mode = normalized;
++    clearSpots();
++    for (QTcpSocket *socket : m_sockets) {
++        if (socket && socket->state() == QAbstractSocket::ConnectedState)
++            sendModeFilter(socket, m_socketToServer.value(socket, "Unknown"));
++    }
++    emit debugMessage("DxCluster: active mode changed to " + m_mode);
++}
++
+ void DxClusterClient::start()
+ {
+     if (m_callsign.isEmpty()) {
+@@ -192,21 +207,23 @@ void DxClusterClient::onConnected()
+     // Send login
+     socket->write((m_callsign + "\r\n").toUtf8());
+ 
+-    // Set up FT8 filter if supported (varies by cluster software)
+-    if (m_ft8Only) {
+-        // Check if this is a VE7CC CC Cluster node (supports enhanced CC User commands)
+-        if (serverName.contains("VE7CC", Qt::CaseInsensitive)) {
+-            // CC Cluster specific commands for optimal FT8 spot coverage
+-            // Reference: https://bcdxc.org/ve7cc/ccc/CCC_Commands.htm
+-            socket->write("set/skimmer\r\n");        // Enable skimmer spots
+-            socket->write("set/ft8\r\n");            // Enable FT8 mode
+-            emit debugMessage(QString("DxCluster: Sent CC User filter commands to %1").arg(serverName));
+-        } else {
+-            // Generic cluster filter commands
+-            socket->write("set/ft8\r\n");
+-            socket->write("set/dx/mode ft8\r\n");
+-        }
++    sendModeFilter(socket, serverName);
++}
++
++void DxClusterClient::sendModeFilter(QTcpSocket *socket, const QString &serverName)
++{
++    if (!socket || !m_ft8Only) return;
++    const QByteArray mode = m_mode.toLower().toUtf8();
++    if (serverName.contains("VE7CC", Qt::CaseInsensitive)) {
++        socket->write("set/skimmer\r\n");
++        socket->write("set/noall\r\n");
++        socket->write(QByteArray("set/") + mode + "\r\n");
++    } else {
++        socket->write(QByteArray("set/") + mode + "\r\n");
++        socket->write(QByteArray("set/dx/mode ") + mode + "\r\n");
+     }
++    emit debugMessage(QString("DxCluster: requested %1 spots from %2")
++                      .arg(m_mode).arg(serverName));
+ }
+ 
+ void DxClusterClient::onDisconnected()
+@@ -298,14 +315,14 @@ void DxClusterClient::parseSpotLine(const QString &line, const QString &serverNa
+     QString callsign = rx.cap(3);
+     QString comment = rx.cap(4).trimmed();
+ 
+-    // Phase 1 is deliberately FT8-only.  A dial-frequency guess is not mode
+-    // evidence: FT4 and other traffic can share the same +/-25 kHz window.
++    // A dial-frequency guess is not mode evidence. Accept only an explicit
++    // mode matching the currently active MSHV mode.
+     const QString mode = explicitDigitalMode(comment);
+-    if (m_ft8Only && !AutoDxRuntimeConfig::acceptsExternalMode(mode)) {
++    if (m_ft8Only && mode.compare(m_mode, Qt::CaseInsensitive) != 0) {
+         static int rejectCount = 0;
+         if (rejectCount++ < 20) {  // Log first 20 rejections for debugging
+-            emit debugMessage(QString("DxCluster-REJECT: %1 @ %2 kHz comment='%3' (not FT8)")
+-                .arg(callsign).arg(freqKHz, 0, 'f', 1).arg(comment.left(40)));
++            emit debugMessage(QString("DxCluster-REJECT: %1 @ %2 kHz comment='%3' (not active %4)")
++                .arg(callsign).arg(freqKHz, 0, 'f', 1).arg(comment.left(40)).arg(m_mode));
+         }
+         return;
+     }
+diff --git a/MSHV_2762/src/HvAutoDxer/dxclusterclient.h b/MSHV_2762/src/HvAutoDxer/dxclusterclient.h
+index 7a20abb..fc09ffe 100644
+--- a/MSHV_2762/src/HvAutoDxer/dxclusterclient.h
++++ b/MSHV_2762/src/HvAutoDxer/dxclusterclient.h
+@@ -53,6 +53,8 @@ public:
+     void clearServers();
+ 
+     void setFT8Filter(bool enabled) { m_ft8Only = enabled; }
++    void setMode(const QString &mode);
++    QString mode() const { return m_mode; }
+     void start();
+     void stop();
+     bool isConnected() const;
+@@ -79,11 +81,13 @@ private slots:
+ private:
+     void connectToServer(int index);
+     void parseSpotLine(const QString &line, const QString &serverName);
++    void sendModeFilter(QTcpSocket *socket, const QString &serverName);
+     QString explicitDigitalMode(const QString &comment) const;
+     int frequencyToBandIndex(double freqKHz) const;
+ 
+     QString m_callsign;
+     bool m_ft8Only;
++    QString m_mode;
+     bool m_running;
+ 
+     QList<ClusterServer> m_servers;
+diff --git a/MSHV_2762/src/HvAutoDxer/localspotbridge.cpp b/MSHV_2762/src/HvAutoDxer/localspotbridge.cpp
+index 996905a..2aeb6b0 100644
+--- a/MSHV_2762/src/HvAutoDxer/localspotbridge.cpp
++++ b/MSHV_2762/src/HvAutoDxer/localspotbridge.cpp
+@@ -7,6 +7,7 @@
+ 
+ LocalSpotBridge::LocalSpotBridge(QObject *parent)
+     : QObject(parent)
++    , m_mode("FT8")
+     , m_enabled(true)
+     , m_spotCount(0)
+ {
+@@ -34,7 +35,7 @@ void LocalSpotBridge::onLocalDecode(const CachedDecode &decode)
+     spot.bandIndex = decode.bandIndex;
+     spot.snr = decode.snr;
+     spot.isUSSpotter = true;  // Local decode is always "us"
+-    spot.mode = "FT8";       // Bridge is active only in the Phase 1 FT8 core.
++    spot.mode = m_mode;
+     spot.source = "LOCAL";
+     spot.timestamp = QDateTime::currentDateTimeUtc();
+     spot.spotterCount = 1;
+diff --git a/MSHV_2762/src/HvAutoDxer/localspotbridge.h b/MSHV_2762/src/HvAutoDxer/localspotbridge.h
+index 39b667b..b7dfafd 100644
+--- a/MSHV_2762/src/HvAutoDxer/localspotbridge.h
++++ b/MSHV_2762/src/HvAutoDxer/localspotbridge.h
+@@ -17,6 +17,7 @@ public:
+     explicit LocalSpotBridge(QObject *parent = nullptr);
+ 
+     void setMyCallsign(const QString &call) { m_myCallsign = call; }
++    void setMode(const QString &mode) { m_mode = mode.trimmed().toUpper(); }
+     void setEnabled(bool enabled) { m_enabled = enabled; }
+     bool isEnabled() const { return m_enabled; }
+ 
+@@ -31,6 +32,7 @@ signals:
+ 
+ private:
+     QString m_myCallsign;
++    QString m_mode;
+     bool m_enabled;
+     int m_spotCount;  // For debug logging throttle
+ };
+diff --git a/MSHV_2762/src/HvAutoDxer/spotaggregator.cpp b/MSHV_2762/src/HvAutoDxer/spotaggregator.cpp
+index 0df08c3..1444ce6 100644
+--- a/MSHV_2762/src/HvAutoDxer/spotaggregator.cpp
++++ b/MSHV_2762/src/HvAutoDxer/spotaggregator.cpp
+@@ -49,6 +49,7 @@ static bool isRareDXCallsign(const QString &callsign)
+ 
+ SpotAggregator::SpotAggregator(QObject *parent)
+     : QObject(parent)
++    , m_mode("FT8")
+     , m_rbnEnabled(true)
+     , m_pskrEnabled(true)
+     , m_dxClusterEnabled(true)
+@@ -91,6 +92,7 @@ SpotAggregator::SpotAggregator(QObject *parent)
+ 
+     // Create DX Cluster client
+     m_dxClusterClient = new DxClusterClient(this);
++    m_dxClusterClient->setMode(m_mode);
+     connect(m_dxClusterClient, SIGNAL(debugMessage(QString)), this, SIGNAL(debugMessage(QString)));
+     connect(m_dxClusterClient, SIGNAL(spotReceived(ClusterSpot)), this, SLOT(onDxClusterSpot(ClusterSpot)));
+ 
+@@ -98,6 +100,22 @@ SpotAggregator::SpotAggregator(QObject *parent)
+     addDefaultDxClusterServers();
+ }
+ 
++void SpotAggregator::setMode(const QString &mode)
++{
++    const QString normalized = mode.trimmed().toUpper();
++    if (normalized != "FT8" && normalized != "FT4") return;
++    if (m_mode == normalized) return;
++    m_mode = normalized;
++    clearSpots();
++    m_dxClusterClient->setMode(m_mode);
++    if (m_rbnSocket->state() == QAbstractSocket::ConnectedState) {
++        m_rbnSocket->write("set/noall\r\n");
++        m_rbnSocket->write(("set/" + m_mode.toLower() + "\r\n").toUtf8());
++    }
++    if (m_pskrEnabled && isGridConfigured()) pollPSKR();
++    emit debugMessage("SpotAggregator: active mode changed to " + m_mode);
++}
++
+ SpotAggregator::~SpotAggregator()
+ {
+     stop();
+@@ -242,15 +260,15 @@ void SpotAggregator::onRBNConnected()
+ 
+     QTimer::singleShot(1000, this, [this]() {
+         if (m_rbnSocket->state() == QAbstractSocket::ConnectedState) {
+-            m_rbnSocket->write("set/ft8\r\n");
+-            emit debugMessage("SpotAggregator: RBN sent set/ft8 (enable FT8 only)");
++            m_rbnSocket->write(("set/" + m_mode.toLower() + "\r\n").toUtf8());
++            emit debugMessage("SpotAggregator: RBN enabled " + m_mode);
+         }
+     });
+ 
+     QTimer::singleShot(1500, this, [this]() {
+         if (m_rbnSocket->state() == QAbstractSocket::ConnectedState) {
+             m_rbnSocket->write("set/skimmer\r\n");
+-            emit debugMessage("SpotAggregator: RBN filters applied - ready for FT8 spots");
++            emit debugMessage("SpotAggregator: RBN filters applied - ready for " + m_mode + " spots");
+             emit connected();
+         }
+     });
+@@ -373,7 +391,7 @@ void SpotAggregator::pollPSKR()
+     // Use 4-char grid (square) for better precision - reduces irrelevant spots by ~100x
+     // 2-char field = ~500,000 sq km, 4-char square = ~12,000 sq km
+     query.addQueryItem("receiverGrid", m_myGrid.left(4));
+-    query.addQueryItem("mode", "FT8");
++    query.addQueryItem("mode", m_mode);
+     query.addQueryItem("flowStartSeconds", "300");  // Last 5 minutes
+     query.addQueryItem("fmt", "json");              // CRITICAL: Request JSON format
+     query.addQueryItem("noactive", "1");            // Don't include active flag (faster)
+@@ -869,7 +887,7 @@ void SpotAggregator::addLocalSpot(ExternalSpot spot)
+     // Local decoder mode is controlled by AutoDxerCore's FT8-only effective
+     // gate.  Preserve explicit evidence so external-QSY filters cannot confuse
+     // local confirmation with an untyped network spot.
+-    if (spot.mode.isEmpty()) spot.mode = "FT8";
++    if (spot.mode.isEmpty()) spot.mode = m_mode;
+     // Local spots bypass US-only filter (they're from our own decoder)
+     // but still need valid band
+     if (spot.bandIndex < 3) {
+diff --git a/MSHV_2762/src/HvAutoDxer/spotaggregator.h b/MSHV_2762/src/HvAutoDxer/spotaggregator.h
+index b904e6f..d270652 100644
+--- a/MSHV_2762/src/HvAutoDxer/spotaggregator.h
++++ b/MSHV_2762/src/HvAutoDxer/spotaggregator.h
+@@ -45,6 +45,8 @@ public:
+ 
+     void setCallsign(const QString &call);  // Also updates DxClusterClient
+     void setGrid(const QString &grid);  // Triggers immediate PSKR poll if enabled
++    void setMode(const QString &mode);
++    QString mode() const { return m_mode; }
+     void start();
+     void stop();
+     bool isConnected() const;
+@@ -114,6 +116,7 @@ private:
+     
+     QString m_myCallsign;
+     QString m_myGrid;
++    QString m_mode;
+     bool m_rbnEnabled;
+     bool m_pskrEnabled;
+     bool m_dxClusterEnabled;
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+index 1a1b70b..465d106 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+@@ -161,6 +161,7 @@ TargetScorer::TargetScorer(DxccTracker *tracker, HvCty *cty, QObject *parent)
+     , m_priorityGrid(true)
+     , m_historicalNoveltyAllowed(false)
+     , m_usGridOnly(true)  // Default: only chase US territory grids
++    , m_currentMode("FT8")
+     , m_weightNewDXCC(TargetPriority::NewDXCC)
+     , m_weightNewBandSlot(TargetPriority::NewBandSlot)
+     , m_weightNewGrid(TargetPriority::NewGrid)
+@@ -537,7 +538,7 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     const QString awardBand = decode.bandIndex >= 0 && decode.bandIndex < 15
+         ? QString::fromLatin1(bandNames[decode.bandIndex]) : QString();
+     const AwardReferenceScore award = m_awardIndex.score(
+-        decode.callsign, awardBand, "FT8", decode.isLocalDecode,
++        decode.callsign, awardBand, m_currentMode, decode.isLocalDecode,
+         QDateTime::currentDateTimeUtc(), m_awardConfig);
+     if (award.eligible) {
+         target.isAwardReference = true;
+@@ -694,6 +695,14 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+         target.priorityReason = reasons.join(", ");
+     }
+ 
++    const bool hasHigherValueNeed = facts.newDxcc || facts.newContinent
++        || facts.newGrid || facts.newCqZone || facts.newItuZone
++        || facts.bandDxcc || facts.bandContinent || facts.bandGrid
++        || facts.bandCqZone || facts.bandItuZone
++        || usStateAdmission || awardAdmission || watchedDxpedition;
++    target.isOrdinaryNewCallFallback = target.priority > 0
++        && facts.newCall && !hasHigherValueNeed && !target.isCallingMe;
++
+     return target;
+ }
+ 
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.h b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+index a282b8a..a853a3b 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.h
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+@@ -52,6 +52,7 @@ struct ScoredTarget
+     bool isUsStateQuota;
+     QString usState;
+     bool isAwardReference;
++    bool isOrdinaryNewCallFallback;
+     QString awardProgram;
+     QString awardReference;
+     QString awardSlotKey;
+@@ -62,6 +63,7 @@ struct ScoredTarget
+     ScoredTarget() : bandIndex(-1), audioFrequency(0), dialFrequencyHz(0), snr(0), priority(0),
+                      isNewDXCC(false), isUnconfirmedDXCC(false), isNewBandSlot(false), isNewGrid(false), isCallingMe(false),
+                      isUsStateConfirmation(false), isUsStateQuota(false), isAwardReference(false),
++                     isOrdinaryNewCallFallback(false),
+                      isLocalDecode(true), decodeCount(0) {}
+ 
+     bool operator<(const ScoredTarget &other) const { return priority > other.priority; }
+@@ -109,6 +111,7 @@ public:
+     bool priorityBandSlotEnabled() const { return m_priorityBandSlot; }
+     bool priorityGridEnabled() const { return m_priorityGrid; }
+     void setMyCallsign(const QString &callsign) { m_myCallsign = callsign.trimmed().toUpper(); }
++    void setCurrentMode(const QString &mode) { m_currentMode = mode.trimmed().toUpper(); }
+     void setTargetWeights(int newDxcc, int newBandSlot, int newGrid,
+                           int callingMe, int cqBonus, int snrPerDb) {
+         m_weightNewDXCC = qMax(0, newDxcc);
+@@ -202,6 +205,7 @@ private:
+     bool m_usGridOnly;    // Only chase grids within US territory
+     QString m_myCountry;  // Own country to filter out
+     QString m_myCallsign;
++    QString m_currentMode;
+     int m_weightNewDXCC;
+     int m_weightNewBandSlot;
+     int m_weightNewGrid;

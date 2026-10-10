@@ -367,11 +367,29 @@
             border-color: #22c55e;
         }
 
+        .digital-engine-launch-button {
+            cursor: pointer;
+        }
+
         .wsjtx-launch-button:hover:not(:disabled) {
             background: #16a34a;
         }
 
         .wsjtx-launch-button:disabled {
+            opacity: 0.7;
+            cursor: wait;
+        }
+
+        .mshv-launch-button {
+            background: #9a3412;
+            border-color: #f97316;
+        }
+
+        .mshv-launch-button:hover:not(:disabled) {
+            background: #c2410c;
+        }
+
+        .digital-engine-launch-button:disabled {
             opacity: 0.7;
             cursor: wait;
         }

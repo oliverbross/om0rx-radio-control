@@ -1,0 +1,1630 @@
+diff --git a/MSHV_2762/src/HvAutoBand/hvslotfinder.cpp b/MSHV_2762/src/HvAutoBand/hvslotfinder.cpp
+index fb448fc..2b53626 100644
+--- a/MSHV_2762/src/HvAutoBand/hvslotfinder.cpp
++++ b/MSHV_2762/src/HvAutoBand/hvslotfinder.cpp
+@@ -8,14 +8,37 @@
+ #include <QDebug>
+ #include "../HvReliability/hvlogger.h"
+ 
++namespace {
++const int SLOT_OCCUPANCY_MAX_AGE_SECONDS = 45;
++
++bool isRecentlyOccupied(const FrequencySlot& slot, const QDateTime& now)
++{
++    if (slot.usageCount <= 0 || !slot.lastUsed.isValid()) {
++        return false;
++    }
++    const qint64 ageSeconds = slot.lastUsed.secsTo(now);
++    return ageSeconds >= -1 && ageSeconds <= SLOT_OCCUPANCY_MAX_AGE_SECONDS;
++}
++
++int firstAlignedSlot(int minFreq, int slotWidth)
++{
++    return ((minFreq + slotWidth - 1) / slotWidth) * slotWidth;
++}
++
++int lastAlignedSlot(int maxFreq, int slotWidth)
++{
++    return (maxFreq / slotWidth) * slotWidth;
++}
++}
++
+ HvSlotFinder::HvSlotFinder(QObject *parent)
+     : QObject(parent)
+     , m_slotWidth(60)          // FT8 typical slot width
+-    , m_minFreq(500)           // Stay above 500 Hz (avoid low freq QRM)
+-    , m_maxFreq(2500)          // Stay below 2500 Hz (avoid high freq edge)
++    , m_minFreq(1400)          // Keep automated replies above crowded low audio
++    , m_maxFreq(1800)          // Keep them inside the operator's reply window
+     , m_analysisPeriods(2)     // Analyze 2 periods before recommending
+-    , m_preferredMinFreq(500)  // Preferred range start (same as min)
+-    , m_preferredMaxFreq(2500) // Preferred range end (same as max)
++    , m_preferredMinFreq(1400) // Preferred range start (same as min)
++    , m_preferredMaxFreq(1800) // Preferred range end (same as max)
+     , m_periodsCollected(0)
+ {
+     m_periodStartTime = QDateTime::currentDateTimeUtc();
+@@ -148,8 +171,8 @@ void HvSlotFinder::onBandSwitch()
+ SlotAnalysis HvSlotFinder::findBestSlot() const
+ {
+     SlotAnalysis result;
+-    result.suggestedFreq = 1500;  // Default to middle of 500-2500 Hz range
+-    result.alternateFreq = 1200;
++    result.suggestedFreq = 1500;
++    result.alternateFreq = 1680;
+     result.confidence = 0.0;
+     result.totalSlots = 0;
+     result.occupiedSlots = 0;
+@@ -166,8 +189,9 @@ SlotAnalysis HvSlotFinder::findBestSlot() const
+ 
+     // Find occupied slots
+     QSet<int> occupiedSlots;
++    const QDateTime now = QDateTime::currentDateTimeUtc();
+     for (auto it = m_slotUsage.begin(); it != m_slotUsage.end(); ++it) {
+-        if (it.value().usageCount > 0 && it.key() >= m_minFreq && it.key() <= m_maxFreq) {
++        if (isRecentlyOccupied(it.value(), now) && it.key() >= m_minFreq && it.key() <= m_maxFreq) {
+             occupiedSlots.insert(it.key());
+         }
+     }
+@@ -196,7 +220,9 @@ SlotAnalysis HvSlotFinder::findBestSlot() const
+     if (alternateSlot < m_minFreq) {
+         alternateSlot = m_minFreq + m_slotWidth;
+     }
+-    result.alternateFreq = roundToSlot(alternateSlot);
++    result.alternateFreq = qBound(firstAlignedSlot(m_minFreq, m_slotWidth),
++                                  roundToSlot(alternateSlot),
++                                  lastAlignedSlot(m_maxFreq, m_slotWidth));
+ 
+     return result;
+ }
+@@ -205,23 +231,24 @@ int HvSlotFinder::findClearSlot() const
+ {
+     // Build set of occupied slots
+     QSet<int> occupied;
++    const QDateTime now = QDateTime::currentDateTimeUtc();
+     for (auto it = m_slotUsage.begin(); it != m_slotUsage.end(); ++it) {
+-        if (it.value().usageCount > 0) {
++        if (isRecentlyOccupied(it.value(), now)) {
+             occupied.insert(it.key());
+         }
+     }
+ 
+     // First try preferred range
+-    for (int freq = m_preferredMinFreq; freq <= m_preferredMaxFreq; freq += m_slotWidth) {
+-        int slot = roundToSlot(freq);
++    for (int slot = firstAlignedSlot(m_preferredMinFreq, m_slotWidth);
++         slot <= lastAlignedSlot(m_preferredMaxFreq, m_slotWidth); slot += m_slotWidth) {
+         if (!occupied.contains(slot) && !occupied.contains(slot - m_slotWidth) && !occupied.contains(slot + m_slotWidth)) {
+             return slot;
+         }
+     }
+ 
+     // Then try full range
+-    for (int freq = m_minFreq; freq <= m_maxFreq; freq += m_slotWidth) {
+-        int slot = roundToSlot(freq);
++    for (int slot = firstAlignedSlot(m_minFreq, m_slotWidth);
++         slot <= lastAlignedSlot(m_maxFreq, m_slotWidth); slot += m_slotWidth) {
+         if (!occupied.contains(slot)) {
+             return slot;
+         }
+@@ -232,18 +259,21 @@ int HvSlotFinder::findClearSlot() const
+ 
+ int HvSlotFinder::findLeastCongestedSlot() const
+ {
+-    int bestSlot = m_minFreq + (m_maxFreq - m_minFreq) / 2;
++    int bestSlot = qBound(firstAlignedSlot(m_minFreq, m_slotWidth),
++                          roundToSlot(m_minFreq + (m_maxFreq - m_minFreq) / 2),
++                          lastAlignedSlot(m_maxFreq, m_slotWidth));
+     int lowestUsage = INT_MAX;
++    const QDateTime now = QDateTime::currentDateTimeUtc();
+ 
+     // Check all slots in preferred range first
+-    for (int freq = m_preferredMinFreq; freq <= m_preferredMaxFreq; freq += m_slotWidth) {
+-        int slot = roundToSlot(freq);
++    for (int slot = firstAlignedSlot(m_preferredMinFreq, m_slotWidth);
++         slot <= lastAlignedSlot(m_preferredMaxFreq, m_slotWidth); slot += m_slotWidth) {
+         int usage = 0;
+ 
+         // Check this slot and neighbors
+         for (int offset = -m_slotWidth; offset <= m_slotWidth; offset += m_slotWidth) {
+             int checkSlot = slot + offset;
+-            if (m_slotUsage.contains(checkSlot)) {
++            if (m_slotUsage.contains(checkSlot) && isRecentlyOccupied(m_slotUsage[checkSlot], now)) {
+                 usage += m_slotUsage[checkSlot].usageCount;
+                 if (m_slotUsage[checkSlot].isQrm) {
+                     usage += 5;  // Penalize QRM slots
+@@ -259,11 +289,11 @@ int HvSlotFinder::findLeastCongestedSlot() const
+ 
+     // If nothing good in preferred range, check full range
+     if (lowestUsage > 2) {
+-        for (int freq = m_minFreq; freq <= m_maxFreq; freq += m_slotWidth) {
+-            int slot = roundToSlot(freq);
++        for (int slot = firstAlignedSlot(m_minFreq, m_slotWidth);
++             slot <= lastAlignedSlot(m_maxFreq, m_slotWidth); slot += m_slotWidth) {
+             if (slot < m_preferredMinFreq || slot > m_preferredMaxFreq) {
+                 int usage = 0;
+-                if (m_slotUsage.contains(slot)) {
++                if (m_slotUsage.contains(slot) && isRecentlyOccupied(m_slotUsage[slot], now)) {
+                     usage = m_slotUsage[slot].usageCount;
+                 }
+                 if (usage < lowestUsage) {
+@@ -415,8 +445,12 @@ CallableRange HvSlotFinder::estimateCallableRange(const MultistreamInfo& info)
+ SlotAnalysis HvSlotFinder::findBestSlot(const CallableRange& range) const
+ {
+     SlotAnalysis result;
+-    result.suggestedFreq = (range.minFreq + range.maxFreq) / 2;  // Default to middle of range
+-    result.alternateFreq = range.minFreq + 60;
++    const int firstSlot = firstAlignedSlot(range.minFreq, m_slotWidth);
++    const int lastSlot = lastAlignedSlot(range.maxFreq, m_slotWidth);
++    result.suggestedFreq = qBound(firstSlot,
++                                  roundToSlot((range.minFreq + range.maxFreq) / 2),
++                                  lastSlot);
++    result.alternateFreq = qBound(firstSlot, result.suggestedFreq + m_slotWidth, lastSlot);
+     result.confidence = 0.0;
+     result.totalSlots = (range.maxFreq - range.minFreq) / m_slotWidth;
+     result.occupiedSlots = 0;
+@@ -431,8 +465,9 @@ SlotAnalysis HvSlotFinder::findBestSlot(const CallableRange& range) const
+                                 .arg(range.minFreq).arg(range.maxFreq));
+ 
+     // Count occupied slots in range
++    const QDateTime now = QDateTime::currentDateTimeUtc();
+     for (auto it = m_slotUsage.begin(); it != m_slotUsage.end(); ++it) {
+-        if (it.value().usageCount > 0 && it.key() >= range.minFreq && it.key() <= range.maxFreq) {
++        if (isRecentlyOccupied(it.value(), now) && it.key() >= range.minFreq && it.key() <= range.maxFreq) {
+             result.occupiedSlots++;
+         }
+     }
+@@ -462,7 +497,7 @@ SlotAnalysis HvSlotFinder::findBestSlot(const CallableRange& range) const
+     if (alternateSlot < range.minFreq) {
+         alternateSlot = range.minFreq;
+     }
+-    result.alternateFreq = roundToSlot(alternateSlot);
++    result.alternateFreq = qBound(firstSlot, roundToSlot(alternateSlot), lastSlot);
+ 
+     HvLogger::instance()->info(QString("[SlotFinder] Best slot in callable range: %1 Hz (alt: %2 Hz)")
+                                .arg(result.suggestedFreq).arg(result.alternateFreq));
+@@ -475,15 +510,16 @@ int HvSlotFinder::findClearSlotInRange(int minFreq, int maxFreq) const
+ {
+     // Build set of occupied slots
+     QSet<int> occupied;
++    const QDateTime now = QDateTime::currentDateTimeUtc();
+     for (auto it = m_slotUsage.begin(); it != m_slotUsage.end(); ++it) {
+-        if (it.value().usageCount > 0) {
++        if (isRecentlyOccupied(it.value(), now)) {
+             occupied.insert(it.key());
+         }
+     }
+ 
+     // Search within the specified range
+-    for (int freq = minFreq; freq <= maxFreq; freq += m_slotWidth) {
+-        int slot = roundToSlot(freq);
++    for (int slot = firstAlignedSlot(minFreq, m_slotWidth);
++         slot <= lastAlignedSlot(maxFreq, m_slotWidth); slot += m_slotWidth) {
+         // Check this slot and neighbors are clear
+         if (!occupied.contains(slot) && !occupied.contains(slot - m_slotWidth) && !occupied.contains(slot + m_slotWidth)) {
+             return slot;
+@@ -491,8 +527,8 @@ int HvSlotFinder::findClearSlotInRange(int minFreq, int maxFreq) const
+     }
+ 
+     // Try again without neighbor check
+-    for (int freq = minFreq; freq <= maxFreq; freq += m_slotWidth) {
+-        int slot = roundToSlot(freq);
++    for (int slot = firstAlignedSlot(minFreq, m_slotWidth);
++         slot <= lastAlignedSlot(maxFreq, m_slotWidth); slot += m_slotWidth) {
+         if (!occupied.contains(slot)) {
+             return slot;
+         }
+@@ -504,18 +540,20 @@ int HvSlotFinder::findClearSlotInRange(int minFreq, int maxFreq) const
+ // Find least congested slot within specified range
+ int HvSlotFinder::findLeastCongestedInRange(int minFreq, int maxFreq) const
+ {
+-    int bestSlot = (minFreq + maxFreq) / 2;
+-    bestSlot = roundToSlot(bestSlot);
++    int bestSlot = qBound(firstAlignedSlot(minFreq, m_slotWidth),
++                          roundToSlot((minFreq + maxFreq) / 2),
++                          lastAlignedSlot(maxFreq, m_slotWidth));
+     int lowestUsage = INT_MAX;
++    const QDateTime now = QDateTime::currentDateTimeUtc();
+ 
+-    for (int freq = minFreq; freq <= maxFreq; freq += m_slotWidth) {
+-        int slot = roundToSlot(freq);
++    for (int slot = firstAlignedSlot(minFreq, m_slotWidth);
++         slot <= lastAlignedSlot(maxFreq, m_slotWidth); slot += m_slotWidth) {
+         int usage = 0;
+ 
+         // Check this slot and neighbors
+         for (int offset = -m_slotWidth; offset <= m_slotWidth; offset += m_slotWidth) {
+             int checkSlot = slot + offset;
+-            if (m_slotUsage.contains(checkSlot)) {
++            if (m_slotUsage.contains(checkSlot) && isRecentlyOccupied(m_slotUsage[checkSlot], now)) {
+                 usage += m_slotUsage[checkSlot].usageCount;
+                 if (m_slotUsage[checkSlot].isQrm) {
+                     usage += 5;  // Penalize QRM slots
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+index 889238a..7c64aa9 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+@@ -1404,7 +1404,7 @@ void HvAutoDxSettings::loadSettings(const QString& appPath)
+     m_sameTargetRetrySeconds->setValue(settings.value("Attempt/SameTargetRetrySeconds", 1800).toInt());
+     m_recentQsoCooldownSeconds->setValue(settings.value("Attempt/RecentQsoCooldownSeconds", 3600).toInt());
+     m_minimumBandDwellSeconds->setValue(settings.value("BandSwitching/MinimumDwellSeconds", 180).toInt());
+-    m_engagedCompletionGraceSeconds->setValue(settings.value("Attempt/EngagedCompletionGraceSeconds", 60).toInt());
++    m_engagedCompletionGraceSeconds->setValue(settings.value("Attempt/EngagedCompletionGraceSeconds", 120).toInt());
+     m_atnoMinimumCallMinutes->setValue(settings.value("Attempt/ATNOMinimumCallMinutes", 30).toInt());
+     index = m_atnoChaseType->findData(settings.value("AutoDx/ATNOChaseType", 3).toInt());
+     m_atnoChaseType->setCurrentIndex(index >= 0 ? index : 3);
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+index 25f8524..1976f6d 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -86,7 +86,7 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     , m_targetHeardFreshSeconds(60)
+     , m_crossBandVerifySeconds(60)
+     , m_bandSwitchCooldownSeconds(120)
+-    , m_engagedCompletionGraceSeconds(60)
++    , m_engagedCompletionGraceSeconds(120)
+     , m_atnoMinimumCallSeconds(1800)
+     , m_persistNewDxccWhileHeard(true)
+     , m_persistNewBandSlotWhileHeard(true)
+@@ -225,6 +225,7 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+ 
+     // Load band selection from settings (uses settingsPath which is App_Path/settings)
+     m_bandManager->loadSettings(settingsPath);
++    loadIgnoredStations();
+ 
+     m_localSpotBridge = new LocalSpotBridge(this);
+     // Runtime configuration may propagate the configured callsign to the local
+@@ -242,6 +243,13 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+ 
+     // Create slot finder for TX frequency analysis after band changes
+     m_slotFinder = new HvSlotFinder(this);
++    // Keep normal FT8/FT4 replies in the clean, well-shaped part of the
++    // transmitter passband requested by the operator. DXpedition split
++    // handling remains independent and may deliberately use another offset.
++    m_slotFinder->setMinFreq(1400);
++    m_slotFinder->setMaxFreq(1800);
++    m_slotFinder->setPreferredRange(1400, 1800);
++    m_slotFinder->setSlotWidth(m_currentMode == "FT4" ? 100 : 60);
+     connect(m_slotFinder, &HvSlotFinder::analysisReady,
+             this, &AutoDxerCore::onSlotAnalysisReady);
+ 
+@@ -449,6 +457,7 @@ void AutoDxerCore::setEnabled(bool enabled)
+                                     "Auto DX disabled; manual target cancelled");
+             m_manualTarget = ScoredTarget();
+         }
++        clearOperatorCalls();
+         // Clear any pending slot analysis
+         m_waitingForSlotAnalysis = false;
+         m_pendingSlotAnalysisTarget = ScoredTarget();
+@@ -481,6 +490,7 @@ void AutoDxerCore::setCurrentMode(const QString &mode)
+         m_waitingForSlotAnalysis = false;
+         m_pendingSlotAnalysisTarget = ScoredTarget();
+         m_manualTarget = ScoredTarget();
++        clearOperatorCalls();
+         clearSuspendedTarget();
+         m_directedCallerInbox.clear();
+         m_directedCallerInboxAt.clear();
+@@ -504,6 +514,14 @@ void AutoDxerCore::setCurrentMode(const QString &mode)
+         }
+     }
+     m_currentMode = normalized;
++    if (m_slotFinder) {
++        // FT4 occupies roughly twice the audio width of FT8. Use wider slot
++        // centres so the occupancy guard protects the whole transmitted tone.
++        m_slotFinder->setSlotWidth(normalized == "FT4" ? 100 : 60);
++        m_slotFinder->setMinFreq(1400);
++        m_slotFinder->setMaxFreq(1800);
++        m_slotFinder->setPreferredRange(1400, 1800);
++    }
+     if (m_bandManager) m_bandManager->setMode(normalized);
+     if (m_localSpotBridge) m_localSpotBridge->setMode(normalized);
+     if (m_spotAggregator) m_spotAggregator->setMode(normalized);
+@@ -1295,15 +1313,11 @@ QJsonObject AutoDxerCore::autoDxStatus() const
+         : 0;
+     const int normalBudgetSeconds = m_selectionConfig.callWindowSeconds
+         * m_selectionConfig.maxConsecutiveWindows;
+-    const bool persistentAtno = m_currentTargetIsATNO
+-        && currentTargetPersistsWhileHeard()
+-        && targetLocallyFresh(m_currentTarget.callsign, m_currentTarget.bandIndex,
+-                              m_targetHeardFreshSeconds);
+-    int baseBudgetSeconds = AutoDxTimingPolicy::attemptLimitSeconds(
+-        m_currentTargetIsATNO, persistentAtno, normalBudgetSeconds,
+-        m_atnoMinimumCallSeconds);
+-    if (m_currentTargetIsDxpedition)
+-        baseBudgetSeconds = qMax(baseBudgetSeconds, 1800);
++    const bool persistentAtno = m_currentTargetIsATNO;
++    int baseBudgetSeconds = normalBudgetSeconds;
++    const bool newDxccLease = m_currentTargetIsATNO;
++    if (newDxccLease)
++        baseBudgetSeconds = qMax(baseBudgetSeconds, m_atnoMinimumCallSeconds);
+     const int budgetSeconds = m_targetRespondedToUs
+         ? m_engagedCompletionGraceSeconds : baseBudgetSeconds;
+     const qint64 budgetElapsedMs = m_targetRespondedToUs
+@@ -1337,7 +1351,8 @@ QJsonObject AutoDxerCore::autoDxStatus() const
+     budget["normal_total_seconds"] = normalBudgetSeconds;
+     budget["atno_minimum_call_seconds"] = m_atnoMinimumCallSeconds;
+     budget["atno_persistence_active"] = persistentAtno;
+-    budget["dxpedition_30_minute_lease_active"] = m_currentTargetIsDxpedition;
++    budget["new_dxcc_30_minute_lease_active"] = newDxccLease;
++    budget["dxpedition_30_minute_lease_active"] = false;
+     budget["engaged_completion_grace_seconds"] = m_engagedCompletionGraceSeconds;
+     budget["completion_grace_active"] = m_targetRespondedToUs;
+     budget["lease_basis"] = m_targetRespondedToUs
+@@ -2208,6 +2223,169 @@ void AutoDxerCore::requestManualTarget(QStringList decodeData)
+     if (m_state == Listening && !m_currentTarget.isValid()) evaluateTargets();
+ }
+ 
++static int initialQueueStage(const ScoredTarget &target, const QString &myCallsign,
++                             QString *receivedReport)
++{
++    if (receivedReport) receivedReport->clear();
++    const AutoDxParsedMessage parsed = AutoDxMessageParser::parse(target.originalMessage);
++    if (!target.isCallingMe || !parsed.senderResolved
++            || parsed.destination.compare(myCallsign, Qt::CaseInsensitive) != 0
++            || parsed.transmitter.compare(target.callsign, Qt::CaseInsensitive) != 0) {
++        return 0;
++    }
++
++    const QStringList fields = target.originalMessage.simplified().toUpper()
++        .split(' ', Qt::SkipEmptyParts);
++    if (fields.size() < 3) return 1;
++    QString exchange = fields.last();
++    QRegExp plainReport("^[+-][0-9]{2}$");
++    QRegExp acknowledgedReport("^R[+-][0-9]{2}$");
++    if (plainReport.exactMatch(exchange)) {
++        if (receivedReport) *receivedReport = exchange;
++        return 2;
++    }
++    if (acknowledgedReport.exactMatch(exchange)) {
++        exchange.remove(0, 1);
++        if (receivedReport) *receivedReport = exchange;
++        return 3;
++    }
++    if (exchange == "RRR") return 3;
++    if (exchange == "RR73" || exchange == "73") return 4;
++    // A grid or calls-only directed message has already completed Tx1.
++    return 1;
++}
++
++static QString formattedFtReport(int snr)
++{
++    const int bounded = qBound(-30, snr, 30);
++    return QString("%1%2").arg(bounded >= 0 ? "+" : "-")
++        .arg(qAbs(bounded), 2, 10, QChar('0'));
++}
++
++QString AutoDxerCore::operatorCallKey(const QString &callsign, int bandIndex,
++                                      const QString &mode) const
++{
++    return targetScopeKey(callsign, bandIndex, mode);
++}
++
++int AutoDxerCore::operatorCallIndex(const QString &key) const
++{
++    for (int i = 0; i < m_operatorCallQueue.size(); ++i) {
++        const OperatorCallRequest &request = m_operatorCallQueue.at(i);
++        if (operatorCallKey(request.target.callsign, request.target.bandIndex,
++                            request.mode) == key) return i;
++    }
++    return -1;
++}
++
++void AutoDxerCore::queueOperatorTarget(QStringList decodeData)
++{
++    QString callsign, grid;
++    int snr = 0, freq = 0;
++    bool isCQ = false;
++    parseDecodeMessage(decodeData, callsign, grid, snr, freq, isCQ);
++    callsign = callsign.trimmed().toUpper();
++    if (!m_enabled || callsign.isEmpty() || callsign == m_myCallsign
++            || catTransitionPending() || m_currentBandIndex < 3) {
++        emit debugMessage(QString("CALLERS: unable to queue %1 while Auto DX/band state is unavailable")
++                          .arg(callsign));
++        return;
++    }
++    if (m_currentTarget.isValid()
++            && callsignsMatch(m_currentTarget.callsign, callsign)) {
++        emit debugMessage(QString("CALLERS: %1 is already the active target").arg(callsign));
++        return;
++    }
++
++    const QString key = operatorCallKey(callsign, m_currentBandIndex, m_currentMode);
++    if (operatorCallIndex(key) >= 0) {
++        emit debugMessage(QString("CALLERS: %1 is already queued on %2/%3")
++                          .arg(callsign, bandName(m_currentBandIndex), m_currentMode));
++        return;
++    }
++
++    CachedDecode decode;
++    bool found = false;
++    const QList<CachedDecode> active = m_decodeCache->getActiveDecodes(
++        m_currentBandIndex, m_targetHeardFreshSeconds);
++    for (const CachedDecode &candidate : active) {
++        if (candidate.isLocalDecode && callsignsMatch(candidate.callsign, callsign)) {
++            decode = candidate;
++            found = true;
++            break;
++        }
++    }
++    if (!found) {
++        decode.callsign = callsign;
++        decode.grid = grid;
++        decode.dxccEntity = m_cty ? m_cty->FindCountry(callsign, false) : QString();
++        decode.originalMessage = decodeData.value(4, "");
++        decode.bandIndex = m_currentBandIndex;
++        decode.audioFrequency = freq;
++        decode.dialFrequencyHz = m_currentDialFrequencyHz;
++        decode.snr = snr;
++        decode.timestamp = QDateTime::currentDateTimeUtc();
++        decode.firstSeen = decode.timestamp;
++        decode.decodeCount = 1;
++        decode.isCQ = isCQ;
++        decode.isLocalDecode = true;
++        m_decodeCache->addDecode(callsign, grid, decode.dxccEntity,
++            decode.originalMessage, m_currentBandIndex, freq,
++            m_currentDialFrequencyHz, snr, isCQ);
++    }
++
++    ScoredTarget target = m_targetScorer->scoreTarget(decode);
++    target.callsign = decode.callsign;
++    target.grid = decode.grid;
++    target.dxccEntity = decode.dxccEntity;
++    target.originalMessage = decode.originalMessage;
++    target.bandIndex = m_currentBandIndex;
++    target.audioFrequency = decode.audioFrequency;
++    target.dialFrequencyHz = decode.dialFrequencyHz;
++    target.snr = decode.snr;
++    target.decodedAt = decode.timestamp;
++    target.isLocalDecode = true;
++    target.decodeCount = qMax(1, decode.decodeCount);
++    target.priority = INT_MAX;
++    target.priorityReason = "Operator callers list";
++    target.eligibilityClass = "manual-operator";
++
++    OperatorCallRequest request;
++    request.target = target;
++    request.mode = m_currentMode;
++    request.queuedAt = QDateTime::currentDateTimeUtc();
++    if (m_operatorCallQueue.size() >= 32) m_operatorCallQueue.removeLast();
++    m_operatorCallQueue.append(request);
++    m_operatorTargetHold = false;
++    emit operatorCallQueueChanged();
++    emit debugMessage(QString("CALLERS: queued %1 as position %2 on %3/%4")
++                      .arg(callsign).arg(m_operatorCallQueue.size())
++                      .arg(bandName(m_currentBandIndex), m_currentMode));
++    if (m_state == Listening && !m_currentTarget.isValid()
++            && !postQsoGuardActive() && !lateReplyGuardActive()) {
++        evaluateTargets();
++    }
++}
++
++void AutoDxerCore::removeOperatorCall(QString key)
++{
++    key = key.trimmed().toUpper();
++    const int index = operatorCallIndex(key);
++    if (index < 0) return;
++    const QString call = m_operatorCallQueue.at(index).target.callsign;
++    m_operatorCallQueue.removeAt(index);
++    emit operatorCallQueueChanged();
++    emit debugMessage(QString("CALLERS: removed %1 from operator queue").arg(call));
++}
++
++void AutoDxerCore::clearOperatorCalls()
++{
++    if (m_operatorCallQueue.isEmpty()) return;
++    m_operatorCallQueue.clear();
++    emit operatorCallQueueChanged();
++    emit debugMessage("CALLERS: operator queue cleared");
++}
++
+ void AutoDxerCore::cancelCurrentCallByOperator()
+ {
+     const QString cancelledCall = m_currentTarget.callsign;
+@@ -2223,6 +2401,7 @@ void AutoDxerCore::cancelCurrentCallByOperator()
+                                 "Cancelled by STOP/CLEAR CALL");
+     }
+     m_manualTarget = ScoredTarget();
++    clearOperatorCalls();
+     clearSuspendedTarget();
+     clearPendingCrossBandVerification();
+     m_pendingNonStdCallsign.clear();
+@@ -2565,16 +2744,10 @@ void AutoDxerCore::onDecodeComplete(bool busy, int decState)
+             const qint64 progressIdleMs = m_lastTargetProgressUtc.isValid()
+                 ? qMax<qint64>(0, m_lastTargetProgressUtc.msecsTo(now))
+                 : currentTargetAttemptElapsedMs();
+-            const bool persistentAtno = m_currentTargetIsATNO
+-                && currentTargetPersistsWhileHeard()
+-                && targetLocallyFresh(m_currentTarget.callsign,
+-                                      m_currentTarget.bandIndex,
+-                                      m_targetHeardFreshSeconds);
+-            int attemptLimitSeconds = AutoDxTimingPolicy::attemptLimitSeconds(
+-                m_currentTargetIsATNO, persistentAtno, m_normalCallSeconds,
+-                m_atnoMinimumCallSeconds);
+-            if (m_currentTargetIsDxpedition)
+-                attemptLimitSeconds = qMax(attemptLimitSeconds, 1800);
++            int attemptLimitSeconds = m_normalCallSeconds;
++            if (m_currentTargetIsATNO)
++                attemptLimitSeconds = qMax(attemptLimitSeconds,
++                                           m_atnoMinimumCallSeconds);
+             const bool attemptExpired = m_targetAttemptTimer.isValid()
+                 && (m_targetRespondedToUs
+                     ? AutoDxTimingPolicy::engagedProgressExpired(
+@@ -2614,7 +2787,7 @@ void AutoDxerCore::onDecodeComplete(bool busy, int decState)
+             // external verification/QSY work in descending scope. A logged
+             // QSO's receive guard owns the radio even if native queue cleanup
+             // has already changed the public state back to Listening.
+-            if (!postQsoGuardActive()) {
++            if (!postQsoGuardActive() && m_operatorCallQueue.isEmpty()) {
+                 checkCrossBandAlerts();
+                 checkSameBandNonStdFreqAlerts();
+             }
+@@ -2674,6 +2847,7 @@ void AutoDxerCore::evaluateTargets()
+     // so without this guard a fresh same-band candidate can repeatedly win
+     // that race and starve later configured bands.
+     if (m_fullHuntingEnabled && m_manualTarget.callsign.isEmpty()
++            && m_operatorCallQueue.isEmpty()
+             && m_state == Listening
+             && !m_currentTarget.isValid() && !m_targetRespondedToUs
+             && !postQsoGuardActive() && m_fullHuntingVisitTimer.isValid()
+@@ -2819,7 +2993,8 @@ void AutoDxerCore::evaluateTargets()
+ 
+     // Band schedules are hard eligibility boundaries for new targets, but the
+     // verification blocks above must be allowed to finish or time out first.
+-    if (m_bandManager && !m_bandManager->isBandOpenNow(m_currentBandIndex)) {
++    if (m_operatorCallQueue.isEmpty() && m_bandManager
++            && !m_bandManager->isBandOpenNow(m_currentBandIndex)) {
+         emit debugMessage(QString("SCHEDULE-CLOSED: %1 cannot start a new target now")
+                          .arg(bandName(m_currentBandIndex)));
+         return;
+@@ -2831,16 +3006,25 @@ void AutoDxerCore::evaluateTargets()
+     // External evidence is evaluated by the alert scheduler. Appending it
+     // here only performed quadratic duplicate scans before discarding every
+     // external-only row in the local-selection pass below.
+-    if (activeStations.isEmpty()) return;
++    const bool hasQueuedOperatorTarget = !m_operatorCallQueue.isEmpty()
++        && m_operatorCallQueue.first().target.bandIndex == m_currentBandIndex
++        && m_operatorCallQueue.first().mode == m_currentMode;
++    if (activeStations.isEmpty() && !hasQueuedOperatorTarget) return;
+ 
+     // Filter to only locally decoded stations (external spots are for alerts only)
+     QList<CachedDecode> localStations;
+     const QDateTime selectionNow = QDateTime::currentDateTimeUtc();
+     for (const CachedDecode &decode : activeStations) {
+         if (decode.isLocalDecode) {
+-            const QString retryKey = extractBaseCallsign(decode.callsign).toUpper();
+-            const bool operatorSelected = !m_manualTarget.callsign.isEmpty()
+-                && callsignsMatch(decode.callsign, m_manualTarget.callsign);
++            const QString retryKey = targetScopeKey(
++                decode.callsign, m_currentBandIndex, m_currentMode);
++            const bool operatorSelected = (!m_manualTarget.callsign.isEmpty()
++                && callsignsMatch(decode.callsign, m_manualTarget.callsign))
++                || (hasQueuedOperatorTarget
++                    && callsignsMatch(decode.callsign,
++                        m_operatorCallQueue.first().target.callsign));
++            if (!operatorSelected && isStationIgnored(
++                    decode.callsign, m_currentBandIndex, m_currentMode)) continue;
+             if (!operatorSelected && m_targetRetryAfter.value(retryKey) > selectionNow) continue;
+             localStations.append(decode);
+         }
+@@ -2867,6 +3051,11 @@ void AutoDxerCore::evaluateTargets()
+             m_manualTarget = ScoredTarget();
+         }
+     }
++    bool selectedByOperatorQueue = false;
++    if (best.priority <= 0 && hasQueuedOperatorTarget) {
++        best = m_operatorCallQueue.first().target;
++        selectedByOperatorQueue = true;
++    }
+     const QDateTime inboxNow = QDateTime::currentDateTimeUtc();
+     QStringList expiredCallers;
+     for (const QString &inboxCall : m_directedCallerInbox) {
+@@ -2906,8 +3095,9 @@ void AutoDxerCore::evaluateTargets()
+     if (best.priority <= 0) best = m_targetScorer->getBestTarget(localStations);
+ 
+     if (best.priority > 0) {
+-        const bool selectedByManualRequest = !m_manualTarget.callsign.isEmpty()
+-            && callsignsMatch(best.callsign, m_manualTarget.callsign);
++        const bool selectedByManualRequest = (!m_manualTarget.callsign.isEmpty()
++            && callsignsMatch(best.callsign, m_manualTarget.callsign))
++            || selectedByOperatorQueue;
+         const bool ordinaryNewCall = best.isOrdinaryNewCallFallback
+             && !best.isCallingMe
+             && !selectedByManualRequest
+@@ -2970,7 +3160,8 @@ void AutoDxerCore::evaluateTargets()
+         // Reject a cooling-down target before reserving slot-analysis ownership.
+         // The final guard in feedToQueue() remains as defense in depth for
+         // direct callers and other paths that bypass evaluateTargets().
+-        const QString retryKey = extractBaseCallsign(best.callsign).toUpper();
++        const QString retryKey = targetScopeKey(
++            best.callsign, best.bandIndex, m_currentMode);
+         if (!selectedByManualRequest && m_targetRetryAfter.contains(retryKey)
+                 && QDateTime::currentDateTimeUtc() < m_targetRetryAfter.value(retryKey)) {
+             QJsonObject fields;
+@@ -2982,8 +3173,9 @@ void AutoDxerCore::evaluateTargets()
+             return;
+         }
+         if (best.isCallingMe) {
+-            m_directedCallerInbox.removeAll(retryKey);
+-            m_directedCallerInboxAt.remove(retryKey);
++            const QString callerKey = extractBaseCallsign(best.callsign).toUpper();
++            m_directedCallerInbox.removeAll(callerKey);
++            m_directedCallerInboxAt.remove(callerKey);
+         }
+         // Debug: Verify target source and cache status
+         bool foundInLocal = false;
+@@ -3019,9 +3211,17 @@ void AutoDxerCore::evaluateTargets()
+             return;  // Wait for onSlotAnalysisReady to feed target
+         }
+ 
+-        const bool wasManual = !m_manualTarget.callsign.isEmpty()
+-            && callsignsMatch(best.callsign, m_manualTarget.callsign);
++        const bool wasManual = (!m_manualTarget.callsign.isEmpty()
++            && callsignsMatch(best.callsign, m_manualTarget.callsign))
++            || selectedByOperatorQueue;
+         feedToQueue(best);
++        if (selectedByOperatorQueue && m_currentTarget.isValid()
++                && callsignsMatch(m_currentTarget.callsign, best.callsign)) {
++            m_operatorCallQueue.removeFirst();
++            emit operatorCallQueueChanged();
++            emit debugMessage(QString("CALLERS: %1 promoted from operator queue to active target")
++                              .arg(best.callsign));
++        }
+         if (wasManual && m_currentTarget.isValid()
+                 && callsignsMatch(m_currentTarget.callsign, best.callsign)) {
+             m_manualTarget = ScoredTarget();
+@@ -3280,7 +3480,15 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+                           .arg(target.callsign, bandName(target.bandIndex), m_currentMode));
+         return;
+     }
+-    const QString retryKey = extractBaseCallsign(target.callsign).toUpper();
++    const QString retryKey = targetScopeKey(
++        target.callsign, target.bandIndex, m_currentMode);
++    if (!operatorSelected && isStationIgnored(
++            target.callsign, target.bandIndex, m_currentMode)) {
++        noteSkipped("operator-ignore:" + target.callsign);
++        emit debugMessage(QString("QUEUE-BLOCKED: %1 ignored on %2/%3")
++                          .arg(target.callsign, bandName(target.bandIndex), m_currentMode));
++        return;
++    }
+     if (!operatorSelected && newAttempt && m_targetRetryAfter.contains(retryKey)
+             && QDateTime::currentDateTimeUtc() < m_targetRetryAfter.value(retryKey)) {
+         QJsonObject fields;
+@@ -3391,6 +3599,35 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+         }
+     }
+ 
++    // Re-evaluate TX audio for every new standard-dial target. Previously the
++    // slot finder only ran after a band change, so all later calls inherited
++    // the first 1500 Hz choice even when that slot became busy. Do not retune
++    // an exchange during queue reinsertion, and leave explicit DXpedition
++    // split-frequency operation to its target-relative logic.
++    const bool splitTarget = isDxpeditionTarget(target.callsign, target.bandIndex)
++        || !m_pendingCrossBandCallsign.isEmpty()
++        || !m_pendingNonStdCallsign.isEmpty();
++    if (newAttempt && !splitTarget && m_slotFinder
++            && m_slotFinder->hasEnoughData()) {
++        CallableRange replyRange;
++        replyRange.minFreq = 1400;
++        replyRange.maxFreq = 1800;
++        replyRange.isEstimated = false;
++        const SlotAnalysis txSlot = m_slotFinder->findBestSlot(replyRange);
++        emit requestTxFreqChange(txSlot.suggestedFreq);
++        emit debugMessage(QString("TX-SLOT: %1 using %2 Hz in protected 1400-1800 Hz range (%3)")
++                          .arg(target.callsign)
++                          .arg(txSlot.suggestedFreq)
++                          .arg(txSlot.reason));
++        QJsonObject slotFields;
++        slotFields["call"] = target.callsign;
++        slotFields["tx_audio_hz"] = txSlot.suggestedFreq;
++        slotFields["range_min_hz"] = replyRange.minFreq;
++        slotFields["range_max_hz"] = replyRange.maxFreq;
++        slotFields["occupied_slots"] = txSlot.occupiedSlots;
++        auditEvent("tx-slot-selected", slotFields);
++    }
++
+     const QString attemptCall = extractBaseCallsign(target.callsign).toUpper();
+     const QDateTime attemptUtc = QDateTime::currentDateTimeUtc();
+     pruneAttemptHistory(attemptUtc);
+@@ -3407,15 +3644,17 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+     // Build queue entry matching LsQueue column format:
+     // [0]=Call, [1]=dB(SNR), [2]=RxdB, [3]=Dist, [4]=Grid, [5]=Freq,
+     // [6]=Time, [7]=IDrpt, [8]=TTry, [9]=GinTxT, [10]=s, [11]=e
++    QString receivedReport;
++    const int initialStage = initialQueueStage(target, m_myCallsign, &receivedReport);
+     QStringList data;
+     data << target.callsign                              // [0] Call
+-         << QString::number(target.snr)                  // [1] dB (SNR)
+-         << "-15"                                        // [2] Rx dB (default)
++         << formattedFtReport(target.snr)                // [1] report we send
++         << receivedReport                               // [2] report received from target
+          << "9999"                                       // [3] Dist (auto-calc by MSHV)
+          << target.grid.left(4)                          // [4] Grid
+          << QString::number(queueAudioFrequency)         // [5] Freq
+          << QDateTime::currentDateTimeUtc().toString("yyyyMMdd hh:mm")  // [6] Start DateTime (date+time for log)
+-         << "0"                                          // [7] IDrpt
++         << QString::number(initialStage)                // [7] protocol stage
+          << "0"                                          // [8] TTry
+          << "0"                                          // [9] GinTxT
+          << "0"                                          // [10] s
+@@ -3436,13 +3675,14 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+         m_sessionTargetsAttempted++;
+         m_targetMissedCycles = 0;
+         m_targetHeardThisCycle = true;
+-        // The first directed decode is an invitation, not proof that an
+-        // exchange is already in progress. A later directed decode for the
+-        // selected caller sets m_targetRespondedToUs in onLocalDecode().
+-        m_targetRespondedToUs = false;
++        // A fully resolved message addressed to us is already positive QSO
++        // progress. Protect it immediately; otherwise the admission decode is
++        // lost before m_currentTarget exists and the exchange can be treated
++        // as unanswered until the station happens to repeat it.
++        m_targetRespondedToUs = target.isCallingMe;
+         clearLateReplyGuard();
+         m_lastLocalTransmissionUtc = QDateTime();
+-        m_lastTargetProgressUtc = QDateTime();
++        m_lastTargetProgressUtc = target.isCallingMe ? attemptUtc : QDateTime();
+         m_lastMissedCycleCheck = QDateTime();
+         m_scarceTargetMode = false;
+         m_atnoTotalCallCycles = 0;
+@@ -3487,8 +3727,9 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+     int verifyQueue = m_queueWidget->getQueueList()->FindCallOrBaseCallRow(target.callsign);
+     int verifyNow = m_queueWidget->getNowList()->FindCallOrBaseCallRow(target.callsign);
+ 
+-    emit debugMessage(QString("QUEUE-ADD: %1 -> queue (grid=%2, snr=%3, audioHz=%4)")
+-        .arg(target.callsign).arg(target.grid).arg(target.snr).arg(queueAudioFrequency));
++    emit debugMessage(QString("QUEUE-ADD: %1 -> queue (grid=%2, snr=%3, audioHz=%4, stage=%5)")
++        .arg(target.callsign).arg(target.grid).arg(target.snr)
++        .arg(queueAudioFrequency).arg(initialStage));
+     emit debugMessage(QString("QUEUE-VERIFY: %1 queueRow=%2 nowRow=%3")
+         .arg(target.callsign).arg(verifyQueue).arg(verifyNow));
+ 
+@@ -3552,9 +3793,10 @@ void AutoDxerCore::checkQueueStatus()
+         const bool fresh = targetLocallyFresh(targetCall, m_currentTarget.bandIndex,
+                                                m_targetHeardFreshSeconds);
+         const bool persistent = !m_currentTarget.isCallingMe
+-            && currentTargetPersistsWhileHeard() && fresh;
+-        const int ownedAttemptSeconds = m_currentTargetIsDxpedition
+-            ? qMax(m_normalCallSeconds, 1800) : m_normalCallSeconds;
++            && m_currentTargetIsATNO && currentTargetPersistsWhileHeard() && fresh;
++        const int ownedAttemptSeconds = m_currentTargetIsATNO
++            ? qMax(m_normalCallSeconds, m_atnoMinimumCallSeconds)
++            : m_normalCallSeconds;
+         const bool normalAttemptActive = !m_targetRespondedToUs
+             && m_targetAttemptTimer.isValid()
+             && !AutoDxTimingPolicy::normalAttemptExpired(
+@@ -3649,6 +3891,7 @@ void AutoDxerCore::checkTimeout()
+     if (!m_enabled || (!m_bandSwitchingEnabled && !m_fullHuntingEnabled)
+             || m_state != Listening
+             || !m_manualTarget.callsign.isEmpty()
++            || !m_operatorCallQueue.isEmpty()
+             || m_currentTarget.isValid() || m_targetRespondedToUs
+             || !m_pendingCrossBandCallsign.isEmpty()
+             || !m_pendingNonStdCallsign.isEmpty() || m_waitingForSlotAnalysis
+@@ -3714,6 +3957,10 @@ void AutoDxerCore::checkTimeout()
+ 
+ void AutoDxerCore::switchBand(bool emptyPeriodOverride)
+ {
++    if (!m_operatorCallQueue.isEmpty()) {
++        emit debugMessage("CALLERS: band change deferred until operator queue is empty");
++        return;
++    }
+     if (lateReplyGuardActive()) {
+         QJsonObject fields;
+         fields["reason"] = "late-reply-receive-guard";
+@@ -3841,6 +4088,181 @@ bool AutoDxerCore::postQsoGuardActive() const
+     return m_postQsoGuardTimer && m_postQsoGuardTimer->isActive();
+ }
+ 
++QString AutoDxerCore::targetScopeKey(const QString &callsign, int bandIndex,
++                                     const QString &mode) const
++{
++    return QString("%1|%2|%3")
++        .arg(extractBaseCallsign(callsign).trimmed().toUpper())
++        .arg(bandIndex)
++        .arg(mode.trimmed().toUpper());
++}
++
++bool AutoDxerCore::isStationIgnored(const QString &callsign, int bandIndex,
++                                    const QString &mode) const
++{
++    if (callsign.trimmed().isEmpty() || bandIndex < 3) return false;
++    return m_ignoredStations.contains(targetScopeKey(callsign, bandIndex, mode));
++}
++
++QJsonArray AutoDxerCore::ignoredStations() const
++{
++    QList<QJsonObject> rows = m_ignoredStations.values();
++    std::sort(rows.begin(), rows.end(), [](const QJsonObject &a, const QJsonObject &b) {
++        const int bandA = a.value("band_index").toInt();
++        const int bandB = b.value("band_index").toInt();
++        if (bandA != bandB) return bandA < bandB;
++        const QString modeA = a.value("mode").toString();
++        const QString modeB = b.value("mode").toString();
++        if (modeA != modeB) return modeA < modeB;
++        return a.value("callsign").toString() < b.value("callsign").toString();
++    });
++    QJsonArray result;
++    for (const QJsonObject &row : rows) result.append(row);
++    return result;
++}
++
++QJsonArray AutoDxerCore::queuedOperatorCalls() const
++{
++    QJsonArray result;
++    for (int i = 0; i < m_operatorCallQueue.size(); ++i) {
++        const OperatorCallRequest &request = m_operatorCallQueue.at(i);
++        QJsonObject row;
++        row["key"] = operatorCallKey(request.target.callsign,
++                                      request.target.bandIndex, request.mode);
++        row["position"] = i + 1;
++        row["callsign"] = request.target.callsign;
++        row["band_index"] = request.target.bandIndex;
++        row["band"] = bandName(request.target.bandIndex);
++        row["mode"] = request.mode;
++        row["snr"] = request.target.snr;
++        row["queued_utc"] = request.queuedAt.toString(Qt::ISODateWithMs);
++        result.append(row);
++    }
++    return result;
++}
++
++void AutoDxerCore::loadIgnoredStations()
++{
++    m_ignoredStations.clear();
++    QFile file(m_settingsPath + "/database/autodx_ignore.json");
++    if (!file.exists()) return;
++    if (!file.open(QIODevice::ReadOnly)) {
++        emit debugMessage("IGNORE: unable to read persistent ignore list");
++        return;
++    }
++    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
++    if (!document.isObject()) {
++        emit debugMessage("IGNORE: malformed persistent ignore list ignored");
++        return;
++    }
++    const QJsonArray entries = document.object().value("entries").toArray();
++    for (const QJsonValue &value : entries) {
++        const QJsonObject row = value.toObject();
++        const QString call = row.value("callsign").toString().trimmed().toUpper();
++        const int band = row.value("band_index").toInt(-1);
++        const QString mode = row.value("mode").toString().trimmed().toUpper();
++        if (call.isEmpty() || band < 3 || (mode != "FT8" && mode != "FT4")) continue;
++        QJsonObject normalized = row;
++        normalized["callsign"] = extractBaseCallsign(call).toUpper();
++        normalized["band_index"] = band;
++        normalized["band"] = bandName(band);
++        normalized["mode"] = mode;
++        normalized["key"] = targetScopeKey(call, band, mode);
++        m_ignoredStations.insert(normalized.value("key").toString(), normalized);
++    }
++}
++
++bool AutoDxerCore::saveIgnoredStations() const
++{
++    QDir().mkpath(m_settingsPath + "/database");
++    QSaveFile file(m_settingsPath + "/database/autodx_ignore.json");
++    if (!file.open(QIODevice::WriteOnly)) return false;
++    QJsonObject root;
++    root["schema_version"] = 1;
++    root["entries"] = ignoredStations();
++    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
++    return file.commit();
++}
++
++void AutoDxerCore::ignoreDecodedStation(QStringList decodeData)
++{
++    QString callsign, grid;
++    int snr = 0, freq = 0;
++    bool isCQ = false;
++    parseDecodeMessage(decodeData, callsign, grid, snr, freq, isCQ);
++    Q_UNUSED(grid);
++    Q_UNUSED(snr);
++    Q_UNUSED(freq);
++    Q_UNUSED(isCQ);
++    ignoreStation(callsign);
++}
++
++void AutoDxerCore::ignoreStation(QString callsign)
++{
++    callsign = extractBaseCallsign(callsign).trimmed().toUpper();
++    if (callsign.isEmpty() || callsign == m_myCallsign || m_currentBandIndex < 3)
++        return;
++    const QString key = targetScopeKey(callsign, m_currentBandIndex, m_currentMode);
++    QJsonObject row;
++    row["key"] = key;
++    row["callsign"] = callsign;
++    row["band_index"] = m_currentBandIndex;
++    row["band"] = bandName(m_currentBandIndex);
++    row["mode"] = m_currentMode;
++    row["added_utc"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
++    m_ignoredStations.insert(key, row);
++    if (!saveIgnoredStations()) {
++        m_ignoredStations.remove(key);
++        emit debugMessage(QString("IGNORE: failed to save %1").arg(callsign));
++        return;
++    }
++    emit debugMessage(QString("IGNORE: %1 excluded from Auto DX on %2/%3")
++                      .arg(callsign, bandName(m_currentBandIndex), m_currentMode));
++    emit ignoreListChanged();
++    const int queuedIndex = operatorCallIndex(key);
++    if (queuedIndex >= 0) {
++        m_operatorCallQueue.removeAt(queuedIndex);
++        emit operatorCallQueueChanged();
++    }
++    if (m_currentTarget.isValid()
++            && callsignsMatch(m_currentTarget.callsign, callsign)
++            && m_currentTarget.bandIndex == m_currentBandIndex) {
++        emit requestImmediateStopAndReset();
++        terminalClearCurrentTarget("operator ignored active station", false);
++    }
++}
++
++void AutoDxerCore::removeIgnoredStation(QString key)
++{
++    key = key.trimmed().toUpper();
++    if (!m_ignoredStations.contains(key)) return;
++    const QJsonObject removed = m_ignoredStations.take(key);
++    if (!saveIgnoredStations()) {
++        m_ignoredStations.insert(key, removed);
++        emit debugMessage("IGNORE: failed to persist removal");
++        return;
++    }
++    emit debugMessage(QString("IGNORE: %1 restored for Auto DX on %2/%3")
++                      .arg(removed.value("callsign").toString(),
++                           removed.value("band").toString(),
++                           removed.value("mode").toString()));
++    emit ignoreListChanged();
++}
++
++void AutoDxerCore::clearIgnoredStations()
++{
++    if (m_ignoredStations.isEmpty()) return;
++    const QHash<QString, QJsonObject> previous = m_ignoredStations;
++    m_ignoredStations.clear();
++    if (!saveIgnoredStations()) {
++        m_ignoredStations = previous;
++        emit debugMessage("IGNORE: failed to clear persistent list");
++        return;
++    }
++    emit debugMessage("IGNORE: all Auto DX station exclusions cleared");
++    emit ignoreListChanged();
++}
++
+ bool AutoDxerCore::lateReplyGuardActive() const
+ {
+     return m_lateReplyGuardTimer && m_lateReplyGuardTimer->isActive();
+@@ -4206,15 +4628,10 @@ void AutoDxerCore::abandonCurrentTarget(const QString &reason)
+         writeOutcomeTelemetry("not-completed", reason);
+         emit debugMessage(QString("TARGET-STOP: %1 (%2)")
+                          .arg(m_currentTarget.callsign).arg(reason));
+-        const int retrySeconds = qMax(m_selectionConfig.sameTargetRetrySeconds,
+-            m_pileupConfig.enabled ? m_pileupConfig.revisitDelaySeconds : 0);
+-        if (!m_currentTarget.isCallingMe && retrySeconds > 0) {
+-            m_lastStoppedCall = m_currentTarget.callsign;
+-            m_lastRetryAt = QDateTime::currentDateTimeUtc().addSecs(
+-                retrySeconds);
+-            m_targetRetryAfter.insert(
+-                extractBaseCallsign(m_currentTarget.callsign).toUpper(), m_lastRetryAt);
+-        }
++        const int retrySeconds = !m_currentTarget.isCallingMe
++            ? scheduleAdaptiveRetry(m_currentTarget.callsign,
++                                    m_currentTarget.bandIndex, m_currentMode)
++            : 0;
+         QJsonObject fields;
+         fields["call"] = m_currentTarget.callsign;
+         fields["reason"] = reason;
+@@ -4250,15 +4667,14 @@ void AutoDxerCore::terminalClearCurrentTarget(const QString &reason, bool schedu
+     const bool targetWasDxpedition = m_currentTargetIsDxpedition;
+     const qint64 consumedMs = currentTargetAttemptElapsedMs();
+     const QString call = m_currentTarget.callsign;
+-    const QString retryKey = extractBaseCallsign(call).toUpper();
++    const int targetBand = m_currentTarget.bandIndex;
++    const QString targetMode = m_currentMode;
+     if (!call.isEmpty()) {
+-        if (scheduleRetry && m_selectionConfig.sameTargetRetrySeconds > 0) {
+-            m_lastStoppedCall = call;
+-            m_lastRetryAt = QDateTime::currentDateTimeUtc().addSecs(
+-                m_selectionConfig.sameTargetRetrySeconds);
+-            m_targetRetryAfter.insert(retryKey, m_lastRetryAt);
++        int retrySeconds = 0;
++        if (scheduleRetry) {
++            retrySeconds = scheduleAdaptiveRetry(call, targetBand, targetMode);
+         } else {
+-            m_targetRetryAfter.remove(retryKey);
++            clearAdaptiveRetry(call, targetBand, targetMode);
+             if (callsignsMatch(m_lastStoppedCall, call)) {
+                 m_lastStoppedCall.clear();
+                 m_lastRetryAt = QDateTime();
+@@ -4272,6 +4688,7 @@ void AutoDxerCore::terminalClearCurrentTarget(const QString &reason, bool schedu
+         fields["consumed_ms"] = static_cast<double>(consumedMs);
+         fields["budget_seconds"] = m_normalCallSeconds;
+         fields["retry_scheduled"] = scheduleRetry;
++        fields["retry_seconds"] = retrySeconds;
+         auditEvent("target-terminal", fields);
+     }
+     clearLateReplyGuard();
+@@ -4598,6 +5015,28 @@ void AutoDxerCore::onAutoModeChanged(bool isOn)
+     if (m_autoOffReconcileTimer) m_autoOffReconcileTimer->start();
+ }
+ 
++int AutoDxerCore::scheduleAdaptiveRetry(const QString &callsign, int bandIndex,
++                                        const QString &mode)
++{
++    const QString key = targetScopeKey(callsign, bandIndex, mode);
++    const int burst = m_unansweredBurstCounts.value(key, 0) + 1;
++    m_unansweredBurstCounts.insert(key, burst);
++    static const int delays[] = { 180, 600, 1800, 3600 };
++    const int seconds = delays[qMin(burst - 1, 3)];
++    m_lastStoppedCall = callsign;
++    m_lastRetryAt = QDateTime::currentDateTimeUtc().addSecs(seconds);
++    m_targetRetryAfter.insert(key, m_lastRetryAt);
++    return seconds;
++}
++
++void AutoDxerCore::clearAdaptiveRetry(const QString &callsign, int bandIndex,
++                                      const QString &mode)
++{
++    const QString key = targetScopeKey(callsign, bandIndex, mode);
++    m_unansweredBurstCounts.remove(key);
++    m_targetRetryAfter.remove(key);
++}
++
+ void AutoDxerCore::onLocalTransmission(const QString &message)
+ {
+     if (!m_enabled || m_state != WaitingForQSO || !m_currentTarget.isValid()) return;
+@@ -4722,6 +5161,7 @@ void AutoDxerCore::onMSHVQsoLogged(QStringList qsoData)
+     const QString slotKey = workedSlotKey(callsign, bandIndex, mode);
+     m_recentlyWorked.insert(slotKey);
+     m_workedTimestamps[slotKey] = QDateTime::currentDateTime();
++    clearAdaptiveRetry(callsign, bandIndex, mode);
+     if (m_targetScorer) m_targetScorer->recordUsStateQso(callsign, bandIndex);
+ 
+     // Remove from decode cache so it won't appear as a target
+@@ -5005,6 +5445,15 @@ void AutoDxerCore::checkCrossBandAlerts()
+         QList<ExternalSpot> spots = m_spotAggregator->getSpots(
+             band, m_dxpeditionMaxSpotAgeSeconds);
+         for (const ExternalSpot &spot : spots) {
++            if (isStationIgnored(spot.callsign, band, m_currentMode)) {
++                noteSkipped("operator-ignore:" + spot.callsign);
++                continue;
++            }
++            if (m_targetRetryAfter.value(targetScopeKey(
++                    spot.callsign, band, m_currentMode)) > now) {
++                noteSkipped("same-target-retry-delay:" + spot.callsign);
++                continue;
++            }
+             if (crossBandRetryDeferred(spot.callsign, band, now)) {
+                 noteSkipped("cross-band-terminal-backoff:" + spot.callsign);
+                 continue;
+@@ -5369,6 +5818,13 @@ void AutoDxerCore::checkSameBandNonStdFreqAlerts()
+         m_currentBandIndex, m_dxpeditionMaxSpotAgeSeconds);
+ 
+     for (const ExternalSpot &spot : spots) {
++        if (isStationIgnored(spot.callsign, m_currentBandIndex, m_currentMode)) {
++            noteSkipped("operator-ignore:" + spot.callsign);
++            continue;
++        }
++        if (m_targetRetryAfter.value(targetScopeKey(
++                spot.callsign, m_currentBandIndex, m_currentMode))
++                > QDateTime::currentDateTimeUtc()) continue;
+         if (!historicalActionAllowed(spot.callsign, false)) continue;
+         // An off-standard QSY needs fresh, explicit FT8 network evidence.
+         // Local catalog/decode metadata can boost selection but cannot invent
+@@ -5734,6 +6190,16 @@ void AutoDxerCore::onSlotAnalysisReady(SlotAnalysis analysis)
+         const QString deferredCall = m_pendingSlotAnalysisTarget.callsign;
+         m_waitingForSlotAnalysis = false;
+         feedToQueue(m_pendingSlotAnalysisTarget);
++        const QString deferredOperatorKey = operatorCallKey(
++            deferredCall, m_pendingSlotAnalysisTarget.bandIndex, m_currentMode);
++        const int deferredOperatorIndex = operatorCallIndex(deferredOperatorKey);
++        if (deferredOperatorIndex >= 0 && m_currentTarget.isValid()
++                && callsignsMatch(m_currentTarget.callsign, deferredCall)) {
++            m_operatorCallQueue.removeAt(deferredOperatorIndex);
++            emit operatorCallQueueChanged();
++            emit debugMessage(QString("CALLERS: %1 promoted from operator queue after slot analysis")
++                              .arg(deferredCall));
++        }
+         if (!m_manualTarget.callsign.isEmpty()
+                 && callsignsMatch(m_manualTarget.callsign, deferredCall)
+                 && m_currentTarget.isValid()) {
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.h b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+index ca82648..818f675 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+@@ -56,6 +56,13 @@ struct DxTarget
+     bool isValid() const { return !callsign.isEmpty() && bandIndex >= 3; }
+ };
+ 
++struct OperatorCallRequest
++{
++    ScoredTarget target;
++    QString mode;
++    QDateTime queuedAt;
++};
++
+ class AutoDxerCore : public QObject
+ {
+     Q_OBJECT
+@@ -89,6 +96,10 @@ public:
+     QString stateString() const;
+     QJsonObject runtimeConfigStatus() const;
+     QJsonObject autoDxStatus() const;
++    QJsonArray ignoredStations() const;
++    QJsonArray queuedOperatorCalls() const;
++    bool isStationIgnored(const QString &callsign, int bandIndex,
++                          const QString &mode) const;
+     void reloadRuntimeConfig();
+     
+     // Configuration
+@@ -157,11 +168,14 @@ signals:
+     void qsoCompleted(QString callsign, QString entity, int bandIndex);
+     void statsUpdated();
+     void manualTargetStatus(QString callsign, bool queued, QString reason);
++    void ignoreListChanged();
++    void operatorCallQueueChanged();
+     // CQ control - AutoDxer is search-and-pounce only, never CQ
+     void requestDisableCQOnFreeSlot();
+     // AUTO mode control
+     void requestEnableAuto();   // Enable AUTO when feeding target to queue
+     void requestDisableAuto();  // Turn off AUTO when giving up on a target
++    void requestImmediateStopAndReset(); // Halt/reset native QSO UI without entering operator hold
+     void requestAuthorizationInvalidation(QString reason); // Explicit provider/lifecycle exit only
+     // TX frequency slot selection - emitted after band switch + 2 decode cycles
+     void requestTxFreqChange(double audioFreqHz);
+@@ -187,6 +201,13 @@ public slots:
+     // Dial frequency feedback from MSHV's rig control
+     void onDialFrequencyChanged(int dialFrequencyHz);
+     void requestManualTarget(QStringList decodeData);
++    void queueOperatorTarget(QStringList decodeData);
++    void removeOperatorCall(QString key);
++    void clearOperatorCalls();
++    void ignoreDecodedStation(QStringList decodeData);
++    void ignoreStation(QString callsign);
++    void removeIgnoredStation(QString key);
++    void clearIgnoredStations();
+     void cancelCurrentCallByOperator();
+ 
+ private slots:
+@@ -206,6 +227,9 @@ private:
+     int decodePeriodDebounceSeconds() const;
+     void startListening();
+     void evaluateTargets();
++    QString operatorCallKey(const QString &callsign, int bandIndex,
++                            const QString &mode) const;
++    int operatorCallIndex(const QString &key) const;
+     void feedToQueue(const ScoredTarget &target, bool newAttempt = true,
+                      bool admittedReinsert = false);
+     void checkQueueStatus();
+@@ -236,6 +260,14 @@ private:
+     int bestBandForSwitch();
+     bool targetLocallyFresh(const QString &callsign, int bandIndex, int maxAgeSeconds) const;
+     bool currentTargetPersistsWhileHeard() const;
++    QString targetScopeKey(const QString &callsign, int bandIndex,
++                           const QString &mode) const;
++    int scheduleAdaptiveRetry(const QString &callsign, int bandIndex,
++                              const QString &mode);
++    void clearAdaptiveRetry(const QString &callsign, int bandIndex,
++                            const QString &mode);
++    void loadIgnoredStations();
++    bool saveIgnoredStations() const;
+     bool requestStandardDialReturnIfNeeded(const QString &reason);
+     void abandonCurrentTarget(const QString &reason);
+     void terminalClearCurrentTarget(const QString &reason, bool scheduleRetry);
+@@ -347,6 +379,8 @@ private:
+     AutoDxSelectionConfig m_selectionConfig;
+     QElapsedTimer m_bandDwellTimer;
+     QHash<QString, QDateTime> m_targetRetryAfter;
++    QHash<QString, int> m_unansweredBurstCounts;
++    QHash<QString, QJsonObject> m_ignoredStations;
+     int m_attemptSequence;
+     int m_activeAttempt;
+     QString m_selectionId;
+@@ -562,6 +596,7 @@ private:
+     ScoredTarget m_pendingSlotAnalysisTarget;  // Target waiting for slot analysis to complete
+     bool m_waitingForSlotAnalysis;             // True when target is waiting for slot analysis
+     ScoredTarget m_manualTarget;                // User-requested target, deferred across active QSO
++    QList<OperatorCallRequest> m_operatorCallQueue; // FIFO right-click "call next" requests
+ 
+     // Short-lived exact-slot guard while a logged QSO is being acknowledged
+     // by Wavelog. Durable duplicate suppression comes from worked.db.
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp b/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
+index a5919a8..487d94d 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
+@@ -34,6 +34,8 @@ AutoDxerPanel::AutoDxerPanel(AutoDxerCore *core, QWidget *parent)
+     connect(m_core, SIGNAL(stateChanged(AutoDxerCore::State)), this, SLOT(onStateChanged(AutoDxerCore::State)));
+     connect(m_core, SIGNAL(targetChanged(DxTarget)), this, SLOT(onTargetChanged(DxTarget)));
+     connect(m_core, SIGNAL(statsUpdated()), this, SLOT(onStatsUpdated()));
++    connect(m_core, SIGNAL(ignoreListChanged()), this, SLOT(refreshIgnoreList()));
++    connect(m_core, SIGNAL(operatorCallQueueChanged()), this, SLOT(refreshCallerList()));
+ 
+     // 30-second auto-refresh timer for Cache and Target tabs
+     m_refreshTimer = new QTimer(this);
+@@ -57,6 +59,8 @@ void AutoDxerPanel::setAppPath(const QString &appPath)
+     loadGridFromSettings();
+     loadEnableFromSettings();
+     loadSmsSettings();
++    refreshIgnoreList();
++    refreshCallerList();
+ }
+ 
+ void AutoDxerPanel::loadGridFromSettings()
+@@ -501,7 +505,49 @@ void AutoDxerPanel::setupUI()
+     smsLayout->addWidget(m_smsStatusLabel);
+ 
+     smsLayout->addStretch();
+-    m_tabWidget->addTab(smsTab, "SMS");
++    // SMS configuration is retained for compatibility but no longer occupies
++    // scarce panel space. The operator-facing Ignore list replaces that tab.
++    smsTab->hide();
++
++    QWidget *ignoreTab = new QWidget();
++    QVBoxLayout *ignoreLayout = new QVBoxLayout(ignoreTab);
++    QLabel *ignoreHelp = new QLabel(
++        "Right-click a decoded station and choose Ignore. Exclusions apply only to the shown band and mode.");
++    ignoreHelp->setWordWrap(true);
++    ignoreLayout->addWidget(ignoreHelp);
++    m_ignoreList = new QListWidget();
++    m_ignoreList->setFont(QFont("Monospace", 9));
++    m_ignoreList->setSelectionMode(QAbstractItemView::SingleSelection);
++    ignoreLayout->addWidget(m_ignoreList);
++    QHBoxLayout *ignoreButtons = new QHBoxLayout();
++    QPushButton *removeIgnore = new QPushButton("Remove selected");
++    QPushButton *clearIgnores = new QPushButton("Clear all");
++    connect(removeIgnore, SIGNAL(clicked()), this, SLOT(removeSelectedIgnore()));
++    connect(clearIgnores, SIGNAL(clicked()), this, SLOT(clearIgnoreList()));
++    ignoreButtons->addWidget(removeIgnore);
++    ignoreButtons->addWidget(clearIgnores);
++    ignoreLayout->addLayout(ignoreButtons);
++    m_tabWidget->addTab(ignoreTab, "Ignore");
++
++    QWidget *callersTab = new QWidget();
++    QVBoxLayout *callersLayout = new QVBoxLayout(callersTab);
++    QLabel *callersHelp = new QLabel(
++        "Right-click a decoded station and choose Call next. These stations are called in order after the current QSO and its receive guard finish.");
++    callersHelp->setWordWrap(true);
++    callersLayout->addWidget(callersHelp);
++    m_callerList = new QListWidget();
++    m_callerList->setFont(QFont("Monospace", 9));
++    m_callerList->setSelectionMode(QAbstractItemView::SingleSelection);
++    callersLayout->addWidget(m_callerList);
++    QHBoxLayout *callerButtons = new QHBoxLayout();
++    QPushButton *removeCaller = new QPushButton("Remove selected");
++    QPushButton *clearCallers = new QPushButton("Clear all");
++    connect(removeCaller, SIGNAL(clicked()), this, SLOT(removeSelectedCaller()));
++    connect(clearCallers, SIGNAL(clicked()), this, SLOT(clearCallerList()));
++    callerButtons->addWidget(removeCaller);
++    callerButtons->addWidget(clearCallers);
++    callersLayout->addLayout(callerButtons);
++    m_tabWidget->addTab(callersTab, "Callers");
+ 
+     mainLayout->addWidget(m_tabWidget, 1);
+     
+@@ -700,6 +746,88 @@ void AutoDxerPanel::refreshTargetList()
+     }
+ }
+ 
++void AutoDxerPanel::refreshIgnoreList()
++{
++    if (!m_ignoreList) return;
++    m_ignoreList->clear();
++    const QJsonArray entries = m_core->ignoredStations();
++    for (const QJsonValue &value : entries) {
++        const QJsonObject row = value.toObject();
++        QListWidgetItem *item = new QListWidgetItem(QString("%1  %2  %3")
++            .arg(row.value("callsign").toString(), -12)
++            .arg(row.value("band").toString(), -5)
++            .arg(row.value("mode").toString()));
++        item->setData(Qt::UserRole, row.value("key").toString());
++        item->setToolTip(QString("Added %1")
++            .arg(row.value("added_utc").toString()));
++        m_ignoreList->addItem(item);
++    }
++    if (entries.isEmpty()) {
++        QListWidgetItem *empty = new QListWidgetItem("No ignored stations");
++        empty->setFlags(empty->flags() & ~Qt::ItemIsSelectable);
++        m_ignoreList->addItem(empty);
++    }
++}
++
++void AutoDxerPanel::removeSelectedIgnore()
++{
++    QListWidgetItem *item = m_ignoreList ? m_ignoreList->currentItem() : nullptr;
++    if (!item) return;
++    const QString key = item->data(Qt::UserRole).toString();
++    if (!key.isEmpty()) m_core->removeIgnoredStation(key);
++}
++
++void AutoDxerPanel::clearIgnoreList()
++{
++    if (m_core->ignoredStations().isEmpty()) return;
++    if (QMessageBox::question(this, "Clear Ignore List",
++            "Remove every per-band/per-mode Auto DX exclusion?",
++            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes)
++        m_core->clearIgnoredStations();
++}
++
++void AutoDxerPanel::refreshCallerList()
++{
++    if (!m_callerList) return;
++    m_callerList->clear();
++    const QJsonArray entries = m_core->queuedOperatorCalls();
++    for (const QJsonValue &value : entries) {
++        const QJsonObject row = value.toObject();
++        QListWidgetItem *item = new QListWidgetItem(QString("%1. %2  %3  %4")
++            .arg(row.value("position").toInt(), 2)
++            .arg(row.value("callsign").toString(), -12)
++            .arg(row.value("band").toString(), -5)
++            .arg(row.value("mode").toString()));
++        item->setData(Qt::UserRole, row.value("key").toString());
++        item->setToolTip(QString("Queued %1, SNR %2 dB")
++            .arg(row.value("queued_utc").toString())
++            .arg(row.value("snr").toInt()));
++        m_callerList->addItem(item);
++    }
++    if (entries.isEmpty()) {
++        QListWidgetItem *empty = new QListWidgetItem("No operator-queued callers");
++        empty->setFlags(empty->flags() & ~Qt::ItemIsSelectable);
++        m_callerList->addItem(empty);
++    }
++}
++
++void AutoDxerPanel::removeSelectedCaller()
++{
++    QListWidgetItem *item = m_callerList ? m_callerList->currentItem() : nullptr;
++    if (!item) return;
++    const QString key = item->data(Qt::UserRole).toString();
++    if (!key.isEmpty()) m_core->removeOperatorCall(key);
++}
++
++void AutoDxerPanel::clearCallerList()
++{
++    if (m_core->queuedOperatorCalls().isEmpty()) return;
++    if (QMessageBox::question(this, "Clear Callers List",
++            "Remove every station waiting in the operator callers list?",
++            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes)
++        m_core->clearOperatorCalls();
++}
++
+ void AutoDxerPanel::onUsOnlyToggled(bool checked)
+ {
+     m_core->spotAggregator()->setUSOnly(checked);
+@@ -807,6 +935,10 @@ void AutoDxerPanel::onRefreshTimer()
+         refreshCacheList();
+     } else if (currentTab == 1) {  // Targets tab
+         refreshTargetList();
++    } else if (currentTab == 4) {  // Ignore tab
++        refreshIgnoreList();
++    } else if (currentTab == 5) {  // Callers tab
++        refreshCallerList();
+     }
+ 
+     // Also update session stats (elapsed time changes even without QSOs)
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxerpanel.h b/MSHV_2762/src/HvAutoDxer/autodxerpanel.h
+index 68d7b21..76cad78 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxerpanel.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxerpanel.h
+@@ -55,6 +55,12 @@ private slots:
+     void onClearStats();
+     void refreshCacheList();
+     void refreshTargetList();
++    void refreshIgnoreList();
++    void removeSelectedIgnore();
++    void clearIgnoreList();
++    void refreshCallerList();
++    void removeSelectedCaller();
++    void clearCallerList();
+     void updateGridWarning();
+     void onRefreshTimer();
+     void onResetSession();
+@@ -110,6 +116,8 @@ private:
+     QTabWidget *m_tabWidget;
+     QListWidget *m_cacheList;
+     QListWidget *m_targetList;
++    QListWidget *m_ignoreList;
++    QListWidget *m_callerList;
+     QTextEdit *m_logView;
+     
+     // Settings
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+index 9b404ce..527346d 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+@@ -224,7 +224,7 @@ struct AutoDxRuntimeConfig
+         c.bandSwitchCooldownSeconds = qBound(0, settings.value("AutomationTiming/BandSwitchCooldownSeconds", 120).toInt(), 1800);
+         c.engagedCompletionGraceSeconds = AutoDxTimingPolicy::alignToFt8SlotSeconds(
+             settings.value("Attempt/EngagedCompletionGraceSeconds",
+-                settings.value("AutoDX/EngagedCompletionGraceSeconds", 60)).toInt());
++                settings.value("AutoDX/EngagedCompletionGraceSeconds", 120)).toInt());
+         c.atnoMinimumCallSeconds = qBound(1, settings.value(
+             "Attempt/ATNOMinimumCallMinutes", 30).toInt(), 180) * 60;
+         c.persistNewDxccWhileHeard = settings.value("AutomationTiming/PersistNewDxccWhileHeard", true).toBool();
+diff --git a/MSHV_2762/src/HvDecodeList/decodelist.cpp b/MSHV_2762/src/HvDecodeList/decodelist.cpp
+index f06656a..acbb63b 100644
+--- a/MSHV_2762/src/HvDecodeList/decodelist.cpp
++++ b/MSHV_2762/src/HvDecodeList/decodelist.cpp
+@@ -198,6 +198,12 @@ DecodeList::DecodeList(int ident,bool f,QWidget *parent)
+     QAction *ac_spot = new QAction(QPixmap(":pic/spot_dx.png"),tr("Spot Receiving Text"), this);//"Spot DX Cluster" Spot Receiving Text
+     m_spot->addAction(ac_spot);
+     connect(ac_spot, SIGNAL(triggered()), this, SLOT(ac_spot()));
++    QAction *ac_call_next = new QAction(tr("Add to Auto DX callers list (call next)"), this);
++    m_spot->addAction(ac_call_next);
++    connect(ac_call_next, SIGNAL(triggered()), this, SLOT(ac_call_next_autodx()));
++    QAction *ac_ignore = new QAction(tr("Ignore for Auto DX on this band/mode"), this);
++    m_spot->addAction(ac_ignore);
++    connect(ac_ignore, SIGNAL(triggered()), this, SLOT(ac_ignore_autodx()));
+ 
+     //f_resize_event = false;
+     s_mark_txt.clear();
+@@ -2323,6 +2329,30 @@ void DecodeList::ac_spot()
+ 	//2.76sf last -> 0=normal msg, 1=$VERIFY$, 2=C0ALL.123456, 3=verified
+     emit EmitRxStationInfo(list,1,false,3);//0->to psk reporter 1->to dx clusters  2.34, bool usefudpdectxt
+ }
++void DecodeList::ac_call_next_autodx()
++{
++    const QModelIndex index = selectionModel()->currentIndex();
++    if (!index.isValid()) return;
++    QStandardItem *message = model.item(index.row(), FT_MESSAGE_COLUMN);
++    if (!message) return;
++    const QStringList rawDecode = message->data(RAW_DECODE_ROLE).toStringList();
++    if (!rawDecode.isEmpty()) emit RequestAutoDxCallNext(rawDecode);
++}
++void DecodeList::ac_ignore_autodx()
++{
++    const QModelIndex index = selectionModel()->currentIndex();
++    if (!index.isValid()) return;
++    QStandardItem *message = model.item(index.row(), FT_MESSAGE_COLUMN);
++    if (!message) return;
++    QString callsign = message->data(CALLSIGN_ROLE).toString().trimmed().toUpper();
++    if (callsign.isEmpty()) callsign = FindHisCall(message->text()).trimmed().toUpper();
++    if (!callsign.isEmpty()) {
++        emit RequestAutoDxIgnoreCall(callsign);
++        return;
++    }
++    const QStringList rawDecode = message->data(RAW_DECODE_ROLE).toStringList();
++    if (!rawDecode.isEmpty()) emit RequestAutoDxIgnore(rawDecode);
++}
+ void DecodeList::mouseDoubleClickEvent(QMouseEvent * event)
+ {
+ 	const QModelIndex index = indexAt(event->pos());
+@@ -2358,7 +2388,11 @@ void DecodeList::mousePressEvent(QMouseEvent * event)
+ {
+     QTreeView::mousePressEvent(event);
+     QModelIndex index = indexAt(event->pos());
+-    if (event->button() == Qt::RightButton && !(index.row() == -1)) m_spot->exec(QCursor::pos());
++    if (event->button() == Qt::RightButton && index.isValid()) {
++        selectionModel()->setCurrentIndex(index,
++            QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
++        m_spot->exec(QCursor::pos());
++    }
+ 
+     if (f_click_on_call_show_cty && (s_mode==0 || s_mode==12 || s_mode==11 || s_mode==13 || allq65) &&
+             event->button() == Qt::LeftButton && !(index.row() == -1))
+diff --git a/MSHV_2762/src/HvDecodeList/decodelist.h b/MSHV_2762/src/HvDecodeList/decodelist.h
+index b107bee..980952b 100644
+--- a/MSHV_2762/src/HvDecodeList/decodelist.h
++++ b/MSHV_2762/src/HvDecodeList/decodelist.h
+@@ -90,6 +90,9 @@ signals:
+     void EmitDetectTextInMsg(QString,QString &);
+     void EmitHeaderDoubleClicked();//2.44
+     void RequestAutoDxTarget(QStringList decodeData);
++    void RequestAutoDxCallNext(QStringList decodeData);
++    void RequestAutoDxIgnore(QStringList decodeData);
++    void RequestAutoDxIgnoreCall(QString callsign);
+ 
+ public slots:
+     void InsertItem_hv(QStringList,bool,bool);
+@@ -117,6 +120,8 @@ private slots:
+     void FlushModelBatchRepaint();
+     void ItemSelectedText(QString,int,int);
+     void ac_spot();
++    void ac_call_next_autodx();
++    void ac_ignore_autodx();
+     //void SetHeaderSingleClicked();
+     void SetHeaderDoubleClicked();//2.44
+ 
+diff --git a/MSHV_2762/src/HvTxW/hvmultianswermodw.cpp b/MSHV_2762/src/HvTxW/hvmultianswermodw.cpp
+index 34a5b02..1517aaf 100644
+--- a/MSHV_2762/src/HvTxW/hvmultianswermodw.cpp
++++ b/MSHV_2762/src/HvTxW/hvmultianswermodw.cpp
+@@ -1378,6 +1378,24 @@ void MultiAnswerModW::SetTxSnV2(int v)
+ {
+     s_txsn_v2 = v; //qDebug()<<"s_txsn_v2"<<s_txsn_v2;
+ }
++bool MultiAnswerModW::setOperatorTxStage(const QString &callsign, int stage)
++{
++    if (stage < 0 || stage > 4 || callsign.trimmed().isEmpty()) return false;
++    int row = LsNow->FindCallOrBaseCallRow(callsign);
++    if (row >= 0) {
++        LsNow->SetItem(row, 7, QString::number(stage));
++        LsNow->SetItem(row, 8,
++            QString::number(QDateTime::currentDateTimeUtc().toTime_t()));
++        gen_msg();
++        return true;
++    }
++    row = LsQueue->FindCallOrBaseCallRow(callsign);
++    if (row >= 0) {
++        LsQueue->SetItem(row, 7, QString::number(stage));
++        return true;
++    }
++    return false;
++}
+ QString MultiAnswerModW::MakeSMsg(QString hc0,QString hc1,QString mc,QString rpt)//2.76.2
+ {
+     QString res;
+diff --git a/MSHV_2762/src/HvTxW/hvmultianswermodw.h b/MSHV_2762/src/HvTxW/hvmultianswermodw.h
+index 72e4fe2..b022d7b 100644
+--- a/MSHV_2762/src/HvTxW/hvmultianswermodw.h
++++ b/MSHV_2762/src/HvTxW/hvmultianswermodw.h
+@@ -220,6 +220,7 @@ public:
+ 	void refreshQueue() { RefreshLists(0); }  // Move items from queue to active list
+ 	void clearActiveList() { LsNow->Clear_List(); }  // Clear active transmissions for band switch
+ 	void clearBothLists() { LsNow->Clear_List(); LsQueue->Clear_List(); }  // Clear all for band switch
++	bool setOperatorTxStage(const QString &callsign, int stage);
+ 
+ signals:
+     void MamEmitMessage(QString,bool,bool,bool);
+diff --git a/MSHV_2762/src/HvTxW/hvtxw.cpp b/MSHV_2762/src/HvTxW/hvtxw.cpp
+index a308aff..1dc564d 100644
+--- a/MSHV_2762/src/HvTxW/hvtxw.cpp
++++ b/MSHV_2762/src/HvTxW/hvtxw.cpp
+@@ -4429,6 +4429,10 @@ void HvTxW::RbPress(int identif)
+ {
+     //qDebug()<<identif<<s_b_identif;
+     s_b_identif = identif;
++    if (f_multi_answer_mod && (s_mode==11 || s_mode==13 || allq65)
++            && identif >= 0 && identif <= 4) {
++        MultiAnswerMod->setOperatorTxStage(le_his_call->getText(), identif);
++    }
+     for (int i = 0; i<count_tx_widget; i++)
+     {
+         HvTxIn *TempHvTxIn = (HvTxIn*)V_l->itemAt(i)->widget();
+@@ -4444,6 +4448,10 @@ void HvTxW::RbPress(int identif)
+ void HvTxW::BReleased(int identif,QString str)
+ {
+     s_b_identif = identif;
++    if (f_multi_answer_mod && (s_mode==11 || s_mode==13 || allq65)
++            && identif >= 0 && identif <= 4) {
++        MultiAnswerMod->setOperatorTxStage(le_his_call->getText(), identif);
++    }
+     for (int i = 0; i<count_tx_widget; i++)
+     {
+         HvTxIn *TempHvTxIn = (HvTxIn*)V_l->itemAt(i)->widget();
+diff --git a/MSHV_2762/src/main_ms.cpp b/MSHV_2762/src/main_ms.cpp
+index ac5cbbf..1648670 100644
+--- a/MSHV_2762/src/main_ms.cpp
++++ b/MSHV_2762/src/main_ms.cpp
+@@ -857,6 +857,18 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+             m_autoDxerCore, SLOT(requestManualTarget(QStringList)));
+     connect(TDecodeList2, SIGNAL(RequestAutoDxTarget(QStringList)),
+             m_autoDxerCore, SLOT(requestManualTarget(QStringList)));
++    connect(TDecodeList1, SIGNAL(RequestAutoDxCallNext(QStringList)),
++            m_autoDxerCore, SLOT(queueOperatorTarget(QStringList)));
++    connect(TDecodeList2, SIGNAL(RequestAutoDxCallNext(QStringList)),
++            m_autoDxerCore, SLOT(queueOperatorTarget(QStringList)));
++    connect(TDecodeList1, SIGNAL(RequestAutoDxIgnore(QStringList)),
++            m_autoDxerCore, SLOT(ignoreDecodedStation(QStringList)));
++    connect(TDecodeList2, SIGNAL(RequestAutoDxIgnore(QStringList)),
++            m_autoDxerCore, SLOT(ignoreDecodedStation(QStringList)));
++    connect(TDecodeList1, SIGNAL(RequestAutoDxIgnoreCall(QString)),
++            m_autoDxerCore, SLOT(ignoreStation(QString)));
++    connect(TDecodeList2, SIGNAL(RequestAutoDxIgnoreCall(QString)),
++            m_autoDxerCore, SLOT(ignoreStation(QString)));
+     connect(m_autoDxerCore, &AutoDxerCore::manualTargetStatus,
+             this, [this](const QString &call, bool queued, const QString &reason) {
+         // The signal also reports rejections and the transition from a queued
+@@ -917,6 +929,14 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+             THvTxW, SLOT(StartAuto()));
+     connect(m_autoDxerCore, SIGNAL(requestDisableAuto()),
+             THvTxW, SLOT(StopAuto()));
++    connect(m_autoDxerCore, &AutoDxerCore::requestImmediateStopAndReset,
++            this, [this]() {
++        StopTxGlobalWithReason("operator-ignore-active-station");
++        m_autoDxerQueuedCall.clear();
++        TDecodeList1->SetAutoDxQueuedTarget(QString());
++        TDecodeList2->SetAutoDxQueuedTarget(QString());
++        THvTxW->ResetQSO();
++    });
+     connect(m_autoDxerCore, &AutoDxerCore::requestAuthorizationInvalidation,
+             this, [this](const QString &reason) {
+         Om0rxStationGate::invalidateAndNotify(this, reason);

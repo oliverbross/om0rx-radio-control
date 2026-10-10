@@ -1,0 +1,2485 @@
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+index b77d73c..b897d98 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+@@ -79,6 +79,9 @@ void HvAutoDxSettings::setupUi()
+     createAutomationTimingGroup();
+     createEligibilityGroup();
+     createUsStatesGroup();
++    createAwardHuntingGroup();
++    createActivityStrategyGroup();
++    createClusterChaseGroup();
+     createBandSelectionGroup();
+     createPriorityGroup();
+     createOperatingModeGroup();
+@@ -91,6 +94,9 @@ void HvAutoDxSettings::setupUi()
+     scrollLayout->addWidget(m_automationTimingGroup);
+     scrollLayout->addWidget(m_eligibilityGroup);
+     scrollLayout->addWidget(m_usStatesGroup);
++    scrollLayout->addWidget(m_awardHuntingGroup);
++    scrollLayout->addWidget(m_activityStrategyGroup);
++    scrollLayout->addWidget(m_clusterChaseGroup);
+     scrollLayout->addWidget(m_bandSelectionGroup);
+     scrollLayout->addWidget(m_priorityGroup);
+     // The legacy CQ/Hybrid/S&P helper is not part of the native AutoDxerCore.
+@@ -571,6 +577,190 @@ void HvAutoDxSettings::createUsStatesGroup()
+     layout->addWidget(help, 4, 0, 1, 4);
+ }
+ 
++void HvAutoDxSettings::createAwardHuntingGroup()
++{
++    m_awardHuntingGroup = new QGroupBox("Awards, confirmations && campaign");
++    QGridLayout *layout = new QGridLayout(m_awardHuntingGroup);
++    auto addCheck = [&](const QString &key, const QString &label, bool value, int row, int column) {
++        QCheckBox *control = new QCheckBox(label);
++        control->setChecked(value);
++        m_runtimeChecks.insert(key, control);
++        layout->addWidget(control, row, column, 1, 2);
++    };
++    auto addSpin = [&](const QString &key, const QString &label, int value, int minimum,
++                       int maximum, int row, int column) {
++        QSpinBox *control = new QSpinBox;
++        control->setRange(minimum, maximum);
++        control->setValue(value);
++        m_runtimeSpins.insert(key, control);
++        layout->addWidget(new QLabel(label), row, column);
++        layout->addWidget(control, row, column + 1);
++    };
++
++    addCheck("AwardHunting/Enabled", "Enable composable award hunting", true, 0, 0);
++    addCheck("AwardHunting/StackScores", "Stack simultaneous award bonuses", true, 0, 2);
++    addSpin("AwardHunting/NewDxccWeight", "New DXCC (ATNO):", 10000, 0, 100000, 1, 0);
++    addSpin("AwardHunting/NewDxccBandWeight", "New DXCC band slot:", 1000, 0, 100000, 1, 2);
++    addSpin("AwardHunting/UnconfirmedDxccWeight", "Worked, not confirmed DXCC:", 8500, 0, 100000, 2, 0);
++    addSpin("AwardHunting/NewContinentWeight", "New/unconfirmed continent:", 2500, 0, 100000, 2, 2);
++    addSpin("AwardHunting/NewCqZoneWeight", "New/unconfirmed WAZ zone:", 2200, 0, 100000, 3, 0);
++    addSpin("AwardHunting/NewItuZoneWeight", "New/unconfirmed ITU zone:", 2000, 0, 100000, 3, 2);
++    addSpin("AwardHunting/NewGridWeight", "New grid:", 500, 0, 100000, 4, 0);
++
++    layout->addWidget(new QLabel("Campaign preset:"), 5, 0);
++    m_campaignProfile = new QComboBox;
++    m_campaignProfile->addItem("Balanced", "balanced");
++    m_campaignProfile->addItem("DXCC Challenge", "dxcc-challenge");
++    m_campaignProfile->addItem("Five-band DXCC", "five-band-dxcc");
++    m_campaignProfile->addItem("Worked All States", "worked-all-states");
++    m_campaignProfile->addItem("WAZ", "waz");
++    m_campaignProfile->addItem("ITU zones", "itu-zones");
++    m_campaignProfile->addItem("Grids", "grids");
++    m_campaignProfile->addItem("POTA / SOTA / WWFF", "references");
++    m_campaignProfile->addItem("Custom", "custom");
++    layout->addWidget(m_campaignProfile, 5, 1);
++    addSpin("Campaign/DxccWeightPercent", "DXCC %:", 100, 0, 500, 6, 0);
++    addSpin("Campaign/StateWeightPercent", "US states %:", 100, 0, 500, 6, 2);
++    addSpin("Campaign/ZoneWeightPercent", "Zones %:", 100, 0, 500, 7, 0);
++    addSpin("Campaign/GridWeightPercent", "Grids %:", 100, 0, 500, 7, 2);
++    addSpin("Campaign/ReferenceWeightPercent", "References %:", 100, 0, 500, 8, 0);
++
++    connect(m_campaignProfile, QOverload<int>::of(&QComboBox::currentIndexChanged),
++            this, [this](int) {
++        const QString profile = m_campaignProfile->currentData().toString();
++        const QMap<QString, QList<int> > presets = {
++            {"balanced", {100, 100, 100, 100, 100}},
++            {"dxcc-challenge", {175, 75, 100, 75, 75}},
++            {"five-band-dxcc", {200, 50, 75, 50, 50}},
++            {"worked-all-states", {75, 200, 75, 75, 50}},
++            {"waz", {75, 50, 200, 50, 50}},
++            {"itu-zones", {75, 50, 200, 50, 50}},
++            {"grids", {75, 50, 50, 200, 50}},
++            {"references", {75, 50, 50, 50, 200}}
++        };
++        if (!presets.contains(profile)) return;
++        const QList<int> values = presets.value(profile);
++        m_runtimeSpins.value("Campaign/DxccWeightPercent")->setValue(values[0]);
++        m_runtimeSpins.value("Campaign/StateWeightPercent")->setValue(values[1]);
++        m_runtimeSpins.value("Campaign/ZoneWeightPercent")->setValue(values[2]);
++        m_runtimeSpins.value("Campaign/GridWeightPercent")->setValue(values[3]);
++        m_runtimeSpins.value("Campaign/ReferenceWeightPercent")->setValue(values[4]);
++    });
++    const QStringList campaignWeightKeys = QStringList()
++        << "Campaign/DxccWeightPercent" << "Campaign/StateWeightPercent"
++        << "Campaign/ZoneWeightPercent" << "Campaign/GridWeightPercent"
++        << "Campaign/ReferenceWeightPercent";
++    for (const QString &key : campaignWeightKeys) {
++        connect(m_runtimeSpins.value(key), &QSpinBox::editingFinished, this, [this]() {
++            const int customIndex = m_campaignProfile->findData("custom");
++            if (customIndex >= 0) m_campaignProfile->setCurrentIndex(customIndex);
++        });
++    }
++
++    QLabel *help = new QLabel("Awards can be combined: a station may simultaneously satisfy DXCC, band-slot, state, zone, grid and activity-reference goals. Exact call/band/mode duplicates remain blocked.");
++    help->setWordWrap(true);
++    layout->addWidget(help, 9, 0, 1, 4);
++}
++
++void HvAutoDxSettings::createActivityStrategyGroup()
++{
++    m_activityStrategyGroup = new QGroupBox("POTA / SOTA / WWFF, propagation && calling strategy");
++    QGridLayout *layout = new QGridLayout(m_activityStrategyGroup);
++    auto addCheck = [&](const QString &key, const QString &label, bool value, int row, int column) {
++        QCheckBox *control = new QCheckBox(label);
++        control->setChecked(value);
++        m_runtimeChecks.insert(key, control);
++        layout->addWidget(control, row, column, 1, 2);
++    };
++    auto addSpin = [&](const QString &key, const QString &label, int value, int minimum,
++                       int maximum, int row, int column) {
++        QSpinBox *control = new QSpinBox;
++        control->setRange(minimum, maximum);
++        control->setValue(value);
++        m_runtimeSpins.insert(key, control);
++        layout->addWidget(new QLabel(label), row, column);
++        layout->addWidget(control, row, column + 1);
++    };
++
++    addCheck("ReferenceHunting/Enabled", "Enable activity-reference hunting", true, 0, 0);
++    addCheck("ReferenceHunting/RequireLocalDecode", "Require a local decode before TX", true, 0, 2);
++    addCheck("ReferenceHunting/PotaEnabled", "POTA", true, 1, 0);
++    addCheck("ReferenceHunting/SotaEnabled", "SOTA", true, 1, 2);
++    addCheck("ReferenceHunting/WwffEnabled", "WWFF", true, 2, 0);
++    addSpin("ReferenceHunting/PotaWeight", "POTA weight:", 1800, 0, 100000, 3, 0);
++    addSpin("ReferenceHunting/SotaWeight", "SOTA weight:", 1800, 0, 100000, 3, 2);
++    addSpin("ReferenceHunting/WwffWeight", "WWFF weight:", 1400, 0, 100000, 4, 0);
++    addSpin("ReferenceHunting/NewReferenceWeight", "New reference:", 2500, 0, 100000, 4, 2);
++    addSpin("ReferenceHunting/NewReferenceBandWeight", "New reference/band:", 1000, 0, 100000, 5, 0);
++    addSpin("ReferenceHunting/NewReferenceBandModeWeight", "New reference/band/mode:", 500, 0, 100000, 5, 2);
++    addSpin("ReferenceHunting/MaxActivationAgeSeconds", "Activation freshness (sec):", 900, 60, 86400, 6, 0);
++
++    addCheck("PropagationAdaptation/Enabled", "Adapt band score to live propagation", true, 7, 0);
++    addSpin("PropagationAdaptation/WindowSeconds", "Propagation window (sec):", 900, 60, 86400, 8, 0);
++    addSpin("PropagationAdaptation/UniqueDecodeWeight", "Unique decode weight:", 20, 0, 100000, 8, 2);
++    addSpin("PropagationAdaptation/DistantDecodeWeight", "Distant decode weight:", 40, 0, 100000, 9, 0);
++    addSpin("PropagationAdaptation/SuccessfulQsoWeight", "Successful QSO weight:", 250, 0, 100000, 9, 2);
++    addSpin("PropagationAdaptation/MaxBandBoost", "Maximum band boost:", 1500, 0, 100000, 10, 0);
++
++    addCheck("PileupStrategy/Enabled", "Rotate TX audio offsets in pileups", true, 11, 0);
++    addSpin("PileupStrategy/RotateAfterAttempts", "Rotate after attempts:", 2, 1, 20, 12, 0);
++    addSpin("PileupStrategy/RevisitDelaySeconds", "Pileup revisit delay (sec):", 120, 0, 86400, 12, 2);
++    layout->addWidget(new QLabel("TX audio offsets (Hz):"), 13, 0);
++    QLineEdit *offsets = new QLineEdit("0,-120,120,-240,240");
++    offsets->setToolTip("Comma-separated offsets; up to 16 values from -2400 to 2400 Hz");
++    m_runtimeTexts.insert("PileupStrategy/AudioOffsetsHz", offsets);
++    layout->addWidget(offsets, 13, 1, 1, 3);
++
++    addCheck("DirectedCallers/Enabled", "Prioritize stations calling me while idle", true, 14, 0);
++    addSpin("DirectedCallers/InboxSize", "Caller inbox size:", 8, 1, 100, 15, 0);
++    addSpin("DirectedCallers/MaxAgeSeconds", "Caller freshness (sec):", 90, 15, 3600, 15, 2);
++    addCheck("OutcomeLearning/Enabled", "Record outcomes for adaptive scoring", true, 16, 0);
++    layout->addWidget(new QLabel("Outcome telemetry file:"), 17, 0);
++    QLineEdit *telemetry = new QLineEdit("logs/autodx-outcomes.jsonl");
++    telemetry->setToolTip("Relative path inside the MSHV runtime; absolute paths and '..' are rejected");
++    m_runtimeTexts.insert("OutcomeLearning/TelemetryFile", telemetry);
++    layout->addWidget(telemetry, 17, 1, 1, 3);
++}
++
++void HvAutoDxSettings::createClusterChaseGroup()
++{
++    m_clusterChaseGroup = new QGroupBox("Cluster cross-band chase");
++    QGridLayout *layout = new QGridLayout(m_clusterChaseGroup);
++    auto addCheck = [&](const QString &key, const QString &label, bool value, int row, int column) {
++        QCheckBox *control = new QCheckBox(label);
++        control->setChecked(value);
++        m_runtimeChecks.insert(key, control);
++        layout->addWidget(control, row, column, 1, 2);
++    };
++    auto addSpin = [&](const QString &key, const QString &label, int value, int minimum,
++                       int maximum, int row, int column) {
++        QSpinBox *control = new QSpinBox;
++        control->setRange(minimum, maximum);
++        control->setValue(value);
++        m_runtimeSpins.insert(key, control);
++        layout->addWidget(new QLabel(label), row, column);
++        layout->addWidget(control, row, column + 1);
++    };
++
++    addCheck("ClusterChase/Enabled", "Enable cross-band cluster chase", true, 0, 0);
++    addCheck("ClusterChase/ChaseDxpeditions", "DXpeditions / off-standard FT8", true, 0, 2);
++    addCheck("ClusterChase/ChaseNewDxcc", "New or unconfirmed DXCC", true, 1, 0);
++    addCheck("ClusterChase/ChaseBandDxcc", "New DXCC band slots", true, 1, 2);
++    addCheck("ClusterChase/ChaseUsStates", "Needed US states", true, 2, 0);
++    addCheck("ClusterChase/ChaseUnconfirmedContinents", "Unconfirmed continents", true, 2, 2);
++    addCheck("ClusterChase/ChaseUnconfirmedCqZones", "Unconfirmed WAZ/CQ zones", true, 3, 0);
++    addCheck("ClusterChase/ChaseUnconfirmedItuZones", "Unconfirmed ITU zones", true, 3, 2);
++    addSpin("ClusterChase/MinSpotters", "Minimum spotters:", 1, 1, 20, 4, 0);
++    addSpin("ClusterChase/ConsensusSpotters", "Consensus spotters:", 2, 1, 20, 4, 2);
++    addSpin("ClusterChase/QueueLimit", "Visible queue limit:", 12, 1, 50, 5, 0);
++    addCheck("GridChase/Enabled", "Enable grid-square hunting", true, 5, 2);
++    addSpin("Dxpedition/RxAudioHz", "Expected DX RX audio (Hz):", 1000, 300, 2700, 6, 0);
++
++    QLabel *help = new QLabel("Needed cluster targets may override ordinary continent filters. An active QSO always finishes first, and a cross-band/off-frequency target must be decoded locally before transmission.");
++    help->setWordWrap(true);
++    layout->addWidget(help, 7, 0, 1, 4);
++}
++
+ void HvAutoDxSettings::createBandSelectionGroup()
+ {
+     m_bandSelectionGroup = new QGroupBox("Band Selection");
+@@ -1188,6 +1378,19 @@ void HvAutoDxSettings::loadSettings(const QString& appPath)
+         "USStates/UnderQuotaWeight", 7000).toInt());
+     m_usStatesBands->setText(settings.value(
+         "USStates/Bands", "3,4,6,7,8,9,10,11,12").toString());
++
++    // The advanced controls use the exact same canonical keys as the native
++    // runtime reader and the OM0RX synchronization API.
++    for (auto it = m_runtimeChecks.begin(); it != m_runtimeChecks.end(); ++it)
++        it.value()->setChecked(settings.value(it.key(), it.value()->isChecked()).toBool());
++    for (auto it = m_runtimeSpins.begin(); it != m_runtimeSpins.end(); ++it)
++        it.value()->setValue(settings.value(it.key(), it.value()->value()).toInt());
++    for (auto it = m_runtimeTexts.begin(); it != m_runtimeTexts.end(); ++it)
++        it.value()->setText(settings.value(it.key(), it.value()->text()).toString());
++    index = m_campaignProfile->findData(
++        settings.value("Campaign/Profile", "balanced").toString().trimmed().toLower());
++    m_campaignProfile->setCurrentIndex(-1);
++    m_campaignProfile->setCurrentIndex(index >= 0 ? index : m_campaignProfile->findData("custom"));
+ 
+     // Band Selection - default to all HF bands enabled (no 6m)
+     QString bandStr = settings.value("BandSelection/EnabledBands", "3,4,6,7,8,9,10,11,12").toString();
+@@ -1379,6 +1582,14 @@ void HvAutoDxSettings::saveSettings(const QString& appPath)
+     }
+     if (stateBands.isEmpty()) stateBands << "3" << "4" << "6" << "7" << "8" << "9" << "10" << "11" << "12";
+     settings.setValue("USStates/Bands", stateBands.join(','));
++
++    for (auto it = m_runtimeChecks.constBegin(); it != m_runtimeChecks.constEnd(); ++it)
++        settings.setValue(it.key(), it.value()->isChecked());
++    for (auto it = m_runtimeSpins.constBegin(); it != m_runtimeSpins.constEnd(); ++it)
++        settings.setValue(it.key(), it.value()->value());
++    for (auto it = m_runtimeTexts.constBegin(); it != m_runtimeTexts.constEnd(); ++it)
++        settings.setValue(it.key(), it.value()->text().trimmed());
++    settings.setValue("Campaign/Profile", m_campaignProfile->currentData().toString());
+ 
+     // Priority
+     settings.setValue("Priority/NewDxccAllTime", m_weightNewDxccAllTime->value());
+@@ -1448,7 +1659,11 @@ void HvAutoDxSettings::updateUiState()
+     m_dxpeditionGroup->setEnabled(enabled);
+     m_bandSwitchingGroup->setEnabled(enabled);
+     m_automationTimingGroup->setEnabled(enabled);
+-    m_eligibilityGroup->setEnabled(enabled);
++    m_eligibilityGroup->setEnabled(enabled);
++    m_usStatesGroup->setEnabled(enabled);
++    m_awardHuntingGroup->setEnabled(enabled);
++    m_activityStrategyGroup->setEnabled(enabled);
++    m_clusterChaseGroup->setEnabled(enabled);
+     m_bandSelectionGroup->setEnabled(enabled);
+     m_priorityGroup->setEnabled(enabled);
+     m_opModeGroup->setEnabled(enabled);
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+index b68f740..139dae6 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+@@ -208,6 +208,9 @@ private:
+     void createAutomationTimingGroup();
+     void createEligibilityGroup();
+     void createUsStatesGroup();
++    void createAwardHuntingGroup();
++    void createActivityStrategyGroup();
++    void createClusterChaseGroup();
+     void populateDefaultServers();  // Helper to populate defaults without confirmation
+     void createPriorityGroup();
+     void createOperatingModeGroup();
+@@ -319,6 +322,16 @@ private:
+     QSpinBox *m_usStatesMissingConfirmationWeight;
+     QSpinBox *m_usStatesUnderQuotaWeight;
+     QLineEdit *m_usStatesBands;
++
++    // Composable award, activity, cluster and learning controls.  Keys are
++    // the canonical autodx.ini paths consumed by AutoDxRuntimeConfig.
++    QGroupBox *m_awardHuntingGroup;
++    QGroupBox *m_activityStrategyGroup;
++    QGroupBox *m_clusterChaseGroup;
++    QMap<QString, QCheckBox*> m_runtimeChecks;
++    QMap<QString, QSpinBox*> m_runtimeSpins;
++    QMap<QString, QLineEdit*> m_runtimeTexts;
++    QComboBox *m_campaignProfile;
+ 
+     // Band Selection
+     QGroupBox *m_bandSelectionGroup;
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+index 424b04a..b875b27 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -116,6 +116,15 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     , m_clusterChaseMinSpotters(1)
+     , m_clusterChaseConsensusSpotters(2)
+     , m_clusterChaseQueueLimit(12)
++    , m_directedCallersEnabled(true)
++    , m_directedCallerInboxSize(8)
++    , m_directedCallerMaxAgeSeconds(90)
++    , m_outcomeLearningEnabled(true)
++    , m_awardActivationEntries(0)
++    , m_awardActivationIndexValid(false)
++    , m_runtimeConfigWatchTimer(nullptr)
++    , m_runtimeConfigReloadPending(false)
++    , m_runtimeConfigReloading(false)
+     , m_cty(cty)
+     , m_hvDxccTracker(nullptr)
+     , m_targetAttemptElapsedOffsetMs(0)
+@@ -204,6 +213,15 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     // Runtime configuration may propagate the configured callsign to the local
+     // bridge, so every component it owns must exist before loading the INI.
+     loadRuntimeConfig(settingsPath);
++    m_runtimeConfigMtime = QFileInfo(settingsPath + "/autodx.ini").lastModified().toUTC();
++    m_awardActivationMtime = QFileInfo(
++        settingsPath + "/database/award_hunting.json").lastModified().toUTC();
++    m_runtimeConfigLastAppliedUtc = QDateTime::currentDateTimeUtc();
++    m_runtimeConfigWatchTimer = new QTimer(this);
++    m_runtimeConfigWatchTimer->setInterval(2000);
++    connect(m_runtimeConfigWatchTimer, &QTimer::timeout,
++            this, &AutoDxerCore::checkRuntimeConfigUpdates);
++    m_runtimeConfigWatchTimer->start();
+ 
+     // Create slot finder for TX frequency analysis after band changes
+     m_slotFinder = new HvSlotFinder(this);
+@@ -424,12 +442,35 @@ void AutoDxerCore::loadRuntimeConfig(const QString &settingsPath)
+ 
+     m_targetScorer->setTargetWeights(config.newDxccWeight, config.newBandSlotWeight, config.newGridWeight,
+                                      config.callingMeWeight, config.cqWeight, config.snrWeight);
+-    m_targetScorer->setPriorityDXCC(config.newDxccWeight > 0);
+-    m_targetScorer->setPriorityBandSlot(config.newBandSlotWeight > 0);
+-    m_targetScorer->setPriorityGrid(config.gridChaseEnabled && config.newGridWeight > 0);
++    m_targetScorer->setPriorityDXCC(config.awardHunting.enabled
++        ? (config.awardHunting.newDxccWeight > 0
++            || config.awardHunting.unconfirmedDxccWeight > 0)
++        : config.newDxccWeight > 0);
++    m_targetScorer->setPriorityBandSlot(config.awardHunting.enabled
++        ? config.awardHunting.newDxccBandWeight > 0
++        : config.newBandSlotWeight > 0);
++    m_targetScorer->setPriorityGrid(config.gridChaseEnabled
++        && (config.awardHunting.enabled
++            ? config.awardHunting.newGridWeight > 0 : config.newGridWeight > 0));
+     m_targetScorer->setUSGridOnly(config.gridUsOnly);
+     m_targetScorer->setMinSNR(config.selection.minSignal);
+     m_targetScorer->setSelectionConfig(m_selectionConfig);
++    m_awardHuntingConfig = config.awardHunting;
++    m_targetScorer->setAwardHuntingConfig(m_awardHuntingConfig);
++    m_awardActivationIndexValid = m_targetScorer->loadAwardActivationIndex(
++        settingsPath + "/database/award_hunting.json");
++    m_awardActivationEntries = m_targetScorer->awardActivationCount();
++    m_propagationConfig = config.propagationAdaptation;
++    m_pileupConfig = config.pileupStrategy;
++    m_directedCallersEnabled = config.directedCallersEnabled;
++    m_directedCallerInboxSize = config.directedCallerInboxSize;
++    m_directedCallerMaxAgeSeconds = config.directedCallerMaxAgeSeconds;
++    m_campaignProfile = config.campaignProfile;
++    m_outcomeLearningEnabled = config.outcomeLearningEnabled;
++    m_outcomeTelemetryPath = QDir::cleanPath(
++        QDir(settingsPath).absoluteFilePath("../" + config.outcomeTelemetryFile));
++    m_targetScorer->loadOutcomeLearning(
++        m_outcomeTelemetryPath, m_outcomeLearningEnabled);
+     m_targetScorer->configureUsStates(
+         config.usStatesEnabled, config.usStatesMinimumWorked,
+         config.usStatesRequireConfirmation, config.usStatesPreferLotw,
+@@ -500,39 +541,52 @@ void AutoDxerCore::loadRuntimeConfig(const QString &settingsPath)
+         m_spotAggregator->setGrid(config.grid);
+     }
+ 
+-    m_runtimeRbnEnabled = config.rbnEnabled;
+-    m_runtimePskrEnabled = config.pskrEnabled;
+-    m_runtimeDxClusterEnabled = config.dxClusterEnabled;
+-    m_runtimeUsOnly = config.usOnly;
+-    m_runtimeUseDefaultServers = config.useDefaultServers;
+-    m_runtimeCustomServers = config.customServers;
+-    m_spotAggregator->setRBNEnabled(m_runtimeRbnEnabled);
+-    m_spotAggregator->setRBNHost(config.rbnHost);
+-    m_spotAggregator->setRBNPort(config.rbnPort);
+-    m_spotAggregator->setPSKREnabled(m_runtimePskrEnabled);
+-    m_spotAggregator->setPSKRPollInterval(config.pskrPollInterval);
+-    m_spotAggregator->setDxClusterEnabled(m_runtimeDxClusterEnabled);
+-    m_spotAggregator->setUSOnly(m_runtimeUsOnly);
+-    // Rebuild the server list for both transitions. Merely flipping the flag
+-    // cannot restore defaults after a custom list previously cleared them.
+-    m_spotAggregator->clearDxClusterServers();
+-    m_spotAggregator->setUseDefaultServers(m_runtimeUseDefaultServers);
+-
+-    m_runtimeDxClusterServerCount = 0;
+-    if (!m_runtimeUseDefaultServers) {
+-        for (const QString &server : config.customServers) {
+-            const QStringList parts = server.split("|");
+-            if (parts.size() < 4 || parts.at(3).trimmed().toLower() != "true") continue;
+-            bool validPort = false;
+-            const int port = parts.at(2).toInt(&validPort);
+-            if (!validPort || port < 1 || port > 65535 || parts.at(1).trimmed().isEmpty()) continue;
+-            m_spotAggregator->dxClusterClient()->addServer(
+-                ClusterServer(parts.at(0).trimmed(), parts.at(1).trimmed(), port));
+-            ++m_runtimeDxClusterServerCount;
++    const bool firstSourceLoad = !m_runtimeConfigLastAppliedUtc.isValid();
++    const bool sourceConfigurationChanged = firstSourceLoad
++        || m_runtimeRbnEnabled != config.rbnEnabled
++        || m_runtimePskrEnabled != config.pskrEnabled
++        || m_runtimeDxClusterEnabled != config.dxClusterEnabled
++        || m_runtimeUsOnly != config.usOnly
++        || m_runtimeUseDefaultServers != config.useDefaultServers
++        || m_runtimeCustomServers != config.customServers
++        || m_spotAggregator->rbnHost() != config.rbnHost
++        || m_spotAggregator->rbnPort() != config.rbnPort
++        || m_spotAggregator->pskrPollInterval() != config.pskrPollInterval;
++    if (sourceConfigurationChanged) {
++        m_runtimeRbnEnabled = config.rbnEnabled;
++        m_runtimePskrEnabled = config.pskrEnabled;
++        m_runtimeDxClusterEnabled = config.dxClusterEnabled;
++        m_runtimeUsOnly = config.usOnly;
++        m_runtimeUseDefaultServers = config.useDefaultServers;
++        m_runtimeCustomServers = config.customServers;
++        m_spotAggregator->setRBNEnabled(m_runtimeRbnEnabled);
++        m_spotAggregator->setRBNHost(config.rbnHost);
++        m_spotAggregator->setRBNPort(config.rbnPort);
++        m_spotAggregator->setPSKREnabled(m_runtimePskrEnabled);
++        m_spotAggregator->setPSKRPollInterval(config.pskrPollInterval);
++        m_spotAggregator->setDxClusterEnabled(m_runtimeDxClusterEnabled);
++        m_spotAggregator->setUSOnly(m_runtimeUsOnly);
++        // Rebuild the server list for both transitions. Merely flipping the
++        // flag cannot restore defaults after a custom list cleared them.
++        m_spotAggregator->clearDxClusterServers();
++        m_spotAggregator->setUseDefaultServers(m_runtimeUseDefaultServers);
++
++        m_runtimeDxClusterServerCount = 0;
++        if (!m_runtimeUseDefaultServers) {
++            for (const QString &server : config.customServers) {
++                const QStringList parts = server.split("|");
++                if (parts.size() < 4 || parts.at(3).trimmed().toLower() != "true") continue;
++                bool validPort = false;
++                const int port = parts.at(2).toInt(&validPort);
++                if (!validPort || port < 1 || port > 65535 || parts.at(1).trimmed().isEmpty()) continue;
++                m_spotAggregator->dxClusterClient()->addServer(
++                    ClusterServer(parts.at(0).trimmed(), parts.at(1).trimmed(), port));
++                ++m_runtimeDxClusterServerCount;
++            }
++        } else {
++            m_spotAggregator->addDefaultDxClusterServers();
++            m_runtimeDxClusterServerCount = m_spotAggregator->dxClusterClient()->totalServerCount();
+         }
+-    } else {
+-        m_spotAggregator->addDefaultDxClusterServers();
+-        m_runtimeDxClusterServerCount = m_spotAggregator->dxClusterClient()->totalServerCount();
+     }
+ 
+     emit debugMessage(QString("AUTODX-RUNTIME-CONFIG: modes=%1 bands=%2 switch=%3 call=%4s quiet=%5s heard=%6s verify=%7s cooldown=%8s RBN=%9 PSKR=%10 DXC=%11 USOnly=%12")
+@@ -562,6 +616,13 @@ void AutoDxerCore::loadRuntimeConfig(const QString &settingsPath)
+         ? "any-active" : "needed-only";
+     configAudit["cluster_chase_enabled"] = m_clusterChaseEnabled;
+     configAudit["cluster_continent_override"] = true;
++    configAudit["award_activation_index_valid"] = m_awardActivationIndexValid;
++    configAudit["award_activation_entries"] = m_awardActivationEntries;
++    configAudit["campaign_profile"] = m_campaignProfile;
++    configAudit["propagation_adaptation_enabled"] = m_propagationConfig.enabled;
++    configAudit["pileup_strategy_enabled"] = m_pileupConfig.enabled;
++    configAudit["directed_callers_enabled"] = m_directedCallersEnabled;
++    configAudit["outcome_learning_enabled"] = m_outcomeLearningEnabled;
+     auditEvent("policy-loaded", configAudit);
+ }
+ 
+@@ -579,6 +640,34 @@ void AutoDxerCore::auditEvent(const QString &event, const QJsonObject &fields)
+         QJsonDocument(record).toJson(QJsonDocument::Compact)));
+ }
+ 
++void AutoDxerCore::writeOutcomeTelemetry(const QString &outcome, const QString &reason)
++{
++    if (!m_outcomeLearningEnabled || m_outcomeTelemetryPath.isEmpty()
++            || !m_currentTarget.isValid()) return;
++    m_targetScorer->recordOutcome(
++        m_currentTarget.callsign, outcome == "completed");
++    QFileInfo info(m_outcomeTelemetryPath);
++    if (!QDir().mkpath(info.absolutePath())) return;
++    QFile file(m_outcomeTelemetryPath);
++    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) return;
++    QJsonObject record;
++    record["schema"] = "om0rx.autodx.outcome.v1";
++    record["utc"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
++    record["call"] = m_currentTarget.callsign;
++    record["band_index"] = m_currentTarget.bandIndex;
++    record["mode"] = m_currentMode;
++    record["outcome"] = outcome;
++    record["reason"] = reason;
++    record["selection_class"] = m_selectionClass;
++    record["selection_reason"] = m_selectionReason;
++    record["selection_score"] = m_selectionScore;
++    record["attempt"] = m_activeAttempt;
++    record["attempt_elapsed_ms"] = static_cast<double>(currentTargetAttemptElapsedMs());
++    record["engaged"] = m_targetRespondedToUs;
++    file.write(QJsonDocument(record).toJson(QJsonDocument::Compact));
++    file.write("\n");
++}
++
+ void AutoDxerCore::noteSkipped(const QString &reason)
+ {
+     const QString normalized = reason.trimmed();
+@@ -588,6 +677,26 @@ void AutoDxerCore::noteSkipped(const QString &reason)
+     while (m_recentSkippedReasons.size() > 12) m_recentSkippedReasons.removeFirst();
+ }
+ 
++void AutoDxerCore::pruneAttemptHistory(const QDateTime &now)
++{
++    for (auto it = m_callAttemptUpdated.begin(); it != m_callAttemptUpdated.end(); ) {
++        if (!it.value().isValid() || it.value().secsTo(now) > 86400) {
++            m_callAttemptCounts.remove(it.key());
++            it = m_callAttemptUpdated.erase(it);
++        } else ++it;
++    }
++    while (m_callAttemptUpdated.size() > 1000) {
++        auto oldest = m_callAttemptUpdated.begin();
++        for (auto it = m_callAttemptUpdated.begin(); it != m_callAttemptUpdated.end(); ++it)
++            if (it.value() < oldest.value()) oldest = it;
++        m_callAttemptCounts.remove(oldest.key());
++        m_callAttemptUpdated.erase(oldest);
++    }
++    for (auto it = m_targetRetryAfter.begin(); it != m_targetRetryAfter.end(); )
++        if (!it.value().isValid() || it.value() <= now)
++            it = m_targetRetryAfter.erase(it); else ++it;
++}
++
+ void AutoDxerCore::reloadDxpeditionWatch(bool force)
+ {
+     const QString path = m_settingsPath + "/database/dxpedition_watch.json";
+@@ -710,15 +819,67 @@ bool AutoDxerCore::dxpeditionScopeAdmits(const QString &callsign, int bandIndex,
+ void AutoDxerCore::reloadRuntimeConfig()
+ {
+     const bool wasEffective = m_enabled;
++    const AutoDxRuntimeConfig next = AutoDxRuntimeConfig::load(m_settingsPath);
++    const bool sourceConfigurationChanged = m_runtimeRbnEnabled != next.rbnEnabled
++        || m_runtimePskrEnabled != next.pskrEnabled
++        || m_runtimeDxClusterEnabled != next.dxClusterEnabled
++        || m_runtimeUsOnly != next.usOnly
++        || m_runtimeUseDefaultServers != next.useDefaultServers
++        || m_runtimeCustomServers != next.customServers
++        || (m_spotAggregator && (m_spotAggregator->rbnHost() != next.rbnHost
++            || m_spotAggregator->rbnPort() != next.rbnPort
++            || m_spotAggregator->pskrPollInterval() != next.pskrPollInterval));
+     loadRuntimeConfig(m_settingsPath);
+     setEnabled(m_desiredEnabled);
+-    if (wasEffective && m_enabled && m_spotAggregator) {
++    if (sourceConfigurationChanged && wasEffective && m_enabled && m_spotAggregator) {
+         m_spotAggregator->stop();
+         m_spotAggregator->start();
+     }
+     resetQuietBandTimer();
+ }
+ 
++void AutoDxerCore::checkRuntimeConfigUpdates()
++{
++    if (m_runtimeConfigReloading) return;
++    const QDateTime iniMtime = QFileInfo(
++        m_settingsPath + "/autodx.ini").lastModified().toUTC();
++    const QDateTime awardMtime = QFileInfo(
++        m_settingsPath + "/database/award_hunting.json").lastModified().toUTC();
++    const bool iniChanged = iniMtime != m_runtimeConfigMtime;
++    const bool awardChanged = awardMtime != m_awardActivationMtime;
++    if (awardChanged) {
++        m_awardActivationIndexValid = m_targetScorer->loadAwardActivationIndex(
++            m_settingsPath + "/database/award_hunting.json");
++        m_awardActivationEntries = m_targetScorer->awardActivationCount();
++        m_awardActivationMtime = awardMtime;
++        QJsonObject fields;
++        fields["award_index_mtime_utc"] = awardMtime.toString(Qt::ISODateWithMs);
++        fields["award_index_valid"] = m_awardActivationIndexValid;
++        fields["award_entries"] = m_awardActivationEntries;
++        auditEvent("award-index-hot-reloaded", fields);
++    }
++    if (!iniChanged && !m_runtimeConfigReloadPending) return;
++    if (m_state == WaitingForQSO || m_currentTarget.isValid()
++            || m_targetRespondedToUs || catTransitionPending()) {
++        m_runtimeConfigReloadPending = true;
++        return;
++    }
++
++    m_runtimeConfigReloading = true;
++    m_runtimeConfigReloadPending = false;
++    reloadRuntimeConfig();
++    m_runtimeConfigMtime = QFileInfo(
++        m_settingsPath + "/autodx.ini").lastModified().toUTC();
++    m_runtimeConfigLastAppliedUtc = QDateTime::currentDateTimeUtc();
++    m_runtimeConfigReloading = false;
++    QJsonObject fields;
++    fields["ini_mtime_utc"] = m_runtimeConfigMtime.toString(Qt::ISODateWithMs);
++    fields["award_index_mtime_utc"] = m_awardActivationMtime.toString(Qt::ISODateWithMs);
++    fields["award_index_valid"] = m_awardActivationIndexValid;
++    fields["award_entries"] = m_awardActivationEntries;
++    auditEvent("runtime-config-hot-reloaded", fields);
++}
++
+ QJsonObject AutoDxerCore::runtimeConfigStatus() const
+ {
+     QJsonArray modes;
+@@ -909,6 +1070,74 @@ QJsonObject AutoDxerCore::runtimeConfigStatus() const
+     result["historical_novelty_allowed"] = m_historicalNoveltyAllowed;
+     result["history_authority_status"] = m_historyAuthorityStatus;
+     result["acknowledged_history_deltas"] = m_appliedHistoryDeltaKeys.size();
++    QJsonObject award;
++    award["enabled"] = m_awardHuntingConfig.enabled;
++    award["stack_scores"] = m_awardHuntingConfig.stackScores;
++    award["new_dxcc_weight"] = m_awardHuntingConfig.newDxccWeight;
++    award["new_dxcc_band_weight"] = m_awardHuntingConfig.newDxccBandWeight;
++    award["unconfirmed_dxcc_weight"] = m_awardHuntingConfig.unconfirmedDxccWeight;
++    award["new_continent_weight"] = m_awardHuntingConfig.newContinentWeight;
++    award["new_cq_zone_weight"] = m_awardHuntingConfig.newCqZoneWeight;
++    award["new_itu_zone_weight"] = m_awardHuntingConfig.newItuZoneWeight;
++    award["new_grid_weight"] = m_awardHuntingConfig.newGridWeight;
++    result["award_hunting"] = award;
++    QJsonObject references;
++    references["enabled"] = m_awardHuntingConfig.referenceEnabled;
++    references["pota_enabled"] = m_awardHuntingConfig.potaEnabled;
++    references["sota_enabled"] = m_awardHuntingConfig.sotaEnabled;
++    references["wwff_enabled"] = m_awardHuntingConfig.wwffEnabled;
++    references["pota_weight"] = m_awardHuntingConfig.potaWeight;
++    references["sota_weight"] = m_awardHuntingConfig.sotaWeight;
++    references["wwff_weight"] = m_awardHuntingConfig.wwffWeight;
++    references["new_reference_weight"] = m_awardHuntingConfig.newReferenceWeight;
++    references["new_reference_band_weight"] = m_awardHuntingConfig.newReferenceBandWeight;
++    references["new_reference_band_mode_weight"] = m_awardHuntingConfig.newReferenceBandModeWeight;
++    references["max_activation_age_seconds"] = m_awardHuntingConfig.maxActivationAgeSeconds;
++    references["require_local_decode"] = m_awardHuntingConfig.requireLocalDecode;
++    references["index_valid"] = m_awardActivationIndexValid;
++    references["activation_count"] = m_awardActivationEntries;
++    result["reference_hunting"] = references;
++    QJsonObject adaptation;
++    adaptation["enabled"] = m_propagationConfig.enabled;
++    adaptation["window_seconds"] = m_propagationConfig.windowSeconds;
++    adaptation["unique_decode_weight"] = m_propagationConfig.uniqueDecodeWeight;
++    adaptation["distant_decode_weight"] = m_propagationConfig.distantDecodeWeight;
++    adaptation["successful_qso_weight"] = m_propagationConfig.successfulQsoWeight;
++    adaptation["max_band_boost"] = m_propagationConfig.maxBandBoost;
++    result["propagation_adaptation"] = adaptation;
++    QJsonObject pileup;
++    pileup["enabled"] = m_pileupConfig.enabled;
++    pileup["rotate_after_attempts"] = m_pileupConfig.rotateAfterAttempts;
++    pileup["revisit_delay_seconds"] = m_pileupConfig.revisitDelaySeconds;
++    QJsonArray offsets;
++    for (int offset : m_pileupConfig.audioOffsetsHz) offsets.append(offset);
++    pileup["audio_offsets_hz"] = offsets;
++    result["pileup_strategy"] = pileup;
++    QJsonObject directedConfig;
++    directedConfig["enabled"] = m_directedCallersEnabled;
++    directedConfig["inbox_size"] = m_directedCallerInboxSize;
++    directedConfig["max_age_seconds"] = m_directedCallerMaxAgeSeconds;
++    directedConfig["queued"] = m_directedCallerInbox.size();
++    result["directed_callers"] = directedConfig;
++    QJsonObject campaign;
++    campaign["profile"] = m_campaignProfile;
++    campaign["dxcc_weight_percent"] = m_awardHuntingConfig.dxccWeightPercent;
++    campaign["state_weight_percent"] = m_awardHuntingConfig.stateWeightPercent;
++    campaign["zone_weight_percent"] = m_awardHuntingConfig.zoneWeightPercent;
++    campaign["grid_weight_percent"] = m_awardHuntingConfig.gridWeightPercent;
++    campaign["reference_weight_percent"] = m_awardHuntingConfig.referenceWeightPercent;
++    result["campaign"] = campaign;
++    QJsonObject learning;
++    learning["enabled"] = m_outcomeLearningEnabled;
++    learning["telemetry_file"] = QDir(m_settingsPath + "/..").relativeFilePath(
++        m_outcomeTelemetryPath);
++    result["outcome_learning"] = learning;
++    QJsonObject hotReload;
++    hotReload["poll_seconds"] = 2;
++    hotReload["pending"] = m_runtimeConfigReloadPending;
++    hotReload["last_applied_utc"] = m_runtimeConfigLastAppliedUtc.isValid()
++        ? m_runtimeConfigLastAppliedUtc.toString(Qt::ISODateWithMs) : QString();
++    result["config_hot_reload"] = hotReload;
+     return result;
+ }
+ 
+@@ -936,6 +1165,15 @@ QJsonObject AutoDxerCore::autoDxStatus() const
+     target["audio_frequency_hz"] = m_currentTarget.audioFrequency;
+     target["dial_frequency_hz"] = m_currentTarget.dialFrequencyHz;
+     target["directed_caller"] = m_currentTarget.isCallingMe;
++    QJsonArray targetAwardReferences;
++    for (const AwardReferenceMatch &match : m_currentTarget.awardReferences) {
++        QJsonObject reference;
++        reference["program"] = match.program;
++        reference["reference"] = match.reference;
++        reference["slot_key"] = match.slotKey;
++        targetAwardReferences.append(reference);
++    }
++    target["award_references"] = targetAwardReferences;
+ 
+     QJsonObject budget;
+     budget["call_window_seconds"] = m_selectionConfig.callWindowSeconds;
+@@ -1767,6 +2005,12 @@ void AutoDxerCore::onLocalDecode(QStringList decodeData)
+     // Look up DXCC entity
+     QString entity;
+     if (m_cty) entity = m_cty->FindCountry(callsign, false);
++    // Weak long-path signals are a conservative native proxy when a decode
++    // does not carry distance. Unique-call evidence is still counted once.
++    const QDateTime decodeUtc = QDateTime::currentDateTimeUtc();
++    m_bandProductivity.prune(decodeUtc, m_propagationConfig.windowSeconds);
++    m_bandProductivity.observeDecode(
++        m_currentBandIndex, callsign, snr <= -15, decodeUtc);
+ 
+     // Add to cache (with current dial frequency for non-standard freq tracking)
+     m_decodeCache->addDecode(callsign, grid, entity, originalMsg, m_currentBandIndex, freq, m_currentDialFrequencyHz, snr, isCQ);
+@@ -2225,19 +2469,18 @@ void AutoDxerCore::evaluateTargets()
+     // Also get external spots from RBN/PSKReporter for awareness
+     QList<ExternalSpot> externalSpots = m_spotAggregator->getSpots(m_currentBandIndex, 120);
+ 
+-    for (const ExternalSpot &spot : externalSpots) {
+-        if (spot.source != "LOCAL" && !AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)) continue;
+-        if (containsCallsign(activeStations, spot.callsign)) continue;
+-        CachedDecode converted = spotToCachedDecode(spot);
+-        activeStations.append(converted);
+-    }
+-
++    // External evidence is evaluated by the alert scheduler. Appending it
++    // here only performed quadratic duplicate scans before discarding every
++    // external-only row in the local-selection pass below.
+     if (activeStations.isEmpty()) return;
+ 
+     // Filter to only locally decoded stations (external spots are for alerts only)
+     QList<CachedDecode> localStations;
++    const QDateTime selectionNow = QDateTime::currentDateTimeUtc();
+     for (const CachedDecode &decode : activeStations) {
+         if (decode.isLocalDecode) {
++            const QString retryKey = extractBaseCallsign(decode.callsign).toUpper();
++            if (m_targetRetryAfter.value(retryKey) > selectionNow) continue;
+             localStations.append(decode);
+         }
+     }
+@@ -2249,7 +2492,42 @@ void AutoDxerCore::evaluateTargets()
+     // An operator request wins the next idle selection, but only while the
+     // same local evidence and normal history/duplicate gates still admit it.
+     ScoredTarget best;
+-    if (!m_manualTarget.callsign.isEmpty()) {
++    const QDateTime inboxNow = QDateTime::currentDateTimeUtc();
++    QStringList expiredCallers;
++    for (const QString &inboxCall : m_directedCallerInbox) {
++        const QDateTime queuedAt = m_directedCallerInboxAt.value(inboxCall);
++        if (!queuedAt.isValid() || queuedAt.secsTo(inboxNow) > m_directedCallerMaxAgeSeconds) {
++            expiredCallers << inboxCall;
++        }
++    }
++    for (const QString &call : expiredCallers) {
++        m_directedCallerInbox.removeAll(call);
++        m_directedCallerInboxAt.remove(call);
++    }
++    QStringList ineligibleCallers;
++    for (const QString &inboxCall : m_directedCallerInbox) {
++        bool localRowFound = false;
++        ScoredTarget candidate;
++        for (const CachedDecode &decode : localStations) {
++            if (!callsignsMatch(decode.callsign, inboxCall)) continue;
++            localRowFound = true;
++            candidate = m_targetScorer->scoreTarget(decode);
++            break;
++        }
++        // A fresh caller whose row rolled out must not block callers later in
++        // the FIFO. Keep it queued, then continue looking for a usable row.
++        if (!localRowFound) continue;
++        if (candidate.priority > 0 && candidate.isCallingMe) {
++            best = candidate;
++            break;
++        }
++        if (candidate.isCallingMe) ineligibleCallers << inboxCall;
++    }
++    for (const QString &call : ineligibleCallers) {
++        m_directedCallerInbox.removeAll(call);
++        m_directedCallerInboxAt.remove(call);
++    }
++    if (best.priority <= 0 && !m_manualTarget.callsign.isEmpty()) {
+         for (const CachedDecode &decode : localStations) {
+             if (callsignsMatch(decode.callsign, m_manualTarget.callsign)) {
+                 best = m_targetScorer->scoreTarget(decode);
+@@ -2283,6 +2561,10 @@ void AutoDxerCore::evaluateTargets()
+             auditEvent("retry-blocked", fields);
+             return;
+         }
++        if (best.isCallingMe) {
++            m_directedCallerInbox.removeAll(retryKey);
++            m_directedCallerInboxAt.remove(retryKey);
++        }
+         // Debug: Verify target source and cache status
+         bool foundInLocal = false;
+         bool foundInExternal = false;
+@@ -2360,7 +2642,7 @@ void AutoDxerCore::clearSuspendedTarget()
+ void AutoDxerCore::considerCallingMePreemption(const CachedDecode &decode)
+ {
+     if (catTransitionPending()) return;
+-    if (!m_enabled || !m_targetScorer || !decode.isLocalDecode
++    if (!m_directedCallersEnabled || !m_enabled || !m_targetScorer || !decode.isLocalDecode
+             || decode.bandIndex != m_currentBandIndex) return;
+ 
+     const ScoredTarget caller = m_targetScorer->scoreTarget(decode);
+@@ -2393,6 +2675,14 @@ void AutoDxerCore::considerCallingMePreemption(const CachedDecode &decode)
+ 
+     m_lastDirectedCaller = caller.callsign;
+     m_lastDirectedCallerAt = QDateTime::currentDateTimeUtc();
++    const QString inboxCall = extractBaseCallsign(caller.callsign).toUpper();
++    m_directedCallerInbox.removeAll(inboxCall);
++    m_directedCallerInbox.append(inboxCall);
++    m_directedCallerInboxAt.insert(inboxCall, m_lastDirectedCallerAt);
++    while (m_directedCallerInbox.size() > m_directedCallerInboxSize) {
++        const QString dropped = m_directedCallerInbox.takeFirst();
++        m_directedCallerInboxAt.remove(dropped);
++    }
+ 
+     if (m_currentTarget.isValid()
+             && callsignsMatch(caller.callsign, m_currentTarget.callsign)) return;
+@@ -2418,6 +2708,7 @@ void AutoDxerCore::considerCallingMePreemption(const CachedDecode &decode)
+         m_suspendedTarget.audioFrequency = m_currentTarget.audioFrequency;
+         m_suspendedTarget.dialFrequencyHz = m_currentTarget.dialFrequencyHz;
+         m_suspendedTarget.priority = m_currentTarget.priority;
++        m_suspendedTarget.awardReferences = m_currentTarget.awardReferences;
+         m_suspendedTarget.snr = -15;
+         m_suspendedTarget.isLocalDecode = true;
+         m_suspendedTarget.isNewDXCC = m_currentTargetIsATNO;
+@@ -2461,6 +2752,8 @@ void AutoDxerCore::considerCallingMePreemption(const CachedDecode &decode)
+ 
+     feedToQueue(caller, true);
+     if (m_currentTarget.isValid() && m_currentTarget.isCallingMe) {
++        m_directedCallerInbox.removeAll(inboxCall);
++        m_directedCallerInboxAt.remove(inboxCall);
+         emit debugMessage(QString("CALLING-ME-PREEMPT: %1 selected immediately (score=%2)")
+                          .arg(caller.callsign).arg(caller.priority));
+         QJsonObject fields;
+@@ -2671,6 +2964,19 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+         }
+     }
+ 
++    const QString attemptCall = extractBaseCallsign(target.callsign).toUpper();
++    const QDateTime attemptUtc = QDateTime::currentDateTimeUtc();
++    pruneAttemptHistory(attemptUtc);
++    int pileupAttempt = m_callAttemptCounts.value(attemptCall, 0);
++    if (newAttempt) {
++        pileupAttempt = m_callAttemptCounts.value(attemptCall, 0);
++        m_callAttemptCounts.insert(attemptCall, pileupAttempt + 1);
++        m_callAttemptUpdated.insert(attemptCall, attemptUtc);
++        pruneAttemptHistory(attemptUtc);
++    }
++    const int queueAudioFrequency = m_pileupConfig.audioFrequency(
++        target.audioFrequency, pileupAttempt);
++
+     // Build queue entry matching LsQueue column format:
+     // [0]=Call, [1]=dB(SNR), [2]=RxdB, [3]=Dist, [4]=Grid, [5]=Freq,
+     // [6]=Time, [7]=IDrpt, [8]=TTry, [9]=GinTxT, [10]=s, [11]=e
+@@ -2680,7 +2986,7 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+          << "-15"                                        // [2] Rx dB (default)
+          << "9999"                                       // [3] Dist (auto-calc by MSHV)
+          << target.grid.left(4)                          // [4] Grid
+-         << QString::number(target.audioFrequency)       // [5] Freq
++         << QString::number(queueAudioFrequency)         // [5] Freq
+          << QDateTime::currentDateTimeUtc().toString("yyyyMMdd hh:mm")  // [6] Start DateTime (date+time for log)
+          << "0"                                          // [7] IDrpt
+          << "0"                                          // [8] TTry
+@@ -2727,6 +3033,11 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+         fields["max_windows"] = m_selectionConfig.maxConsecutiveWindows;
+         fields["budget_seconds"] = m_normalCallSeconds;
+         fields["directed_caller"] = target.isCallingMe;
++        fields["award_program"] = target.awardProgram;
++        fields["award_reference"] = target.awardReference;
++        fields["award_slot_key"] = target.awardSlotKey;
++        fields["pileup_attempt"] = pileupAttempt;
++        fields["tx_audio_hz"] = queueAudioFrequency;
+         auditEvent("target-selected", fields);
+     }
+ 
+@@ -2741,7 +3052,7 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+     int verifyNow = m_queueWidget->getNowList()->FindCallOrBaseCallRow(target.callsign);
+ 
+     emit debugMessage(QString("QUEUE-ADD: %1 -> queue (grid=%2, snr=%3, audioHz=%4)")
+-        .arg(target.callsign).arg(target.grid).arg(target.snr).arg(target.audioFrequency));
++        .arg(target.callsign).arg(target.grid).arg(target.snr).arg(queueAudioFrequency));
+     emit debugMessage(QString("QUEUE-VERIFY: %1 queueRow=%2 nowRow=%3")
+         .arg(target.callsign).arg(verifyQueue).arg(verifyNow));
+ 
+@@ -2763,10 +3074,11 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+     m_currentTarget.grid = target.grid;
+     m_currentTarget.dxccEntity = target.dxccEntity;
+     m_currentTarget.bandIndex = target.bandIndex;
+-    m_currentTarget.audioFrequency = target.audioFrequency;
++    m_currentTarget.audioFrequency = queueAudioFrequency;
+     m_currentTarget.dialFrequencyHz = target.dialFrequencyHz;
+     m_currentTarget.priority = target.priority;
+     m_currentTarget.isCallingMe = target.isCallingMe;
++    m_currentTarget.awardReferences = target.awardReferences;
+ 
+     emit targetChanged(m_currentTarget);
+     setState(WaitingForQSO);
+@@ -2847,6 +3159,7 @@ void AutoDxerCore::checkQueueStatus()
+                 reinsert.dialFrequencyHz = foundCurrentBand ? decode.dialFrequencyHz : m_currentTarget.dialFrequencyHz;
+                 reinsert.snr = foundCurrentBand ? decode.snr : 0;
+                 reinsert.priority = m_currentTarget.priority;
++                reinsert.awardReferences = m_currentTarget.awardReferences;
+                 reinsert.isNewDXCC = m_currentTargetIsATNO;
+                 reinsert.isNewBandSlot = m_currentTargetIsNewSlot;
+                 reinsert.isCallingMe = m_currentTarget.isCallingMe;
+@@ -3023,6 +3336,9 @@ int AutoDxerCore::bestBandForSwitch()
+ {
+     if (!m_bandManager) return -1;
+ 
++    m_bandProductivity.prune(
++        QDateTime::currentDateTimeUtc(), m_propagationConfig.windowSeconds);
++
+     int bestBand = -1;
+     int bestOpportunity = -1;
+     int bestActivity = -1;
+@@ -3040,6 +3356,9 @@ int AutoDxerCore::bestBandForSwitch()
+             const ScoredTarget scored = m_targetScorer->scoreTarget(spotToCachedDecode(spot));
+             opportunity = qMax(opportunity, scored.priority);
+         }
++        const int productivity = m_bandProductivity.score(
++            band, QDateTime::currentDateTimeUtc(), m_propagationConfig);
++        if (productivity > 0) opportunity = qMax(opportunity, productivity);
+ 
+         if (opportunity > bestOpportunity
+                 || (opportunity == bestOpportunity && activity > bestActivity)) {
+@@ -3085,12 +3404,15 @@ void AutoDxerCore::abandonCurrentTarget(const QString &reason)
+ {
+     const qint64 consumedMs = currentTargetAttemptElapsedMs();
+     if (m_currentTarget.isValid()) {
++        writeOutcomeTelemetry("not-completed", reason);
+         emit debugMessage(QString("TARGET-STOP: %1 (%2)")
+                          .arg(m_currentTarget.callsign).arg(reason));
+-        if (!m_currentTarget.isCallingMe && m_selectionConfig.sameTargetRetrySeconds > 0) {
++        const int retrySeconds = qMax(m_selectionConfig.sameTargetRetrySeconds,
++            m_pileupConfig.enabled ? m_pileupConfig.revisitDelaySeconds : 0);
++        if (!m_currentTarget.isCallingMe && retrySeconds > 0) {
+             m_lastStoppedCall = m_currentTarget.callsign;
+             m_lastRetryAt = QDateTime::currentDateTimeUtc().addSecs(
+-                m_selectionConfig.sameTargetRetrySeconds);
++                retrySeconds);
+             m_targetRetryAfter.insert(
+                 extractBaseCallsign(m_currentTarget.callsign).toUpper(), m_lastRetryAt);
+         }
+@@ -3100,7 +3422,7 @@ void AutoDxerCore::abandonCurrentTarget(const QString &reason)
+         fields["attempt"] = m_activeAttempt;
+         fields["consumed_ms"] = static_cast<double>(consumedMs);
+         fields["budget_seconds"] = m_normalCallSeconds;
+-        fields["retry_seconds"] = m_selectionConfig.sameTargetRetrySeconds;
++        fields["retry_seconds"] = retrySeconds;
+         auditEvent("target-stop", fields);
+     }
+     emit requestDisableAuto();
+@@ -3565,6 +3887,10 @@ void AutoDxerCore::onMSHVQsoLogged(QStringList qsoData)
+     if (m_currentTarget.isValid() &&
+         callsignsMatch(callsign, m_currentTarget.callsign)) {
+ 
++        writeOutcomeTelemetry("completed", "QSO logged");
++        m_bandProductivity.observeSuccessfulQso(bandIndex, QDateTime::currentDateTimeUtc());
++        m_callAttemptCounts.remove(extractBaseCallsign(callsign).toUpper());
++        m_callAttemptUpdated.remove(extractBaseCallsign(callsign).toUpper());
+         emit qsoCompleted(callsign, entity, bandIndex);
+ 
+         // Clear pending cross-band and non-standard frequency targets
+@@ -3757,6 +4083,7 @@ void AutoDxerCore::checkCrossBandAlerts()
+         int band;
+         int priority;
+         int score;
++        int huntingRank;
+         bool dxpedition;
+         int standardDial;
+         int spotDialFreq;
+@@ -3907,6 +4234,7 @@ void AutoDxerCore::checkCrossBandAlerts()
+             candidate.spot = spot;
+             candidate.entity = entity;
+             candidate.band = band;
++            candidate.huntingRank = isNewDxcc ? 3 : isNewBandSlot ? 2 : 1;
+             candidate.priority = isNewDxcc ? 3
+                 : (isUsStateNeeded || isUnconfirmedContinent
+                    || isUnconfirmedCqZone || isUnconfirmedItuZone) ? 2 : 1;
+@@ -3945,6 +4273,7 @@ void AutoDxerCore::checkCrossBandAlerts()
+ 
+     std::sort(candidates.begin(), candidates.end(), [](const AlertCandidate &a,
+                                                         const AlertCandidate &b) {
++        if (a.huntingRank != b.huntingRank) return a.huntingRank > b.huntingRank;
+         if (a.score != b.score) return a.score > b.score;
+         if (a.spot.spotterCount != b.spot.spotterCount)
+             return a.spot.spotterCount > b.spot.spotterCount;
+@@ -3983,7 +4312,9 @@ void AutoDxerCore::checkCrossBandAlerts()
+             < m_bandSwitchCooldownSeconds) return;
+ 
+     const int winningScore = candidates.first().score;
+-    while (!candidates.isEmpty() && candidates.last().score < winningScore)
++    const int winningRank = candidates.first().huntingRank;
++    while (!candidates.isEmpty() && (candidates.last().huntingRank != winningRank
++            || candidates.last().score != winningScore))
+         candidates.removeLast();
+ 
+     QList<int> eligibleBands;
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.h b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+index ee12413..7ea5787 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+@@ -21,6 +21,7 @@
+ #include <QElapsedTimer>
+ #include "decodecache.h"
+ #include "autodxselectionpolicy.h"
++#include "awardhuntingpolicy.h"
+ #include "dxcctracker.h"
+ #include "targetscorer.h"
+ #include "spotaggregator.h"
+@@ -45,10 +46,12 @@ struct DxTarget
+     int listenCycles;
+     int callCycles;
+     bool isCallingMe;
++    QList<AwardReferenceMatch> awardReferences;
+ 
+     DxTarget() : bandIndex(-1), audioFrequency(0), dialFrequencyHz(0), priority(0), listenCycles(0), callCycles(0), isCallingMe(false) {}
+     void clear() { callsign.clear(); grid.clear(); dxccEntity.clear(); bandIndex = -1;
+-                   audioFrequency = 0; dialFrequencyHz = 0; priority = 0; listenCycles = 0; callCycles = 0; isCallingMe = false; }
++                   audioFrequency = 0; dialFrequencyHz = 0; priority = 0; listenCycles = 0; callCycles = 0; isCallingMe = false;
++                   awardReferences.clear(); }
+     bool isValid() const { return !callsign.isEmpty() && bandIndex >= 3; }
+ };
+ 
+@@ -246,7 +249,10 @@ private:
+     void clearPendingCrossBandVerification();
+     bool returnFromPendingCrossBandVerification(const QString &reason);
+     void auditEvent(const QString &event, const QJsonObject &fields = QJsonObject());
++    void writeOutcomeTelemetry(const QString &outcome, const QString &reason);
++    void checkRuntimeConfigUpdates();
+     void noteSkipped(const QString &reason);
++    void pruneAttemptHistory(const QDateTime &now);
+     void reloadDxpeditionWatch(bool force = false);
+     bool isCataloguedDxpedition(const QString &callsign, int bandIndex) const;
+     bool isDxpeditionTarget(const QString &callsign, int bandIndex) const;
+@@ -345,6 +351,28 @@ private:
+     int m_clusterChaseConsensusSpotters;
+     int m_clusterChaseQueueLimit;
+     QJsonArray m_clusterChaseQueue;
++    AwardHuntingConfig m_awardHuntingConfig;
++    PropagationAdaptationConfig m_propagationConfig;
++    PileupStrategyConfig m_pileupConfig;
++    QHash<QString, int> m_callAttemptCounts;
++    QHash<QString, QDateTime> m_callAttemptUpdated;
++    BandProductivityTracker m_bandProductivity;
++    bool m_directedCallersEnabled;
++    int m_directedCallerInboxSize;
++    int m_directedCallerMaxAgeSeconds;
++    QStringList m_directedCallerInbox;
++    QHash<QString, QDateTime> m_directedCallerInboxAt;
++    QString m_campaignProfile;
++    bool m_outcomeLearningEnabled;
++    QString m_outcomeTelemetryPath;
++    int m_awardActivationEntries;
++    bool m_awardActivationIndexValid;
++    QTimer *m_runtimeConfigWatchTimer;
++    QDateTime m_runtimeConfigMtime;
++    QDateTime m_awardActivationMtime;
++    bool m_runtimeConfigReloadPending;
++    bool m_runtimeConfigReloading;
++    QDateTime m_runtimeConfigLastAppliedUtc;
+     
+     // Components
+     DecodeCache *m_decodeCache;
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+index 8d4a9fd..550689a 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+@@ -6,6 +6,7 @@
+ #include <QSet>
+ #include <QRegExp>
+ #include "autodxselectionpolicy.h"
++#include "awardhuntingpolicy.h"
+ 
+ namespace AutoDxTimingPolicy {
+ inline bool normalAttemptExpired(qint64 elapsedMilliseconds, int limitSeconds)
+@@ -120,6 +121,15 @@ struct AutoDxRuntimeConfig
+     int usStatesMissingConfirmationWeight;
+     int usStatesUnderQuotaWeight;
+     QSet<int> usStatesBands;
++    AwardHuntingConfig awardHunting;
++    PropagationAdaptationConfig propagationAdaptation;
++    PileupStrategyConfig pileupStrategy;
++    bool directedCallersEnabled;
++    int directedCallerInboxSize;
++    int directedCallerMaxAgeSeconds;
++    QString campaignProfile;
++    bool outcomeLearningEnabled;
++    QString outcomeTelemetryFile;
+ 
+     bool modeAllowed(const QString &mode) const
+     {
+@@ -174,6 +184,105 @@ struct AutoDxRuntimeConfig
+         c.callingMeWeight = qMax(0, settings.value("TargetPriority/CallingMe", 400).toInt());
+         c.cqWeight = qMax(0, settings.value("TargetPriority/Cq", 200).toInt());
+         c.snrWeight = qMax(0, settings.value("TargetPriority/SnrPerDb", 10).toInt());
++        c.awardHunting.enabled = settings.value("AwardHunting/Enabled", true).toBool();
++        c.awardHunting.stackScores = settings.value("AwardHunting/StackScores", true).toBool();
++        c.awardHunting.newDxccWeight = qBound(0, settings.value(
++            "AwardHunting/NewDxccWeight", c.newDxccWeight).toInt(), 100000);
++        c.awardHunting.newDxccBandWeight = qBound(0, settings.value(
++            "AwardHunting/NewDxccBandWeight", c.newBandSlotWeight).toInt(), 100000);
++        c.awardHunting.unconfirmedDxccWeight = qBound(0, settings.value(
++            "AwardHunting/UnconfirmedDxccWeight", 8500).toInt(), 100000);
++        c.awardHunting.newContinentWeight = qBound(0, settings.value(
++            "AwardHunting/NewContinentWeight", 2500).toInt(), 100000);
++        c.awardHunting.newCqZoneWeight = qBound(0, settings.value(
++            "AwardHunting/NewCqZoneWeight", 2200).toInt(), 100000);
++        c.awardHunting.newItuZoneWeight = qBound(0, settings.value(
++            "AwardHunting/NewItuZoneWeight", 2000).toInt(), 100000);
++        c.awardHunting.newGridWeight = qBound(0, settings.value(
++            "AwardHunting/NewGridWeight", c.newGridWeight).toInt(), 100000);
++        c.awardHunting.referenceEnabled = settings.value(
++            "ReferenceHunting/Enabled", true).toBool();
++        c.awardHunting.potaEnabled = settings.value(
++            "ReferenceHunting/PotaEnabled", true).toBool();
++        c.awardHunting.sotaEnabled = settings.value(
++            "ReferenceHunting/SotaEnabled", true).toBool();
++        c.awardHunting.wwffEnabled = settings.value(
++            "ReferenceHunting/WwffEnabled", true).toBool();
++        c.awardHunting.potaWeight = qBound(0, settings.value(
++            "ReferenceHunting/PotaWeight", 1800).toInt(), 100000);
++        c.awardHunting.sotaWeight = qBound(0, settings.value(
++            "ReferenceHunting/SotaWeight", 1800).toInt(), 100000);
++        c.awardHunting.wwffWeight = qBound(0, settings.value(
++            "ReferenceHunting/WwffWeight", 1400).toInt(), 100000);
++        c.awardHunting.newReferenceWeight = qBound(0, settings.value(
++            "ReferenceHunting/NewReferenceWeight", 2500).toInt(), 100000);
++        c.awardHunting.newReferenceBandWeight = qBound(0, settings.value(
++            "ReferenceHunting/NewReferenceBandWeight", 1000).toInt(), 100000);
++        c.awardHunting.newReferenceBandModeWeight = qBound(0, settings.value(
++            "ReferenceHunting/NewReferenceBandModeWeight", 500).toInt(), 100000);
++        c.awardHunting.maxActivationAgeSeconds = qBound(60, settings.value(
++            "ReferenceHunting/MaxActivationAgeSeconds", 900).toInt(), 86400);
++        c.awardHunting.requireLocalDecode = settings.value(
++            "ReferenceHunting/RequireLocalDecode", true).toBool();
++        c.propagationAdaptation.enabled = settings.value(
++            "PropagationAdaptation/Enabled", true).toBool();
++        c.propagationAdaptation.windowSeconds = qBound(60, settings.value(
++            "PropagationAdaptation/WindowSeconds", 900).toInt(), 86400);
++        c.propagationAdaptation.uniqueDecodeWeight = qBound(0, settings.value(
++            "PropagationAdaptation/UniqueDecodeWeight", 20).toInt(), 100000);
++        c.propagationAdaptation.distantDecodeWeight = qBound(0, settings.value(
++            "PropagationAdaptation/DistantDecodeWeight", 40).toInt(), 100000);
++        c.propagationAdaptation.successfulQsoWeight = qBound(0, settings.value(
++            "PropagationAdaptation/SuccessfulQsoWeight", 250).toInt(), 100000);
++        c.propagationAdaptation.maxBandBoost = qBound(0, settings.value(
++            "PropagationAdaptation/MaxBandBoost", 1500).toInt(), 100000);
++        c.pileupStrategy.enabled = settings.value("PileupStrategy/Enabled", true).toBool();
++        c.pileupStrategy.rotateAfterAttempts = qBound(1, settings.value(
++            "PileupStrategy/RotateAfterAttempts", 2).toInt(), 20);
++        c.pileupStrategy.revisitDelaySeconds = qBound(0, settings.value(
++            "PileupStrategy/RevisitDelaySeconds", 120).toInt(), 86400);
++        c.pileupStrategy.audioOffsetsHz.clear();
++        const QStringList audioOffsets = settings.value(
++            "PileupStrategy/AudioOffsetsHz", "0,-120,120,-240,240")
++            .toString().split(',', Qt::SkipEmptyParts);
++        QSet<int> uniqueAudioOffsets;
++        for (const QString &offset : audioOffsets) {
++            if (c.pileupStrategy.audioOffsetsHz.size() >= 16) break;
++            bool ok = false;
++            const int hz = offset.trimmed().toInt(&ok);
++            const int bounded = qBound(-2400, hz, 2400);
++            if (ok && !uniqueAudioOffsets.contains(bounded)) {
++                uniqueAudioOffsets.insert(bounded);
++                c.pileupStrategy.audioOffsetsHz << bounded;
++            }
++        }
++        if (c.pileupStrategy.audioOffsetsHz.isEmpty()) c.pileupStrategy.audioOffsetsHz << 0;
++        c.directedCallersEnabled = settings.value("DirectedCallers/Enabled", true).toBool();
++        c.directedCallerInboxSize = qBound(1, settings.value(
++            "DirectedCallers/InboxSize", 8).toInt(), 100);
++        c.directedCallerMaxAgeSeconds = qBound(15, settings.value(
++            "DirectedCallers/MaxAgeSeconds", 90).toInt(), 3600);
++        c.campaignProfile = settings.value("Campaign/Profile", "balanced")
++            .toString().trimmed().toLower();
++        c.awardHunting.dxccWeightPercent = qBound(0, settings.value(
++            "Campaign/DxccWeightPercent", 100).toInt(), 500);
++        c.awardHunting.stateWeightPercent = qBound(0, settings.value(
++            "Campaign/StateWeightPercent", 100).toInt(), 500);
++        c.awardHunting.zoneWeightPercent = qBound(0, settings.value(
++            "Campaign/ZoneWeightPercent", 100).toInt(), 500);
++        c.awardHunting.gridWeightPercent = qBound(0, settings.value(
++            "Campaign/GridWeightPercent", 100).toInt(), 500);
++        c.awardHunting.referenceWeightPercent = qBound(0, settings.value(
++            "Campaign/ReferenceWeightPercent", 100).toInt(), 500);
++        c.awardHunting.applyCampaignProfile(c.campaignProfile);
++        c.outcomeLearningEnabled = settings.value("OutcomeLearning/Enabled", true).toBool();
++        c.outcomeTelemetryFile = settings.value(
++            "OutcomeLearning/TelemetryFile", "logs/autodx-outcomes.jsonl")
++            .toString().trimmed();
++        if (c.outcomeTelemetryFile.isEmpty() || c.outcomeTelemetryFile.contains("..")
++                || c.outcomeTelemetryFile.startsWith('/')
++                || c.outcomeTelemetryFile.contains(':'))
++            c.outcomeTelemetryFile = "logs/autodx-outcomes.jsonl";
+         c.gridChaseEnabled = settings.value("GridChase/Enabled", true).toBool();
+         c.gridUsOnly = settings.value("GridChase/USOnly", false).toBool();
+         c.minSnr = qBound(-30, settings.value("SpotSources/MinSNR", -20).toInt(), 0);
+diff --git a/MSHV_2762/src/HvAutoDxer/awardadifpolicy.h b/MSHV_2762/src/HvAutoDxer/awardadifpolicy.h
+new file mode 100644
+index 0000000..0330227
+--- /dev/null
++++ b/MSHV_2762/src/HvAutoDxer/awardadifpolicy.h
+@@ -0,0 +1,127 @@
++#ifndef AWARDADIFPOLICY_H
++#define AWARDADIFPOLICY_H
++
++#include <QList>
++#include <QSet>
++#include <QString>
++#include <QStringList>
++#include <algorithm>
++
++struct AwardReferenceMatch
++{
++    QString program;
++    QString reference;
++    QString slotKey;
++};
++
++class AwardAdifPolicy
++{
++public:
++    static QString baseCallsign(const QString &call)
++    {
++        const QString normalized = call.trimmed().toUpper();
++        const QStringList parts = normalized.split('/', Qt::SkipEmptyParts);
++        QString best;
++        for (const QString &part : parts) {
++            bool hasLetter = false, hasDigit = false;
++            for (const QChar &ch : part) {
++                hasLetter = hasLetter || ch.isLetter();
++                hasDigit = hasDigit || ch.isDigit();
++            }
++            if (hasLetter && hasDigit && part.size() > best.size()) best = part;
++        }
++        return best.isEmpty() ? normalized : best;
++    }
++
++    static QList<AwardReferenceMatch> normalized(
++        const QList<AwardReferenceMatch> &matches)
++    {
++        QList<AwardReferenceMatch> result;
++        QSet<QString> seen;
++        for (AwardReferenceMatch match : matches) {
++            match.program = match.program.trimmed().toUpper();
++            match.reference = cleanValue(match.reference).toUpper();
++            match.slotKey = match.slotKey.trimmed().toUpper();
++            if ((match.program != "POTA" && match.program != "SOTA"
++                    && match.program != "WWFF") || match.reference.isEmpty()) continue;
++            const QString key = match.program + "\t" + match.reference;
++            if (seen.contains(key)) continue;
++            seen.insert(key);
++            result << match;
++        }
++        std::sort(result.begin(), result.end(), [](const AwardReferenceMatch &left,
++                                                   const AwardReferenceMatch &right) {
++            if (left.program != right.program) return left.program < right.program;
++            if (left.reference != right.reference) return left.reference < right.reference;
++            return left.slotKey < right.slotKey;
++        });
++        return result;
++    }
++
++    static QString encodeProgramReferences(
++        const QList<AwardReferenceMatch> &matches, const QString &program)
++    {
++        QStringList values;
++        const QString wanted = program.trimmed().toUpper();
++        for (const AwardReferenceMatch &match : normalized(matches))
++            if (match.program == wanted) values << match.reference;
++        return values.join('|');
++    }
++
++    static QList<AwardReferenceMatch> fromProgramColumns(
++        const QString &pota, const QString &sota, const QString &wwff)
++    {
++        QList<AwardReferenceMatch> matches;
++        appendColumn(matches, "POTA", pota);
++        appendColumn(matches, "SOTA", sota);
++        appendColumn(matches, "WWFF", wwff);
++        return normalized(matches);
++    }
++
++    static QString adifFields(const QList<AwardReferenceMatch> &matches)
++    {
++        const QList<AwardReferenceMatch> refs = normalized(matches);
++        QString out;
++        for (const AwardReferenceMatch &match : refs) {
++            const QString field = match.program + "_REF";
++            out += '<' + field + ':' + QString::number(match.reference.size())
++                + '>' + match.reference;
++        }
++        // SIG/SIG_INFO is unambiguous only for a single matched reference.
++        // Multi-program QSOs retain every reference in its standard named
++        // field instead of flattening unrelated programs into one value.
++        if (refs.size() == 1) {
++            out += "<SIG:" + QString::number(refs.first().program.size())
++                + ">" + refs.first().program;
++            out += "<SIG_INFO:" + QString::number(refs.first().reference.size())
++                + ">" + refs.first().reference;
++        }
++        return out;
++    }
++
++private:
++    static QString cleanValue(QString value)
++    {
++        value.remove('<');
++        value.remove('>');
++        value.remove('\r');
++        value.remove('\n');
++        value.remove(';');
++        value.remove('|');
++        return value.trimmed();
++    }
++
++    static void appendColumn(QList<AwardReferenceMatch> &matches,
++                             const QString &program, const QString &column)
++    {
++        const QStringList refs = column.split('|', Qt::SkipEmptyParts);
++        for (const QString &reference : refs) {
++            AwardReferenceMatch match;
++            match.program = program;
++            match.reference = reference;
++            matches << match;
++        }
++    }
++};
++
++#endif // AWARDADIFPOLICY_H
+diff --git a/MSHV_2762/src/HvAutoDxer/awardhuntingpolicy.h b/MSHV_2762/src/HvAutoDxer/awardhuntingpolicy.h
+new file mode 100644
+index 0000000..e43f05b
+--- /dev/null
++++ b/MSHV_2762/src/HvAutoDxer/awardhuntingpolicy.h
+@@ -0,0 +1,456 @@
++#ifndef AWARDHUNTINGPOLICY_H
++#define AWARDHUNTINGPOLICY_H
++
++#include <QDateTime>
++#include <QFile>
++#include <QHash>
++#include <QJsonArray>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QList>
++#include <QSet>
++#include <QString>
++#include <QStringList>
++#include <algorithm>
++#include <climits>
++#include "awardadifpolicy.h"
++
++// Side-effect-free native policy helpers.  Every award dimension is additive;
++// disabling one program or assigning it a zero weight never disables another.
++struct AwardHuntingConfig
++{
++    bool enabled;
++    bool stackScores;
++    int newDxccWeight;
++    int newDxccBandWeight;
++    int unconfirmedDxccWeight;
++    int newContinentWeight;
++    int newCqZoneWeight;
++    int newItuZoneWeight;
++    int newGridWeight;
++
++    bool referenceEnabled;
++    bool potaEnabled;
++    bool sotaEnabled;
++    bool wwffEnabled;
++    int potaWeight;
++    int sotaWeight;
++    int wwffWeight;
++    int newReferenceWeight;
++    int newReferenceBandWeight;
++    int newReferenceBandModeWeight;
++    int maxActivationAgeSeconds;
++    bool requireLocalDecode;
++
++    int dxccWeightPercent;
++    int stateWeightPercent;
++    int zoneWeightPercent;
++    int gridWeightPercent;
++    int referenceWeightPercent;
++
++    AwardHuntingConfig()
++        : enabled(true), stackScores(true), newDxccWeight(10000),
++          newDxccBandWeight(1000), unconfirmedDxccWeight(8500),
++          newContinentWeight(2500), newCqZoneWeight(2200),
++          newItuZoneWeight(2000), newGridWeight(500),
++          referenceEnabled(true), potaEnabled(true), sotaEnabled(true),
++          wwffEnabled(true), potaWeight(1800), sotaWeight(1800),
++          wwffWeight(1400), newReferenceWeight(2500),
++          newReferenceBandWeight(1000), newReferenceBandModeWeight(500),
++          maxActivationAgeSeconds(900), requireLocalDecode(true),
++          dxccWeightPercent(100), stateWeightPercent(100),
++          zoneWeightPercent(100), gridWeightPercent(100),
++          referenceWeightPercent(100) {}
++
++    static int scaled(int value, int percent)
++    {
++        return qMax(0, value) * qBound(0, percent, 500) / 100;
++    }
++
++    bool programEnabled(const QString &program) const
++    {
++        const QString p = program.trimmed().toUpper();
++        return referenceEnabled && ((p == "POTA" && potaEnabled)
++            || (p == "SOTA" && sotaEnabled) || (p == "WWFF" && wwffEnabled));
++    }
++
++    int programWeight(const QString &program) const
++    {
++        const QString p = program.trimmed().toUpper();
++        if (p == "POTA") return potaWeight;
++        if (p == "SOTA") return sotaWeight;
++        if (p == "WWFF") return wwffWeight;
++        return 0;
++    }
++
++    void applyCampaignProfile(const QString &profile)
++    {
++        const QString p = profile.trimmed().toLower();
++        if (p == "custom") return;
++        dxccWeightPercent = 100;
++        stateWeightPercent = 100;
++        zoneWeightPercent = 100;
++        gridWeightPercent = 100;
++        referenceWeightPercent = 100;
++        if (p == "dxcc-challenge") {
++            dxccWeightPercent = 175; stateWeightPercent = 75;
++            gridWeightPercent = 75; referenceWeightPercent = 75;
++        } else if (p == "five-band-dxcc") {
++            dxccWeightPercent = 200; stateWeightPercent = 50;
++            zoneWeightPercent = 75; gridWeightPercent = 50;
++            referenceWeightPercent = 50;
++        } else if (p == "worked-all-states") {
++            dxccWeightPercent = 75; stateWeightPercent = 200;
++            zoneWeightPercent = 75; gridWeightPercent = 75;
++            referenceWeightPercent = 50;
++        } else if (p == "waz" || p == "itu-zones") {
++            dxccWeightPercent = 75; stateWeightPercent = 50;
++            zoneWeightPercent = 200; gridWeightPercent = 50;
++            referenceWeightPercent = 50;
++        } else if (p == "grids") {
++            dxccWeightPercent = 75; stateWeightPercent = 50;
++            zoneWeightPercent = 50; gridWeightPercent = 200;
++            referenceWeightPercent = 50;
++        } else if (p == "references") {
++            dxccWeightPercent = 75; stateWeightPercent = 50;
++            zoneWeightPercent = 50; gridWeightPercent = 50;
++            referenceWeightPercent = 200;
++        }
++    }
++};
++
++struct AwardActivation
++{
++    QString callsign;
++    QString program;
++    QString reference;
++    QString band;
++    QString mode;
++    int frequencyHz;
++    QDateTime spottedAtUtc;
++    QDateTime expiresAtUtc;
++    QString sourceId;
++    double confidence;
++    QString slotKey;
++    QString historyStatus;
++    bool newReference;
++    bool newReferenceOnBand;
++    bool newReferenceOnBandMode;
++
++    AwardActivation()
++        : frequencyHz(0), confidence(0.0), newReference(false),
++          newReferenceOnBand(false), newReferenceOnBandMode(false) {}
++};
++
++struct AwardReferenceScore
++{
++    bool eligible;
++    int score;
++    QString program;
++    QString reference;
++    QString slotKey;
++    QStringList reasons;
++    QList<AwardReferenceMatch> matches;
++
++    AwardReferenceScore() : eligible(false), score(0) {}
++};
++
++class AwardActivationIndex
++{
++public:
++    AwardActivationIndex() : m_schemaValid(false), m_historyAuthoritative(false), m_entryCount(0) {}
++
++    bool load(const QString &path)
++    {
++        m_byCall.clear();
++        m_schemaValid = false;
++        m_historyAuthoritative = false;
++        m_entryCount = 0;
++        QFile file(path);
++        if (!file.open(QIODevice::ReadOnly)) return false;
++        QJsonParseError error;
++        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &error);
++        if (error.error != QJsonParseError::NoError || !doc.isObject()) return false;
++        const QJsonObject root = doc.object();
++        if (root.value("schema").toInt() != 1 || !root.value("activations").isArray())
++            return false;
++        m_historyAuthoritative = root.value("history_authoritative").toBool(false);
++        const QJsonArray rows = root.value("activations").toArray();
++        for (const QJsonValue &value : rows) {
++            if (!value.isObject()) continue;
++            const QJsonObject row = value.toObject();
++            AwardActivation a;
++            a.callsign = baseCallsign(row.value("callsign").toString());
++            a.program = row.value("program").toString().trimmed().toUpper();
++            a.reference = row.value("reference").toString().trimmed().toUpper();
++            a.band = row.value("band").toString().trimmed().toLower();
++            a.mode = row.value("mode").toString().trimmed().toUpper();
++            a.frequencyHz = row.value("frequency_hz").toInt();
++            a.spottedAtUtc = parseUtc(row.value("spotted_at_utc").toString());
++            a.expiresAtUtc = parseUtc(row.value("expires_at_utc").toString());
++            a.sourceId = row.value("source_id").toString().trimmed();
++            a.confidence = row.value("confidence").toDouble();
++            a.slotKey = row.value("slot_key").toString().trimmed().toUpper();
++            a.historyStatus = row.value("history_status").toString().trimmed().toLower();
++            const QJsonObject gaps = row.value("gaps").toObject();
++            a.newReference = gaps.value("new_reference").toBool();
++            a.newReferenceOnBand = gaps.value("new_reference_on_band").toBool();
++            a.newReferenceOnBandMode = gaps.value("new_reference_on_band_mode").toBool();
++            if (a.callsign.isEmpty() || a.reference.isEmpty()
++                    || (a.program != "POTA" && a.program != "SOTA" && a.program != "WWFF"))
++                continue;
++            if (a.slotKey.isEmpty())
++                a.slotKey = a.program + ":" + a.reference + "@" + a.band + "@" + a.mode;
++            m_byCall.insert(a.callsign, a);
++            ++m_entryCount;
++        }
++        m_schemaValid = true;
++        return true;
++    }
++
++    AwardReferenceScore score(const QString &callsign, const QString &band,
++                              const QString &mode, bool localDecode,
++                              const QDateTime &nowUtc,
++                              const AwardHuntingConfig &config) const
++    {
++        AwardReferenceScore result;
++        if (!config.enabled || !config.referenceEnabled || !m_historyAuthoritative) return result;
++        QList<AwardActivation> rows = m_byCall.values(baseCallsign(callsign));
++        std::sort(rows.begin(), rows.end(), [](const AwardActivation &left,
++                                               const AwardActivation &right) {
++            if (left.program != right.program) return left.program < right.program;
++            if (left.reference != right.reference) return left.reference < right.reference;
++            if (left.slotKey != right.slotKey) return left.slotKey < right.slotKey;
++            if (left.sourceId != right.sourceId) return left.sourceId < right.sourceId;
++            if (left.spottedAtUtc != right.spottedAtUtc)
++                return left.spottedAtUtc < right.spottedAtUtc;
++            return left.confidence > right.confidence;
++        });
++        QSet<QString> seenSlots;
++        qint64 stackedScore = 0;
++        QStringList programs, references, slotKeys;
++        for (const AwardActivation &a : rows) {
++            if (!config.programEnabled(a.program)) continue;
++            if (a.historyStatus != "authoritative") continue;
++            if (!a.newReference && !a.newReferenceOnBand && !a.newReferenceOnBandMode) continue;
++            if (config.requireLocalDecode && !localDecode) continue;
++            if (!a.band.isEmpty() && a.band != band.trimmed().toLower()) continue;
++            if (!a.mode.isEmpty() && a.mode != mode.trimmed().toUpper()) continue;
++            if (a.spottedAtUtc.isValid()
++                    && a.spottedAtUtc.secsTo(nowUtc) > config.maxActivationAgeSeconds) continue;
++            if (a.expiresAtUtc.isValid() && a.expiresAtUtc < nowUtc) continue;
++            if (seenSlots.contains(a.slotKey)) continue;
++            seenSlots.insert(a.slotKey);
++            int score = config.programWeight(a.program);
++            QStringList reasons;
++            reasons << a.program + " " + a.reference;
++            if (a.newReference) {
++                score += config.newReferenceWeight;
++                reasons << "new reference";
++            }
++            if (a.newReferenceOnBand) {
++                score += config.newReferenceBandWeight;
++                reasons << "new reference band";
++            }
++            if (a.newReferenceOnBandMode) {
++                score += config.newReferenceBandModeWeight;
++                reasons << "new reference band/mode";
++            }
++            score = AwardHuntingConfig::scaled(score, config.referenceWeightPercent);
++            if (score <= 0) continue;
++            if (!config.stackScores && score <= result.score) continue;
++            if (config.stackScores) {
++                stackedScore = qMin<qint64>(INT_MAX, stackedScore + score);
++                result.score = static_cast<int>(stackedScore);
++                if (!programs.contains(a.program)) programs << a.program;
++                references << a.reference;
++                slotKeys << a.slotKey;
++                result.reasons.append(reasons);
++                AwardReferenceMatch match;
++                match.program = a.program;
++                match.reference = a.reference;
++                match.slotKey = a.slotKey;
++                result.matches << match;
++            } else {
++                result.score = score;
++                programs = QStringList() << a.program;
++                references = QStringList() << a.reference;
++                slotKeys = QStringList() << a.slotKey;
++                result.reasons = reasons;
++                result.matches.clear();
++                AwardReferenceMatch match;
++                match.program = a.program;
++                match.reference = a.reference;
++                match.slotKey = a.slotKey;
++                result.matches << match;
++            }
++            result.eligible = true;
++        }
++        result.program = programs.join("+");
++        result.reference = references.join(",");
++        result.slotKey = slotKeys.join(",");
++        return result;
++    }
++
++    bool schemaValid() const { return m_schemaValid; }
++    bool historyAuthoritative() const { return m_historyAuthoritative; }
++    int entryCount() const { return m_entryCount; }
++
++    static QString baseCallsign(const QString &call)
++    {
++        const QString normalized = call.trimmed().toUpper();
++        const QStringList parts = normalized.split('/', Qt::SkipEmptyParts);
++        QString best;
++        for (const QString &part : parts) {
++            bool hasLetter = false, hasDigit = false;
++            for (const QChar &ch : part) {
++                hasLetter = hasLetter || ch.isLetter();
++                hasDigit = hasDigit || ch.isDigit();
++            }
++            if (hasLetter && hasDigit && part.size() > best.size()) best = part;
++        }
++        return best.isEmpty() ? normalized : best;
++    }
++
++private:
++    static QDateTime parseUtc(const QString &value)
++    {
++        QDateTime parsed = QDateTime::fromString(value, Qt::ISODateWithMs);
++        if (!parsed.isValid()) parsed = QDateTime::fromString(value, Qt::ISODate);
++        return parsed.isValid() ? parsed.toUTC() : QDateTime();
++    }
++
++    QMultiHash<QString, AwardActivation> m_byCall;
++    bool m_schemaValid;
++    bool m_historyAuthoritative;
++    int m_entryCount;
++};
++
++struct PropagationAdaptationConfig
++{
++    bool enabled;
++    int windowSeconds;
++    int uniqueDecodeWeight;
++    int distantDecodeWeight;
++    int successfulQsoWeight;
++    int maxBandBoost;
++    PropagationAdaptationConfig() : enabled(true), windowSeconds(900),
++        uniqueDecodeWeight(20), distantDecodeWeight(40),
++        successfulQsoWeight(250), maxBandBoost(1500) {}
++};
++
++class BandProductivityTracker
++{
++public:
++    void observeDecode(int band, const QString &call, bool distant, const QDateTime &utc)
++    {
++        const QString key = QString::number(band) + "@" + AwardActivationIndex::baseCallsign(call);
++        m_lastDecode.insert(key, utc);
++        if (distant) m_lastDistantDecode.insert(key, utc);
++    }
++    void observeSuccessfulQso(int band, const QDateTime &utc) { m_lastSuccess.insert(band, utc); }
++    void prune(const QDateTime &now, int windowSeconds)
++    {
++        const int boundedWindow = qBound(60, windowSeconds, 86400);
++        for (auto it = m_lastDecode.begin(); it != m_lastDecode.end(); )
++            if (!it.value().isValid() || it.value().secsTo(now) > boundedWindow)
++                it = m_lastDecode.erase(it); else ++it;
++        for (auto it = m_lastDistantDecode.begin(); it != m_lastDistantDecode.end(); )
++            if (!it.value().isValid() || it.value().secsTo(now) > boundedWindow)
++                it = m_lastDistantDecode.erase(it); else ++it;
++        for (auto it = m_lastSuccess.begin(); it != m_lastSuccess.end(); )
++            if (!it.value().isValid() || it.value().secsTo(now) > boundedWindow)
++                it = m_lastSuccess.erase(it); else ++it;
++    }
++    int score(int band, const QDateTime &now, const PropagationAdaptationConfig &c) const
++    {
++        if (!c.enabled) return 0;
++        int unique = 0, distant = 0;
++        const QString prefix = QString::number(band) + "@";
++        for (auto it = m_lastDecode.constBegin(); it != m_lastDecode.constEnd(); ++it)
++            if (it.key().startsWith(prefix) && it.value().secsTo(now) <= c.windowSeconds) ++unique;
++        for (auto it = m_lastDistantDecode.constBegin(); it != m_lastDistantDecode.constEnd(); ++it)
++            if (it.key().startsWith(prefix) && it.value().secsTo(now) <= c.windowSeconds) ++distant;
++        qint64 value = static_cast<qint64>(unique) * c.uniqueDecodeWeight
++            + static_cast<qint64>(distant) * c.distantDecodeWeight;
++        if (m_lastSuccess.contains(band)
++                && m_lastSuccess.value(band).secsTo(now) <= c.windowSeconds)
++            value += c.successfulQsoWeight;
++        return static_cast<int>(qBound<qint64>(0, value, c.maxBandBoost));
++    }
++private:
++    QHash<QString, QDateTime> m_lastDecode;
++    QHash<QString, QDateTime> m_lastDistantDecode;
++    QHash<int, QDateTime> m_lastSuccess;
++};
++
++class OutcomeLearningIndex
++{
++public:
++    OutcomeLearningIndex() : m_enabled(false) {}
++
++    bool load(const QString &path, bool enabled)
++    {
++        m_scores.clear();
++        m_enabled = enabled;
++        if (!enabled) return true;
++        QFile file(path);
++        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
++        const qint64 tailBytes = 2 * 1024 * 1024;
++        if (file.size() > tailBytes) {
++            file.seek(file.size() - tailBytes);
++            file.readLine();
++        }
++        while (!file.atEnd()) {
++            const QJsonDocument doc = QJsonDocument::fromJson(file.readLine().trimmed());
++            if (!doc.isObject()) continue;
++            const QJsonObject row = doc.object();
++            if (row.value("schema").toString() != "om0rx.autodx.outcome.v1") continue;
++            const QString call = AwardActivationIndex::baseCallsign(row.value("call").toString());
++            if (call.isEmpty()) continue;
++            const bool completed = row.value("outcome").toString() == "completed";
++            record(call, completed);
++        }
++        return true;
++    }
++
++    void record(const QString &callsign, bool completed)
++    {
++        if (!m_enabled) return;
++        const QString call = AwardActivationIndex::baseCallsign(callsign);
++        if (call.isEmpty()) return;
++        if (!m_scores.contains(call) && m_scores.size() >= 5000) return;
++        m_scores.insert(call, qBound(-250, m_scores.value(call)
++            + (completed ? 75 : -25), 500));
++    }
++
++    int adjustment(const QString &callsign) const
++    {
++        return m_enabled
++            ? m_scores.value(AwardActivationIndex::baseCallsign(callsign), 0) : 0;
++    }
++    int callCount() const { return m_scores.size(); }
++
++private:
++    bool m_enabled;
++    QHash<QString, int> m_scores;
++};
++
++struct PileupStrategyConfig
++{
++    bool enabled;
++    QList<int> audioOffsetsHz;
++    int rotateAfterAttempts;
++    int revisitDelaySeconds;
++    PileupStrategyConfig() : enabled(true), rotateAfterAttempts(2), revisitDelaySeconds(120)
++    { audioOffsetsHz << 0 << -120 << 120 << -240 << 240; }
++
++    int audioFrequency(int baseHz, int attempt) const
++    {
++        if (!enabled || audioOffsetsHz.isEmpty()) return qBound(300, baseHz, 2700);
++        const int index = qMax(0, attempt) / qMax(1, rotateAfterAttempts);
++        return qBound(300, baseHz + audioOffsetsHz.at(index % audioOffsetsHz.size()), 2700);
++    }
++};
++
++#endif // AWARDHUNTINGPOLICY_H
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+index 56f5088..1a1b70b 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+@@ -460,13 +460,20 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+         reasons << "Calling me";
+     }
+     int dxccScore = 0;
++    const int configuredDxccWeight = m_awardConfig.enabled
++        ? m_awardConfig.newDxccWeight : m_weightNewDXCC;
++    const int configuredBandWeight = m_awardConfig.enabled
++        ? m_awardConfig.newDxccBandWeight : m_weightNewBandSlot;
++    const int configuredGridWeight = m_awardConfig.enabled
++        ? m_awardConfig.newGridWeight : m_weightNewGrid;
+     
+     // Use callsign-based lookup to avoid entity name abbreviation mismatch (EU Russia vs European Russia)
+-    if (m_historicalNoveltyAllowed && !ownCountry && m_priorityDXCC && facts.newDxcc) {
++    if (m_historicalNoveltyAllowed && !ownCountry && m_priorityDXCC && configuredDxccWeight > 0 && facts.newDxcc) {
+         // Apply rarity multiplier based on Club Log Most Wanted rankings
+         int rank = getMostWantedRank(entity);
+         double multiplier = getRarityMultiplier(rank);
+-        int rarityScore = static_cast<int>(m_weightNewDXCC * multiplier);
++        int rarityScore = static_cast<int>(AwardHuntingConfig::scaled(
++            configuredDxccWeight, m_awardConfig.dxccWeightPercent) * multiplier);
+         dxccScore = rarityScore;
+         target.isNewDXCC = true;
+ 
+@@ -476,7 +483,7 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+             emit debugMessage(QString("RARITY-SCORED: %1 (%2) rank=%3 mult=%4x base=%5 final=%6")
+                              .arg(decode.callsign).arg(entity)
+                              .arg(rank).arg(multiplier, 0, 'f', 1)
+-                             .arg(m_weightNewDXCC).arg(rarityScore));
++                             .arg(configuredDxccWeight).arg(rarityScore));
+         } else {
+             reasons << "New DXCC";
+         }
+@@ -486,10 +493,13 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+             && m_confirmationDataAvailable && !entity.isEmpty()
+             && !m_confirmedDxccEntities.contains(entity.trimmed().toUpper())) {
+         target.isUnconfirmedDXCC = true;
+-        dxccScore = qMax(dxccScore, m_weightNewDXCC * 9 / 10);
++        dxccScore = qMax(dxccScore, AwardHuntingConfig::scaled(
++            m_awardConfig.enabled ? m_awardConfig.unconfirmedDxccWeight
++                                  : m_weightNewDXCC * 9 / 10,
++            m_awardConfig.dxccWeightPercent));
+         reasons << "DXCC worked-not-confirmed";
+     }
+-    if (m_historicalNoveltyAllowed && m_priorityBandSlot && facts.bandDxcc) {
++    if (m_historicalNoveltyAllowed && m_priorityBandSlot && configuredBandWeight > 0 && facts.bandDxcc) {
+         target.isNewBandSlot = true;
+         reasons << "New Band Slot";
+     }
+@@ -520,6 +530,22 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     facts.lotwKnown = m_lotwDataAvailable;
+     facts.lotwMember = m_lotwMembers.contains(baseCallsign(decode.callsign));
+     const AutoDxEligibilityResult policy = m_selectionConfig.evaluate(facts);
++    static const char *bandNames[] = {
++        "", "", "", "160m", "80m", "60m", "40m", "30m", "20m",
++        "17m", "15m", "12m", "10m", "", "6m"
++    };
++    const QString awardBand = decode.bandIndex >= 0 && decode.bandIndex < 15
++        ? QString::fromLatin1(bandNames[decode.bandIndex]) : QString();
++    const AwardReferenceScore award = m_awardIndex.score(
++        decode.callsign, awardBand, "FT8", decode.isLocalDecode,
++        QDateTime::currentDateTimeUtc(), m_awardConfig);
++    if (award.eligible) {
++        target.isAwardReference = true;
++        target.awardProgram = award.program;
++        target.awardReference = award.reference;
++        target.awardSlotKey = award.slotKey;
++        target.awardReferences = award.matches;
++    }
+     const bool watchedDxpedition = isWatchedDxpedition(decode.callsign, decode.bandIndex);
+     // "Any active" still means once per call/band.  The bandCall fact comes
+     // from the Wavelog-backed tracker, preserving exact-once history policy.
+@@ -527,34 +553,48 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+         && m_dxpeditionChaseAnyActive && watchedDxpedition
+         && m_historicalNoveltyAllowed && facts.bandCall;
+     const bool usStateAdmission = target.isUsStateConfirmation || target.isUsStateQuota;
+-    bool hasNewStatus = usStateAdmission || (m_selectionConfig.filterMatrixEnabled
++    const bool awardAdmission = award.eligible;
++    bool hasNewStatus = usStateAdmission || awardAdmission || (m_selectionConfig.filterMatrixEnabled
+         ? policy.eligible : eligibility.any());
+     if (!policy.blockers.isEmpty()) {
+         const bool noveltyOnlyBlock = policy.blockers.size() == 1
+             && policy.blockers.first() == "not-selected-by-filter-matrix";
+-        if ((!activeDxpeditionAdmission && !usStateAdmission) || !noveltyOnlyBlock) {
++        if ((!activeDxpeditionAdmission && !usStateAdmission && !awardAdmission)
++                || !noveltyOnlyBlock) {
+             target.priorityReason = policy.blockers.join(", ");
+             return target;
+         }
+     }
+-    if (!m_selectionConfig.filterMatrixEnabled) {
+-        target.priority += eligibility.weightedScore(dxccScore, m_weightNewBandSlot,
+-                                                     m_weightNewGrid, m_weightCallingMe);
+-    } else if (policy.eligible) {
+-        // Matrix categories use the same headline ranks as the WSJT-Z path.
++    // Matrix eligibility chooses which candidates may be considered; award
++    // weights still determine their relative value. This keeps campaign
++    // profiles effective in both matrix and legacy modes.
++    if (m_selectionConfig.filterMatrixEnabled && policy.eligible) {
+         if (policy.targetClass == "directed-caller") target.priority = 99999;
+         else if (policy.targetClass == "new-call") target.priority = 2000;
+         else if (policy.targetClass == "band-call") target.priority = 6500;
+-        else if (policy.targetClass == "new-dxcc")
+-            target.priority = target.isUnconfirmedDXCC ? 9000 : 10000;
+-        else if (policy.targetClass == "band-dxcc") target.priority = 8000;
+-        else target.priority = 5000;
++    } else if (!m_selectionConfig.filterMatrixEnabled && target.isCallingMe) {
++        target.priority = m_weightCallingMe;
+     }
+     target.eligibilityClass = policy.targetClass;
++
++    QList<int> awardDimensionScores;
++    if (target.isNewDXCC || target.isUnconfirmedDXCC)
++        awardDimensionScores << dxccScore;
++    if (target.isNewBandSlot)
++        awardDimensionScores << AwardHuntingConfig::scaled(
++            configuredBandWeight, m_awardConfig.dxccWeightPercent);
++    if (target.isNewGrid)
++        awardDimensionScores << AwardHuntingConfig::scaled(
++            configuredGridWeight, m_awardConfig.gridWeightPercent);
++    else if (facts.bandGrid)
++        awardDimensionScores << AwardHuntingConfig::scaled(
++            configuredGridWeight / 2, m_awardConfig.gridWeightPercent);
+     if (usStateAdmission) {
+         const int stateWeight = target.isUsStateConfirmation
+             ? m_usStatesMissingConfirmationWeight : m_usStatesUnderQuotaWeight;
+-        target.priority = qMax(target.priority, stateWeight);
++        const int scaledStateWeight = AwardHuntingConfig::scaled(
++            stateWeight, m_awardConfig.stateWeightPercent);
++        awardDimensionScores << scaledStateWeight;
+         target.eligibilityClass = target.isUsStateConfirmation
+             ? "us-state-confirmation" : "us-state-quota";
+         reasons << QString("US state %1 %2/%3 worked, %4 confirmed")
+@@ -564,6 +604,39 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+             reasons << "LoTW state candidate";
+         }
+     }
++    if (m_awardConfig.enabled) {
++        struct Dimension { bool matched; int weight; const char *reason; };
++        const Dimension dimensions[] = {
++            {facts.newContinent, m_awardConfig.newContinentWeight, "new continent"},
++            {facts.newCqZone, m_awardConfig.newCqZoneWeight, "new CQ zone"},
++            {facts.newItuZone, m_awardConfig.newItuZoneWeight, "new ITU zone"},
++            {facts.bandContinent, m_awardConfig.newContinentWeight / 2, "new continent band"},
++            {facts.bandCqZone, m_awardConfig.newCqZoneWeight / 2, "new CQ zone band"},
++            {facts.bandItuZone, m_awardConfig.newItuZoneWeight / 2, "new ITU zone band"}
++        };
++        for (const Dimension &dimension : dimensions) {
++            if (!dimension.matched || dimension.weight <= 0) continue;
++            const int value = AwardHuntingConfig::scaled(
++                dimension.weight, m_awardConfig.zoneWeightPercent);
++            awardDimensionScores << value;
++            reasons << dimension.reason;
++        }
++    }
++    if (awardAdmission) {
++        awardDimensionScores << award.score;
++        if (target.eligibilityClass.isEmpty()) target.eligibilityClass = "award-reference";
++        for (const QString &reason : award.reasons) reasons << reason;
++    }
++    int awardScore = 0;
++    for (int value : awardDimensionScores) {
++        if (value <= 0) continue;
++        awardScore = m_awardConfig.stackScores
++            ? static_cast<int>(qMin<qint64>(INT_MAX,
++                static_cast<qint64>(awardScore) + value))
++            : qMax(awardScore, value);
++    }
++    target.priority = static_cast<int>(qMin<qint64>(INT_MAX,
++        static_cast<qint64>(target.priority) + awardScore));
+     // Preference/catalog bonuses enhance an admitted positive-base target;
+     // they never create eligibility or resurrect a rejected target.
+     if (activeDxpeditionAdmission) {
+@@ -587,6 +660,14 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+         if (!reasons.contains(reason)) reasons << reason;
+     }
+ 
++    const int learnedAdjustment = m_outcomeLearning.adjustment(decode.callsign);
++    if (target.priority > 0 && learnedAdjustment != 0) {
++        target.priority = qMax(1, target.priority + learnedAdjustment);
++        reasons << QString("outcome learning %1%2")
++            .arg(learnedAdjustment > 0 ? "+" : QString())
++            .arg(learnedAdjustment);
++    }
++
+     if (target.priority > 0) {
+         // SNR bonus (per dB above -15)
+         if (decode.snr > -15) {
+@@ -596,7 +677,7 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+ 
+         // Bonus for multiple decodes (station is consistently active)
+         if (decode.decodeCount > 1) {
+-            target.priority += (decode.decodeCount - 1) * TargetPriority::MultipleDecodes;
++            target.priority += qMin(decode.decodeCount - 1, 10) * TargetPriority::MultipleDecodes;
+         }
+ 
+         // Bonus for CQ stations (actively looking for contacts)
+@@ -640,8 +721,7 @@ QList<ScoredTarget> TargetScorer::scoreAllTargets(const QList<CachedDecode> &dec
+     } else {
+         std::stable_sort(targets.begin(), targets.end(), [](const ScoredTarget &a,
+                                                             const ScoredTarget &b) {
+-            if (a.priority != b.priority) return a.priority > b.priority;
+-            return a.decodedAt > b.decodedAt;
++            return a.preferredTo(b, false);
+         });
+     }
+     return targets;
+@@ -657,12 +737,7 @@ ScoredTarget TargetScorer::getBestTarget(const QList<CachedDecode> &decodes)
+     for (const CachedDecode &decode : decodes) {
+         const ScoredTarget target = scoreTarget(decode);
+         if (target.priority <= 0) continue;
+-        const bool better = !found
+-            || (newestFirst
+-                ? target.decodedAt > best.decodedAt
+-                : (target.priority > best.priority
+-                   || (target.priority == best.priority
+-                       && target.decodedAt > best.decodedAt)));
++        const bool better = !found || target.preferredTo(best, newestFirst);
+         if (better) {
+             best = target;
+             found = true;
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.h b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+index f5b41ad..a282b8a 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.h
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+@@ -13,6 +13,7 @@
+ #include <QHash>
+ #include "decodecache.h"
+ #include "autodxselectionpolicy.h"
++#include "awardhuntingpolicy.h"
+ 
+ class DxccTracker;
+ class HvCty;
+@@ -50,14 +51,36 @@ struct ScoredTarget
+     bool isUsStateConfirmation;
+     bool isUsStateQuota;
+     QString usState;
++    bool isAwardReference;
++    QString awardProgram;
++    QString awardReference;
++    QString awardSlotKey;
++    QList<AwardReferenceMatch> awardReferences;
+     bool isLocalDecode;  // true = decoded locally, false = from external spot only
+     int decodeCount;
+ 
+     ScoredTarget() : bandIndex(-1), audioFrequency(0), dialFrequencyHz(0), snr(0), priority(0),
+                      isNewDXCC(false), isUnconfirmedDXCC(false), isNewBandSlot(false), isNewGrid(false), isCallingMe(false),
+-                     isUsStateConfirmation(false), isUsStateQuota(false), isLocalDecode(true), decodeCount(0) {}
++                     isUsStateConfirmation(false), isUsStateQuota(false), isAwardReference(false),
++                     isLocalDecode(true), decodeCount(0) {}
+ 
+     bool operator<(const ScoredTarget &other) const { return priority > other.priority; }
++
++    // Score-order hunting is DXCC-first; bonuses break ties within a need.
++    int huntingClass() const {
++        if (isCallingMe) return 5;
++        if (isNewDXCC) return 4;
++        if (isNewBandSlot) return 3;
++        if (isUnconfirmedDXCC) return 2;
++        return 1;
++    }
++    bool preferredTo(const ScoredTarget &other, bool newestFirst) const {
++        if (!newestFirst) {
++            if (huntingClass() != other.huntingClass()) return huntingClass() > other.huntingClass();
++            if (priority != other.priority) return priority > other.priority;
++        }
++        return decodedAt > other.decodedAt;
++    }
+ };
+ 
+ class TargetScorer : public QObject
+@@ -135,6 +158,18 @@ public:
+     int usStatesMissingConfirmationWeight() const { return m_usStatesMissingConfirmationWeight; }
+     int usStatesUnderQuotaWeight() const { return m_usStatesUnderQuotaWeight; }
+     QSet<int> usStatesBands() const { return m_usStatesBands; }
++    void setAwardHuntingConfig(const AwardHuntingConfig &config) { m_awardConfig = config; }
++    AwardHuntingConfig awardHuntingConfig() const { return m_awardConfig; }
++    bool loadAwardActivationIndex(const QString &path) { return m_awardIndex.load(path); }
++    bool awardActivationIndexValid() const { return m_awardIndex.schemaValid(); }
++    int awardActivationCount() const { return m_awardIndex.entryCount(); }
++    bool loadOutcomeLearning(const QString &path, bool enabled) {
++        return m_outcomeLearning.load(path, enabled);
++    }
++    void recordOutcome(const QString &call, bool completed) {
++        m_outcomeLearning.record(call, completed);
++    }
++    int outcomeLearningCallCount() const { return m_outcomeLearning.callCount(); }
+ 
+     // US-only grid filtering - only chase grids within US territory
+     void setUSGridOnly(bool enabled) { m_usGridOnly = enabled; }
+@@ -193,6 +228,9 @@ private:
+     QSet<QString> m_usStateLotwCalls;
+     QHash<QString, QSet<QString> > m_usStateWorkedCalls;
+     QHash<QString, QSet<QString> > m_usStateConfirmedCalls;
++    AwardHuntingConfig m_awardConfig;
++    AwardActivationIndex m_awardIndex;
++    OutcomeLearningIndex m_outcomeLearning;
+ 
+     // DXCC rarity scoring - Club Log Most Wanted rankings
+     static QMap<QString, int> s_mostWantedByCountry;
+diff --git a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp
+index 2608b54..0e38a64 100644
+--- a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp
++++ b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp
+@@ -295,8 +295,9 @@ bool HvDxccTracker::createTables()
+     return true;
+ }
+ 
+-bool HvDxccTracker::loadDxccDatabase()
+-{
++bool HvDxccTracker::loadDxccDatabase()
++{
++    m_workedAwardIndexDirty = true;
+     // Clear existing data
+     m_prefixToEntity.clear();
+     m_entityById.clear();
+@@ -749,6 +750,7 @@ void HvDxccTracker::loadMostWantedRankings()
+ 
+ void HvDxccTracker::loadWorkedFromDatabase()
+ {
++    m_workedAwardIndexDirty = true;
+     m_workedDxccAllTime.clear();
+     m_workedDxccByBand.clear();
+     m_workedDxccByBandMode.clear();
+@@ -769,6 +771,8 @@ void HvDxccTracker::loadWorkedFromDatabase()
+         int bandIndex = query.value(1).toInt();
+         QString mode = query.value(2).toString();
+ 
++        m_workedAwardIndexDirty = true;
++
+         m_workedDxccAllTime.insert(QString::number(entityNum));
+         m_workedDxccByBand.insert(QString("%1_%2").arg(entityNum).arg(bandIndex));
+         m_workedDxccByBandMode.insert(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
+@@ -1077,61 +1081,57 @@ bool HvDxccTracker::isItuZoneConfirmed(int zone) const
+     return false;
+ }
+ 
+-bool HvDxccTracker::isContinentWorked(const QString& continent, int bandIndex) const
+-{
+-    const QString wanted = continent.trimmed().toUpper();
+-    for (const QString &worked : m_workedDxccByBand) {
+-        const QStringList parts = worked.split('_');
+-        if (parts.size() != 2 || parts.at(1).toInt() != bandIndex) continue;
+-        if (m_entityById.value(parts.at(0).toInt()).continent.toUpper() == wanted) return true;
+-    }
+-    return false;
+-}
++bool HvDxccTracker::isContinentWorked(const QString& continent, int bandIndex) const
++{
++    ensureWorkedAwardIndex();
++    return m_workedAwardIndex.contains("C:" + continent.trimmed().toUpper() + "@" + QString::number(bandIndex));
++}
+ 
+ bool HvDxccTracker::isContinentWorkedAllTime(const QString& continent) const
+ {
+-    const QString wanted = continent.trimmed().toUpper();
+-    for (const QString &worked : m_workedDxccAllTime) {
+-        if (m_entityById.value(worked.toInt()).continent.toUpper() == wanted) return true;
+-    }
+-    return false;
++    return isContinentWorked(continent, -1);
+ }
+ 
+ bool HvDxccTracker::isCqZoneWorked(int zone, int bandIndex) const
+ {
+-    for (const QString &worked : m_workedDxccByBand) {
+-        const QStringList parts = worked.split('_');
+-        if (parts.size() == 2 && parts.at(1).toInt() == bandIndex
+-                && m_entityById.value(parts.at(0).toInt()).cqZone == zone) return true;
+-    }
+-    return false;
++    ensureWorkedAwardIndex();
++    return zone > 0 && m_workedAwardIndex.contains("Q:" + QString::number(zone) + "@" + QString::number(bandIndex));
+ }
+ 
+ bool HvDxccTracker::isCqZoneWorkedAllTime(int zone) const
+ {
+-    for (const QString &worked : m_workedDxccAllTime) {
+-        if (m_entityById.value(worked.toInt()).cqZone == zone) return true;
+-    }
+-    return false;
++    return isCqZoneWorked(zone, -1);
+ }
+ 
+ bool HvDxccTracker::isItuZoneWorked(int zone, int bandIndex) const
+ {
+-    for (const QString &worked : m_workedDxccByBand) {
+-        const QStringList parts = worked.split('_');
+-        if (parts.size() == 2 && parts.at(1).toInt() == bandIndex
+-                && m_entityById.value(parts.at(0).toInt()).ituZone == zone) return true;
+-    }
+-    return false;
++    ensureWorkedAwardIndex();
++    return zone > 0 && m_workedAwardIndex.contains("I:" + QString::number(zone) + "@" + QString::number(bandIndex));
+ }
+ 
+ bool HvDxccTracker::isItuZoneWorkedAllTime(int zone) const
+ {
+-    for (const QString &worked : m_workedDxccAllTime) {
+-        if (m_entityById.value(worked.toInt()).ituZone == zone) return true;
+-    }
+-    return false;
+-}
++    return isItuZoneWorked(zone, -1);
++}
++
++void HvDxccTracker::ensureWorkedAwardIndex() const
++{
++    if (!m_workedAwardIndexDirty) return;
++    m_workedAwardIndex.clear();
++    const auto add = [this](int entity, int band) {
++        const DxccEntity data = m_entityById.value(entity);
++        const QString suffix = "@" + QString::number(band);
++        if (!data.continent.isEmpty()) m_workedAwardIndex.insert("C:" + data.continent.toUpper() + suffix);
++        if (data.cqZone > 0) m_workedAwardIndex.insert("Q:" + QString::number(data.cqZone) + suffix);
++        if (data.ituZone > 0) m_workedAwardIndex.insert("I:" + QString::number(data.ituZone) + suffix);
++    };
++    for (const QString &entity : m_workedDxccAllTime) add(entity.toInt(), -1);
++    for (const QString &worked : m_workedDxccByBand) {
++        const QStringList parts = worked.split('_');
++        if (parts.size() == 2) add(parts.at(0).toInt(), parts.at(1).toInt());
++    }
++    m_workedAwardIndexDirty = false;
++}
+ 
+ // New entity/grid detection - Primary interface for highlighting
+ bool HvDxccTracker::isNewDxcc(const QString& callsign, int bandIndex)
+@@ -1375,6 +1375,7 @@ bool HvDxccTracker::applyWavelogAcknowledgedQso(
+     }
+ 
+     if (entityNum > 0) {
++        m_workedAwardIndexDirty = true;
+         m_workedDxccAllTime.insert(QString::number(entityNum));
+         m_workedDxccByBand.insert(QString("%1_%2").arg(entityNum).arg(bandIndex));
+         m_workedDxccByBandMode.insert(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
+@@ -1509,6 +1510,7 @@ bool HvDxccTracker::addWorkedDxcc(int entityNum, int bandIndex, const QString& m
+                                    const QString& callsign, const QString& date)
+ {
+     // Update in-memory cache
++    m_workedAwardIndexDirty = true;
+     m_workedDxccAllTime.insert(QString::number(entityNum));
+     m_workedDxccByBand.insert(QString("%1_%2").arg(entityNum).arg(bandIndex));
+     m_workedDxccByBandMode.insert(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
+@@ -1676,6 +1678,7 @@ void HvDxccTracker::importFromAdifLog(const QString& logPath)
+             // Add DXCC if valid entity
+             if (entityNum > 0) {
+                 // Update in-memory cache
++                m_workedAwardIndexDirty = true;
+                 m_workedDxccAllTime.insert(QString::number(entityNum));
+                 m_workedDxccByBand.insert(QString("%1_%2").arg(entityNum).arg(bandIndex));
+                 m_workedDxccByBandMode.insert(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
+@@ -1817,6 +1820,8 @@ void HvDxccTracker::clearWorkedDxcc()
+ {
+     QMutexLocker locker(&m_mutex);
+ 
++    m_workedAwardIndexDirty = true;
++
+     m_workedDxccAllTime.clear();
+     m_workedDxccByBand.clear();
+     m_workedDxccByBandMode.clear();
+@@ -1863,6 +1868,7 @@ void HvDxccTracker::clearAllWorkedData()
+     QMutexLocker locker(&m_mutex);
+ 
+     // Clear in-memory caches
++    m_workedAwardIndexDirty = true;
+     m_workedDxccAllTime.clear();
+     m_workedDxccByBand.clear();
+     m_workedDxccByBandMode.clear();
+diff --git a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.h b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.h
+index b9835ae..fb8031e 100644
+--- a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.h
++++ b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.h
+@@ -183,7 +183,11 @@ private:
+     QMap<QString, int> m_callPrefixToEntity;     // Call prefix -> Entity#
+ 
+     // Worked tracking: fast in-memory cache
+-    QSet<QString> m_workedDxccAllTime;           // "ENTITY_NUM"
++    QSet<QString> m_workedDxccAllTime;           // "ENTITY_NUM"
++    // Derived membership indexes, rebuilt once after history/CTY mutations.
++    void ensureWorkedAwardIndex() const;
++    mutable bool m_workedAwardIndexDirty = true;
++    mutable QSet<QString> m_workedAwardIndex;
+     QSet<QString> m_workedDxccByBand;            // "ENTITY_NUM_BAND"
+     QSet<QString> m_workedDxccByBandMode;        // "ENTITY_NUM_BAND_MODE"
+     QSet<QString> m_workedDxccByMode;            // "ENTITY_NUM_MODE"
+diff --git a/MSHV_2762/src/HvTxW/HvLogW/hvlogw.cpp b/MSHV_2762/src/HvTxW/HvLogW/hvlogw.cpp
+index 0d8e744..c02fb37 100644
+--- a/MSHV_2762/src/HvTxW/HvLogW/hvlogw.cpp
++++ b/MSHV_2762/src/HvTxW/HvLogW/hvlogw.cpp
+@@ -111,7 +111,8 @@ HvLogList::HvLogList(bool indsty,QWidget *parent)
+     //<<"Band"<<"Freq kHz"<<"Prop"<<"Comment";
+     list_A <<tr("Date")<<tr("Start")<<"Date End"<<tr("End")<<tr("Callsign")<<tr("Locator")<<"TXRpt"<<"RXRpt"<<tr("Mode")
+     <<tr("Band")<<"Freq kHz"<<tr("Prop")<<tr("Comment")<<"secSta"<<"TXSn"<<"RXSn"<<"TXExch"<<"RXExch"<<"Cid"
+-    <<"Cmt"<<"secDnd"<<tr("Distance")<<tr("Satellite")<<tr("Sat Mode")<<"RX Freq MHz";
++    <<"Cmt"<<"secDnd"<<tr("Distance")<<tr("Satellite")<<tr("Sat Mode")<<"RX Freq MHz"
++    <<"POTA_REF"<<"SOTA_REF"<<"WWFF_REF";
+     model.setHorizontalHeaderLabels(list_A);
+ 
+     THvHeader->setSectionResizeMode(QHeaderView::Fixed);//qt5
+@@ -210,6 +211,9 @@ void HvLogList::HideSections()
+     THvHeader->hideSection(18); //contest id hiden
+     THvHeader->hideSection(19); //contest MULTI-TWO hiden
+     THvHeader->hideSection(20); //enum seconds end 00-59 hiden
++    THvHeader->hideSection(25); //AutoDX POTA references persisted for ADIF
++    THvHeader->hideSection(26); //AutoDX SOTA references persisted for ADIF
++    THvHeader->hideSection(27); //AutoDX WWFF references persisted for ADIF
+ }
+ void HvLogList::paintEvent(QPaintEvent *event)
+ {
+@@ -2410,6 +2414,9 @@ void HvLogW::AddExtrnalAdif()
+         QString satn = ExtractAdifRecord(line,"<SAT_NAME:");
+         QString satm = ExtractAdifRecord(line,"<SAT_MODE:");
+         QString frrx = ExtractAdifRecord(line,"<FREQ_RX:");
++        QString potaRef = ExtractAdifRecord(line,"<POTA_REF:");
++        QString sotaRef = ExtractAdifRecord(line,"<SOTA_REF:");
++        QString wwffRef = ExtractAdifRecord(line,"<WWFF_REF:");
+ 
+         QString tx_sn = ExtractAdifRecord(line,"<STX:");
+         if (tx_sn.isEmpty()) tx_sn = ExtractAdifRecord(line,"<STX_STRING:");//SRX_STRING LogHX exception
+@@ -2494,7 +2501,7 @@ void HvLogW::AddExtrnalAdif()
+         t_list<<str_date<<tss_s<<str_date_end<<tss_end<<calls<<hgrid<<tx_rst
+         <<rx_rst<<mode_disp<<str_band<<str_frq<<prop_m<<comm<<enum_sec_sta
+         <<tx_sn<<rx_sn<<log_tx_exch<<log_rx_exch<<log_cont_id<<trmN<<enum_sec_end<<dist
+-        <<satn<<satm<<frrx;
++        <<satn<<satm<<frrx<<potaRef<<sotaRef<<wwffRef;
+ 
+         Insert(t_list,false,false,0,false,false);
+         added_qso++;
+@@ -3018,6 +3025,7 @@ void HvLogW::ReadEDI(QString path,bool pbarr,bool check_format)
+             {
+                 for (int i = list.count(); i < MIN_CCOUNT; ++i) list.append("");
+             }
++            while (list.count() < 28) list.append("");
+             QStringList t_list;
+             QString str_date = list.at(0);
+             QString str_date_end = list.at(2);
+@@ -3078,7 +3086,8 @@ void HvLogW::ReadEDI(QString path,bool pbarr,bool check_format)
+             t_list<<str_date<<tss_s<<str_date_end<<tss_end<<list.at(4)<<list.at(8)<<list.at(6)
+             <<list.at(7)<<mode_disp<<str_band<<list.at(10)<<list.at(12)<<list.at(11)<<enum_sec_sta
+             <<list.at(13)<<list.at(14)<<list.at(15)<<list.at(16)<<cont_id<<trmN<<enum_sec_end<<dist
+-            <<list.at(22)<<list.at(23)<<rxfrq;
++            <<list.at(22)<<list.at(23)<<rxfrq
++            <<list.at(25)<<list.at(26)<<list.at(27);
+ 
+             Insert(t_list,false,false,0,false,false);//0=show_cont_id 0=no, 1=sn, 2=exch 3=sn+exch
+             list.clear();
+@@ -3295,6 +3304,26 @@ void HvLogW::SetAutoLogInfo()//2.75
+ 
+ 	return s;
+ }*/
++void HvLogW::SetAutoDxAwardReferences(
++    const QString &callsign, const QStringList &programReferencePairs)
++{
++    const QString call = AwardAdifPolicy::baseCallsign(callsign);
++    if (call.isEmpty()) {
++        if (programReferencePairs.isEmpty()) autoDxAwardReferencesByCall.clear();
++        return;
++    }
++    QList<AwardReferenceMatch> matches;
++    for (int i = 0; i + 1 < programReferencePairs.size(); i += 2) {
++        AwardReferenceMatch match;
++        match.program = programReferencePairs.at(i);
++        match.reference = programReferencePairs.at(i + 1);
++        matches << match;
++    }
++    matches = AwardAdifPolicy::normalized(matches);
++    if (matches.isEmpty()) autoDxAwardReferencesByCall.remove(call);
++    else autoDxAwardReferencesByCall.insert(call, matches);
++}
++
+ QString HvLogW::MakeAdifString(int l_row)
+ {
+     QString s;
+@@ -3466,6 +3495,16 @@ QString HvLogW::MakeAdifString(int l_row)
+     //n1mm rx-><APP_N1MM_EXCHANGE1:2>2A  rx-><ARRL_SECT:2>AL  <CONTEST_ID:14>ARRL-FIELD-DAY ????
+     //s = qslmsg; if (!s.isEmpty()) out.append("<QSLMSG:"+QString("%1").arg(s.count())+">"+s);
+ 
++    if (THvLogList->model.columnCount() > 27
++            && THvLogList->model.item(l_row, 25)
++            && THvLogList->model.item(l_row, 26)
++            && THvLogList->model.item(l_row, 27)) {
++        out.append(AwardAdifPolicy::adifFields(
++            AwardAdifPolicy::fromProgramColumns(
++                THvLogList->model.item(l_row, 25)->text(),
++                THvLogList->model.item(l_row, 26)->text(),
++                THvLogList->model.item(l_row, 27)->text())));
++    }
+     out.append("<EOR>\n");
+ 
+     return out;
+@@ -3654,6 +3693,16 @@ bool HvLogW::Insert(QStringList lst, bool save_changes,bool warning_msg,int show
+         else lst[24] = "";
+     }
+ 
++    while (lst.size() < 28) lst.append("");
++    const QString awardCall = AwardAdifPolicy::baseCallsign(lst.at(4));
++    if (save_changes && autoDxAwardReferencesByCall.contains(awardCall)) {
++        const QList<AwardReferenceMatch> matches =
++            autoDxAwardReferencesByCall.take(awardCall);
++        lst[25] = AwardAdifPolicy::encodeProgramReferences(matches, "POTA");
++        lst[26] = AwardAdifPolicy::encodeProgramReferences(matches, "SOTA");
++        lst[27] = AwardAdifPolicy::encodeProgramReferences(matches, "WWFF");
++    }
++
+     if (lst.at(21).isEmpty())//readEDI readADIF ....
+     {
+         QString distt = CalcDistance(lst.at(5)); //qDebug()<<s_my_grid<<lst.at(5)<<distt;
+@@ -3914,9 +3963,9 @@ void HvLogW::SaveEDI(QString path,bool fappend)
+         out  <<THvLogList->model.item(j, 22)->text()<<";";//Satellite                 22
+         out  <<THvLogList->model.item(j, 23)->text()<<";";//Sat Mode                  23
+         out  <<THvLogList->model.item(j, 24)->text()<<";";//RX Freq                   24
+-        out  <<";";  //free reserve from 2.73 HV                                      25
+-        out  <<";";  //free reserve from 2.73 HV                                      26
+-        out  <<";"; //free reserve from 2.73 HV                                       27
++        out  <<THvLogList->model.item(j, 25)->text()<<";";//POTA refs                 25
++        out  <<THvLogList->model.item(j, 26)->text()<<";";//SOTA refs                 26
++        out  <<THvLogList->model.item(j, 27)->text()<<";";//WWFF refs                 27
+         //out  <<""; //free reserve from 2.73 HV                                      28
+         out<<"\n";
+     }
+diff --git a/MSHV_2762/src/HvTxW/HvLogW/hvlogw.h b/MSHV_2762/src/HvTxW/HvLogW/hvlogw.h
+index e358cb0..aded98e 100644
+--- a/MSHV_2762/src/HvTxW/HvLogW/hvlogw.h
++++ b/MSHV_2762/src/HvTxW/HvLogW/hvlogw.h
+@@ -21,6 +21,8 @@
+ #include <QLineEdit>
+ #include <QProgressDialog>
+ #include <QGroupBox>
++#include <QHash>
++#include "../../HvAutoDxer/awardadifpolicy.h"
+ //#include <QSpinBox>
+ //#include "hvloglist.h"
+ #include "../../config.h"
+@@ -236,6 +238,8 @@ public:
+ 	QString GetPropSettings();//2.75
+ 	void SetPropSettings(QString);//2.75
+ 	QString GetAdifStatus();  // Returns ADIF logging status for debugging
++    void SetAutoDxAwardReferences(const QString &callsign,
++                                  const QStringList &programReferencePairs);
+ 
+ public slots:
+    void EditQso();
+@@ -316,6 +320,7 @@ private:
+     //HvLogDetiles *THvLogDetiles;
+     void SaveEDI(QString,bool);//2.48 append
+     QString om0rxOfflineImport;
++    QHash<QString, QList<AwardReferenceMatch> > autoDxAwardReferencesByCall;
+     void ReadEDI(QString,bool pbarr,bool check_format);
+     HvEditW *THvEditW;
+     HvEditW *AddManQsoW;
+diff --git a/MSHV_2762/src/HvTxW/hvtxw.cpp b/MSHV_2762/src/HvTxW/hvtxw.cpp
+index fa7c1f7..b2d0232 100644
+--- a/MSHV_2762/src/HvTxW/hvtxw.cpp
++++ b/MSHV_2762/src/HvTxW/hvtxw.cpp
+@@ -2044,6 +2044,14 @@ void HvTxW::AddToLogMultiAnswerQSO(QStringList l)
+         }
+     }
+ }
++
++void HvTxW::SetAutoDxAwardReferences(
++    QString callsign, QStringList programReferencePairs)
++{
++    if (THvLogW)
++        THvLogW->SetAutoDxAwardReferences(callsign, programReferencePairs);
++}
++
+ bool HvTxW::SetTimePeriod_p(QString time_1,int msg_pos)//1.56=,QString str
+ {
+     //for MSK144,JT65,FT8  msg_pos if 0<-v obratnia period 1,2...100<-normal logic
+diff --git a/MSHV_2762/src/HvTxW/hvtxw.h b/MSHV_2762/src/HvTxW/hvtxw.h
+index d3a0eec..76636f2 100644
+--- a/MSHV_2762/src/HvTxW/hvtxw.h
++++ b/MSHV_2762/src/HvTxW/hvtxw.h
+@@ -368,6 +368,8 @@ public slots:
+     void SetMaManAdding(bool);
+     void CBEnableAliChanged(bool);//2.75
+     void SetAutoLogInfo();//2.75
++    void SetAutoDxAwardReferences(QString callsign,
++                                  QStringList programReferencePairs);
+     MultiAnswerModW* getMultiAnswerMod() { return MultiAnswerMod; }  // AutoDxer access
+ 
+ signals:
+diff --git a/MSHV_2762/src/main_ms.cpp b/MSHV_2762/src/main_ms.cpp
+index d8e981e..f4c31bc 100644
+--- a/MSHV_2762/src/main_ms.cpp
++++ b/MSHV_2762/src/main_ms.cpp
+@@ -823,6 +823,11 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+             this, [this](const DxTarget &target) {
+         THvTxW->SyncAutoDxerStatusTarget(target.callsign, target.grid,
+                                          m_autoDxerCore->targetRespondedToUs());
++        QStringList awardReferencePairs;
++        for (const AwardReferenceMatch &match : target.awardReferences)
++            awardReferencePairs << match.program << match.reference;
++        THvTxW->SetAutoDxAwardReferences(
++            target.callsign, awardReferencePairs);
+     });
+     // Connect ALL local decodes to Auto DXer (EmitRxStationInfo fires for every decode)
+     connect(TDecodeList1, SIGNAL(EmitRxStationInfo(QStringList,int,bool,uint8_t)),

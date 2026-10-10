@@ -28,6 +28,7 @@ from radio_control.activity_references import extract_activity_references, refer
 from radio_control.spot_processor import band_from_khz, infer_mode
 from radio_control.qso_outbox import get_qso_outbox
 from radio_control.spot_classification import classify_call_status, classify_dxcc_status
+from radio_control.log_throttle import warning as throttled_warning
 from radio_control import config
 logger = logging.getLogger(__name__)
 
@@ -597,7 +598,56 @@ class WSJTXService:
             write_qso_to_postgres_read_cache(qso_data)
         except Exception as exc:
             logger.debug("Unable to write WSJT-X QSO to PostgreSQL read cache for %s: %s", qso_data.get("callsign"), exc)
+        self._persist_mshv_award_acknowledgement(qso_data)
         self._mark_automation_qso_logged(qso_data)
+
+    @staticmethod
+    def _persist_mshv_award_acknowledgement(qso_data: Dict[str, Any]) -> None:
+        """Cross the durable portable-award boundary for online MSHV logs.
+
+        Wavelog has already accepted this QSO (or an exact readback verified a
+        duplicate) when this method runs.  A reference-bearing MSHV QSO must
+        therefore be journaled before the caller can report success.  If local
+        persistence fails, invalidate the sidecar so native MSHV cannot hunt
+        from stale novelty state.
+        """
+        if str(qso_data.get("provider") or "").strip().lower() != "mshv_auto_dx":
+            return
+        programs = {
+            str(item.get("type") or "").upper()
+            for item in extract_activity_references(qso_data)
+        }
+        if not programs & {"POTA", "SOTA", "WWFF"}:
+            return
+
+        from services.mshv_award_hunting import (
+            invalidate_award_hunting_watch,
+            record_acknowledged_award_qso,
+            republish_after_authoritative_history_change,
+        )
+        from services.mshv_configuration import runtime_path
+
+        try:
+            recorded = record_acknowledged_award_qso(qso_data)
+            if not recorded.get("recorded"):
+                raise RuntimeError(str(recorded.get("reason") or "portable award journal rejected QSO"))
+        except Exception as exc:
+            try:
+                invalidate_award_hunting_watch(
+                    runtime_path(), reason="mshv-award-acknowledgement-persistence-failed",
+                )
+            except Exception:
+                logger.exception("Unable to invalidate MSHV award sidecar after journal failure")
+            raise RuntimeError("portable award acknowledgement was not durably journaled") from exc
+
+        refreshed = republish_after_authoritative_history_change(
+            "wavelog-qso-acknowledged", acknowledged_qso=qso_data,
+        )
+        if refreshed.get("error"):
+            # The republisher invalidates before rebuilding.  Persistence is
+            # already durable, so retain the QSO acknowledgement but surface
+            # that hunting remains safely inhibited pending the next refresh.
+            logger.warning("MSHV award sidecar remains invalidated after acknowledgement: %s", refreshed["error"])
 
     def _mark_automation_qso_logged(self, qso_data: Dict[str, Any]) -> None:
         call = str(qso_data.get("callsign") or qso_data.get("call") or "").strip().upper()
@@ -685,7 +735,6 @@ class WSJTXService:
         except Exception as exc:
             logger.debug("Async WSJT-X local ADIF save failed for %s: %s", call, exc, exc_info=True)
 
-        self._record_logged_qso_in_status_cache(qso_data)
         if qso_key:
             try:
                 from services.qso_logging import _record_dedupe_entry
@@ -791,7 +840,10 @@ class WSJTXService:
                                 qrz_data.get("country", "N/A"),
                             )
                     except Exception as exc:
-                        logger.warning("⚠️  QRZ lookup failed for %s: %s", call, exc)
+                        throttled_warning(
+                            logger, f"wsjtx-qrz:{call}:{type(exc).__name__}:{exc}", 300,
+                            "QRZ lookup failed for %s: %s", call, exc,
+                        )
                         qrz_data = {}
 
                 cty_data = {}
@@ -828,6 +880,13 @@ class WSJTXService:
                     "prop_mode": adif_fields.get("prop_mode") or None,
                     "freq_rx": adif_fields.get("freq_rx") or None,
                     "mode_rx": adif_fields.get("mode_rx") or None,
+                    "provider": req.get("provider") or "wsjtz",
+                    "station_callsign": req.get("station_callsign") or adif_fields.get("station_callsign") or config.MY_STATION,
+                    "client_id": req.get("client_id") or "",
+                    "event_id": req.get("event_id") or "",
+                    "time_on": req.get("time_on") or adif_fields.get("time_on") or None,
+                    "frequency_hz": frequency_hz or None,
+                    "adif_text": adif_text,
                     **reference_fields,
                 }
                 qso_key = ""
@@ -849,7 +908,8 @@ class WSJTXService:
                     dedupe_keys = [key for key in (qso_key, *loose_qso_keys) if key]
                     dedupe_entry = _claim_dedupe_keys(dedupe_keys, qso_data)
                     if dedupe_entry:
-                        asyncio.create_task(asyncio.to_thread(self._record_logged_qso_in_status_cache, qso_data))
+                        if dedupe_entry.get("wavelog_success") is True:
+                            asyncio.create_task(asyncio.to_thread(self._record_logged_qso_in_status_cache, qso_data))
                         return {
                             "success": True,
                             "duplicate": True,
@@ -896,15 +956,20 @@ class WSJTXService:
                 except Exception as exc:
                     logger.debug("Async WSJT-X local ADIF save failed for %s: %s", call, exc, exc_info=True)
 
+                verified_duplicate = bool(
+                    result.get("duplicate") is True
+                    and result.get("identity_verified") is True
+                )
+                online_acknowledged = bool(result.get("success") or verified_duplicate)
                 outbox_queued = False
-                if not result.get("success"):
+                if not online_acknowledged:
                     outbox_queued = get_qso_outbox().enqueue(
                         qso_data,
                         reason=result.get("message") or result.get("error") or "WSJT-X bridge Wavelog upload failed",
                     )
                     self._schedule_wavelog_outbox_replay()
 
-                if result.get("success") or outbox_queued:
+                if online_acknowledged:
                     self._record_logged_qso_in_status_cache(qso_data)
                 if qso_key:
                     try:
@@ -915,7 +980,11 @@ class WSJTXService:
                             "adif_saved": adif_saved,
                             "outbox_queued": outbox_queued,
                         }
-                        if result.get("success") or outbox_queued:
+                        if online_acknowledged or outbox_queued:
+                            if verified_duplicate:
+                                response_for_dedupe["wavelog"] = {
+                                    **result, "success": True, "readback_verified": True,
+                                }
                             _record_dedupe_entries(dedupe_keys, qso_data, response_for_dedupe)
                         else:
                             _release_dedupe_keys(dedupe_keys)
@@ -927,12 +996,15 @@ class WSJTXService:
                     call,
                     qso_data.get("band"),
                     qso_data.get("mode"),
-                    result.get("success"),
+                    online_acknowledged,
                     adif_saved,
                     outbox_queued,
                 )
                 return {
-                    "success": bool(result.get("success") or outbox_queued),
+                    "success": bool(online_acknowledged or outbox_queued),
+                    "duplicate": verified_duplicate,
+                    "readback_verified": verified_duplicate,
+                    "readback_identity_exact": verified_duplicate,
                     "async_upload": True,
                     "wavelog": result,
                     "adif_saved": adif_saved,
@@ -963,7 +1035,10 @@ class WSJTXService:
                     else:
                         logger.debug(f"ℹ️  No QRZ data found for {call}")
                 except Exception as e:
-                    logger.warning(f"⚠️  QRZ lookup failed for {call}: {e}")
+                    throttled_warning(
+                        logger, f"wsjtx-qrz:{call}:{type(e).__name__}:{e}", 300,
+                        "QRZ lookup failed for %s: %s", call, e,
+                    )
                     qrz_data = {}
 
             # Enrich with CTY data if available (for continent and other metadata)
@@ -1037,6 +1112,13 @@ class WSJTXService:
                 "sat_mode": adif_fields.get("sat_mode") or None,
                 "freq_rx": adif_fields.get("freq_rx") or None,
                 "mode_rx": adif_fields.get("mode_rx") or None,
+                "provider": req.get("provider") or "wsjtz",
+                "station_callsign": req.get("station_callsign") or adif_fields.get("station_callsign") or config.MY_STATION,
+                "client_id": req.get("client_id") or "",
+                "event_id": req.get("event_id") or "",
+                "time_on": req.get("time_on") or adif_fields.get("time_on") or None,
+                "frequency_hz": frequency_hz or None,
+                "adif_text": adif_text,
             }
             try:
                 from services.qso_logging import (
@@ -1070,8 +1152,9 @@ class WSJTXService:
                         loose_qso_key,
                         call,
                     )
-                    self._record_logged_qso_in_status_cache(qso_data)
                     dedupe_entry = dedupe_entry or {"recent": True}
+                    if dedupe_entry.get("wavelog_success") is True:
+                        self._record_logged_qso_in_status_cache(qso_data)
                     return {
                         "success": True,
                         "duplicate": True,
@@ -1192,16 +1275,16 @@ class WSJTXService:
                         logger.debug("Unable to record WSJT-X QSO dedupe entry for %s: %s", call, exc, exc_info=True)
                 return response
             else:
-                duplicate_text = " ".join(
-                    str((result or {}).get(key) or "")
-                    for key in ("message", "error")
-                ).lower()
-                if "duplicate" in duplicate_text:
+                if ((result or {}).get("duplicate") is True and
+                        (result or {}).get("identity_verified") is True):
                     logger.info("✅ WSJT-X QSO already exists in Wavelog; treating duplicate as resolved: %s", call)
                     self._record_logged_qso_in_status_cache(qso_data)
                     response = {
                         "success": True,
                         "duplicate": True,
+                        "readback_verified": True,
+                        "readback_identity_exact": True,
+                        "wavelog": {**(result or {}), "success": True, "readback_verified": True},
                         "message": (result or {}).get("message") or "QSO already exists in Wavelog",
                         "adif_saved": adif_saved,
                         "qso_key": qso_key,
@@ -1222,9 +1305,10 @@ class WSJTXService:
                         try:
                             from services.qso_logging import _record_dedupe_entry
 
-                            _record_dedupe_entry(qso_key, qso_data, {"wavelog": result or {}, "adif_saved": adif_saved})
+                            verified = {**(result or {}), "success": True, "readback_verified": True}
+                            _record_dedupe_entry(qso_key, qso_data, {"wavelog": verified, "adif_saved": adif_saved})
                             if loose_qso_key and loose_qso_key != qso_key:
-                                _record_dedupe_entry(loose_qso_key, qso_data, {"wavelog": result or {}, "adif_saved": adif_saved})
+                                _record_dedupe_entry(loose_qso_key, qso_data, {"wavelog": verified, "adif_saved": adif_saved})
                         except Exception as exc:
                             logger.debug("Unable to record duplicate WSJT-X QSO dedupe entry for %s: %s", call, exc, exc_info=True)
                     return response
@@ -1236,8 +1320,6 @@ class WSJTXService:
                 # If Wavelog fails but ADIF saved, still return partial success
                 if adif_saved or outbox_queued:
                     # Local ADIF alone is an archive, not a durable Wavelog delivery.
-                    if outbox_queued:
-                        self._record_logged_qso_in_status_cache(qso_data)
                     if qso_key:
                         try:
                             from services.qso_logging import _record_dedupe_entry
@@ -1341,6 +1423,32 @@ class WSJTXService:
                     "confidence": result.get("confidence"),
                 }
             else:
+                policy_reason = None
+                if result.get("band_enabled") is False:
+                    policy_reason = "band-disabled"
+                elif result.get("auto_allowed") is False and result.get("bearing") is not None:
+                    policy_reason = "auto-disallowed"
+
+                if policy_reason:
+                    reason = result.get("message") or result.get("error") or "Rotator policy skipped request"
+                    logger.info(
+                        "Rotator auto skipped by policy: %s on %s (%s: %s)",
+                        call,
+                        result.get("band") or "unknown band",
+                        policy_reason,
+                        reason,
+                    )
+                    return {
+                        "success": False,
+                        "skipped": True,
+                        "policy": policy_reason,
+                        "reason": reason,
+                        "bearing": result.get("bearing"),
+                        "band": result.get("band"),
+                        "source": result.get("source"),
+                        "confidence": result.get("confidence"),
+                    }
+
                 logger.error(f"❌ Rotator command failed: {call}")
                 return {
                     "success": False,
@@ -1417,6 +1525,9 @@ class WSJTXService:
     def launch_patched_engine(self, req: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Start the locally built OM0RX-patched WSJT-X engine on Windows."""
         req = req or {}
+        if not req.get("dryRun"):
+            from services.digital_engine import require_om0rx_planner
+            require_om0rx_planner()
         status = self.get_patched_engine_status()
         if not status["supported"]:
             raise HTTPException(status_code=400, detail="Patched WSJT engine launcher is currently Windows-only")
@@ -1506,6 +1617,9 @@ class WSJTXService:
     def launch_wsjtz_engine(self, req: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Start the locally built OM0RX WSJT-Z engine on Windows."""
         req = req or {}
+        if not req.get("dryRun") and not req.get("_provider_managed"):
+            from services.digital_engine import get_digital_engine_service
+            return get_digital_engine_service().select({**req, "provider": "wsjtz"}, launch=True)
         status = self.get_wsjtz_engine_status()
         if not status["supported"]:
             raise HTTPException(status_code=400, detail="WSJT-Z engine launcher is currently Windows-only")
@@ -2293,6 +2407,9 @@ class WSJTXService:
         heartbeat/status packets. Sending directly from FastAPI would usually
         target the wrong port.
         """
+        if command not in {"status", "halt_tx", "clear", "replay", "select_provider", "reset_client"}:
+            from services.digital_engine import require_om0rx_planner
+            require_om0rx_planner()
         url = getattr(config, 'WSJTX_BRIDGE_COMMAND_URL', 'http://127.0.0.1:8092/wsjtx/command')
         payload = dict(payload or {})
         trace_id = _wsjtx_trace_id(payload)
@@ -2633,6 +2750,10 @@ def register_wsjtx_endpoints(app):
     This function can be called from main.py to register all WSJT-X endpoints.
     """
 
+    from services.digital_engine import register_digital_endpoints
+    register_digital_endpoints(app)
+
+    @app.post("/api/digital/log-qso")
     @app.post("/api/wsjtx/log-qso")
     async def wsjtx_log_qso(req: Dict[str, Any]):
         """
@@ -2640,7 +2761,8 @@ def register_wsjtx_endpoints(app):
         Enriches with QRZ data if available
         """
         service = get_wsjtx_service()
-        return await service.log_qso(req)
+        from services.digital_logging import log_digital_qso
+        return await log_digital_qso(req, service)
 
     @app.post("/api/wsjtx/auto-rotate")
     async def wsjtx_auto_rotate(req: Dict[str, Any]):
@@ -2680,6 +2802,8 @@ def register_wsjtx_endpoints(app):
     @app.post("/api/wsjtx/automation/settings")
     async def wsjtx_automation_settings(req: Dict[str, Any], request: Request):
         """Update backend Digital automation from native OM0RX WSJT-X controls."""
+        from services.digital_engine import require_om0rx_planner
+        require_om0rx_planner()
         from services.ft8_service import get_ft8_service
 
         ft8_service = get_ft8_service()
@@ -2698,6 +2822,8 @@ def register_wsjtx_endpoints(app):
     @app.post("/api/wsjtx/automation/tick")
     async def wsjtx_automation_tick(req: Dict[str, Any], request: Request):
         """Let the backend planner arm the next eligible WSJT-X target."""
+        from services.digital_engine import require_om0rx_planner
+        require_om0rx_planner()
         from services.ft8_service import get_ft8_service
 
         ft8_service = get_ft8_service()

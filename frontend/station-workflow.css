@@ -1,0 +1,234 @@
+.station-workflow-panel {
+    --workflow-accent: #64748b;
+    margin: 0 0 6px;
+    padding: 9px 10px;
+    border: 1px solid #3b4654;
+    border-left: 3px solid var(--workflow-accent);
+    border-radius: 7px;
+    background: #22272d;
+}
+
+.station-workflow-panel[data-state="ready"] { --workflow-accent: #22c55e; }
+.station-workflow-panel[data-state="active"] { --workflow-accent: #38bdf8; }
+.station-workflow-panel[data-state="warning"] { --workflow-accent: #f59e0b; }
+.station-workflow-panel[data-state="maintenance"] { --workflow-accent: #f97316; }
+.station-workflow-panel[data-state="locked"] { --workflow-accent: #a78bfa; }
+.station-workflow-panel[data-state="unavailable"] { --workflow-accent: #64748b; }
+
+.station-workflow-header,
+.station-workflow-layout,
+.station-workflow-summary,
+.station-workflow-actions,
+.station-workflow-transaction-head,
+.station-workflow-footer {
+    display: flex;
+    align-items: center;
+}
+
+.station-workflow-header {
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 7px;
+}
+
+.station-workflow-eyebrow {
+    display: block;
+    color: #a78bfa;
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: .11em;
+    text-transform: uppercase;
+}
+
+.station-workflow-header h2 {
+    margin: 1px 0 0;
+    color: #f8fafc;
+    font-size: 13px;
+}
+
+.station-workflow-badges {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.station-workflow-alarm-badge {
+    border: 1px solid #92400e;
+    border-radius: 999px;
+    padding: 2px 7px;
+    color: #fbbf24;
+    font-size: 8px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.station-workflow-state {
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    padding: 2px 7px;
+    color: #cbd5e1;
+    font-size: 8px;
+    font-weight: 800;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+}
+
+.station-workflow-state.state-ready { color: #4ade80; }
+.station-workflow-state.state-active { color: #38bdf8; }
+.station-workflow-state.state-warning { color: #fbbf24; }
+.station-workflow-state.state-maintenance { color: #fb923c; }
+.station-workflow-state.state-locked { color: #c4b5fd; }
+.station-workflow-state.state-unavailable { color: #94a3b8; }
+
+.station-workflow-layout {
+    align-items: stretch;
+    gap: 10px;
+}
+
+.station-workflow-summary {
+    display: grid;
+    grid-template-columns: minmax(150px, 1.6fr) minmax(100px, 1fr) minmax(100px, 1fr);
+    flex: 1 1 auto;
+    gap: 5px;
+}
+
+.station-workflow-summary > div {
+    min-width: 0;
+    padding: 6px 8px;
+    border: 1px solid #39434e;
+    border-radius: 5px;
+    background: rgba(15, 23, 31, .65);
+}
+
+.station-workflow-summary span,
+.station-workflow-summary strong {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.station-workflow-summary span {
+    color: #7f8b99;
+    font-size: 8px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.station-workflow-summary strong {
+    margin-top: 2px;
+    color: #e2e8f0;
+    font-size: 10px;
+}
+
+.station-workflow-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(92px, 1fr));
+    flex: 0 1 520px;
+    gap: 5px;
+}
+
+.station-workflow-actions button {
+    min-width: 0;
+    padding: 6px 8px;
+    border: 1px solid #4b5a68;
+    border-radius: 4px;
+    background: #304151;
+    color: #f1f5f9;
+    font-size: 9px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.station-workflow-actions button:not(:disabled):hover { background: #3d5367; }
+.station-workflow-actions button:disabled {
+    border-color: #39414a;
+    background: #292e34;
+    color: #747f8b;
+    cursor: not-allowed;
+    opacity: .72;
+}
+
+.station-workflow-actions .station-workflow-tune:not(:disabled) {
+    border-color: #0ea5e9;
+    background: #075985;
+}
+
+.station-workflow-actions .station-workflow-cancel:not(:disabled) {
+    border-color: #f87171;
+    background: #7f1d1d;
+}
+
+.station-workflow-actions .station-workflow-maintenance:not(:disabled),
+.station-workflow-actions .station-workflow-maintenance-exit:not(:disabled) {
+    border-color: #f97316;
+    background: #7c2d12;
+}
+
+.station-workflow-transaction {
+    margin-top: 7px;
+    padding: 6px 8px;
+    border: 1px solid #39434e;
+    border-radius: 5px;
+    background: rgba(15, 23, 31, .48);
+}
+
+.station-workflow-transaction-head {
+    justify-content: space-between;
+    gap: 8px;
+    color: #dbe5ef;
+    font-size: 9px;
+}
+
+.station-workflow-transaction-head span { color: #94a3b8; }
+
+.station-workflow-transaction progress {
+    width: 100%;
+    height: 6px;
+    margin-top: 5px;
+    accent-color: #38bdf8;
+}
+
+.station-workflow-transaction p {
+    margin: 3px 0 0;
+    color: #8491a1;
+    font-size: 8px;
+}
+
+.station-workflow-footer {
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 6px;
+}
+
+.station-workflow-lock {
+    margin: 0;
+    color: #c4b5fd;
+    font-size: 9px;
+}
+
+.station-workflow-panel[data-commissioned="true"] .station-workflow-lock { color: #86efac; }
+
+.station-workflow-issues {
+    display: flex;
+    justify-content: flex-end;
+    gap: 5px 12px;
+    margin: 0;
+    padding: 0;
+    color: #fbbf24;
+    font-size: 8px;
+    list-style-position: inside;
+}
+
+@media (max-width: 900px) {
+    .station-workflow-layout { flex-direction: column; }
+    .station-workflow-actions { flex-basis: auto; width: 100%; }
+}
+
+@media (max-width: 580px) {
+    .station-workflow-summary { grid-template-columns: 1fr; }
+    .station-workflow-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .station-workflow-footer { flex-direction: column; }
+    .station-workflow-issues { justify-content: flex-start; flex-direction: column; }
+}

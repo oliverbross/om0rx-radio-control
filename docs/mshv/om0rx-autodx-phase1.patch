@@ -1,0 +1,1050 @@
+diff --git a/MSHV_2762/src/HvAutoDxer/bandmanager.cpp b/MSHV_2762/src/HvAutoDxer/bandmanager.cpp
+index 159be78..199bd8e 100644
+--- a/MSHV_2762/src/HvAutoDxer/bandmanager.cpp
++++ b/MSHV_2762/src/HvAutoDxer/bandmanager.cpp
+@@ -99,7 +99,11 @@ void BandManager::loadSettings(const QString& settingsPath)
+     QSettings settings(settingsPath + "/autodx.ini", QSettings::IniFormat);
+ 
+     // Load enabled bands - default to all HF bands (no 6m)
+-    QString bandStr = settings.value("BandSelection/EnabledBands", "3,4,6,7,8,9,10,11,12").toString();
++    const QVariant bandValue = settings.value(
++        "BandSelection/EnabledBands", "3,4,6,7,8,9,10,11,12");
++    const QString bandStr = bandValue.type() == QVariant::StringList
++        ? bandValue.toStringList().join(",")
++        : bandValue.toString();
+ 
+     m_enabledBands.clear();
+     QStringList bands = bandStr.split(",", Qt::SkipEmptyParts);
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+index f815faa..c4c3a99 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -3,12 +3,15 @@
+  * May be used under the terms of the GNU General Public License (GPL)
+  */
+ #include "autodxercore.h"
++#include "autodxruntimeconfig.h"
+ #include "twiliosmsnotifier.h"
+ #include "../HvDecodeList/hvcty.h"
+ #include "../HvTxW/hvmultianswermodw.h"
+ #include "../HvReliability/hvlogger.h"
+ #include <QDir>
++#include <QJsonArray>
+ #include <QRegExp>
++#include <QSettings>
+ 
+ // Helper: Check if callsign is rare DX (DXpedition) that should use dial frequency directly
+ // For these stations, the spotted frequency IS the dial frequency, not an RF frequency
+@@ -47,10 +50,20 @@ static bool isRareDXCallsign(const QString &callsign)
+ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *parent)
+     : QObject(parent)
+     , m_enabled(false)
++    , m_desiredEnabled(false)
+     , m_state(Idle)
+     , m_queueWidget(nullptr)
+     , m_currentBandIndex(-1)
+     , m_currentDialFrequencyHz(0)
++    , m_currentMode("FT8")
++    , m_autoDxModes(QStringList() << "FT8")
++    , m_bandSwitchingEnabled(false)
++    , m_runtimeRbnEnabled(true)
++    , m_runtimePskrEnabled(true)
++    , m_runtimeDxClusterEnabled(true)
++    , m_runtimeUsOnly(false)
++    , m_runtimeUseDefaultServers(true)
++    , m_runtimeDxClusterServerCount(0)
+     , m_cty(cty)
+     , m_hvDxccTracker(nullptr)
+     , m_qsoCount(0)
+@@ -95,6 +108,9 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     m_bandManager->loadSettings(settingsPath);
+ 
+     m_localSpotBridge = new LocalSpotBridge(this);
++    // Runtime configuration may propagate the configured callsign to the local
++    // bridge, so every component it owns must exist before loading the INI.
++    loadRuntimeConfig(settingsPath);
+ 
+     // Create slot finder for TX frequency analysis after band changes
+     m_slotFinder = new HvSlotFinder(this);
+@@ -188,12 +204,17 @@ void AutoDxerCore::setHvDxccTracker(HvDxccTracker *tracker)
+ 
+ void AutoDxerCore::setEnabled(bool enabled)
+ {
+-    if (m_enabled == enabled) return;
++    m_desiredEnabled = enabled;
++    const bool effective = enabled && isConfiguredMode(m_currentMode);
++    if (m_enabled == effective) return;
+ 
+-    m_enabled = enabled;
+-    emit debugMessage(QString("AutoDxerCore: %1").arg(enabled ? "ENABLED" : "DISABLED"));
++    m_enabled = effective;
++    emit debugMessage(QString("AutoDxerCore: desired=%1 effective=%2 mode=%3")
++                      .arg(enabled ? "ON" : "OFF")
++                      .arg(effective ? "ON" : "OFF")
++                      .arg(m_currentMode));
+ 
+-    if (enabled) {
++    if (effective) {
+         // CRITICAL: Disable "CQ on free slot" - AutoDxer is search-and-pounce only
+         emit debugMessage("AutoDxerCore: Disabling 'CQ on free slot' - search and pounce mode only");
+         emit requestDisableCQOnFreeSlot();
+@@ -220,6 +241,156 @@ void AutoDxerCore::setEnabled(bool enabled)
+     }
+ }
+ 
++bool AutoDxerCore::isConfiguredMode(const QString &mode) const
++{
++    return m_autoDxModes.contains(mode.trimmed().toUpper());
++}
++
++void AutoDxerCore::setCurrentMode(const QString &mode)
++{
++    const QString normalized = mode.trimmed().toUpper();
++    m_currentMode = normalized;
++    setEnabled(m_desiredEnabled);
++}
++
++void AutoDxerCore::loadRuntimeConfig(const QString &settingsPath)
++{
++    const AutoDxRuntimeConfig config = AutoDxRuntimeConfig::load(settingsPath);
++    m_desiredEnabled = config.desiredEnabled;
++    m_autoDxModes = config.modes;
++    m_bandSwitchingEnabled = config.bandSwitchingEnabled;
++    m_scarceTargetThreshold = config.scarceThreshold;
++    m_atnoChaseType = static_cast<ATNOChaseType>(config.atnoChaseType);
++    m_bandManager->loadSettings(settingsPath);
++
++    m_targetScorer->setTargetWeights(config.newDxccWeight, config.newBandSlotWeight, config.newGridWeight,
++                                     config.callingMeWeight, config.cqWeight, config.snrWeight);
++    m_targetScorer->setPriorityDXCC(config.newDxccWeight > 0);
++    m_targetScorer->setPriorityBandSlot(config.newBandSlotWeight > 0);
++    m_targetScorer->setPriorityGrid(config.gridChaseEnabled && config.newGridWeight > 0);
++    m_targetScorer->setUSGridOnly(config.gridUsOnly);
++    m_targetScorer->setMinSNR(config.minSnr);
++
++    if (!config.callsign.isEmpty()) setCallsign(config.callsign);
++    if (!config.grid.isEmpty()) {
++        setMyGrid(config.grid);
++        m_spotAggregator->setGrid(config.grid);
++    }
++
++    m_runtimeRbnEnabled = config.rbnEnabled;
++    m_runtimePskrEnabled = config.pskrEnabled;
++    m_runtimeDxClusterEnabled = config.dxClusterEnabled;
++    m_runtimeUsOnly = config.usOnly;
++    m_runtimeUseDefaultServers = config.useDefaultServers;
++    m_runtimeCustomServers = config.customServers;
++    m_spotAggregator->setRBNEnabled(m_runtimeRbnEnabled);
++    m_spotAggregator->setRBNHost(config.rbnHost);
++    m_spotAggregator->setRBNPort(config.rbnPort);
++    m_spotAggregator->setPSKREnabled(m_runtimePskrEnabled);
++    m_spotAggregator->setPSKRPollInterval(config.pskrPollInterval);
++    m_spotAggregator->setDxClusterEnabled(m_runtimeDxClusterEnabled);
++    m_spotAggregator->setUSOnly(m_runtimeUsOnly);
++    m_spotAggregator->setUseDefaultServers(m_runtimeUseDefaultServers);
++
++    m_runtimeDxClusterServerCount = 0;
++    if (!m_runtimeUseDefaultServers) {
++        m_spotAggregator->clearDxClusterServers();
++        for (const QString &server : config.customServers) {
++            const QStringList parts = server.split("|");
++            if (parts.size() < 4 || parts.at(3).trimmed().toLower() != "true") continue;
++            bool validPort = false;
++            const int port = parts.at(2).toInt(&validPort);
++            if (!validPort || port < 1 || port > 65535 || parts.at(1).trimmed().isEmpty()) continue;
++            m_spotAggregator->dxClusterClient()->addServer(
++                ClusterServer(parts.at(0).trimmed(), parts.at(1).trimmed(), port));
++            ++m_runtimeDxClusterServerCount;
++        }
++    } else {
++        m_runtimeDxClusterServerCount = m_spotAggregator->dxClusterClient()->totalServerCount();
++    }
++
++    emit debugMessage(QString("AUTODX-RUNTIME-CONFIG: modes=%1 bands=%2 switch=%3 RBN=%4 PSKR=%5 DXC=%6 USOnly=%7")
++                      .arg(m_autoDxModes.join(","))
++                      .arg(m_bandManager->getEnabledBands().size())
++                      .arg(m_bandSwitchingEnabled ? "on" : "off")
++                      .arg(m_runtimeRbnEnabled ? "on" : "off")
++                      .arg(m_runtimePskrEnabled ? "on" : "off")
++                      .arg(m_runtimeDxClusterEnabled ? "on" : "off")
++                      .arg(m_runtimeUsOnly ? "on" : "off"));
++}
++
++QJsonObject AutoDxerCore::runtimeConfigStatus() const
++{
++    QJsonArray modes;
++    for (const QString &mode : m_autoDxModes) modes.append(mode);
++    QJsonArray bands;
++    if (m_bandManager) {
++        for (int band : m_bandManager->getEnabledBands()) bands.append(band);
++    }
++    QJsonObject rbn;
++    rbn["enabled"] = m_runtimeRbnEnabled;
++    rbn["host"] = m_spotAggregator ? m_spotAggregator->rbnHost() : QString();
++    rbn["port"] = m_spotAggregator ? m_spotAggregator->rbnPort() : 0;
++    QJsonObject pskr;
++    pskr["enabled"] = m_runtimePskrEnabled;
++    pskr["poll_interval_seconds"] = m_spotAggregator ? m_spotAggregator->pskrPollInterval() : 0;
++    QJsonObject cluster;
++    cluster["enabled"] = m_runtimeDxClusterEnabled;
++    cluster["use_default_servers"] = m_runtimeUseDefaultServers;
++    cluster["server_count"] = m_runtimeDxClusterServerCount;
++    QJsonArray servers;
++    for (const QString &encoded : m_runtimeCustomServers) {
++        const QStringList parts = encoded.split("|");
++        if (parts.size() < 4) continue;
++        QJsonObject server;
++        server["name"] = parts.at(0).trimmed();
++        server["host"] = parts.at(1).trimmed();
++        server["port"] = parts.at(2).toInt();
++        server["enabled"] = parts.at(3).trimmed().compare("true", Qt::CaseInsensitive) == 0;
++        servers.append(server);
++    }
++    cluster["servers"] = servers;
++    QJsonObject sources;
++    sources["rbn"] = rbn;
++    sources["psk_reporter"] = pskr;
++    sources["dx_cluster"] = cluster;
++    sources["us_only"] = m_runtimeUsOnly;
++    sources["us_only_semantics"] = "preferred_with_rare_dx_exceptions";
++    QJsonObject priority;
++    priority["new_dxcc"] = m_targetScorer->newDxccWeight();
++    priority["new_band_slot"] = m_targetScorer->newBandSlotWeight();
++    priority["new_grid"] = m_targetScorer->newGridWeight();
++    priority["calling_me"] = m_targetScorer->callingMeWeight();
++    priority["cq"] = m_targetScorer->cqWeight();
++    priority["snr_per_db"] = m_targetScorer->snrWeight();
++    QJsonObject eligibility;
++    eligibility["new_dxcc"] = m_targetScorer->priorityDXCCEnabled();
++    eligibility["new_band_slot"] = m_targetScorer->priorityBandSlotEnabled();
++    eligibility["new_grid"] = m_targetScorer->priorityGridEnabled();
++    eligibility["calling_me"] = m_targetScorer->callingMeWeight() > 0;
++    eligibility["random_worked_calls"] = false;
++    QJsonObject result;
++    result["schema_version"] = 1;
++    result["desired_enabled"] = m_desiredEnabled;
++    result["effective_enabled"] = m_enabled;
++    result["current_mode"] = m_currentMode;
++    result["mode_allowed"] = isConfiguredMode(m_currentMode);
++    result["auto_dx_modes"] = modes;
++    result["band_switching_enabled"] = m_bandSwitchingEnabled;
++    result["enabled_bands"] = bands;
++    result["callsign"] = m_myCallsign;
++    result["grid"] = m_myGrid;
++    result["min_snr"] = m_targetScorer->minSNR();
++    result["grid_chase_enabled"] = m_targetScorer->priorityGridEnabled();
++    result["grid_chase_us_only"] = m_targetScorer->isUSGridOnly();
++    result["target_priority"] = priority;
++    result["eligibility"] = eligibility;
++    result["atno_chase_type"] = static_cast<int>(m_atnoChaseType);
++    result["scarce_threshold"] = m_scarceTargetThreshold;
++    result["spot_sources"] = sources;
++    return result;
++}
++
+ void AutoDxerCore::setCallsign(const QString &call)
+ {
+     m_myCallsign = call.toUpper();
+@@ -1058,6 +1228,7 @@ void AutoDxerCore::evaluateTargets()
+     int externalCount = 0;
+ 
+     for (const ExternalSpot &spot : externalSpots) {
++        if (spot.source != "LOCAL" && !AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)) continue;
+         if (containsCallsign(activeStations, spot.callsign)) continue;
+         CachedDecode converted = spotToCachedDecode(spot);
+         activeStations.append(converted);
+@@ -1834,6 +2005,12 @@ bool AutoDxerCore::containsCallsign(const QList<CachedDecode> &list, const QStri
+ 
+ void AutoDxerCore::checkCrossBandAlerts()
+ {
++    // Cross-band alerts are opt-in.  Loading enabled bands alone must never
++    // permit a background QSY; the explicit runtime gate is authoritative.
++    if (!m_bandSwitchingEnabled) {
++        return;
++    }
++
+     // Don't interrupt active QSO for cross-band alerts
+     // Check both state AND m_targetRespondedToUs - the flag persists even when
+     // MSHV removes target from queue (which may reset state to Listening)
+@@ -1882,6 +2059,9 @@ void AutoDxerCore::checkCrossBandAlerts()
+ 
+         QList<ExternalSpot> spots = m_spotAggregator->getSpots(band, 120);
+         for (const ExternalSpot &spot : spots) {
++            // Network spots may move the radio only with explicit FT8 source
++            // evidence.  Frequency proximity alone is never a mode signal.
++            if (spot.source != "LOCAL" && !AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)) continue;
+             QString entity;
+             if (m_cty) entity = m_cty->FindCountry(spot.callsign, false);
+ 
+@@ -1892,8 +2072,10 @@ void AutoDxerCore::checkCrossBandAlerts()
+             }
+ 
+             // Check if this is needed (ATNO or new band slot) - same logic as standard freq chasing
+-            bool isNewDxcc = m_dxccTracker->isNewDXCCByCall(spot.callsign);
+-            bool isNewBandSlot = !isNewDxcc && m_dxccTracker->isNewBandSlotByCall(spot.callsign, band);
++            bool isNewDxcc = m_targetScorer->priorityDXCCEnabled() &&
++                             m_dxccTracker->isNewDXCCByCall(spot.callsign);
++            bool isNewBandSlot = m_targetScorer->priorityBandSlotEnabled() &&
++                                 m_dxccTracker->isNewBandSlotByCall(spot.callsign, band);
+             bool isNeeded = isNewDxcc || isNewBandSlot;
+ 
+             // DEBUG: Log rare/DXpedition entities that are ALREADY WORKED on this band
+@@ -2044,9 +2226,12 @@ void AutoDxerCore::checkSameBandNonStdFreqAlerts()
+     QList<ExternalSpot> spots = m_spotAggregator->getSpots(m_currentBandIndex, 120);
+ 
+     for (const ExternalSpot &spot : spots) {
++        if (spot.source != "LOCAL" && !AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)) continue;
+         // Check if this is needed (ATNO or new band slot) - same logic as standard freq chasing
+-        bool isNewDxcc = m_dxccTracker->isNewDXCCByCall(spot.callsign);
+-        bool isNewBandSlot = !isNewDxcc && m_dxccTracker->isNewBandSlotByCall(spot.callsign, m_currentBandIndex);
++        bool isNewDxcc = m_targetScorer->priorityDXCCEnabled() &&
++                         m_dxccTracker->isNewDXCCByCall(spot.callsign);
++        bool isNewBandSlot = m_targetScorer->priorityBandSlotEnabled() &&
++                             m_dxccTracker->isNewBandSlotByCall(spot.callsign, m_currentBandIndex);
+         bool isNeeded = isNewDxcc || isNewBandSlot;
+ 
+         if (!isNeeded) {
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.h b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+index 5c3905b..07525b6 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+@@ -12,6 +12,7 @@
+ #include <QDateTime>
+ #include <QSet>
+ #include <QHash>
++#include <QJsonObject>
+ #include "decodecache.h"
+ #include "dxcctracker.h"
+ #include "targetscorer.h"
+@@ -70,13 +71,16 @@ public:
+     // Control
+     void setEnabled(bool enabled);
+     bool isEnabled() const { return m_enabled; }
++    bool desiredEnabled() const { return m_desiredEnabled; }
+     State state() const { return m_state; }
+     QString stateString() const;
++    QJsonObject runtimeConfigStatus() const;
+     
+     // Configuration
+     void setCallsign(const QString &call);
+     void setMyGrid(const QString &grid) { m_myGrid = grid; }
+     void setCurrentBand(int bandIndex);
++    void setCurrentMode(const QString &mode);
+     void setQueueWidget(MultiAnswerModW *queue) { m_queueWidget = queue; }
+     void setScarceTargetThreshold(int threshold) { m_scarceTargetThreshold = threshold; }
+     int scarceTargetThreshold() const { return m_scarceTargetThreshold; }
+@@ -182,6 +186,8 @@ private:
+     QString extractResponderCallsign(const QString &msg, const QString &myCall);
+     QString extractGrid(const QString &msg);
+     bool isCQMessage(const QString &msg);
++    void loadRuntimeConfig(const QString &settingsPath);
++    bool isConfiguredMode(const QString &mode) const;
+ 
+     // Spot integration helpers
+     CachedDecode spotToCachedDecode(const ExternalSpot &spot);
+@@ -198,6 +204,7 @@ private:
+     bool isScarcePriorityTarget() const;
+     
+     bool m_enabled;
++    bool m_desiredEnabled;
+     State m_state;
+     DxTarget m_currentTarget;
+ 
+@@ -208,6 +215,16 @@ private:
+     QString m_myGrid;
+     int m_currentBandIndex;
+     int m_currentDialFrequencyHz;  // Current dial frequency in Hz (for non-standard freq tracking)
++    QString m_currentMode;
++    QStringList m_autoDxModes;
++    bool m_bandSwitchingEnabled;
++    bool m_runtimeRbnEnabled;
++    bool m_runtimePskrEnabled;
++    bool m_runtimeDxClusterEnabled;
++    bool m_runtimeUsOnly;
++    bool m_runtimeUseDefaultServers;
++    int m_runtimeDxClusterServerCount;
++    QStringList m_runtimeCustomServers;
+     
+     // Components
+     DecodeCache *m_decodeCache;
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp b/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
+index 0361a9a..bc0bea0 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
+@@ -15,6 +15,7 @@
+ #include <QProgressDialog>
+ #include <QApplication>
+ #include <QMessageBox>
++#include <QSignalBlocker>
+ 
+ AutoDxerPanel::AutoDxerPanel(AutoDxerCore *core, QWidget *parent)
+     : QWidget(parent)
+@@ -60,16 +61,12 @@ void AutoDxerPanel::loadGridFromSettings()
+ {
+     if (m_appPath.isEmpty()) return;
+ 
+-    QSettings settings(m_appPath + "/settings/autodx.ini", QSettings::IniFormat);
+-    QString savedGrid = settings.value("SpotSources/Grid", "").toString();
+-
+-    if (!savedGrid.isEmpty()) {
+-        m_gridEdit->setText(savedGrid.toUpper());
+-        m_core->setMyGrid(savedGrid.toUpper());
+-        m_core->spotAggregator()->setGrid(savedGrid.toUpper());
+-        m_core->appendDebugMessage(QString("AutoDxerPanel: Loaded saved grid %1").arg(savedGrid.toUpper()));
+-        updateGridWarning();
+-    }
++    // AutoDxerCore owns the parsed/clamped runtime configuration.  The panel
++    // must only render it during startup; re-reading QSettings here used to
++    // create a second policy loader with different defaults.
++    const QSignalBlocker gridBlocker(m_gridEdit);
++    m_gridEdit->setText(m_core->spotAggregator()->grid().toUpper());
++    updateGridWarning();
+ }
+ 
+ void AutoDxerPanel::saveGridToSettings(const QString &grid)
+@@ -85,51 +82,30 @@ void AutoDxerPanel::loadEnableFromSettings()
+ {
+     if (m_appPath.isEmpty()) return;
+ 
+-    QSettings settings(m_appPath + "/settings/autodx.ini", QSettings::IniFormat);
+-    bool enabled = settings.value("AutoDx/Enabled", true).toBool();  // Default TRUE
+-
+-    m_enableCheck->setChecked(enabled);
+-    m_core->setEnabled(enabled);
+-
+-    if (enabled) {
+-        m_core->appendDebugMessage("AutoDxerPanel: Auto DXer enabled on startup (from settings)");
+-    }
++    // Render the already-applied authoritative core state with every signal
++    // blocked.  Startup display must never write the INI or re-apply policy.
++    const QSignalBlocker enableBlocker(m_enableCheck);
++    const QSignalBlocker usGridBlocker(m_usGridOnlyCheck);
++    const QSignalBlocker minSnrBlocker(m_minSnrSpin);
++    const QSignalBlocker scarceBlocker(m_scarceThresholdSpin);
++    const QSignalBlocker atnoBlocker(m_atnoChaseCombo);
++    const QSignalBlocker rbnBlocker(m_rbnCheck);
++    const QSignalBlocker pskrBlocker(m_pskrCheck);
++    const QSignalBlocker usOnlyBlocker(m_usOnlyCheck);
++
++    m_enableCheck->setChecked(m_core->desiredEnabled());
++    m_usGridOnlyCheck->setChecked(m_core->targetScorer()->isUSGridOnly());
++    m_minSnrSpin->setValue(m_core->targetScorer()->minSNR());
++    m_scarceThresholdSpin->setValue(m_core->scarceTargetThreshold());
++    m_rbnCheck->setChecked(m_core->spotAggregator()->rbnEnabled());
++    m_pskrCheck->setChecked(m_core->spotAggregator()->pskrEnabled());
++    m_usOnlyCheck->setChecked(m_core->spotAggregator()->isUSOnly());
+ 
+-    // Load US Grid Only setting (default TRUE - only chase US grids)
+-    bool usGridOnly = settings.value("GridChase/USOnly", true).toBool();
+-    m_usGridOnlyCheck->setChecked(usGridOnly);
+-    m_core->targetScorer()->setUSGridOnly(usGridOnly);
+-
+-    const int newDxccWeight = qMax(0, settings.value("TargetPriority/NewDxcc", TargetPriority::NewDXCC).toInt());
+-    const int newBandSlotWeight = qMax(0, settings.value("TargetPriority/NewBandSlot", TargetPriority::NewBandSlot).toInt());
+-    const int newGridWeight = qMax(1, settings.value("TargetPriority/NewGrid", TargetPriority::NewGrid).toInt());
+-    const int callingMeWeight = qMax(0, settings.value("TargetPriority/CallingMe", TargetPriority::CallingMe).toInt());
+-    const int cqWeight = qMax(0, settings.value("TargetPriority/Cq", TargetPriority::CQBonus).toInt());
+-    const int snrWeight = qMax(0, settings.value("TargetPriority/SnrPerDb", TargetPriority::SNRBonus).toInt());
+-    const bool gridChaseEnabled = settings.value("GridChase/Enabled", true).toBool();
+-    m_core->targetScorer()->setTargetWeights(newDxccWeight, newBandSlotWeight, newGridWeight,
+-                                             callingMeWeight, cqWeight, snrWeight);
+-    m_core->targetScorer()->setPriorityDXCC(newDxccWeight > 0);
+-    m_core->targetScorer()->setPriorityBandSlot(newBandSlotWeight > 0);
+-    m_core->targetScorer()->setPriorityGrid(gridChaseEnabled);
+-
+-    int minSnr = qBound(-30, settings.value("SpotSources/MinSNR", -20).toInt(), 0);
+-    m_minSnrSpin->setValue(minSnr);
+-    m_core->targetScorer()->setMinSNR(minSnr);
+-
+-    // Load Scarce Target Threshold (default 5)
+-    int scarceThreshold = settings.value("AutoDx/ScarceThreshold", 5).toInt();
+-    m_scarceThresholdSpin->setValue(scarceThreshold);
+-    m_core->setScarceTargetThreshold(scarceThreshold);
+-
+-    // Load ATNO Chase Type (default: Both - extended calling for ATNO and band slots)
+-    int atnoChaseType = settings.value("AutoDx/ATNOChaseType",
+-                                        static_cast<int>(AutoDxerCore::ATNOChaseBoth)).toInt();
+-    int comboIndex = m_atnoChaseCombo->findData(atnoChaseType);
++    const int atnoChaseType = static_cast<int>(m_core->atnoChaseType());
++    const int comboIndex = m_atnoChaseCombo->findData(atnoChaseType);
+     if (comboIndex >= 0) {
+         m_atnoChaseCombo->setCurrentIndex(comboIndex);
+     }
+-    m_core->setATNOChaseType(static_cast<AutoDxerCore::ATNOChaseType>(atnoChaseType));
+ 
+     // Load band selection
+     loadBandSelectionFromSettings();
+@@ -139,22 +115,20 @@ void AutoDxerPanel::loadBandSelectionFromSettings()
+ {
+     if (m_appPath.isEmpty()) return;
+ 
+-    QSettings settings(m_appPath + "/settings/autodx.ini", QSettings::IniFormat);
+-    QString bandStr = settings.value("BandSelection/EnabledBands", "3,4,6,7,8,9,10,11,12").toString();
+-    QStringList bands = bandStr.split(",", Qt::SkipEmptyParts);
+-
+-    m_band160m->setChecked(bands.contains("3"));
+-    m_band80m->setChecked(bands.contains("4"));
+-    m_band40m->setChecked(bands.contains("6"));
+-    m_band30m->setChecked(bands.contains("7"));
+-    m_band20m->setChecked(bands.contains("8"));
+-    m_band17m->setChecked(bands.contains("9"));
+-    m_band15m->setChecked(bands.contains("10"));
+-    m_band12m->setChecked(bands.contains("11"));
+-    m_band10m->setChecked(bands.contains("12"));
+-    m_band6m->setChecked(bands.contains("14"));  // 6m is index 14 in MSHV (NOT 13!)
+-
+-    m_core->appendDebugMessage(QString("AutoDxerPanel: Loaded %1 enabled bands from settings").arg(bands.count()));
++    const QList<int> bands = m_core->bandManager()->getEnabledBands();
++    const QSignalBlocker b160(m_band160m), b80(m_band80m), b40(m_band40m), b30(m_band30m);
++    const QSignalBlocker b20(m_band20m), b17(m_band17m), b15(m_band15m), b12(m_band12m);
++    const QSignalBlocker b10(m_band10m), b6(m_band6m);
++    m_band160m->setChecked(bands.contains(3));
++    m_band80m->setChecked(bands.contains(4));
++    m_band40m->setChecked(bands.contains(6));
++    m_band30m->setChecked(bands.contains(7));
++    m_band20m->setChecked(bands.contains(8));
++    m_band17m->setChecked(bands.contains(9));
++    m_band15m->setChecked(bands.contains(10));
++    m_band12m->setChecked(bands.contains(11));
++    m_band10m->setChecked(bands.contains(12));
++    m_band6m->setChecked(bands.contains(14));
+ }
+ 
+ void AutoDxerPanel::saveBandSelectionToSettings()
+@@ -328,10 +302,10 @@ void AutoDxerPanel::setupUI()
+ 
+     settingsLayout->addSpacing(10);
+ 
+-    m_usOnlyCheck = new QCheckBox("US Spotters Only");
++    m_usOnlyCheck = new QCheckBox("US Spotters Preferred");
+     m_usOnlyCheck->setChecked(m_core->spotAggregator()->isUSOnly());
+-    m_usOnlyCheck->setToolTip("Filter spots to only include those from US-based skimmers.\n"
+-                              "Disable to receive spots from worldwide sources.");
++    m_usOnlyCheck->setToolTip("Prefer spots from US-based skimmers; rare-DX exceptions remain eligible.\n"
++                              "Disable to receive ordinary spots from worldwide sources.");
+     connect(m_usOnlyCheck, SIGNAL(toggled(bool)), this, SLOT(onUsOnlyToggled(bool)));
+     settingsLayout->addWidget(m_usOnlyCheck);
+ 
+@@ -604,7 +578,11 @@ void AutoDxerPanel::updateStatusDisplay()
+ {
+     m_stateLabel->setText(QString("State: %1").arg(m_core->stateString()));
+     m_bandLabel->setText(QString("Band: %1").arg(m_core->bandManager()->currentBandName()));
+-    m_enableCheck->setChecked(m_core->isEnabled());
++    // The checkbox represents the persisted preference, not the mode-gated
++    // effective state.  Never turn a desired-on preference off while merely
++    // rendering a non-FT8 or otherwise ineffective state.
++    const QSignalBlocker enableBlocker(m_enableCheck);
++    m_enableCheck->setChecked(m_core->desiredEnabled());
+ }
+ 
+ void AutoDxerPanel::onImportAdif()
+@@ -706,7 +684,7 @@ void AutoDxerPanel::onUsOnlyToggled(bool checked)
+ {
+     m_core->spotAggregator()->setUSOnly(checked);
+     if (checked) {
+-        m_core->appendDebugMessage("SpotAggregator: US-only filter ENABLED - international spots will be ignored");
++        m_core->appendDebugMessage("SpotAggregator: US spotters preferred - rare-DX exceptions remain eligible");
+     } else {
+         m_core->appendDebugMessage("SpotAggregator: US-only filter DISABLED - receiving worldwide spots");
+     }
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+new file mode 100644
+index 0000000..1d2d85d
+--- /dev/null
++++ b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+@@ -0,0 +1,101 @@
++#ifndef AUTODXRUNTIMECONFIG_H
++#define AUTODXRUNTIMECONFIG_H
++
++#include <QSettings>
++#include <QStringList>
++#include <QRegExp>
++
++// Side-effect-free loader shared by the active core and native fixtures.  It
++// deliberately contains no widgets and opens no network connections.
++struct AutoDxRuntimeConfig
++{
++    bool desiredEnabled;
++    QStringList modes;
++    bool bandSwitchingEnabled;
++    int atnoChaseType;
++    int scarceThreshold;
++    int newDxccWeight;
++    int newBandSlotWeight;
++    int newGridWeight;
++    int callingMeWeight;
++    int cqWeight;
++    int snrWeight;
++    bool gridChaseEnabled;
++    bool gridUsOnly;
++    int minSnr;
++    QString callsign;
++    QString grid;
++    bool rbnEnabled;
++    QString rbnHost;
++    int rbnPort;
++    bool pskrEnabled;
++    int pskrPollInterval;
++    bool dxClusterEnabled;
++    bool usOnly;
++    bool useDefaultServers;
++    QStringList customServers;
++
++    bool modeAllowed(const QString &mode) const
++    {
++        return modes.contains(mode.trimmed().toUpper());
++    }
++
++    bool effectiveEnabled(const QString &mode) const
++    {
++        return desiredEnabled && modeAllowed(mode);
++    }
++
++    static bool acceptsExternalMode(const QString &mode)
++    {
++        return mode.trimmed().compare("FT8", Qt::CaseInsensitive) == 0;
++    }
++
++    static QString explicitDigitalMode(const QString &text)
++    {
++        QRegExp modeRx("(^|[^A-Z0-9])(FT8|FT4)([^A-Z0-9]|$)", Qt::CaseInsensitive);
++        if (modeRx.indexIn(text) < 0) return QString();
++        return modeRx.cap(2).toUpper();
++    }
++
++    static AutoDxRuntimeConfig load(const QString &settingsPath)
++    {
++        QSettings settings(settingsPath + "/autodx.ini", QSettings::IniFormat);
++        AutoDxRuntimeConfig c;
++        c.desiredEnabled = settings.value("AutoDx/Enabled", false).toBool();
++        c.modes.clear();
++        const bool modesConfigured = settings.contains("AutoDx/Modes");
++        const QStringList requested = settings.value("AutoDx/Modes", "FT8")
++            .toString().toUpper().split(",", Qt::SkipEmptyParts);
++        // Phase 1 supports the proven FT8 core only; unknown/FT4 values cannot
++        // expand effective automation merely by editing the INI.
++        if (!modesConfigured || requested.contains("FT8")) c.modes << "FT8";
++        c.bandSwitchingEnabled = settings.value("BandSwitching/Enabled", false).toBool();
++        c.atnoChaseType = qBound(0, settings.value("AutoDx/ATNOChaseType", 3).toInt(), 3);
++        c.scarceThreshold = qBound(0, settings.value("AutoDx/ScarceThreshold", 5).toInt(), 20);
++        c.newDxccWeight = qMax(0, settings.value("TargetPriority/NewDxcc", 10000).toInt());
++        c.newBandSlotWeight = qMax(0, settings.value("TargetPriority/NewBandSlot", 1000).toInt());
++        c.newGridWeight = qMax(1, settings.value("TargetPriority/NewGrid", 500).toInt());
++        c.callingMeWeight = qMax(0, settings.value("TargetPriority/CallingMe", 400).toInt());
++        c.cqWeight = qMax(0, settings.value("TargetPriority/Cq", 200).toInt());
++        c.snrWeight = qMax(0, settings.value("TargetPriority/SnrPerDb", 10).toInt());
++        c.gridChaseEnabled = settings.value("GridChase/Enabled", true).toBool();
++        c.gridUsOnly = settings.value("GridChase/USOnly", false).toBool();
++        c.minSnr = qBound(-30, settings.value("SpotSources/MinSNR", -20).toInt(), 0);
++        c.callsign = settings.value("SpotSources/Callsign", "").toString().trimmed().toUpper();
++        c.grid = settings.value("SpotSources/Grid", "").toString().trimmed().toUpper();
++        c.rbnEnabled = settings.value("SpotSources/RbnEnabled", true).toBool();
++        c.rbnHost = settings.value("SpotSources/RbnHost", "telnet.reversebeacon.net").toString().trimmed();
++        c.rbnPort = qBound(1, settings.value("SpotSources/RbnPort", 7001).toInt(), 65535);
++        c.pskrEnabled = settings.value("SpotSources/PskEnabled", true).toBool();
++        c.pskrPollInterval = qBound(60, settings.value("SpotSources/PskPollInterval", 120).toInt(), 600);
++        c.dxClusterEnabled = settings.value("SpotSources/DxcEnabled", true).toBool();
++        c.usOnly = settings.value("SpotSources/UsOnlyFilter", false).toBool();
++        c.useDefaultServers = settings.value("SpotSources/UseDefaultDxClusterServers", true).toBool();
++        const int count = qBound(0, settings.value("DxClusterServers/Count", 0).toInt(), 16);
++        for (int i = 0; i < count; ++i)
++            c.customServers << settings.value(QString("DxClusterServers/Server%1").arg(i), "").toString();
++        return c;
++    }
++};
++
++#endif // AUTODXRUNTIMECONFIG_H
+diff --git a/MSHV_2762/src/HvAutoDxer/dxclusterclient.cpp b/MSHV_2762/src/HvAutoDxer/dxclusterclient.cpp
+index 38d3b81..75f9302 100644
+--- a/MSHV_2762/src/HvAutoDxer/dxclusterclient.cpp
++++ b/MSHV_2762/src/HvAutoDxer/dxclusterclient.cpp
+@@ -2,7 +2,8 @@
+  * Telnet client for DX cluster spot aggregation
+  * May be used under the terms of the GNU General Public License (GPL)
+  */
+-#include "dxclusterclient.h"
++#include "dxclusterclient.h"
++#include "autodxruntimeconfig.h"
+ #include <QRegExp>
+ 
+ DxClusterClient::DxClusterClient(QObject *parent)
+@@ -194,10 +195,9 @@ void DxClusterClient::onConnected()
+         if (serverName.contains("VE7CC", Qt::CaseInsensitive)) {
+             // CC Cluster specific commands for optimal FT8 spot coverage
+             // Reference: https://bcdxc.org/ve7cc/ccc/CCC_Commands.htm
+-            socket->write("set/skimmer\r\n");        // Enable skimmer spots
+-            socket->write("set/ft8\r\n");            // Enable FT8 mode
+-            socket->write("set/ft4\r\n");            // Enable FT4 mode
+-            emit debugMessage(QString("DxCluster: Sent CC User filter commands to %1").arg(serverName));
++            socket->write("set/skimmer\r\n");        // Enable skimmer spots
++            socket->write("set/ft8\r\n");            // Enable FT8 mode
++            emit debugMessage(QString("DxCluster: Sent CC User filter commands to %1").arg(serverName));
+         } else {
+             // Generic cluster filter commands
+             socket->write("set/ft8\r\n");
+@@ -295,9 +295,10 @@ void DxClusterClient::parseSpotLine(const QString &line, const QString &serverNa
+     QString callsign = rx.cap(3);
+     QString comment = rx.cap(4).trimmed();
+ 
+-    // Check if it's an FT8 spot (if filter enabled)
+-    // Check both comment AND frequency - FT8 spots might not have "FT8" in comment
+-    if (m_ft8Only && !isFT8Spot(comment, freqKHz)) {
++    // Phase 1 is deliberately FT8-only.  A dial-frequency guess is not mode
++    // evidence: FT4 and other traffic can share the same +/-25 kHz window.
++    const QString mode = explicitDigitalMode(comment);
++    if (m_ft8Only && !AutoDxRuntimeConfig::acceptsExternalMode(mode)) {
+         static int rejectCount = 0;
+         if (rejectCount++ < 20) {  // Log first 20 rejections for debugging
+             emit debugMessage(QString("DxCluster-REJECT: %1 @ %2 kHz comment='%3' (not FT8)")
+@@ -321,7 +322,8 @@ void DxClusterClient::parseSpotLine(const QString &line, const QString &serverNa
+     spot.spotter = spotter;
+     spot.frequencyKHz = freqKHz;
+     spot.bandIndex = bandIndex;
+-    spot.snr = snr;
++    spot.snr = snr;
++    spot.mode = mode;
+     spot.comment = comment;
+     spot.source = serverName;
+     spot.timestamp = QDateTime::currentDateTimeUtc();
+@@ -335,40 +337,10 @@ void DxClusterClient::parseSpotLine(const QString &line, const QString &serverNa
+     emit spotReceived(spot);
+ }
+ 
+-bool DxClusterClient::isFT8Spot(const QString &comment, double freqKHz) const
+-{
+-    // Check comment for mode indicator
+-    QString upper = comment.toUpper();
+-    if (upper.contains("FT8") || upper.contains("FT4")) {
+-        return true;
+-    }
+-
+-    // Check if frequency is in FT8 dial frequency range (+/- 25 kHz)
+-    // Wider range captures DXpedition split frequencies (e.g., 14.090 vs 14.074)
+-    // Standard FT8 dial frequencies:
+-    static const double ft8Freqs[] = {
+-        1840.0,   // 160m
+-        3573.0,   // 80m
+-        5357.0,   // 60m
+-        7074.0,   // 40m
+-        10136.0,  // 30m
+-        14074.0,  // 20m
+-        18100.0,  // 17m
+-        21074.0,  // 15m
+-        24915.0,  // 12m
+-        28074.0,  // 10m
+-        50313.0   // 6m
+-    };
+-
+-    for (double ft8Freq : ft8Freqs) {
+-        // 25 kHz window covers DXpedition/contest split frequencies
+-        if (freqKHz >= ft8Freq - 25.0 && freqKHz <= ft8Freq + 25.0) {
+-            return true;
+-        }
+-    }
+-
+-    return false;
+-}
++QString DxClusterClient::explicitDigitalMode(const QString &comment) const
++{
++    return AutoDxRuntimeConfig::explicitDigitalMode(comment);
++}
+ 
+ int DxClusterClient::frequencyToBandIndex(double freqKHz) const
+ {
+diff --git a/MSHV_2762/src/HvAutoDxer/dxclusterclient.h b/MSHV_2762/src/HvAutoDxer/dxclusterclient.h
+index c45dfd2..7760c5c 100644
+--- a/MSHV_2762/src/HvAutoDxer/dxclusterclient.h
++++ b/MSHV_2762/src/HvAutoDxer/dxclusterclient.h
+@@ -30,8 +30,9 @@ struct ClusterSpot
+     QString spotter;
+     double frequencyKHz;
+     int bandIndex;
+-    int snr;
+-    QString comment;
++    int snr;
++    QString mode;     // Explicit mode parsed from the cluster comment.
++    QString comment;
+     QString source;  // Server name
+     QDateTime timestamp;
+ 
+@@ -78,7 +79,7 @@ private slots:
+ private:
+     void connectToServer(int index);
+     void parseSpotLine(const QString &line, const QString &serverName);
+-    bool isFT8Spot(const QString &comment, double freqKHz) const;
++    QString explicitDigitalMode(const QString &comment) const;
+     int frequencyToBandIndex(double freqKHz) const;
+ 
+     QString m_callsign;
+diff --git a/MSHV_2762/src/HvAutoDxer/localspotbridge.cpp b/MSHV_2762/src/HvAutoDxer/localspotbridge.cpp
+index 0b52ea6..9421e8c 100644
+--- a/MSHV_2762/src/HvAutoDxer/localspotbridge.cpp
++++ b/MSHV_2762/src/HvAutoDxer/localspotbridge.cpp
+@@ -33,8 +33,9 @@ void LocalSpotBridge::onLocalDecode(const CachedDecode &decode)
+     }
+     spot.bandIndex = decode.bandIndex;
+     spot.snr = decode.snr;
+-    spot.isUSSpotter = true;  // Local decode is always "us"
+-    spot.source = "LOCAL";
++    spot.isUSSpotter = true;  // Local decode is always "us"
++    spot.mode = "FT8";       // Bridge is active only in the Phase 1 FT8 core.
++    spot.source = "LOCAL";
+     spot.timestamp = QDateTime::currentDateTimeUtc();
+     spot.spotterCount = 1;
+     spot.spotters.append(spot.spotter);
+diff --git a/MSHV_2762/src/HvAutoDxer/spotaggregator.cpp b/MSHV_2762/src/HvAutoDxer/spotaggregator.cpp
+index 523b3ad..ae0b53d 100644
+--- a/MSHV_2762/src/HvAutoDxer/spotaggregator.cpp
++++ b/MSHV_2762/src/HvAutoDxer/spotaggregator.cpp
+@@ -3,6 +3,7 @@
+  * May be used under the terms of the GNU General Public License (GPL)
+  */
+ #include "spotaggregator.h"
++#include "autodxruntimeconfig.h"
+ #include "dxclusterclient.h"
+ #include <QJsonDocument>
+ #include <QJsonArray>
+@@ -128,7 +129,8 @@ void SpotAggregator::setGrid(const QString &grid)
+     m_myGrid = grid;
+ 
+     // If grid was just set and PSKR is enabled, trigger immediate poll
+-    if (wasEmpty && !m_myGrid.isEmpty() && m_myGrid.length() >= 2 && m_pskrEnabled) {
++    if (wasEmpty && !m_myGrid.isEmpty() && m_myGrid.length() >= 2 && m_pskrEnabled &&
++        m_cleanupTimer->isActive()) {
+         emit debugMessage(QString("SpotAggregator: Grid set to '%1' - triggering immediate PSKReporter query").arg(m_myGrid));
+         pollPSKR();
+     }
+@@ -173,6 +175,7 @@ bool SpotAggregator::isConnected() const
+ void SpotAggregator::setRBNEnabled(bool enabled)
+ {
+     m_rbnEnabled = enabled;
++    if (!m_cleanupTimer->isActive()) return;
+     if (enabled && m_rbnSocket->state() == QAbstractSocket::UnconnectedState) {
+         connectRBN();
+     } else if (!enabled && m_rbnSocket->state() != QAbstractSocket::UnconnectedState) {
+@@ -183,6 +186,7 @@ void SpotAggregator::setRBNEnabled(bool enabled)
+ void SpotAggregator::setPSKREnabled(bool enabled)
+ {
+     m_pskrEnabled = enabled;
++    if (!m_cleanupTimer->isActive()) return;
+     if (enabled) {
+         pollPSKR();
+         m_pskrPollTimer->start();
+@@ -191,9 +195,15 @@ void SpotAggregator::setPSKREnabled(bool enabled)
+     }
+ }
+ 
++void SpotAggregator::setPSKRPollInterval(int seconds)
++{
++    m_pskrPollTimer->setInterval(qBound(60, seconds, 600) * 1000);
++}
++
+ void SpotAggregator::setDxClusterEnabled(bool enabled)
+ {
+     m_dxClusterEnabled = enabled;
++    if (!m_cleanupTimer->isActive()) return;
+     if (enabled) {
+         m_dxClusterClient->start();
+     } else {
+@@ -286,13 +296,15 @@ void SpotAggregator::parseRBNLine(const QString &line)
+     if (!line.startsWith("DX de ")) return;
+ 
+     // Updated regex - handle RBN spotter patterns including multi-node skimmers
+-    QRegExp rx("DX de ([A-Z0-9/]+(?:-\\d)?-#):\\s+(\\d+\\.\\d+)\\s+([A-Z0-9/]+)\\s+FT[48]\\s+(-?\\d+)");
++    QRegExp rx("DX de ([A-Z0-9/]+(?:-\\d)?-#):\\s+(\\d+\\.\\d+)\\s+([A-Z0-9/]+)\\s+(FT8|FT4)\\s+(-?\\d+)", Qt::CaseInsensitive);
+     if (rx.indexIn(line) < 0) return;
+ 
+     QString spotter = rx.cap(1);
+     double freqKHz = rx.cap(2).toDouble();
+     QString callsign = rx.cap(3);
+-    int snr = rx.cap(4).toInt();
++    const QString mode = rx.cap(4).toUpper();
++    int snr = rx.cap(5).toInt();
++    if (!AutoDxRuntimeConfig::acceptsExternalMode(mode)) return;
+ 
+     // Filter for US spotters only - BUT EXEMPT RARE DX
+     if (m_usOnly && !isUSCallsign(spotter) && !isRareDXCallsign(callsign)) {
+@@ -331,6 +343,7 @@ void SpotAggregator::parseRBNLine(const QString &line)
+     spot.bandIndex = bandIndex;
+     spot.snr = snr;
+     spot.isUSSpotter = isUSCallsign(spotter);
++    spot.mode = mode;
+     spot.source = "RBN";
+     spot.timestamp = now;
+     spot.spotterCount = 1;
+@@ -410,6 +423,8 @@ void SpotAggregator::onPSKRReply(QNetworkReply *reply)
+         QJsonObject obj = val.toObject();
+         QString receiver = obj["receiverCallsign"].toString();
+         QString callsign = obj["senderCallsign"].toString();
++        const QString mode = obj["mode"].toString().trimmed().toUpper();
++        if (!AutoDxRuntimeConfig::acceptsExternalMode(mode)) continue;
+ 
+         // Filter for US receivers only - BUT EXEMPT RARE DX
+         if (m_usOnly && !isUSCallsign(receiver) && !isRareDXCallsign(callsign)) {
+@@ -455,6 +470,7 @@ void SpotAggregator::onPSKRReply(QNetworkReply *reply)
+         spot.frequencyHz = frequencyHz;
+         spot.snr = snr;
+         spot.isUSSpotter = isUSCallsign(receiver);
++        spot.mode = mode;
+         spot.source = "PSKR";
+         spot.timestamp = now;
+         spot.bandIndex = bandIndex;
+@@ -629,6 +645,11 @@ void SpotAggregator::parsePSKRXML(const QByteArray &data)
+ 
+                 QString senderCall = attrs.value("senderCallsign").toString();
+                 QString receiverCall = attrs.value("receiverCallsign").toString();
++                const QString mode = attrs.value("mode").toString().trimmed().toUpper();
++                if (!AutoDxRuntimeConfig::acceptsExternalMode(mode)) {
++                    skipped++;
++                    continue;
++                }
+                 QString senderGrid = attrs.value("senderLocator").toString().left(4);
+                 int frequency = attrs.value("frequency").toInt();
+                 int snr = attrs.value("sNR").toInt();
+@@ -685,6 +706,7 @@ void SpotAggregator::parsePSKRXML(const QByteArray &data)
+                 spot.frequencyHz = frequency;
+                 spot.snr = snr;
+                 spot.isUSSpotter = isUSCallsign(receiverCall);
++                spot.mode = mode;
+                 spot.source = "PSKR-XML";
+                 spot.timestamp = now;
+                 spot.bandIndex = bandIndex;
+@@ -761,6 +783,8 @@ void SpotAggregator::clearDxClusterServers()
+ 
+ void SpotAggregator::onDxClusterSpot(ClusterSpot spot)
+ {
++    if (!AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)) return;
++
+     // Apply US-only filter if enabled - BUT EXEMPT RARE DX!
+     // Rare DXpeditions (KP5, 3Y, etc.) might only be spotted by non-US stations
+     // but US stations could still hear them. Don't filter these out.
+@@ -807,6 +831,7 @@ void SpotAggregator::onDxClusterSpot(ClusterSpot spot)
+     extSpot.bandIndex = spot.bandIndex;
+     extSpot.snr = spot.snr;
+     extSpot.isUSSpotter = isUSCallsign(spot.spotter);
++    extSpot.mode = spot.mode.toUpper();
+     extSpot.source = "DxCluster:" + spot.source;
+     extSpot.timestamp = now;
+     extSpot.spotterCount = 1;
+@@ -825,6 +850,10 @@ void SpotAggregator::onDxClusterSpot(ClusterSpot spot)
+ 
+ void SpotAggregator::addLocalSpot(ExternalSpot spot)
+ {
++    // Local decoder mode is controlled by AutoDxerCore's FT8-only effective
++    // gate.  Preserve explicit evidence so external-QSY filters cannot confuse
++    // local confirmation with an untyped network spot.
++    if (spot.mode.isEmpty()) spot.mode = "FT8";
+     // Local spots bypass US-only filter (they're from our own decoder)
+     // but still need valid band
+     if (spot.bandIndex < 3) {
+diff --git a/MSHV_2762/src/HvAutoDxer/spotaggregator.h b/MSHV_2762/src/HvAutoDxer/spotaggregator.h
+index 9131b7d..ee20d42 100644
+--- a/MSHV_2762/src/HvAutoDxer/spotaggregator.h
++++ b/MSHV_2762/src/HvAutoDxer/spotaggregator.h
+@@ -23,6 +23,7 @@ struct ExternalSpot
+     int bandIndex;
+     int snr;
+     bool isUSSpotter;
++    QString mode;    // Explicit source mode evidence; Phase 1 accepts FT8 only.
+     QString source;  // "RBN" or "PSKR" or "DXC"
+     QDateTime timestamp;
+ 
+@@ -49,11 +50,16 @@ public:
+     
+     void setRBNEnabled(bool enabled);
+     void setPSKREnabled(bool enabled);
++    void setPSKRPollInterval(int seconds);
+     void setDxClusterEnabled(bool enabled);
+     void setUSOnly(bool enabled) { m_usOnly = enabled; }
+     bool isUSOnly() const { return m_usOnly; }
+     bool isGridConfigured() const { return !m_myGrid.isEmpty() && m_myGrid.length() >= 4; }
+     QString grid() const { return m_myGrid; }
++    bool rbnEnabled() const { return m_rbnEnabled; }
++    bool pskrEnabled() const { return m_pskrEnabled; }
++    bool dxClusterEnabled() const { return m_dxClusterEnabled; }
++    int pskrPollInterval() const { return m_pskrPollTimer ? m_pskrPollTimer->interval() / 1000 : 120; }
+ 
+     // RBN configuration
+     void setRBNHost(const QString &host) { m_rbnHost = host; }
+@@ -66,6 +72,7 @@ public:
+     void addDefaultDxClusterServers();  // Add preconfigured servers
+     void clearDxClusterServers();       // Clear all servers (for settings override)
+     void setUseDefaultServers(bool useDefaults) { m_useDefaultServers = useDefaults; }
++    bool useDefaultServers() const { return m_useDefaultServers; }
+     
+     QList<ExternalSpot> getSpots(int bandIndex, int maxAgeSeconds = 120) const;
+     QList<ExternalSpot> getAllSpots() const { return m_spots.values(); }
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.h b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+index f4105e5..5f30b6e 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.h
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+@@ -68,6 +68,9 @@ public:
+     void setPriorityDXCC(bool enabled) { m_priorityDXCC = enabled; }
+     void setPriorityBandSlot(bool enabled) { m_priorityBandSlot = enabled; }
+     void setPriorityGrid(bool enabled) { m_priorityGrid = enabled; }
++    bool priorityDXCCEnabled() const { return m_priorityDXCC; }
++    bool priorityBandSlotEnabled() const { return m_priorityBandSlot; }
++    bool priorityGridEnabled() const { return m_priorityGrid; }
+     void setMyCallsign(const QString &callsign) { m_myCallsign = callsign.trimmed().toUpper(); }
+     void setTargetWeights(int newDxcc, int newBandSlot, int newGrid,
+                           int callingMe, int cqBonus, int snrPerDb) {
+@@ -78,6 +81,12 @@ public:
+         m_weightCQBonus = qMax(0, cqBonus);
+         m_weightSNRPerDb = qMax(0, snrPerDb);
+     }
++    int newDxccWeight() const { return m_weightNewDXCC; }
++    int newBandSlotWeight() const { return m_weightNewBandSlot; }
++    int newGridWeight() const { return m_weightNewGrid; }
++    int callingMeWeight() const { return m_weightCallingMe; }
++    int cqWeight() const { return m_weightCQBonus; }
++    int snrWeight() const { return m_weightSNRPerDb; }
+ 
+     // US-only grid filtering - only chase grids within US territory
+     void setUSGridOnly(bool enabled) { m_usGridOnly = enabled; }
+diff --git a/MSHV_2762/src/main_ms.cpp b/MSHV_2762/src/main_ms.cpp
+index c8ca278..ba166ef 100644
+--- a/MSHV_2762/src/main_ms.cpp
++++ b/MSHV_2762/src/main_ms.cpp
+@@ -768,6 +768,8 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+         state["provider"] = "mshv_auto_dx";
+         state["state"] = m_autoDxerCore->stateString();
+         state["enabled"] = m_autoDxerCore->isEnabled();
++        state["desired_enabled"] = m_autoDxerCore->desiredEnabled();
++        state["autodx_config"] = m_autoDxerCore->runtimeConfigStatus();
+         state["target_call"] = m_autoDxerCore->currentTarget().callsign;
+         state["frequency_hz"] = Om0rxStationGate::currentHz();
+         state["timestamp"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+@@ -777,7 +779,6 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     });
+     om0rxStateTimer->start(2000);
+     m_autoDxerPanel = new AutoDxerPanel(m_autoDxerCore, this);
+-    m_autoDxerPanel->setAppPath(App_Path);  // Enable settings persistence
+ 
+     // Pass MSHV queue widget to AutoDxer for direct queue insertion
+     m_autoDxerCore->setQueueWidget(THvTxW->getMultiAnswerMod());
+@@ -825,6 +826,16 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     connect(m_autoDxerCore, SIGNAL(requestDisableAuto()),
+             THvTxW, SLOT(StopAuto()));
+ 
++    // Loading the persisted panel state can enable AutoDX.  Do it only after
++    // every safety/upstream-control signal is connected so the initial enable
++    // cannot miss CQ-disable, Auto, queue or telemetry observers.
++    m_autoDxerCore->setCurrentMode(ModeStr(s_mod_ident));
++    // Establish the actual operating mode before the panel hydrates from the
++    // authoritative core so desired/effective state is never rendered against
++    // an empty startup mode.
++    m_autoDxerPanel->setAppPath(App_Path);
++    m_autoDxerCore->bandManager()->loadSettings(App_Path + "/settings");
++
+     // Check initial 2-click auto on state - warn if disabled
+     if (!THvTxW->Get2ClickAutoOn()) {
+         m_autoDxerCore->appendDebugMessage("WARNING: '2-click Auto On' setting is DISABLED at startup");
+@@ -4168,6 +4178,8 @@ void Main_Ms::ModeChanged(bool fg)
+     if (dsty) l_mode->setStyleSheet(ModeColorStr(s_mod_ident)+"color:rgb(0,0,0)}");
+     else l_mode->setStyleSheet(ModeColorStr(s_mod_ident)+"}");
+     l_mode->setText(ModeStr(s_mod_ident));
++    if (m_autoDxerCore)
++        m_autoDxerCore->setCurrentMode(ModeStr(s_mod_ident));
+ 
+     TMsPlayerHV->SetModeForWavSaves(s_mod_ident);
+ 

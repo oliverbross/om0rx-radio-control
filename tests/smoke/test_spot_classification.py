@@ -1,5 +1,6 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import duckdb
 import asyncio
@@ -17,6 +18,38 @@ from radio_control.spot_classification import (
     dxcc_confirmation_from_lookup,
 )
 from services.digital_status import call_status_from_recent_qsos
+
+
+def test_uncertain_live_spots_are_reclassified_without_a_25_row_cutoff():
+    from backend.api.spots import _refresh_uncertain_spot_classifications
+
+    class FakeClassifier:
+        async def dxcc_overall(self, dxcc, **_kwargs):
+            return True, True
+
+        async def dxcc_bandmode_flags(self, dxcc, band, mode, **_kwargs):
+            return False, False, True
+
+    spots = [
+        {
+            "callsign": f"K{i}TEST",
+            "dxcc": 291,
+            "band": "30m",
+            "mode": "FT8",
+            "dxcc_status": "Unknown",
+        }
+        for i in range(30)
+    ]
+
+    asyncio.run(
+        _refresh_uncertain_spot_classifications(
+            SimpleNamespace(classifier=FakeClassifier(), cty_resolver=None),
+            spots,
+        )
+    )
+
+    assert all(spot["dxcc_status"] == "Confirmed" for spot in spots)
+    assert all(spot["dxcc_status_source"] == "verified" for spot in spots)
 
 
 def test_cty_csv_prefix_tokens_do_not_misclassify_u_prefix():

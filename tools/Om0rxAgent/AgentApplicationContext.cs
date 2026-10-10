@@ -8,6 +8,7 @@ public sealed class AgentApplicationContext : ApplicationContext
     private readonly SynchronizationContext _uiContext;
     private StatusForm? _statusForm;
     private Icon? _currentIcon;
+    private ComponentStatus? _currentIconStatus;
     private ToolStripMenuItem? _statusItem;
     private ToolStripMenuItem? _autoRestartItem;
     private ToolStripMenuItem? _startupItem;
@@ -102,9 +103,15 @@ public sealed class AgentApplicationContext : ApplicationContext
 
     private void SetTrayIcon(ComponentStatus status)
     {
+        if (_currentIcon is not null && _currentIconStatus == status)
+        {
+            return;
+        }
+
         var next = TrayIconFactory.Create(status);
         var old = _currentIcon;
         _currentIcon = next;
+        _currentIconStatus = status;
         _notifyIcon.Icon = next;
         old?.Dispose();
     }

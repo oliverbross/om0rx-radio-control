@@ -1,0 +1,323 @@
+diff --git a/MSHV_2762/src/main.cpp b/MSHV_2762/src/main.cpp
+index cee1fdc..48073c3 100644
+--- a/MSHV_2762/src/main.cpp
++++ b/MSHV_2762/src/main.cpp
+@@ -165,7 +165,7 @@ int main(int argc, char ** argv)
+             app.processEvents(); //dot.append('.');
+         }
+     }
+-    win.show();
++    win.ShowWithSavedWindowState();
+ 
+     if (win.is_active_astro_w) win.Start_astro_m->setChecked(true);
+  
+diff --git a/MSHV_2762/src/main_ms.cpp b/MSHV_2762/src/main_ms.cpp
+index 32c0b19..3bca6d0 100644
+--- a/MSHV_2762/src/main_ms.cpp
++++ b/MSHV_2762/src/main_ms.cpp
+@@ -9,6 +9,8 @@
+ #include "main_ms.h"
+  
+ #include <QScreen>
++#include <QGuiApplication>
++#include <QTimer>
+ #include <QWindow>
+ #include <QDesktopWidget>
+ #include <QDesktopServices>
+@@ -118,6 +120,7 @@ void _ReadSSAndSet_()
+ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+         : QWidget(parent)
+ {    
++	window_state_save_timer = 0;
+ 	//printf("--"); 
+ 	InstName = inst0; 
+     s_id_set_to_rig = 0;//0<-from App 1<-from Rig
+@@ -140,6 +143,7 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+    
+     //s_sh_opt = false;
+     block_save = true;
++    restore_window_maximized = false;
+     global_start_moni = false;
+     f_auto_on = false;
+     f_once0s = true;
+@@ -158,6 +162,10 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+ 
+     setWindowTitle(APP_NAME + InstName);  //qDebug()<<QCoreApplication::applicationName();
+     App_Path = (QCoreApplication::applicationDirPath());
++    window_state_save_timer = new QTimer(this);
++    window_state_save_timer->setSingleShot(true);
++    window_state_save_timer->setInterval(750);
++    connect(window_state_save_timer, SIGNAL(timeout()), this, SLOT(SaveSettings()));
+ 
+     dsty = false;
+     if (styid==1) dsty = true;
+@@ -668,7 +676,7 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     connect(ac_bt_band, SIGNAL(triggered()),W_band_bt_sw,SLOT(dexec()));
+     Option_m->addAction(ac_bt_band);
+ 
+-    QAction *sh_wf= new QAction(QString(ShKey[lid][32][1]+"\t"+ShKey[lid][32][0]),this);
++    sh_wf = new QAction(QString(ShKey[lid][32][1]+"\t"+ShKey[lid][32][0]),this);
+     sh_wf->setShortcut(QKeySequence(tr(ShKey[lid][32][0],ShKey[lid][32][1])));
+     sh_wf->setCheckable(true);
+     sh_wf->setChecked(true);
+@@ -2028,7 +2036,65 @@ Main_Ms::~Main_Ms()
+     usleep(120000);//2.57 =120000 HDSDR=50ms ft991a=10ms
+     THvTxW->SetBlockEmitFreqToRig(true); //2.69 no show MA freq restrict QMessageBox at close (DestroyPort())
+     THvRigControl->DestroyPort();
+-}  
++}
++void Main_Ms::ShowWithSavedWindowState()
++{
++    if (restore_window_maximized) showMaximized();
++    else show();
++}
++QRect Main_Ms::CurrentNormalWindowGeometry() const
++{
++    QRect result = normalGeometry();
++    if (!result.isValid() || result.width() <= 0 || result.height() <= 0)
++        result = geometry();
++    return result;
++}
++QRect Main_Ms::ValidatedWindowGeometry(const QRect &savedGeometry) const
++{
++    const QList<QScreen *> screens = QGuiApplication::screens();
++    if (screens.isEmpty()) return savedGeometry;
++
++    QScreen *targetScreen = QGuiApplication::primaryScreen();
++    qint64 largestVisibleArea = 0;
++    for (QScreen *screen : screens)
++    {
++        const QRect intersection = savedGeometry.intersected(screen->availableGeometry());
++        const qint64 visibleArea = static_cast<qint64>(intersection.width()) * intersection.height();
++        if (visibleArea > largestVisibleArea)
++        {
++            largestVisibleArea = visibleArea;
++            targetScreen = screen;
++        }
++    }
++    if (!targetScreen) targetScreen = screens.first();
++
++    const QRect available = targetScreen->availableGeometry();
++    const int boundedWidth = qMin(qMax(savedGeometry.width(), minimumWidth()), available.width());
++    const int boundedHeight = qMin(qMax(savedGeometry.height(), minimumHeight()), available.height());
++    const int boundedX = qBound(available.left(), savedGeometry.x(), available.right() - boundedWidth + 1);
++    const int boundedY = qBound(available.top(), savedGeometry.y(), available.bottom() - boundedHeight + 1);
++    return QRect(boundedX, boundedY, boundedWidth, boundedHeight);
++}
++void Main_Ms::ScheduleWindowStateSave()
++{
++    if (!block_save && isVisible() && window_state_save_timer)
++        window_state_save_timer->start();
++}
++void Main_Ms::moveEvent(QMoveEvent *event)
++{
++    QWidget::moveEvent(event);
++    ScheduleWindowStateSave();
++}
++void Main_Ms::resizeEvent(QResizeEvent *event)
++{
++    QWidget::resizeEvent(event);
++    ScheduleWindowStateSave();
++}
++void Main_Ms::changeEvent(QEvent *event)
++{
++    QWidget::changeEvent(event);
++    if (event->type() == QEvent::WindowStateChange) ScheduleWindowStateSave();
++}
+ void Main_Ms::StyleChanged(bool)
+ {
+     QString slang = tr("To change the Style, you need to MANUALLY RESTART MSHV");
+@@ -2100,6 +2166,7 @@ void Main_Ms::SetShowHideWf(bool f)
+     else Box_dspl->setHidden(true);
+     TDecodeList1->HideShowWfTxRefreshList();
+     TDecodeList2->HideShowWfTxRefreshList();
++    SaveSettings();
+ }
+ void Main_Ms::SetShowHideTx(bool f)
+ {
+@@ -4342,7 +4409,7 @@ void Main_Ms::SetQActionCb(QString s, bool idp, QAction *ac)//idp priority of pr
+ }
+ void Main_Ms::Read_Settings(QString path)
+ {
+-    const int c_st_id = 108;//92  89
++    const int c_st_id = 111;//92  89
+     //dopalva se tuk v kraia
+     QString st_id[c_st_id]=
+         {
+@@ -4368,7 +4435,8 @@ void Main_Ms::Read_Settings(QString path)
+             "def_filter_list","def_filter_list0","def_filter_list1","def_filter_list2","def_filter_list3",
+             "def_filter_list4","def_filter_list5","def_adle_vdsp","def_areset_qso","def_1_dec_sig_q65",
+             "def_auto_clr_avg_afdec","def_dec_aft_eme_delay","def_max_drift","def_use_queue_cont","def_filter_list6",
+-            "use_aseq_max_dist","def_mod_bt_sw","def_show_lcols","vd_bw_lines_draw","def_band_bt_sw"
++            "use_aseq_max_dist","def_mod_bt_sw","def_show_lcols","vd_bw_lines_draw","def_band_bt_sw",
++            "def_main_window_geometry","def_main_window_maximized","def_show_waterfall"
+         };
+ 
+     QString st_res[c_st_id];
+@@ -4559,7 +4627,7 @@ void Main_Ms::Read_Settings(QString path)
+     }
+     if (!st_res[1].isEmpty() && !st_res[0].isEmpty())
+     {
+-        if (st_res[1] == "FULL" || st_res[0] == "FULL" ) setWindowState(Qt::WindowMaximized);
++        if (st_res[1] == "FULL" || st_res[0] == "FULL" ) restore_window_maximized = true;
+         else
+         {
+             int t_width = st_res[0].toInt();
+@@ -4576,19 +4644,17 @@ void Main_Ms::Read_Settings(QString path)
+         if (screenHeight<=600) t_height = 530;
+         resize(t_width, t_height);
+     }
+-    if (!st_res[59].isEmpty() && !st_res[60].isEmpty())
++    if (!st_res[60].isEmpty())
+     {
+-        QStringList list_wh = st_res[59].split("#");
+-        QStringList list_xy = st_res[60].split("#");
+-        if (list_wh.count()==2 && list_xy.count()==2)
++        const QStringList list_xy = st_res[60].split("#");
++        if (list_xy.count() == 2)
+         {
+-            int w_sz = list_wh[0].toInt();
+-            int h_sz = list_wh[1].toInt();
+-            if (w_sz==desktopw->width() && h_sz==desktopw->height())
++            bool xOk = false, yOk = false;
++            const int x_pos1 = list_xy.at(0).toInt(&xOk);
++            const int y_pos1 = list_xy.at(1).toInt(&yOk);
++            if (xOk && yOk)
+             {
+-                int x_pos1 = list_xy[0].toInt();
+-                int y_pos1 = list_xy[1].toInt();
+-                move(x_pos1,y_pos1);
++                setGeometry(ValidatedWindowGeometry(QRect(x_pos1, y_pos1, width(), height())));
+                 f_is_moved_to_prev_desk_pos = true;
+                 if (!st_res[79].isEmpty()) THvHelpMs->SetPosXY(st_res[79]);
+                 if (!st_res[80].isEmpty()) THvTxW->SetAstroWPos(st_res[80]);
+@@ -4801,6 +4867,28 @@ void Main_Ms::Read_Settings(QString path)
+ 	}
+ 	if (!st_res[107].isEmpty()) W_band_bt_sw->SetSettings(st_res[107]);
+ 
++    // The newer geometry record is independent of the desktop's aggregate size,
++    // so monitor reordering, taskbar changes and mixed-DPI layouts remain safe.
++    if (!st_res[108].isEmpty())
++    {
++        const QStringList geometryParts = st_res[108].split("#");
++        if (geometryParts.count() == 4)
++        {
++            bool xOk = false, yOk = false, widthOk = false, heightOk = false;
++            const int savedX = geometryParts.at(0).toInt(&xOk);
++            const int savedY = geometryParts.at(1).toInt(&yOk);
++            const int savedWidth = geometryParts.at(2).toInt(&widthOk);
++            const int savedHeight = geometryParts.at(3).toInt(&heightOk);
++            if (xOk && yOk && widthOk && heightOk && savedWidth > 0 && savedHeight > 0)
++            {
++                setGeometry(ValidatedWindowGeometry(QRect(savedX, savedY, savedWidth, savedHeight)));
++                f_is_moved_to_prev_desk_pos = true;
++            }
++        }
++    }
++    if (!st_res[109].isEmpty()) restore_window_maximized = (st_res[109].toInt() != 0);
++    if (!st_res[110].isEmpty()) sh_wf->setChecked(st_res[110].toInt() != 0);
++
+     THvTxW->SetBlockEmitFreqToRig(false);
+ 
+     //qDebug()<<"W_MAIN START";//<<ttt.elapsed();//2813 ms new 513ms
+@@ -4818,7 +4906,7 @@ void Main_Ms::Save_Settings(QString path)
+     QTextStream out(&file);
+     out << "[ms_settings]" << "\n";
+ 
+-    if (windowState() == Qt::WindowMaximized)
++    if (isMaximized())
+     {
+         out << "default_w=" << "FULL" << "\n";
+         out << "default_h=" << "FULL" << "\n";
+@@ -4999,8 +5087,14 @@ void Main_Ms::Save_Settings(QString path)
+    	out << "vd_bw_lines_draw=" << QString("%1").arg(vd_bw_lines_draw[0]->isChecked()) << "#"
+    							   << QString("%1").arg(vd_bw_lines_draw[1]->isChecked()) << "#"
+    							   << QString("%1").arg(vd_bw_lines_draw[2]->isChecked()) << "\n";
+-    out << "def_band_bt_sw=" << W_band_bt_sw->GetSettings() << "\n";							   
+-
++    out << "def_band_bt_sw=" << W_band_bt_sw->GetSettings() << "\n";
++    const QRect normalWindowGeometry = CurrentNormalWindowGeometry();
++    out << "def_main_window_geometry="
++        << normalWindowGeometry.x() << "#" << normalWindowGeometry.y() << "#"
++        << normalWindowGeometry.width() << "#" << normalWindowGeometry.height() << "\n";
++    out << "def_main_window_maximized=" << QString("%1").arg(isMaximized()) << "\n";
++    out << "def_show_waterfall=" << QString("%1").arg(sh_wf->isChecked()) << "\n";
++							   
+     file.close(); 
+ }
+ void Main_Ms::SetBS1Text(QString s)
+diff --git a/MSHV_2762/src/main_ms.h b/MSHV_2762/src/main_ms.h
+index f935a78..702a0ca 100644
+--- a/MSHV_2762/src/main_ms.h
++++ b/MSHV_2762/src/main_ms.h
+@@ -48,6 +48,7 @@ typedef void (WINAPI *PGNSI)(LPSYSTEM_INFO);
+ #include "HvAutoDxer/autodxerpanel.h"
+ #include "HvDxccChaser/hvdxccchaserwindow.h"
+ #include "HvDxccTracker/hvdxcctracker.h"
++class QTimer;
+ void _ReadSSAndSet_();
+ 
+ #include "config_str_sk.h" 
+@@ -57,6 +58,7 @@ class Main_Ms : public QWidget
+ public:
+     Main_Ms(QString,QWidget * parent = 0);
+     ~Main_Ms();
++    void ShowWithSavedWindowState();
+ 
+     bool is_active_astro_w;
+     QAction *Start_astro_m;
+@@ -195,6 +197,9 @@ private:
+     HvSMeter_H *THvSMeter_H;
+     MsPlayerHV *TMsPlayerHV;
+     void Save_Settings(QString path);
++    QRect ValidatedWindowGeometry(const QRect &savedGeometry) const;
++    QRect CurrentNormalWindowGeometry() const;
++    void ScheduleWindowStateSave();
+     bool isFindId(QString id,QString line,QString &res);
+ 	void SetQActionCb(QString s, bool idp, QAction *ac);
+     void Read_Settings(QString path);
+@@ -367,6 +372,7 @@ private:
+     QAction *Multi_answer_mod;
+     QAction *Multi_answer_mod_std;
+     QAction *Mon_start_m;
++    QAction *sh_wf;
+ 
+     QAction *ac_Cfm73;
+ 	void RefreshCbCfm73();
+@@ -383,6 +389,8 @@ private:
+     QAction *vd_mouse_lines_draw;
+     QAction *vd_bw_lines_draw[3];
+     bool block_save;
++    bool restore_window_maximized;
++    QTimer *window_state_save_timer;
+     int f_once_pt_15_to_30;
+     bool f_rx_only_fi_se;
+     bool f_fast_rfresh_only_fi_se;
+@@ -424,11 +432,16 @@ protected:
+     bool f_de_active;
+     void ModeMenuStatRefresh(bool);
+     void dragMoveEvent(QDragMoveEvent *event);
++    void moveEvent(QMoveEvent *event);
++    void resizeEvent(QResizeEvent *event);
++    void changeEvent(QEvent *event);
+     //void mouseMoveEvent(QMouseEvent *event);
+     //void paintEvent(QPaintEvent *);
+ 
+-    void closeEvent(QCloseEvent*)
++    void closeEvent(QCloseEvent *event)
+     { 
++        // Persist while the native window still has a valid normalGeometry().
++        SaveSettings();
+         if (THvHelpSkMs->isVisible()) THvHelpSkMs->close();
+         if (THvHelpMs->isVisible()) THvHelpMs->close();
+         THvTxW->CloseAllWidget();
+@@ -442,7 +455,8 @@ protected:
+         }
+         if (TCustomPalW->isVisible()) TCustomPalW->close();
+         if (THvMsProc->isVisible()) THvMsProc->close();              
+-        THvTxW->CloseBcnList();           
++        THvTxW->CloseBcnList();
++        QWidget::closeEvent(event);
+     };
+ };
+ #endif

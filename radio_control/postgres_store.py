@@ -8,6 +8,7 @@ settings are present; otherwise the legacy local cache remains available.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Iterator
@@ -15,6 +16,20 @@ from typing import Any, Iterator
 from radio_control import config
 
 logger = logging.getLogger(__name__)
+
+_failure_lock = threading.Lock()
+_failure_until = 0.0
+_failure_dsn = ""
+_failure_reason = ""
+
+
+def reset_connection_backoff() -> None:
+    """Allow an immediate retry after settings or database state changes."""
+    global _failure_until, _failure_dsn, _failure_reason
+    with _failure_lock:
+        _failure_until = 0.0
+        _failure_dsn = ""
+        _failure_reason = ""
 
 
 def get_database_backend() -> str:
@@ -86,13 +101,39 @@ def require_psycopg():
 
 @contextmanager
 def connect() -> Iterator[object]:
+    global _failure_until, _failure_dsn, _failure_reason
     dsn = get_postgres_dsn()
     if not dsn:
         raise RuntimeError(
             "PostgreSQL is selected but POSTGRES_DSN or POSTGRES_HOST/DB/USER is not configured."
         )
     psycopg = require_psycopg()
-    conn = psycopg.connect(dsn)
+    now = time.monotonic()
+    with _failure_lock:
+        if dsn == _failure_dsn and now < _failure_until:
+            remaining = max(1, round(_failure_until - now))
+            raise ConnectionError(
+                f"PostgreSQL is temporarily unavailable after a recent connection failure; "
+                f"retrying in {remaining}s"
+            )
+    timeout_seconds = max(
+        1,
+        int(getattr(config, "POSTGRES_CONNECT_TIMEOUT_SECONDS", 2) or 2),
+    )
+    try:
+        conn = psycopg.connect(dsn, connect_timeout=timeout_seconds)
+    except Exception as exc:
+        cooldown = max(
+            1,
+            int(getattr(config, "POSTGRES_RETRY_COOLDOWN_SECONDS", 30) or 30),
+        )
+        with _failure_lock:
+            _failure_dsn = dsn
+            _failure_until = time.monotonic() + cooldown
+            _failure_reason = str(exc)
+        raise
+    else:
+        reset_connection_backoff()
     try:
         yield conn
     finally:

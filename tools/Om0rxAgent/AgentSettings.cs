@@ -14,6 +14,9 @@ public sealed class AgentSettings
     public bool StartLauncher { get; set; } = true;
     public bool ManageDocker { get; set; } = true;
     public bool RememberWindowLayout { get; set; } = true;
+    public string DigitalEngineProvider { get; set; } = "";
+    // Legacy startup toggle retained for migration and as the generic
+    // "start selected engine" preference in existing settings files.
     public bool StartWsjtzWithAgent { get; set; } = false;
     public bool EnableAutoCallOnStartup { get; set; } = false;
     public int AutoCallLimit { get; set; } = 5;
@@ -21,7 +24,7 @@ public sealed class AgentSettings
     public int FailureRestartThreshold { get; set; } = 3;
     public int RestartCooldownSeconds { get; set; } = 30;
     public string DockerComposeFile { get; set; } = "docker-compose.postgres.yml";
-    public List<string> WatchedProcessNames { get; set; } = new() { "wsjtx", "wsjt-x", "wsjtz", "sdc" };
+    public List<string> WatchedProcessNames { get; set; } = new() { "wsjtx", "wsjt-x", "wsjtz", "mshv", "sdc" };
 
     [JsonIgnore]
     public string BackendUrl => $"http://{BackendHost}:{BackendPort}";
@@ -72,6 +75,14 @@ public sealed class AgentSettings
         }
 
         settings.StartServicesThisSession = settings.StartServicesWithAgent;
+        settings.DigitalEngineProvider = NormalizeDigitalProvider(
+            settings.DigitalEngineProvider,
+            settings.StartWsjtzWithAgent);
+        if (settings.DigitalEngineProvider == "none")
+        {
+            settings.StartWsjtzWithAgent = false;
+            settings.EnableAutoCallOnStartup = false;
+        }
         settings.ProjectRoot = NormalizeProjectRoot(settings.ProjectRoot, args);
         settings.ApplyArgs(args);
         settings.Save();
@@ -119,6 +130,15 @@ public sealed class AgentSettings
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         PropertyNameCaseInsensitive = true,
     };
+
+    public static string NormalizeDigitalProvider(string? value, bool legacyStartWsjtz)
+    {
+        var normalized = (value ?? "").Trim().ToLowerInvariant();
+        if (normalized is "wsjt-z") normalized = "wsjtz";
+        if (normalized is "mshv") normalized = "mshv_auto_dx";
+        if (normalized is "none" or "wsjtz" or "mshv_auto_dx") return normalized;
+        return legacyStartWsjtz ? "wsjtz" : "none";
+    }
 
     private static string NormalizeProjectRoot(string configuredRoot, string[] args)
     {

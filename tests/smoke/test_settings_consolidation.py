@@ -7,6 +7,7 @@ import _bootstrap  # noqa: F401
 from fastapi.testclient import TestClient
 
 import backend.main
+import services.digital_engine as digital_engine
 from radio_control.settings_store import APP_SETTINGS_PATH, LEGACY_FT8_CONFIG_PATH, LEGACY_ROTOR_CONFIG_PATH
 
 
@@ -17,8 +18,12 @@ def read_text(path: Path):
 original_app_settings = read_text(APP_SETTINGS_PATH)
 original_legacy_rotor = read_text(LEGACY_ROTOR_CONFIG_PATH)
 original_legacy_ft8 = read_text(LEGACY_FT8_CONFIG_PATH)
+original_selected_provider = digital_engine.selected_provider
 
 try:
+    # This legacy persistence smoke exercises the WSJT-Z-owned FT8 config
+    # endpoint.  Never borrow or rewrite the operator's live provider choice.
+    digital_engine.selected_provider = lambda: "wsjtz"
     backend.main.register_all_services()
     client = TestClient(backend.main.app)
 
@@ -60,6 +65,7 @@ try:
 
     print("✅ Rotor and FT8 config persist through settings/app_settings.json")
 finally:
+    digital_engine.selected_provider = original_selected_provider
     if original_app_settings is None:
         APP_SETTINGS_PATH.unlink(missing_ok=True)
     else:

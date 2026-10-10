@@ -1,0 +1,2836 @@
+diff --git a/MSHV_2762/MSHV_WIN64.pro b/MSHV_2762/MSHV_WIN64.pro
+index 1ee53dd..e2aba26 100644
+--- a/MSHV_2762/MSHV_WIN64.pro
++++ b/MSHV_2762/MSHV_WIN64.pro
+@@ -116,6 +116,7 @@ HEADERS = src/main_ms.h \
+  src/HvAutoDxer/twiliosmsnotifier.h \
+  src/HvAutoDxer/decodecache.h \
+  src/HvAutoDxer/dxcctracker.h \
++ src/HvAutoDxer/autodxhistoryconditional.h \
+  src/HvAutoDxer/autodxmessageparser.h \
+  src/HvAutoDxer/targetscorer.h \
+  src/HvAutoDxer/spotaggregator.h \
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+index 2f62b09..4b205d3 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.cpp
+@@ -72,7 +72,8 @@ void HvAutoDxSettings::setupUi()
+     scrollLayout->setSpacing(10);
+ 
+     // Create all group boxes
+-    createSpotSourcesGroup();
++    createSpotSourcesGroup();
++    createDxpeditionGroup();
+     createBandSwitchingGroup();
+     createAutomationTimingGroup();
+     createEligibilityGroup();
+@@ -82,7 +83,8 @@ void HvAutoDxSettings::setupUi()
+     createSafetyGroup();
+     createDxccTrackerGroup();
+ 
+-    scrollLayout->addWidget(m_spotSourcesGroup);
++    scrollLayout->addWidget(m_spotSourcesGroup);
++    scrollLayout->addWidget(m_dxpeditionGroup);
+     scrollLayout->addWidget(m_bandSwitchingGroup);
+     scrollLayout->addWidget(m_automationTimingGroup);
+     scrollLayout->addWidget(m_eligibilityGroup);
+@@ -300,20 +302,15 @@ void HvAutoDxSettings::createAutomationTimingGroup()
+     m_targetHeardFreshSeconds = new QSpinBox;
+     m_targetHeardFreshSeconds->setRange(15, 300);
+     m_targetHeardFreshSeconds->setSuffix(" sec");
+-    m_crossBandVerifySeconds = new QSpinBox;
+-    m_crossBandVerifySeconds->setRange(15, 300);
+-    m_crossBandVerifySeconds->setSuffix(" sec");
+-    m_bandSwitchCooldownSeconds = new QSpinBox;
++    m_bandSwitchCooldownSeconds = new QSpinBox;
+     m_bandSwitchCooldownSeconds->setRange(0, 1800);
+     m_bandSwitchCooldownSeconds->setSuffix(" sec");
+     timing->addWidget(new QLabel("Quiet/no-target band dwell:"), 0, 0);
+     timing->addWidget(m_quietBandSeconds, 0, 1);
+     timing->addWidget(new QLabel("Target heard freshness:"), 1, 0);
+     timing->addWidget(m_targetHeardFreshSeconds, 1, 1);
+-    timing->addWidget(new QLabel("Cross-band verify timeout:"), 2, 0);
+-    timing->addWidget(m_crossBandVerifySeconds, 2, 1);
+-    timing->addWidget(new QLabel("Band-switch cooldown:"), 3, 0);
+-    timing->addWidget(m_bandSwitchCooldownSeconds, 3, 1);
++    timing->addWidget(new QLabel("Band-switch cooldown:"), 2, 0);
++    timing->addWidget(m_bandSwitchCooldownSeconds, 2, 1);
+     timing->setColumnStretch(2, 1);
+     layout->addLayout(timing);
+ 
+@@ -353,6 +350,69 @@ void HvAutoDxSettings::createAutomationTimingGroup()
+     layout->addLayout(schedules);
+ }
+ 
++void HvAutoDxSettings::createDxpeditionGroup()
++{
++    m_dxpeditionGroup = new QGroupBox("DXpedition Chase");
++    QVBoxLayout *layout = new QVBoxLayout(m_dxpeditionGroup);
++
++    m_dxpeditionChaseEnabled = new QCheckBox(
++        "Enable catalogue-driven DXpedition chasing");
++    layout->addWidget(m_dxpeditionChaseEnabled);
++
++    QGridLayout *grid = new QGridLayout;
++    m_dxpeditionAllowSameBandOffStandardQsy = new QCheckBox(
++        "Allow same-band off-standard QSY");
++    m_dxpeditionAllowCrossBandQsy = new QCheckBox(
++        "Allow cross-band DXpedition QSY");
++    grid->addWidget(m_dxpeditionAllowSameBandOffStandardQsy, 0, 0, 1, 2);
++    grid->addWidget(m_dxpeditionAllowCrossBandQsy, 0, 2, 1, 2);
++
++    m_dxpeditionChaseScope = new QComboBox;
++    m_dxpeditionChaseScope->addItem("Needed DXCC / band slots only", "needed-only");
++    m_dxpeditionChaseScope->addItem("Any active expedition (once per band)", "any-active");
++    m_dxpeditionMinSpotters = new QSpinBox;
++    m_dxpeditionMinSpotters->setRange(1, 20);
++    m_dxpeditionMaxSpotAgeSeconds = new QSpinBox;
++    m_dxpeditionMaxSpotAgeSeconds->setRange(15, 1800);
++    m_dxpeditionMaxSpotAgeSeconds->setSuffix(" sec");
++    m_dxpeditionTxOffsetHz = new QSpinBox;
++    m_dxpeditionTxOffsetHz->setRange(0, 2400);
++    m_dxpeditionTxOffsetHz->setSuffix(" Hz");
++    m_dxpeditionBoost = new QSpinBox;
++    m_dxpeditionBoost->setRange(0, 100000);
++    grid->addWidget(new QLabel("Chase scope:"), 1, 0);
++    grid->addWidget(m_dxpeditionChaseScope, 1, 1);
++    grid->addWidget(new QLabel("Minimum independent spotters:"), 1, 2);
++    grid->addWidget(m_dxpeditionMinSpotters, 1, 3);
++    grid->addWidget(new QLabel("Maximum spot age:"), 2, 0);
++    grid->addWidget(m_dxpeditionMaxSpotAgeSeconds, 2, 1);
++    grid->addWidget(new QLabel("Local verification timeout:"), 2, 2);
++    grid->addWidget(m_crossBandVerifySeconds = new QSpinBox, 2, 3);
++    m_crossBandVerifySeconds->setRange(15, 300);
++    m_crossBandVerifySeconds->setSuffix(" sec");
++    grid->addWidget(new QLabel("TX offset above expedition:"), 3, 0);
++    grid->addWidget(m_dxpeditionTxOffsetHz, 3, 1);
++    grid->addWidget(new QLabel("Priority boost:"), 3, 2);
++    grid->addWidget(m_dxpeditionBoost, 3, 3);
++    layout->addLayout(grid);
++
++    m_dxpeditionReturnToStandard = new QCheckBox(
++        "Return to the standard FT8 dial after completion or verification timeout");
++    layout->addWidget(m_dxpeditionReturnToStandard);
++
++    m_dxpeditionCatalogStatus = new QLabel("Catalogue: not loaded");
++    m_dxpeditionCatalogStatus->setWordWrap(true);
++    m_dxpeditionCatalogStatus->setStyleSheet("color: #666; font-size: 9pt;");
++    layout->addWidget(m_dxpeditionCatalogStatus);
++
++    connect(m_dxpeditionChaseEnabled, &QCheckBox::toggled,
++            m_dxpeditionAllowSameBandOffStandardQsy, &QWidget::setEnabled);
++    connect(m_dxpeditionChaseEnabled, &QCheckBox::toggled,
++            m_dxpeditionAllowCrossBandQsy, &QWidget::setEnabled);
++    connect(m_dxpeditionChaseEnabled, &QCheckBox::toggled,
++            m_dxpeditionChaseScope, &QWidget::setEnabled);
++}
++
+ void HvAutoDxSettings::createEligibilityGroup()
+ {
+     m_eligibilityGroup = new QGroupBox("Who to call: eligibility, attempts and ranking");
+@@ -434,8 +494,6 @@ void HvAutoDxSettings::createEligibilityGroup()
+     m_scarceThreshold->setRange(0, 20);
+     m_nonEuropeBoost = new QSpinBox;
+     m_nonEuropeBoost->setRange(0, 100000);
+-    m_dxpeditionBoost = new QSpinBox;
+-    m_dxpeditionBoost->setRange(0, 100000);
+ 
+     attempts->addWidget(new QLabel("Selection order:"), 0, 0);
+     attempts->addWidget(m_selectionOrder, 0, 1);
+@@ -455,8 +513,6 @@ void HvAutoDxSettings::createEligibilityGroup()
+     attempts->addWidget(m_scarceThreshold, 3, 3);
+     attempts->addWidget(new QLabel("Non-Europe boost:"), 4, 0);
+     attempts->addWidget(m_nonEuropeBoost, 4, 1);
+-    attempts->addWidget(new QLabel("DXpedition boost:"), 4, 2);
+-    attempts->addWidget(m_dxpeditionBoost, 4, 3);
+     layout->addLayout(attempts);
+ 
+     QLabel *note = new QLabel(
+@@ -753,10 +809,36 @@ void HvAutoDxSettings::setCallsign(const QString& callsign)
+     }
+ }
+ 
+-void HvAutoDxSettings::setGrid(const QString& grid)
+-{
+-    m_grid = grid.toUpper().trimmed();
+-}
++void HvAutoDxSettings::setGrid(const QString& grid)
++{
++    m_grid = grid.toUpper().trimmed();
++}
++
++void HvAutoDxSettings::setAutoDxerCore(AutoDxerCore *core)
++{
++    m_autoDxerCore = core;
++    updateDxpeditionCatalogStatus();
++}
++
++void HvAutoDxSettings::updateDxpeditionCatalogStatus()
++{
++    if (!m_dxpeditionCatalogStatus) return;
++    if (!m_autoDxerCore) {
++        m_dxpeditionCatalogStatus->setText("Catalogue: unavailable");
++        return;
++    }
++    const QJsonObject catalog = m_autoDxerCore->autoDxStatus()
++        .value("dxpedition_catalog").toObject();
++    const bool valid = catalog.value("valid").toBool();
++    const int entries = catalog.value("entries").toInt();
++    const QString expires = catalog.value("expires_utc").toString();
++    m_dxpeditionCatalogStatus->setText(valid
++        ? QString("Catalogue: valid, %1 active callsign/band aliases%2")
++              .arg(entries)
++              .arg(expires.isEmpty() ? QString()
++                   : QString("; expires %1 UTC").arg(expires))
++        : "Catalogue: unavailable or expired; conservative rare-prefix fallback is active");
++}
+ 
+ AutoDxSettings HvAutoDxSettings::getSettings() const
+ {
+@@ -860,6 +942,15 @@ AutoDxSettings HvAutoDxSettings::getSettings() const
+     settings.scarceThreshold = m_scarceThreshold->value();
+     settings.nonEuropeBoost = m_nonEuropeBoost->value();
+     settings.dxpeditionBoost = m_dxpeditionBoost->value();
++    settings.dxpeditionChaseEnabled = m_dxpeditionChaseEnabled->isChecked();
++    settings.dxpeditionAllowSameBandOffStandardQsy =
++        m_dxpeditionAllowSameBandOffStandardQsy->isChecked();
++    settings.dxpeditionAllowCrossBandQsy = m_dxpeditionAllowCrossBandQsy->isChecked();
++    settings.dxpeditionChaseScope = m_dxpeditionChaseScope->currentData().toString();
++    settings.dxpeditionMinSpotters = m_dxpeditionMinSpotters->value();
++    settings.dxpeditionMaxSpotAgeSeconds = m_dxpeditionMaxSpotAgeSeconds->value();
++    settings.dxpeditionTxOffsetHz = m_dxpeditionTxOffsetHz->value();
++    settings.dxpeditionReturnToStandard = m_dxpeditionReturnToStandard->isChecked();
+     settings.nativeTxWatchdogMode = m_nativeTxWatchdogMode->currentData().toInt();
+     settings.nativeTxWatchdogMinutes = m_nativeTxWatchdogMinutes->value();
+     settings.nativeTxWatchdogPeriods = m_nativeTxWatchdogPeriods->value();
+@@ -1015,6 +1106,23 @@ void HvAutoDxSettings::loadSettings(const QString& appPath)
+     m_scarceThreshold->setValue(settings.value("AutoDx/ScarceThreshold", 5).toInt());
+     m_nonEuropeBoost->setValue(settings.value("TargetPriority/NonEuropeBoost", 7500).toInt());
+     m_dxpeditionBoost->setValue(settings.value("TargetPriority/DxpeditionBoost", 12000).toInt());
++    m_dxpeditionChaseEnabled->setChecked(settings.value(
++        "Dxpedition/Enabled", true).toBool());
++    m_dxpeditionAllowSameBandOffStandardQsy->setChecked(settings.value(
++        "Dxpedition/AllowSameBandOffStandardQsy", true).toBool());
++    m_dxpeditionAllowCrossBandQsy->setChecked(settings.value(
++        "Dxpedition/AllowCrossBandQsy", true).toBool());
++    index = m_dxpeditionChaseScope->findData(settings.value(
++        "Dxpedition/ChaseScope", "needed-only").toString().trimmed().toLower());
++    m_dxpeditionChaseScope->setCurrentIndex(index >= 0 ? index : 0);
++    m_dxpeditionMinSpotters->setValue(settings.value(
++        "Dxpedition/MinSpotters", 1).toInt());
++    m_dxpeditionMaxSpotAgeSeconds->setValue(settings.value(
++        "Dxpedition/MaxSpotAgeSeconds", 120).toInt());
++    m_dxpeditionTxOffsetHz->setValue(settings.value(
++        "Dxpedition/TxOffsetHz", 1000).toInt());
++    m_dxpeditionReturnToStandard->setChecked(settings.value(
++        "Dxpedition/ReturnToStandard", true).toBool());
+ 
+     // Band Selection - default to all HF bands enabled (no 6m)
+     QString bandStr = settings.value("BandSelection/EnabledBands", "3,4,6,7,8,9,10,11,12").toString();
+@@ -1176,6 +1284,19 @@ void HvAutoDxSettings::saveSettings(const QString& appPath)
+     settings.setValue("AutoDx/ScarceThreshold", m_scarceThreshold->value());
+     settings.setValue("TargetPriority/NonEuropeBoost", m_nonEuropeBoost->value());
+     settings.setValue("TargetPriority/DxpeditionBoost", m_dxpeditionBoost->value());
++    settings.setValue("Dxpedition/Enabled", m_dxpeditionChaseEnabled->isChecked());
++    settings.setValue("Dxpedition/AllowSameBandOffStandardQsy",
++                      m_dxpeditionAllowSameBandOffStandardQsy->isChecked());
++    settings.setValue("Dxpedition/AllowCrossBandQsy",
++                      m_dxpeditionAllowCrossBandQsy->isChecked());
++    settings.setValue("Dxpedition/ChaseScope",
++                      m_dxpeditionChaseScope->currentData().toString());
++    settings.setValue("Dxpedition/MinSpotters", m_dxpeditionMinSpotters->value());
++    settings.setValue("Dxpedition/MaxSpotAgeSeconds",
++                      m_dxpeditionMaxSpotAgeSeconds->value());
++    settings.setValue("Dxpedition/TxOffsetHz", m_dxpeditionTxOffsetHz->value());
++    settings.setValue("Dxpedition/ReturnToStandard",
++                      m_dxpeditionReturnToStandard->isChecked());
+ 
+     // Priority
+     settings.setValue("Priority/NewDxccAllTime", m_weightNewDxccAllTime->value());
+@@ -1231,6 +1352,7 @@ void HvAutoDxSettings::updateDxccStats(int dxccCount, int gridCount)
+ void HvAutoDxSettings::onMasterEnableChanged(bool enabled)
+ {
+     updateUiState();
++    updateDxpeditionCatalogStatus();
+     // The checkbox is staged with the rest of the dialog and becomes live on
+     // Apply/OK. This keeps Cancel side-effect free.
+     emit autoDxEnabled(enabled);
+@@ -1240,7 +1362,8 @@ void HvAutoDxSettings::updateUiState()
+ {
+     bool enabled = m_enableAutoDx->isChecked();
+ 
+-    m_spotSourcesGroup->setEnabled(enabled);
++    m_spotSourcesGroup->setEnabled(enabled);
++    m_dxpeditionGroup->setEnabled(enabled);
+     m_bandSwitchingGroup->setEnabled(enabled);
+     m_automationTimingGroup->setEnabled(enabled);
+     m_eligibilityGroup->setEnabled(enabled);
+@@ -1249,8 +1372,13 @@ void HvAutoDxSettings::updateUiState()
+     m_opModeGroup->setEnabled(enabled);
+     // The native TX watchdog is useful even when Auto DX is disabled.
+     m_safetyGroup->setEnabled(true);
+-    // DXCC Tracker always enabled for import/export
+-}
++    // DXCC Tracker always enabled for import/export
++
++    const bool chaseEnabled = enabled && m_dxpeditionChaseEnabled->isChecked();
++    m_dxpeditionAllowSameBandOffStandardQsy->setEnabled(chaseEnabled);
++    m_dxpeditionAllowCrossBandQsy->setEnabled(chaseEnabled);
++    m_dxpeditionChaseScope->setEnabled(chaseEnabled);
++}
+ 
+ void HvAutoDxSettings::applyToComponents()
+ {
+@@ -1394,6 +1522,7 @@ void HvAutoDxSettings::onApply()
+     saveSettings(m_appPath);
+     applyToComponents();
+     if (m_autoDxerCore) m_autoDxerCore->reloadRuntimeConfig();
++    updateDxpeditionCatalogStatus();
+     emit txWatchdogParametersChanged(QString("%1#%2#%3")
+         .arg(m_nativeTxWatchdogMode->currentData().toInt())
+         .arg(m_nativeTxWatchdogMinutes->value())
+diff --git a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+index 3c86e46..3cc0f1d 100644
+--- a/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
++++ b/MSHV_2762/src/HvAutoDxSettings/hvautodxsettings.h
+@@ -126,6 +126,14 @@ struct AutoDxSettings {
+     int scarceThreshold;
+     int nonEuropeBoost;
+     int dxpeditionBoost;
++    bool dxpeditionChaseEnabled;
++    bool dxpeditionAllowSameBandOffStandardQsy;
++    bool dxpeditionAllowCrossBandQsy;
++    QString dxpeditionChaseScope;
++    int dxpeditionMinSpotters;
++    int dxpeditionMaxSpotAgeSeconds;
++    int dxpeditionTxOffsetHz;
++    bool dxpeditionReturnToStandard;
+ 
+     // MSHV native TX watchdog: 0=off, 1=minutes, 2=TX periods
+     int nativeTxWatchdogMode;
+@@ -161,7 +169,7 @@ public:
+ 
+     // Set callsign for spot sources
+     void setCallsign(const QString& callsign);
+-    void setAutoDxerCore(AutoDxerCore *core) { m_autoDxerCore = core; }
++    void setAutoDxerCore(AutoDxerCore *core);
+ 
+     // Set/get grid for PSKReporter
+     void setGrid(const QString& grid);
+@@ -192,7 +200,8 @@ private slots:
+ 
+ private:
+     void setupUi();
+-    void createSpotSourcesGroup();
++    void createSpotSourcesGroup();
++    void createDxpeditionGroup();
+     void createBandSwitchingGroup();
+     void createAutomationTimingGroup();
+     void createEligibilityGroup();
+@@ -202,7 +211,8 @@ private:
+     void createSafetyGroup();
+     void createDxccTrackerGroup();
+     void createBandSelectionGroup();
+-    void updateUiState();
++    void updateUiState();
++    void updateDxpeditionCatalogStatus();
+     QList<int> getEnabledBandsFromUi() const;
+ 
+     // Component references
+@@ -239,7 +249,19 @@ private:
+     QPushButton *m_dxcRemoveBtn;
+     QPushButton *m_dxcResetBtn;
+     QCheckBox *m_usOnlyFilter;
+-    QSpinBox *m_minSnr;
++    QSpinBox *m_minSnr;
++
++    // DXpedition chase
++    QGroupBox *m_dxpeditionGroup;
++    QCheckBox *m_dxpeditionChaseEnabled;
++    QCheckBox *m_dxpeditionAllowSameBandOffStandardQsy;
++    QCheckBox *m_dxpeditionAllowCrossBandQsy;
++    QComboBox *m_dxpeditionChaseScope;
++    QSpinBox *m_dxpeditionMinSpotters;
++    QSpinBox *m_dxpeditionMaxSpotAgeSeconds;
++    QSpinBox *m_dxpeditionTxOffsetHz;
++    QCheckBox *m_dxpeditionReturnToStandard;
++    QLabel *m_dxpeditionCatalogStatus;
+ 
+     // Band Switching
+     QGroupBox *m_bandSwitchingGroup;
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+index 794bc9f..d37b8b4 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.cpp
+@@ -4,6 +4,7 @@
+  */
+ #include "autodxercore.h"
+ #include "autodxmessageparser.h"
++#include "autodxhistoryconditional.h"
+ #include "autodxruntimeconfig.h"
+ #include "twiliosmsnotifier.h"
+ #include "../HvDecodeList/hvcty.h"
+@@ -25,7 +26,7 @@
+ 
+ // Helper: Check if callsign is rare DX (DXpedition) that should use dial frequency directly
+ // For these stations, the spotted frequency IS the dial frequency, not an RF frequency
+-static bool isRareDXCallsign(const QString &callsign)
++static bool hasLegacyRarePrefix(const QString &callsign)
+ {
+     return callsign.startsWith("KP5") ||   // Desecheo Island
+            callsign.startsWith("KP1") ||   // Navassa Island
+@@ -94,6 +95,14 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     , m_dxpeditionCatalogValid(false)
+     , m_dxpeditionCatalogEntries(0)
+     , m_dxpeditionBoost(12000)
++    , m_dxpeditionChaseEnabled(true)
++    , m_dxpeditionAllowSameBandOffStandardQsy(true)
++    , m_dxpeditionAllowCrossBandQsy(true)
++    , m_dxpeditionChaseAnyActive(false)
++    , m_dxpeditionMinSpotters(1)
++    , m_dxpeditionMaxSpotAgeSeconds(120)
++    , m_dxpeditionTxOffsetHz(1000)
++    , m_dxpeditionReturnToStandard(true)
+     , m_cty(cty)
+     , m_hvDxccTracker(nullptr)
+     , m_targetAttemptElapsedOffsetMs(0)
+@@ -110,6 +119,7 @@ AutoDxerCore::AutoDxerCore(HvCty *cty, const QString &settingsPath, QObject *par
+     , m_historyTransientTerminalized(false)
+     , m_historicalNoveltyAllowed(false)
+     , m_historyAuthorityStatus("local-tracker")
++    , m_historyCachedAllowed(false)
+     , m_historyLastSequence(0)
+     , m_qsoCount(0)
+     , m_newDxccCount(0)
+@@ -291,6 +301,10 @@ void AutoDxerCore::resetSession()
+ void AutoDxerCore::setHvDxccTracker(HvDxccTracker *tracker)
+ {
+     m_hvDxccTracker = tracker;
++    if (m_hvDxccTracker) {
++        m_hvDxccTracker->setCurrentBand(m_currentBandIndex);
++        m_hvDxccTracker->setCurrentMode(m_currentMode);
++    }
+     // Pass to DxccTracker for unified delegation
+     if (m_dxccTracker) {
+         m_dxccTracker->setHvDxccTracker(tracker);
+@@ -348,6 +362,13 @@ void AutoDxerCore::setEnabled(bool enabled)
+         m_patrolTimer.invalidate();
+         m_patrolBandChangePending = false;
+         clearSuspendedTarget();
++        // OFF/mode exit cancels every queued operator request.  Never retain a
++        // decode-backed manual target across a later re-enable.
++        if (!m_manualTarget.callsign.isEmpty()) {
++            emit manualTargetStatus(m_manualTarget.callsign, false,
++                                    "Auto DX disabled; manual target cancelled");
++            m_manualTarget = ScoredTarget();
++        }
+         // Clear any pending slot analysis
+         m_waitingForSlotAnalysis = false;
+         m_pendingSlotAnalysisTarget = ScoredTarget();
+@@ -363,6 +384,7 @@ void AutoDxerCore::setCurrentMode(const QString &mode)
+ {
+     const QString normalized = mode.trimmed().toUpper();
+     m_currentMode = normalized;
++    if (m_hvDxccTracker) m_hvDxccTracker->setCurrentMode(normalized);
+     setEnabled(m_desiredEnabled);
+ }
+ 
+@@ -424,6 +446,16 @@ void AutoDxerCore::loadRuntimeConfig(const QString &settingsPath)
+         confirmedDxccEntities, confirmationDataAvailable);
+ 
+     m_dxpeditionBoost = config.dxpeditionBoost;
++    m_dxpeditionChaseEnabled = config.dxpeditionChaseEnabled;
++    m_dxpeditionAllowSameBandOffStandardQsy = config.dxpeditionAllowSameBandOffStandardQsy;
++    m_dxpeditionAllowCrossBandQsy = config.dxpeditionAllowCrossBandQsy;
++    m_dxpeditionChaseAnyActive = config.dxpeditionChaseAnyActive;
++    m_dxpeditionMinSpotters = config.dxpeditionMinSpotters;
++    m_dxpeditionMaxSpotAgeSeconds = config.dxpeditionMaxSpotAgeSeconds;
++    m_dxpeditionTxOffsetHz = config.dxpeditionTxOffsetHz;
++    m_dxpeditionReturnToStandard = config.dxpeditionReturnToStandard;
++    m_targetScorer->setDxpeditionPolicy(
++        m_dxpeditionChaseEnabled, m_dxpeditionChaseAnyActive);
+     reloadDxpeditionWatch(true);
+ 
+     if (!config.callsign.isEmpty()) setCallsign(config.callsign);
+@@ -488,6 +520,9 @@ void AutoDxerCore::loadRuntimeConfig(const QString &settingsPath)
+     configAudit["dxcc_confirmation_data_available"] = confirmationDataAvailable;
+     configAudit["dxpedition_catalog_valid"] = m_dxpeditionCatalogValid;
+     configAudit["dxpedition_alias_band_keys"] = m_dxpeditionCatalogEntries;
++    configAudit["dxpedition_chase_enabled"] = m_dxpeditionChaseEnabled;
++    configAudit["dxpedition_scope"] = m_dxpeditionChaseAnyActive
++        ? "any-active" : "needed-only";
+     auditEvent("policy-loaded", configAudit);
+ }
+ 
+@@ -588,9 +623,10 @@ void AutoDxerCore::reloadDxpeditionWatch(bool force)
+     m_dxpeditionCatalogValid = valid;
+     m_dxpeditionCatalogExpiresAt = valid ? expiresAt : QDateTime();
+     m_dxpeditionCatalogEntries = valid ? callBandKeys.size() : 0;
++    m_dxpeditionCallBands = valid ? callBandKeys : QSet<QString>();
+     if (m_targetScorer)
+         m_targetScorer->setDxpeditionWatch(
+-            valid ? callBandKeys : QSet<QString>(), m_dxpeditionBoost);
++            m_dxpeditionCallBands, m_dxpeditionBoost);
+     if (force || fingerprintChanged || validityChanged) {
+         QJsonObject fields;
+         fields["valid"] = valid;
+@@ -602,6 +638,36 @@ void AutoDxerCore::reloadDxpeditionWatch(bool force)
+     }
+ }
+ 
++bool AutoDxerCore::isCataloguedDxpedition(const QString &callsign,
++                                          int bandIndex) const
++{
++    const QString base = extractBaseCallsign(callsign).toUpper();
++    return m_dxpeditionCallBands.contains(base + "@" + QString::number(bandIndex))
++        || m_dxpeditionCallBands.contains(base + "@*");
++}
++
++bool AutoDxerCore::isDxpeditionTarget(const QString &callsign,
++                                      int bandIndex) const
++{
++    // The live, validated catalogue is authoritative.  The legacy prefix
++    // table remains a conservative fallback for a newly announced operation
++    // or a temporarily unavailable catalogue.
++    return isCataloguedDxpedition(callsign, bandIndex)
++        || hasLegacyRarePrefix(callsign.trimmed().toUpper());
++}
++
++bool AutoDxerCore::dxpeditionScopeAdmits(const QString &callsign, int bandIndex,
++                                         bool otherwiseNeeded) const
++{
++    if (otherwiseNeeded) return true;
++    if (!m_dxpeditionChaseEnabled || !m_dxpeditionChaseAnyActive
++            || !isCataloguedDxpedition(callsign, bandIndex)
++            || !m_historicalNoveltyAllowed || !m_dxccTracker) return false;
++    // "Any active" is bounded by Wavelog's call/band novelty.  It broadens
++    // DXCC need, but never knowingly repeats the same expedition on a band.
++    return m_dxccTracker->eligibilityFacts(callsign, QString(), bandIndex).bandCall;
++}
++
+ void AutoDxerCore::reloadRuntimeConfig()
+ {
+     const bool wasEffective = m_enabled;
+@@ -848,6 +914,15 @@ QJsonObject AutoDxerCore::autoDxStatus() const
+         ? m_dxpeditionWatchMtime.toString(Qt::ISODateWithMs) : QString();
+     catalog["expires_utc"] = m_dxpeditionCatalogExpiresAt.isValid()
+         ? m_dxpeditionCatalogExpiresAt.toString(Qt::ISODateWithMs) : QString();
++    catalog["chase_enabled"] = m_dxpeditionChaseEnabled;
++    catalog["allow_same_band_off_standard_qsy"] = m_dxpeditionAllowSameBandOffStandardQsy;
++    catalog["allow_cross_band_qsy"] = m_dxpeditionAllowCrossBandQsy;
++    catalog["chase_scope"] = m_dxpeditionChaseAnyActive ? "any-active" : "needed-only";
++    catalog["min_spotters"] = m_dxpeditionMinSpotters;
++    catalog["max_spot_age_seconds"] = m_dxpeditionMaxSpotAgeSeconds;
++    catalog["verification_seconds"] = m_crossBandVerifySeconds;
++    catalog["tx_offset_hz"] = m_dxpeditionTxOffsetHz;
++    catalog["return_to_standard"] = m_dxpeditionReturnToStandard;
+ 
+     QJsonObject pendingVerification;
+     pendingVerification["active"] = !m_pendingCrossBandCallsign.isEmpty();
+@@ -893,6 +968,11 @@ void AutoDxerCore::refreshWavelogHistory()
+     if (base.isEmpty()) base = "http://127.0.0.1:8080";
+     QNetworkRequest request(QUrl(base + "/api/digital/mshv-history"));
+     request.setRawHeader("X-OM0RX-Control-Token", qgetenv("OM0RX_CONTROL_TOKEN"));
++    if (m_historyCachedAllowed && !m_historyEntityTag.isEmpty()
++            && m_historyRepresentationValidUntil.isValid()
++            && now <= m_historyRepresentationValidUntil) {
++        request.setRawHeader("If-None-Match", m_historyEntityTag);
++    }
+     m_historyRequestPending = true;
+     ++m_historyRequestGeneration;
+     if (m_historyRequestGeneration == 0) ++m_historyRequestGeneration;
+@@ -918,6 +998,12 @@ void AutoDxerCore::applyWavelogHistoryReply(QNetworkReply *reply,
+                           .arg(requestGeneration));
+         return;
+     }
++    const int httpStatus = reply
++        ? reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() : 0;
++    if (httpStatus == 304) {
++        applyUnmodifiedWavelogHistoryReply(reply);
++        return;
++    }
+     if (!reply || reply->error() != QNetworkReply::NoError) {
+         const QNetworkReply::NetworkError networkError = reply
+             ? reply->error() : QNetworkReply::UnknownNetworkError;
+@@ -937,8 +1023,17 @@ void AutoDxerCore::applyWavelogHistoryReply(QNetworkReply *reply,
+         }
+         return;
+     }
++    // A 200 response supersedes the cached representation. Only arm the
++    // conditional path again after the complete payload has been validated
++    // and every acknowledged delta has been applied successfully.
++    m_historyEntityTag.clear();
++    m_historyRepresentationValidUntil = QDateTime();
++    m_historyCachedAuthorityStatus.clear();
++    m_historyCachedAllowed = false;
+     bool allowed = false;
+     QString status = "unavailable";
++    QDateTime generated;
++    int maxAge = 0;
+     QJsonObject payload;
+     QJsonParseError error;
+     const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &error);
+@@ -946,9 +1041,9 @@ void AutoDxerCore::applyWavelogHistoryReply(QNetworkReply *reply,
+         payload = document.object();
+         allowed = payload.value("historical_novelty_allowed").toBool(false);
+         status = payload.value("status").toString("invalid");
+-        const QDateTime generated = QDateTime::fromString(
++        generated = QDateTime::fromString(
+             payload.value("generated_at").toString(), Qt::ISODate);
+-        const int maxAge = payload.value("max_age_seconds").toInt(0);
++        maxAge = payload.value("max_age_seconds").toInt(0);
+         const qint64 age = generated.isValid()
+             ? generated.secsTo(QDateTime::currentDateTimeUtc()) : -1;
+         if (!generated.isValid() || maxAge <= 0 || maxAge > 30 || age < 0 || age > maxAge) {
+@@ -1065,6 +1160,57 @@ void AutoDxerCore::applyWavelogHistoryReply(QNetworkReply *reply,
+     }
+     m_historicalNoveltyAllowed = true;
+     cancelPendingWavelogPaths();
++    const QByteArray entityTag = reply->rawHeader("ETag");
++    if (!entityTag.isEmpty()) {
++        m_historyEntityTag = entityTag;
++        m_historyRepresentationValidUntil = generated.addSecs(maxAge);
++        m_historyCachedAuthorityStatus = status;
++        m_historyCachedAllowed = true;
++    }
++}
++
++bool AutoDxerCore::applyUnmodifiedWavelogHistoryReply(QNetworkReply *reply)
++{
++    const QByteArray entityTag = reply ? reply->rawHeader("ETag") : QByteArray();
++    const QByteArray generatedHeader = reply
++        ? reply->rawHeader("X-OM0RX-History-Generated-At") : QByteArray();
++    const QByteArray maxAgeHeader = reply
++        ? reply->rawHeader("X-OM0RX-History-Max-Age") : QByteArray();
++    bool maxAgeOk = false;
++    const int maxAge = QString::fromLatin1(maxAgeHeader).toInt(&maxAgeOk);
++    const QDateTime generated = QDateTime::fromString(
++        QString::fromLatin1(generatedHeader), Qt::ISODate);
++    const qint64 age = generated.isValid()
++        ? generated.secsTo(QDateTime::currentDateTimeUtc()) : -1;
++    const bool tagMatches = AutoDxHistoryConditional::hasExactEntityTag(
++        entityTag, m_historyEntityTag);
++    if (!m_historyCachedAllowed || m_historyEntityTag.isEmpty() || !tagMatches
++            || !generated.isValid() || !maxAgeOk || maxAge <= 0 || maxAge > 30
++            || age < 0 || age > maxAge) {
++        m_historyEntityTag.clear();
++        m_historyRepresentationValidUntil = QDateTime();
++        m_historyCachedAuthorityStatus.clear();
++        m_historyCachedAllowed = false;
++        clearTransientHistoryFailure();
++        revokeHistoricalNovelty("stale-history-response");
++        return false;
++    }
++
++    // The server has revalidated the same semantic representation. Refresh
++    // only its short freshness lease; decoded records/deltas are already in
++    // the tracker and reparsing the large body would be redundant.
++    m_historyRepresentationValidUntil = generated.addSecs(maxAge);
++    clearTransientHistoryFailure();
++    m_historyAuthorityStatus = m_historyCachedAuthorityStatus;
++    if (!m_hvDxccTracker || !m_targetScorer) {
++        revokeHistoricalNovelty("tracker-unavailable");
++        return false;
++    }
++    m_targetScorer->setPendingWavelogCalls(m_pendingWavelogCalls);
++    m_targetScorer->setHistoricalNoveltyAllowed(true);
++    m_historicalNoveltyAllowed = true;
++    cancelPendingWavelogPaths();
++    return true;
+ }
+ 
+ void AutoDxerCore::noteTransientHistoryFailure(const QString &reason)
+@@ -1387,6 +1533,7 @@ void AutoDxerCore::setCurrentBand(int bandIndex)
+     if (bandIndex != m_currentBandIndex) {
+         m_currentBandIndex = bandIndex;
+         m_bandManager->setCurrentBand(bandIndex);
++        if (m_hvDxccTracker) m_hvDxccTracker->setCurrentBand(bandIndex);
+         if (m_patrolCursorBand < 0) m_patrolCursorBand = bandIndex;
+         emit debugMessage(QString("AutoDxerCore: Band changed to %1").arg(m_bandManager->bandName(bandIndex)));
+ 
+@@ -1442,6 +1589,65 @@ void AutoDxerCore::onStationInfo(QStringList list, int destType, bool emitUdp, u
+     onLocalDecode(list);
+ }
+ 
++void AutoDxerCore::requestManualTarget(QStringList decodeData)
++{
++    QString callsign, grid;
++    int snr = 0, freq = 0;
++    bool isCQ = false;
++    parseDecodeMessage(decodeData, callsign, grid, snr, freq, isCQ);
++    callsign = callsign.trimmed().toUpper();
++    if (!m_enabled || callsign.isEmpty() || callsign == m_myCallsign) {
++        emit manualTargetStatus(callsign, false, "Auto DX is unavailable for this row");
++        return;
++    }
++    if (!historicalActionAllowed(callsign, false)) {
++        emit manualTargetStatus(callsign, false, "Wavelog history gate blocked the target");
++        return;
++    }
++    cleanupRecentlyWorked();
++    for (const QString &workedCall : m_recentlyWorked) {
++        if (callsignsMatch(workedCall, callsign)) {
++            emit manualTargetStatus(callsign, false, "Recently worked");
++            return;
++        }
++    }
++    if (m_currentTarget.isValid() && callsignsMatch(m_currentTarget.callsign, callsign)) {
++        emit manualTargetStatus(callsign, true, "Already active");
++        return;
++    }
++
++    CachedDecode decode;
++    bool found = false;
++    const QList<CachedDecode> active = m_decodeCache->getActiveDecodes(
++        m_currentBandIndex, m_targetHeardFreshSeconds);
++    for (const CachedDecode &candidate : active) {
++        if (candidate.isLocalDecode && callsignsMatch(candidate.callsign, callsign)) {
++            decode = candidate;
++            found = true;
++            break;
++        }
++    }
++    if (!found) {
++        emit manualTargetStatus(callsign, false, "Local decode is no longer fresh");
++        return;
++    }
++
++    const ScoredTarget target = m_targetScorer->scoreTarget(decode);
++    if (target.priority <= 0) {
++        emit manualTargetStatus(callsign, false,
++            target.priorityReason.isEmpty() ? "Duplicate/history eligibility gate" : target.priorityReason);
++        return;
++    }
++    m_manualTarget = target;
++    emit manualTargetStatus(callsign, true,
++        m_state == WaitingForQSO ? "Queued after active QSO" : "Queued by operator");
++
++    // Never displace an active queue/QSO.  Idle listeners can evaluate the
++    // explicit request immediately; otherwise the next decode-complete cycle
++    // revalidates freshness and history before admission.
++    if (m_state == Listening && !m_currentTarget.isValid()) evaluateTargets();
++}
++
+ void AutoDxerCore::onLocalDecode(QStringList decodeData)
+ {
+     if (!m_enabled || decodeData.isEmpty()) return;
+@@ -1454,12 +1660,6 @@ void AutoDxerCore::onLocalDecode(QStringList decodeData)
+     parseDecodeMessage(decodeData, callsign, grid, snr, freq, isCQ);
+     QString originalMsg = decodeData.value(4, "");  // Original message for cache
+ 
+-    // Debug: Log portable callsign extraction to verify fix
+-    if (callsign.contains('/')) {
+-        emit debugMessage(QString("PORTABLE-DECODE: Extracted '%1' from msg '%2'")
+-                         .arg(callsign).arg(originalMsg.left(50)));
+-    }
+-
+     // Feed ALL decodes to slot finder for frequency analysis (before any filtering)
+     // Include callsign for multistream detection
+     if (m_slotFinder && freq >= 100 && freq <= 3000) {
+@@ -1475,13 +1675,6 @@ void AutoDxerCore::onLocalDecode(QStringList decodeData)
+     // Add to cache (with current dial frequency for non-standard freq tracking)
+     m_decodeCache->addDecode(callsign, grid, entity, originalMsg, m_currentBandIndex, freq, m_currentDialFrequencyHz, snr, isCQ);
+ 
+-    // Debug: Log when a "needed" station is decoded locally (helps verify local decode path)
+-    if (m_dxccTracker && (m_dxccTracker->isNewDXCCByCall(callsign) ||
+-                          m_dxccTracker->isNewBandSlotByCall(callsign, m_currentBandIndex))) {
+-        emit debugMessage(QString("LOCAL-DECODE-NEEDED: %1 (%2) snr=%3 freq=%4 isCQ=%5")
+-                         .arg(callsign).arg(entity).arg(snr).arg(freq).arg(isCQ ? "yes" : "no"));
+-    }
+-
+     // Feed to LocalSpotBridge for unified spot handling (shows in DXCC Chaser spots view)
+     CachedDecode localDecode;
+     localDecode.callsign = callsign;
+@@ -1569,16 +1762,12 @@ void AutoDxerCore::parseDecodeMessage(const QStringList &data, QString &callsign
+     snr = data.value(1, "0").toInt();   // Index 1: SNR in dB (confirmed from log)
+     QString msg = data.value(4, "");    // Index 4: FT8 Message (confirmed)
+ 
+-    // Audio frequency might be elsewhere - let's try to find it
+-    // Looking for a number in the 100-3000 range
+-    freq = 1500;  // Default to middle of audio range
+-    for (int i = 5; i < data.size(); i++) {
+-        int val = data.value(i, "0").toInt();
+-        if (val >= 100 && val <= 3000) {
+-            freq = val;
+-            break;
+-        }
+-    }
++    // Raw decoder rows store audio frequency at 7.  Enriched DecodeList rows
++    // store it after Country/CS/DS/MW/Dist at 12.  Never scan numeric display
++    // columns: distance and Most-Wanted rank can also be in the audio range.
++    bool ok = false;
++    freq = data.value(data.size() >= 13 ? 12 : 7).toInt(&ok);
++    if (!ok || freq < 100 || freq > 3000) freq = 1500;
+ 
+     callsign = extractCallsign(msg);
+     grid = extractGrid(msg);
+@@ -1796,7 +1985,6 @@ void AutoDxerCore::evaluateTargets()
+     if (cancelPendingWavelogPaths()) return;
+     // Get local decodes from cache
+     QList<CachedDecode> activeStations = m_decodeCache->getActiveDecodes(m_currentBandIndex, 60);
+-    int localCount = activeStations.size();
+ 
+     // Cross-band verification: If we switched bands for a specific target,
+     // REQUIRE that target to appear in local decodes before calling ANYTHING
+@@ -1883,7 +2071,8 @@ void AutoDxerCore::evaluateTargets()
+     if (!m_pendingNonStdCallsign.isEmpty()) {
+         int elapsedSecs = m_pendingNonStdTime.secsTo(QDateTime::currentDateTimeUtc());
+ 
+-        if (elapsedSecs > NON_STD_FREQ_VERIFY_TIMEOUT_SECS) {
++        if (AutoDxTimingPolicy::verificationExpired(
++                elapsedSecs, m_crossBandVerifySeconds)) {
+             emit debugMessage(QString("NON-STD-FREQ-TIMEOUT: %1 not heard after %2s - returning to standard dial")
+                 .arg(m_pendingNonStdCallsign).arg(elapsedSecs));
+             m_pendingNonStdCallsign.clear();
+@@ -1892,7 +2081,7 @@ void AutoDxerCore::evaluateTargets()
+ 
+             // CRITICAL: Return to standard dial frequency after timeout on non-standard freq
+             // This ensures we go back to where the activity is if DXpedition wasn't heard
+-            if (m_bandManager) {
++            if (m_dxpeditionReturnToStandard && m_bandManager) {
+                 const int NON_STD_FREQ_THRESHOLD_HZ = 3000;  // 3 kHz threshold for "non-standard" dial
+                 int standardDial = m_bandManager->bandFrequencyHz(m_currentBandIndex);
+                 if (standardDial > 0 && qAbs(m_currentDialFrequencyHz - standardDial) > NON_STD_FREQ_THRESHOLD_HZ) {
+@@ -1923,7 +2112,7 @@ void AutoDxerCore::evaluateTargets()
+                 // Continue with normal evaluation - target will be queued
+             } else {
+                 emit debugMessage(QString("NON-STD-FREQ-WAITING: %1 not yet heard (%2s/%3s)")
+-                    .arg(m_pendingNonStdCallsign).arg(elapsedSecs).arg(NON_STD_FREQ_VERIFY_TIMEOUT_SECS));
++                    .arg(m_pendingNonStdCallsign).arg(elapsedSecs).arg(m_crossBandVerifySeconds));
+                 return;  // Block all calls until verified or timeout
+             }
+         }
+@@ -1939,20 +2128,14 @@ void AutoDxerCore::evaluateTargets()
+ 
+     // Also get external spots from RBN/PSKReporter for awareness
+     QList<ExternalSpot> externalSpots = m_spotAggregator->getSpots(m_currentBandIndex, 120);
+-    int externalCount = 0;
+ 
+     for (const ExternalSpot &spot : externalSpots) {
+         if (spot.source != "LOCAL" && !AutoDxRuntimeConfig::acceptsExternalMode(spot.mode)) continue;
+         if (containsCallsign(activeStations, spot.callsign)) continue;
+         CachedDecode converted = spotToCachedDecode(spot);
+         activeStations.append(converted);
+-        externalCount++;
+     }
+ 
+-    // Debug: Log decode counts
+-    emit debugMessage(QString("EVAL: cache=%1 external=%2 total=%3")
+-                     .arg(localCount).arg(externalCount).arg(activeStations.size()));
+-
+     if (activeStations.isEmpty()) return;
+ 
+     // Filter to only locally decoded stations (external spots are for alerts only)
+@@ -1963,59 +2146,27 @@ void AutoDxerCore::evaluateTargets()
+         }
+     }
+ 
+-    // Debug: Log filter results with details
+-    emit debugMessage(QString("EVAL-FILTER: localOnly=%1 (filtered out %2 external)")
+-                     .arg(localStations.size()).arg(activeStations.size() - localStations.size()));
+-
+-    // Log any NEW DXCC entities that are only in external spots (not local decodes)
+-    for (const CachedDecode &decode : activeStations) {
+-        if (!decode.isLocalDecode) {
+-            bool isNewDxcc = m_dxccTracker && !decode.dxccEntity.isEmpty() &&
+-                            m_dxccTracker->isNewDXCC(decode.dxccEntity);
+-            bool isNewSlot = m_dxccTracker && !decode.dxccEntity.isEmpty() &&
+-                            m_dxccTracker->isNewBandSlot(decode.dxccEntity, m_currentBandIndex);
+-            if (isNewDxcc || isNewSlot) {
+-                emit debugMessage(QString("SPOT-ONLY: %1 (%2) on band %3 - %4%5 - NOT in local decodes!")
+-                    .arg(decode.callsign).arg(decode.dxccEntity).arg(bandName(m_currentBandIndex))
+-                    .arg(isNewDxcc ? "NEW-DXCC" : "").arg(isNewSlot ? " NEW-SLOT" : ""));
+-            }
+-        }
+-    }
+-
+     if (localStations.isEmpty()) {
+-        // Log what we're missing
+-        int newDxccSpotted = 0;
+-        for (const CachedDecode &decode : activeStations) {
+-            if (!decode.isLocalDecode && m_dxccTracker && !decode.dxccEntity.isEmpty() &&
+-                m_dxccTracker->isNewDXCC(decode.dxccEntity)) {
+-                newDxccSpotted++;
+-            }
+-        }
+-        if (newDxccSpotted > 0) {
+-            emit debugMessage(QString("EVAL-EMPTY: No local decodes! But %1 NEW-DXCC spotted externally (can't call what we can't hear)")
+-                             .arg(newDxccSpotted));
+-        }
+         return;
+     }
+ 
+-    // Log local decode details for debugging
+-    int newEntitiesLocal = 0;
+-    for (const CachedDecode &d : localStations) {
+-        bool isNew = m_dxccTracker && !d.dxccEntity.isEmpty() &&
+-                    m_dxccTracker->isNewDXCC(d.dxccEntity);
+-        if (isNew) {
+-            emit debugMessage(QString("LOCAL-DECODE-NEW: %1 (%2) @ %3 Hz SNR=%4")
+-                .arg(d.callsign).arg(d.dxccEntity).arg(d.audioFrequency).arg(d.snr));
+-            newEntitiesLocal++;
++    // An operator request wins the next idle selection, but only while the
++    // same local evidence and normal history/duplicate gates still admit it.
++    ScoredTarget best;
++    if (!m_manualTarget.callsign.isEmpty()) {
++        for (const CachedDecode &decode : localStations) {
++            if (callsignsMatch(decode.callsign, m_manualTarget.callsign)) {
++                best = m_targetScorer->scoreTarget(decode);
++                break;
++            }
++        }
++        if (best.priority <= 0) {
++            emit manualTargetStatus(m_manualTarget.callsign, false,
++                                    "Manual target expired or became ineligible");
++            m_manualTarget = ScoredTarget();
+         }
+     }
+-    if (newEntitiesLocal == 0 && localStations.size() > 0) {
+-        emit debugMessage(QString("LOCAL-DECODES: All %1 stations already worked (no new entities)")
+-                         .arg(localStations.size()));
+-    }
+-
+-    // Score and find best target
+-    ScoredTarget best = m_targetScorer->getBestTarget(localStations);
++    if (best.priority <= 0) best = m_targetScorer->getBestTarget(localStations);
+ 
+     if (best.priority > 0) {
+         if (!historicalActionAllowed(best.callsign, best.isCallingMe)) {
+@@ -2048,7 +2199,7 @@ void AutoDxerCore::evaluateTargets()
+             }
+         }
+         // Also check if it's in external spots
+-        for (const ExternalSpot &spot : m_spotAggregator->getSpots(m_currentBandIndex, 120)) {
++        for (const ExternalSpot &spot : externalSpots) {
+             if (spot.callsign.compare(best.callsign, Qt::CaseInsensitive) == 0) {
+                 foundInExternal = true;
+                 break;
+@@ -2070,7 +2221,14 @@ void AutoDxerCore::evaluateTargets()
+             return;  // Wait for onSlotAnalysisReady to feed target
+         }
+ 
++        const bool wasManual = !m_manualTarget.callsign.isEmpty()
++            && callsignsMatch(best.callsign, m_manualTarget.callsign);
+         feedToQueue(best);
++        if (wasManual && m_currentTarget.isValid()
++                && callsignsMatch(m_currentTarget.callsign, best.callsign)) {
++            m_manualTarget = ScoredTarget();
++            emit manualTargetStatus(best.callsign, true, "Active target");
++        }
+     } else {
+         // No target selected - log why
+         emit debugMessage(QString("NO-TARGET: Scorer returned priority 0 for %1 local stations")
+@@ -2379,6 +2537,12 @@ void AutoDxerCore::feedToQueue(const ScoredTarget &target, bool newAttempt,
+     if (target.dialFrequencyHz > 0 && m_bandManager) {
+         int standardDial = m_bandManager->bandFrequencyHz(target.bandIndex);
+         if (standardDial > 0 && qAbs(target.dialFrequencyHz - standardDial) > NON_STD_FREQ_THRESHOLD_HZ) {
++            if (isDxpeditionTarget(target.callsign, target.bandIndex)
++                    && (!m_dxpeditionChaseEnabled
++                        || !m_dxpeditionAllowSameBandOffStandardQsy)) {
++                noteSkipped("dxpedition-same-band-off-standard-disabled:" + target.callsign);
++                return;
++            }
+             // Target is on non-standard frequency (e.g., DXpedition on 14.090 vs standard 14.074)
+             if (qAbs(m_currentDialFrequencyHz - target.dialFrequencyHz) > NON_STD_FREQ_THRESHOLD_HZ) {
+                 noteSkipped("off-standard-qsy-awaiting-local-decode:" + target.callsign);
+@@ -3054,8 +3218,10 @@ void AutoDxerCore::onBandChangeCompleteForRequest(int bandIndex, quint64 request
+     // CRITICAL: For DXpeditions, immediately set TX frequency to ~2000 Hz
+     // Don't wait for slot analysis callback - it may fire before decode data is ready
+     // This applies whether or not the DXpedition is on a standard or non-standard dial
+-    if (!m_pendingCrossBandCallsign.isEmpty() && isRareDXCallsign(m_pendingCrossBandCallsign)) {
+-        int targetTx = 2000;  // 1000 Hz above DXpedition's assumed TX position
++    if (!m_pendingCrossBandCallsign.isEmpty()
++            && m_dxpeditionChaseEnabled
++            && isDxpeditionTarget(m_pendingCrossBandCallsign, m_pendingCrossBandBand)) {
++        int targetTx = qBound(300, 1000 + m_dxpeditionTxOffsetHz, 2700);
+         emit debugMessage(QString("CROSSBAND-TX-IMMEDIATE: Setting TX to %1 Hz for %2 (don't wait for slot analysis)")
+             .arg(targetTx).arg(m_pendingCrossBandCallsign));
+         emit requestTxFreqChange(targetTx);
+@@ -3303,7 +3469,7 @@ void AutoDxerCore::onMSHVQsoLogged(QStringList qsoData)
+ 
+         // CRITICAL: Check if we're on a non-standard dial frequency and return to standard
+         // This ensures we go back to where the activity is after a DXpedition QSO
+-        if (m_bandManager) {
++        if (m_dxpeditionReturnToStandard && m_bandManager) {
+             const int NON_STD_FREQ_THRESHOLD_HZ = 3000;  // 3 kHz threshold for "non-standard" dial
+             int standardDial = m_bandManager->bandFrequencyHz(bandIndex);
+             if (standardDial > 0 && qAbs(m_currentDialFrequencyHz - standardDial) > NON_STD_FREQ_THRESHOLD_HZ) {
+@@ -3368,7 +3534,8 @@ CachedDecode AutoDxerCore::spotToCachedDecode(const ExternalSpot &spot)
+             // Non-standard dial - check if this is a DXpedition
+             // Guard against malformed frequencies (must be valid HF frequency)
+             if (rfFreq >= 100000) {  // Minimum valid RF frequency ~100 kHz
+-                if (isRareDXCallsign(spot.callsign)) {
++                if (m_dxpeditionChaseEnabled
++                        && isDxpeditionTarget(spot.callsign, spot.bandIndex)) {
+                     // DXpedition: The spotted frequency IS the dial frequency
+                     decode.dialFrequencyHz = rfFreq;
+                     decode.audioFrequency = 1000;  // Scan mid-low range for their signal
+@@ -3392,7 +3559,8 @@ CachedDecode AutoDxerCore::spotToCachedDecode(const ExternalSpot &spot)
+     } else {
+         // No band manager or unknown band - check if DXpedition
+         if (rfFreq >= 100000) {
+-            if (isRareDXCallsign(spot.callsign)) {
++            if (m_dxpeditionChaseEnabled
++                    && isDxpeditionTarget(spot.callsign, spot.bandIndex)) {
+                 // DXpedition: Use spotted frequency directly as dial
+                 decode.dialFrequencyHz = rfFreq;
+                 decode.audioFrequency = 1000;
+@@ -3453,10 +3621,6 @@ void AutoDxerCore::checkCrossBandAlerts()
+         return;
+     }
+ 
+-    // Minimum number of independent US spotters required for cross-band alert
+-    // This prevents false alerts from single unreliable spots
+-    const int MIN_SPOTTERS_FOR_ALERT = 2;
+-
+     // DEBUG: Log total spot counts across all bands every 60 seconds
+     static QDateTime lastSpotLog;
+     if (!lastSpotLog.isValid() || lastSpotLog.secsTo(QDateTime::currentDateTimeUtc()) >= 60) {
+@@ -3464,7 +3628,8 @@ void AutoDxerCore::checkCrossBandAlerts()
+         QString bandCounts;
+         for (int b = 3; b <= 14; b++) {
+             if (b == 13) continue;  // Skip 40MHz - not a ham band!
+-            int count = m_spotAggregator->getSpots(b, 120).size();
++            int count = m_spotAggregator->getSpots(
++                b, m_dxpeditionMaxSpotAgeSeconds).size();
+             totalSpots += count;
+             if (count > 0) {
+                 bandCounts += QString("%1:%2 ").arg(bandName(b)).arg(count);
+@@ -3504,7 +3669,8 @@ void AutoDxerCore::checkCrossBandAlerts()
+             continue;
+         }
+ 
+-        QList<ExternalSpot> spots = m_spotAggregator->getSpots(band, 120);
++        QList<ExternalSpot> spots = m_spotAggregator->getSpots(
++            band, m_dxpeditionMaxSpotAgeSeconds);
+         for (const ExternalSpot &spot : spots) {
+             if (crossBandRetryDeferred(spot.callsign, band, now)) {
+                 noteSkipped("cross-band-terminal-backoff:" + spot.callsign);
+@@ -3529,16 +3695,25 @@ void AutoDxerCore::checkCrossBandAlerts()
+             bool isNewBandSlot = m_targetScorer->priorityBandSlotEnabled() &&
+                                  m_dxccTracker->isNewBandSlotByCall(spot.callsign, band);
+             bool isNeeded = isNewDxcc || isNewBandSlot;
++            const bool dxpedition = isDxpeditionTarget(spot.callsign, band);
++            if (dxpedition && (!m_dxpeditionChaseEnabled
++                    || !m_dxpeditionAllowCrossBandQsy)) {
++                noteSkipped("dxpedition-cross-band-disabled:" + spot.callsign);
++                continue;
++            }
++            const bool scopeAdmitted = dxpeditionScopeAdmits(
++                spot.callsign, band, isNeeded);
+ 
+             // DEBUG: Log rare/DXpedition entities that are ALREADY WORKED on this band
+-            if (!isNeeded && (spot.callsign.contains('/') || isRareDXCallsign(spot.callsign))) {
++            if (!isNeeded && (spot.callsign.contains('/')
++                    || isDxpeditionTarget(spot.callsign, band))) {
+                 emit debugMessage(QString("CROSSBAND-SKIP: %1 (%2) on %3 - already worked on this band")
+                     .arg(spot.callsign).arg(entity).arg(bandName(band)));
+             }
+ 
+-            // For needed entities: Allow single spotter (verified locally before calling anyway)
+-            // For non-needed: Require minimum spotters for confidence
+-            int minSpottersRequired = isNeeded ? 1 : MIN_SPOTTERS_FOR_ALERT;
++            // DXpedition confidence is operator-configurable; every candidate
++            // is still locally decoded before the queue can own it.
++            int minSpottersRequired = dxpedition ? m_dxpeditionMinSpotters : 1;
+             if (spot.spotterCount < minSpottersRequired) {
+                 // DEBUG: Log needed entities that don't meet spotter threshold
+                 if (isNeeded) {
+@@ -3555,14 +3730,15 @@ void AutoDxerCore::checkCrossBandAlerts()
+                     .arg(isNewDxcc ? "YES" : "NO").arg(isNewBandSlot ? "YES" : "NO"));
+             }
+ 
+-            if (!isNeeded) continue;
++            if (!scopeAdmitted) continue;
+ 
+             int spotDialFreq = 0;
+             int standardDial = m_bandManager ? m_bandManager->bandFrequencyHz(band) : 0;
+             if (spot.frequencyHz > 100000 && standardDial > 0) {
+                 const int audioIfStandard = spot.frequencyHz - standardDial;
+                 if (audioIfStandard < 0 || audioIfStandard > 3000) {
+-                    if (isRareDXCallsign(spot.callsign)) {
++                    if (m_dxpeditionChaseEnabled
++                            && isDxpeditionTarget(spot.callsign, band)) {
+                         spotDialFreq = spot.frequencyHz;
+                         emit debugMessage(QString("DXPED-DIAL: %1 (%2) on %3 - using spotted freq %4 kHz as dial")
+                             .arg(spot.callsign).arg(entity).arg(bandName(band))
+@@ -3594,7 +3770,8 @@ void AutoDxerCore::checkCrossBandAlerts()
+             candidate.priority = isNewDxcc ? 2 : 1;
+             candidate.reason = isNewDxcc && isNewBandSlot
+                 ? "new-dxcc+new-band-slot"
+-                : isNewDxcc ? "new-dxcc" : "new-band-slot";
++                : isNewDxcc ? "new-dxcc"
++                : isNewBandSlot ? "new-band-slot" : "active-dxpedition";
+             candidate.standardDial = standardDial;
+             candidate.spotDialFreq = spotDialFreq;
+             // Once the independent baseline deadline is due, a lower-class
+@@ -3658,7 +3835,8 @@ void AutoDxerCore::checkCrossBandAlerts()
+     m_pendingCrossBandReturnBand = m_currentBandIndex;
+     m_pendingCrossBandDialFreq = chosen.spotDialFreq;
+ 
+-    if (isRareDXCallsign(chosen.spot.callsign)) {
++    if (m_dxpeditionChaseEnabled
++            && isDxpeditionTarget(chosen.spot.callsign, chosen.band)) {
+         m_pendingCrossBandAudioFreq = 1000;
+         emit debugMessage(QString("DXPED-AUDIO: %1 assuming DX TX at ~1000 Hz audio, will TX at ~2000 Hz")
+                          .arg(chosen.spot.callsign));
+@@ -3732,7 +3910,8 @@ void AutoDxerCore::checkSameBandNonStdFreqAlerts()
+     const int NON_STD_FREQ_THRESHOLD_HZ = 3000;
+ 
+     // Check external spots on CURRENT band only
+-    QList<ExternalSpot> spots = m_spotAggregator->getSpots(m_currentBandIndex, 120);
++    QList<ExternalSpot> spots = m_spotAggregator->getSpots(
++        m_currentBandIndex, m_dxpeditionMaxSpotAgeSeconds);
+ 
+     for (const ExternalSpot &spot : spots) {
+         if (!historicalActionAllowed(spot.callsign, false)) continue;
+@@ -3749,10 +3928,24 @@ void AutoDxerCore::checkSameBandNonStdFreqAlerts()
+         bool isNewBandSlot = m_targetScorer->priorityBandSlotEnabled() &&
+                              m_dxccTracker->isNewBandSlotByCall(spot.callsign, m_currentBandIndex);
+         bool isNeeded = isNewDxcc || isNewBandSlot;
++        const bool dxpedition = isDxpeditionTarget(
++            spot.callsign, m_currentBandIndex);
++        if (dxpedition && (!m_dxpeditionChaseEnabled
++                || !m_dxpeditionAllowSameBandOffStandardQsy)) {
++            noteSkipped("dxpedition-same-band-off-standard-disabled:" + spot.callsign);
++            continue;
++        }
++        if (dxpedition && spot.spotterCount < m_dxpeditionMinSpotters) {
++            noteSkipped("dxpedition-spotter-threshold:" + spot.callsign);
++            continue;
++        }
++        const bool scopeAdmitted = dxpeditionScopeAdmits(
++            spot.callsign, m_currentBandIndex, isNeeded);
+ 
+-        if (!isNeeded) {
++        if (!scopeAdmitted) {
+             // DEBUG: Log rare/DXpedition entities that are ALREADY WORKED on this band
+-            if (spot.callsign.contains('/') || isRareDXCallsign(spot.callsign)) {
++            if (spot.callsign.contains('/')
++                    || isDxpeditionTarget(spot.callsign, m_currentBandIndex)) {
+                 QString entity;
+                 if (m_cty) entity = m_cty->FindCountry(spot.callsign, false);
+                 emit debugMessage(QString("SAMEBAND-SKIP: %1 (%2) on %3 - already worked on this band")
+@@ -3785,7 +3978,8 @@ void AutoDxerCore::checkSameBandNonStdFreqAlerts()
+             continue;
+         } else if (spotRfFreq >= 100000) {
+             // Non-standard frequency - check if this is a DXpedition
+-            if (isRareDXCallsign(spot.callsign)) {
++            if (m_dxpeditionChaseEnabled
++                    && isDxpeditionTarget(spot.callsign, m_currentBandIndex)) {
+                 // DXpedition: The spotted frequency IS the dial frequency
+                 spotDialFreq = spotRfFreq;
+                 emit debugMessage(QString("DXPED-SAMEBAND: %1 using spotted freq %2 Hz as dial")
+@@ -3828,8 +4022,9 @@ void AutoDxerCore::checkSameBandNonStdFreqAlerts()
+ 
+             // CRITICAL: For DXpeditions, immediately set TX frequency to ~2000 Hz
+             // Don't wait for slot analysis callback - it may have already fired with wrong value
+-            if (isRareDXCallsign(spot.callsign)) {
+-                int targetTx = 2000;  // 1000 Hz above DXpedition's assumed TX position
++            if (m_dxpeditionChaseEnabled
++                    && isDxpeditionTarget(spot.callsign, m_currentBandIndex)) {
++                int targetTx = qBound(300, 1000 + m_dxpeditionTxOffsetHz, 2700);
+                 emit debugMessage(QString("DXPED-TX-IMMEDIATE: Setting TX to %1 Hz for %2 (don't wait for slot analysis)")
+                     .arg(targetTx).arg(spot.callsign));
+                 emit requestTxFreqChange(targetTx);
+@@ -3987,13 +4182,15 @@ void AutoDxerCore::onSlotAnalysisReady(SlotAnalysis analysis)
+             cancelPendingWavelogPaths();
+             return;
+         }
+-        // TX about 1000 Hz above target's TX frequency (common DXpedition split)
+-        // Constrain to reasonable FT8 range (300-2700 Hz)
+-        int targetTx = qBound(300, m_pendingCrossBandAudioFreq + 1000, 2700);
+-        emit debugMessage(QString("TX-DXPED: Calling %1 - their audio ~%2 Hz, our TX at %3 Hz (+1000 Hz above)")
++        const bool dxpedition = m_dxpeditionChaseEnabled
++            && isDxpeditionTarget(m_pendingCrossBandCallsign,
++                                   m_pendingCrossBandBand);
++        const int offset = dxpedition ? m_dxpeditionTxOffsetHz : 1000;
++        int targetTx = qBound(300, m_pendingCrossBandAudioFreq + offset, 2700);
++        emit debugMessage(QString("TX-DXPED: Calling %1 - their audio ~%2 Hz, our TX at %3 Hz (+%4 Hz)")
+                          .arg(m_pendingCrossBandCallsign)
+                          .arg(m_pendingCrossBandAudioFreq)
+-                         .arg(targetTx));
++                         .arg(targetTx).arg(offset));
+         emit requestTxFreqChange(targetTx);
+         return;  // Skip normal slot finder logic
+     }
+@@ -4005,8 +4202,11 @@ void AutoDxerCore::onSlotAnalysisReady(SlotAnalysis analysis)
+             return;
+         }
+         // For non-std freq targets, check if it's a DXpedition for proper TX offset
+-        int targetAudio = isRareDXCallsign(m_pendingNonStdCallsign) ? 1000 : 1500;
+-        int targetTx = qBound(300, targetAudio + 1000, 2700);
++        const bool dxpedition = m_dxpeditionChaseEnabled
++            && isDxpeditionTarget(m_pendingNonStdCallsign, m_currentBandIndex);
++        int targetAudio = dxpedition ? 1000 : 1500;
++        int targetTx = qBound(300, targetAudio
++            + (dxpedition ? m_dxpeditionTxOffsetHz : 1000), 2700);
+         emit debugMessage(QString("TX-NONSTD: Calling %1 - assuming audio ~%2 Hz, our TX at %3 Hz (+1000 Hz above)")
+                          .arg(m_pendingNonStdCallsign)
+                          .arg(targetAudio)
+@@ -4053,8 +4253,15 @@ void AutoDxerCore::onSlotAnalysisReady(SlotAnalysis analysis)
+     if (m_waitingForSlotAnalysis && !m_pendingSlotAnalysisTarget.callsign.isEmpty()) {
+         emit debugMessage(QString("SLOT-ANALYSIS: Now feeding deferred target %1 to queue")
+                          .arg(m_pendingSlotAnalysisTarget.callsign));
++        const QString deferredCall = m_pendingSlotAnalysisTarget.callsign;
+         m_waitingForSlotAnalysis = false;
+         feedToQueue(m_pendingSlotAnalysisTarget);
++        if (!m_manualTarget.callsign.isEmpty()
++                && callsignsMatch(m_manualTarget.callsign, deferredCall)
++                && m_currentTarget.isValid()) {
++            m_manualTarget = ScoredTarget();
++            emit manualTargetStatus(deferredCall, true, "Active target");
++        }
+         m_pendingSlotAnalysisTarget = ScoredTarget();  // Clear pending target
+     }
+ }
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxercore.h b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+index 3a0e7b5..890f374 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxercore.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxercore.h
+@@ -10,6 +10,7 @@
+ #include <QString>
+ #include <QStringList>
+ #include <QDateTime>
++#include <QByteArray>
+ #include <QSet>
+ #include <QHash>
+ #include <QJsonObject>
+@@ -149,6 +150,7 @@ signals:
+     void requestDialFreqChange(int dialFrequencyHz);  // Request MSHV QSY to non-standard dial
+     void qsoCompleted(QString callsign, QString entity, int bandIndex);
+     void statsUpdated();
++    void manualTargetStatus(QString callsign, bool queued, QString reason);
+     // CQ control - AutoDxer is search-and-pounce only, never CQ
+     void requestDisableCQOnFreeSlot();
+     // AUTO mode control
+@@ -177,6 +179,7 @@ public slots:
+     void onMSHVQsoLogged(QStringList qsoData);
+     // Dial frequency feedback from MSHV's rig control
+     void onDialFrequencyChanged(int dialFrequencyHz);
++    void requestManualTarget(QStringList decodeData);
+ 
+ private slots:
+     void processListeningState();
+@@ -221,6 +224,7 @@ private:
+     void refreshWavelogHistory();
+     void applyWavelogHistoryReply(QNetworkReply *reply,
+                                   quint64 requestGeneration = 0);
++    bool applyUnmodifiedWavelogHistoryReply(QNetworkReply *reply);
+     void noteTransientHistoryFailure(const QString &reason);
+     void clearTransientHistoryFailure();
+     void expireTransientHistoryGrace();
+@@ -243,6 +247,10 @@ private:
+     void auditEvent(const QString &event, const QJsonObject &fields = QJsonObject());
+     void noteSkipped(const QString &reason);
+     void reloadDxpeditionWatch(bool force = false);
++    bool isCataloguedDxpedition(const QString &callsign, int bandIndex) const;
++    bool isDxpeditionTarget(const QString &callsign, int bandIndex) const;
++    bool dxpeditionScopeAdmits(const QString &callsign, int bandIndex,
++                               bool otherwiseNeeded) const;
+ 
+     // Spot integration helpers
+     CachedDecode spotToCachedDecode(const ExternalSpot &spot);
+@@ -314,6 +322,15 @@ private:
+     bool m_dxpeditionCatalogValid;
+     int m_dxpeditionCatalogEntries;
+     int m_dxpeditionBoost;
++    QSet<QString> m_dxpeditionCallBands;
++    bool m_dxpeditionChaseEnabled;
++    bool m_dxpeditionAllowSameBandOffStandardQsy;
++    bool m_dxpeditionAllowCrossBandQsy;
++    bool m_dxpeditionChaseAnyActive;
++    int m_dxpeditionMinSpotters;
++    int m_dxpeditionMaxSpotAgeSeconds;
++    int m_dxpeditionTxOffsetHz;
++    bool m_dxpeditionReturnToStandard;
+     
+     // Components
+     DecodeCache *m_decodeCache;
+@@ -350,6 +367,10 @@ private:
+     QDateTime m_historyRetryNotBefore;
+     bool m_historicalNoveltyAllowed;
+     QString m_historyAuthorityStatus;
++    QByteArray m_historyEntityTag;
++    QDateTime m_historyRepresentationValidUntil;
++    QString m_historyCachedAuthorityStatus;
++    bool m_historyCachedAllowed;
+     QString m_historySnapshotGeneration;
+     QString m_historyStatePath;
+     int m_historyLastSequence;
+@@ -418,7 +439,6 @@ private:
+     int m_pendingNonStdDialFreq;       // Dial frequency we QSY'd to
+     QDateTime m_pendingNonStdTime;     // When we started waiting
+     QDateTime m_lastNonStdQsyTime;     // Cooldown anchor (member for deterministic policy ownership)
+-    static const int NON_STD_FREQ_VERIFY_TIMEOUT_SECS = 60;  // Give up if not heard locally in 60s
+ 
+     // Scarce target persistence (elite chaser mode)
+     bool m_scarceTargetMode;  // True when chasing the only viable target
+@@ -448,6 +468,7 @@ private:
+     // Slot analysis pending target - wait for TX slot analysis before queueing after band switch
+     ScoredTarget m_pendingSlotAnalysisTarget;  // Target waiting for slot analysis to complete
+     bool m_waitingForSlotAnalysis;             // True when target is waiting for slot analysis
++    ScoredTarget m_manualTarget;                // User-requested target, deferred across active QSO
+ 
+     // Recently-worked blacklist - prevents re-calling stations immediately after QSO
+     QSet<QString> m_recentlyWorked;
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp b/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
+index 00a2528..a5919a8 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
++++ b/MSHV_2762/src/HvAutoDxer/autodxerpanel.cpp
+@@ -545,6 +545,10 @@ void AutoDxerPanel::onTargetChanged(DxTarget target)
+     } else {
+         m_targetLabel->setText("Target: -");
+     }
++    // The candidate list intentionally excludes the target already owned by
++    // MSHV. Refresh immediately so the Targets tab still shows that active
++    // ownership instead of appearing empty during a call.
++    refreshTargetList();
+ }
+ 
+ void AutoDxerPanel::onStatsUpdated()
+@@ -662,17 +666,37 @@ void AutoDxerPanel::refreshCacheList()
+ void AutoDxerPanel::refreshTargetList()
+ {
+     m_targetList->clear();
++    const DxTarget active = m_core->currentTarget();
++    if (active.isValid()) {
++        const QString state = m_core->targetRespondedToUs()
++            ? "exchange in progress" : "calling";
++        m_targetList->addItem(QString("ACTIVE  %1  %2  %3 Hz")
++            .arg(active.callsign, -10)
++            .arg(state)
++            .arg(active.audioFrequency));
++        m_targetList->addItem("---------------- future candidates ----------------");
++    }
+     int band = m_core->bandManager()->currentBand();
+     // Get ALL active stations, not just CQ - we call anyone needed
+     QList<CachedDecode> decodes = m_core->decodeCache()->getActiveDecodes(band, 120);
+     QList<ScoredTarget> targets = m_core->targetScorer()->scoreAllTargets(decodes);
+ 
++    int futureCount = 0;
+     for (const ScoredTarget &t : targets) {
++        if (active.isValid()
++                && t.callsign.compare(active.callsign, Qt::CaseInsensitive) == 0)
++            continue;
+         QString line = QString("%1 P=%2 %3")
+                       .arg(t.callsign, -10)
+                       .arg(t.priority, 5)
+                       .arg(t.priorityReason);
+         m_targetList->addItem(line);
++        ++futureCount;
++    }
++    if (futureCount == 0) {
++        m_targetList->addItem(active.isValid()
++            ? "No other eligible future candidates on this band"
++            : "No eligible future candidates on this band");
+     }
+ }
+ 
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxhistoryconditional.h b/MSHV_2762/src/HvAutoDxer/autodxhistoryconditional.h
+new file mode 100644
+index 0000000..dc834f8
+--- /dev/null
++++ b/MSHV_2762/src/HvAutoDxer/autodxhistoryconditional.h
+@@ -0,0 +1,17 @@
++#ifndef AUTODXHISTORYCONDITIONAL_H
++#define AUTODXHISTORYCONDITIONAL_H
++
++#include <QByteArray>
++
++namespace AutoDxHistoryConditional
++{
++inline bool hasExactEntityTag(const QByteArray &responseEntityTag,
++                              const QByteArray &cachedEntityTag)
++{
++    return !responseEntityTag.isEmpty()
++        && !cachedEntityTag.isEmpty()
++        && responseEntityTag == cachedEntityTag;
++}
++}
++
++#endif
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+index 4af964e..e25959a 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxruntimeconfig.h
+@@ -92,6 +92,14 @@ struct AutoDxRuntimeConfig
+     QStringList customServers;
+     AutoDxSelectionConfig selection;
+     int dxpeditionBoost;
++    bool dxpeditionChaseEnabled;
++    bool dxpeditionAllowSameBandOffStandardQsy;
++    bool dxpeditionAllowCrossBandQsy;
++    bool dxpeditionChaseAnyActive;
++    int dxpeditionMinSpotters;
++    int dxpeditionMaxSpotAgeSeconds;
++    int dxpeditionTxOffsetHz;
++    bool dxpeditionReturnToStandard;
+ 
+     bool modeAllowed(const QString &mode) const
+     {
+@@ -194,6 +202,23 @@ struct AutoDxRuntimeConfig
+             "BandSwitching/MinimumDwellSeconds", 180).toInt(), 7200);
+         c.dxpeditionBoost = qBound(0, settings.value(
+             "TargetPriority/DxpeditionBoost", 12000).toInt(), 100000);
++        c.dxpeditionChaseEnabled = settings.value(
++            "Dxpedition/Enabled", true).toBool();
++        c.dxpeditionAllowSameBandOffStandardQsy = settings.value(
++            "Dxpedition/AllowSameBandOffStandardQsy", true).toBool();
++        c.dxpeditionAllowCrossBandQsy = settings.value(
++            "Dxpedition/AllowCrossBandQsy", true).toBool();
++        c.dxpeditionChaseAnyActive = settings.value(
++            "Dxpedition/ChaseScope", "needed-only").toString().trimmed().toLower()
++                == "any-active";
++        c.dxpeditionMinSpotters = qBound(1, settings.value(
++            "Dxpedition/MinSpotters", 1).toInt(), 20);
++        c.dxpeditionMaxSpotAgeSeconds = qBound(15, settings.value(
++            "Dxpedition/MaxSpotAgeSeconds", 120).toInt(), 1800);
++        c.dxpeditionTxOffsetHz = qBound(0, settings.value(
++            "Dxpedition/TxOffsetHz", 1000).toInt(), 2400);
++        c.dxpeditionReturnToStandard = settings.value(
++            "Dxpedition/ReturnToStandard", true).toBool();
+         c.callsign = settings.value("SpotSources/Callsign", "").toString().trimmed().toUpper();
+         c.grid = settings.value("SpotSources/Grid", "").toString().trimmed().toUpper();
+         c.rbnEnabled = settings.value("SpotSources/RbnEnabled", true).toBool();
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+index 2c3e60e..9b22b27 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+@@ -168,6 +168,8 @@ TargetScorer::TargetScorer(DxccTracker *tracker, HvCty *cty, QObject *parent)
+     , m_weightSNRPerDb(TargetPriority::SNRBonus)
+     , m_lotwDataAvailable(false)
+     , m_dxpeditionBoost(12000)
++    , m_dxpeditionChaseEnabled(true)
++    , m_dxpeditionChaseAnyActive(false)
+     , m_confirmationDataAvailable(false)
+ {
+     // Initialize Club Log Most Wanted rankings for rarity-based scoring
+@@ -331,6 +333,13 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     // explicit calling-me eligibility remain independent.
+     const bool ownCountry = !m_myCountry.isEmpty() && entity == m_myCountry;
+ 
++    // Resolve the Wavelog-backed novelty dimensions once per candidate.  The
++    // previous path queried DXCC, band slot and grid individually, then did
++    // the same work again through eligibilityFacts().
++    AutoDxEligibilityFacts facts = m_historicalNoveltyAllowed && m_tracker
++        ? m_tracker->eligibilityFacts(decode.callsign, decode.grid, decode.bandIndex)
++        : AutoDxEligibilityFacts();
++
+     // Calculate priority based on needs
+     QStringList reasons;
+     if (target.isCallingMe && m_weightCallingMe > 0) {
+@@ -339,7 +348,7 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     int dxccScore = 0;
+     
+     // Use callsign-based lookup to avoid entity name abbreviation mismatch (EU Russia vs European Russia)
+-    if (m_historicalNoveltyAllowed && !ownCountry && m_priorityDXCC && m_tracker && m_tracker->isNewDXCCByCall(decode.callsign)) {
++    if (m_historicalNoveltyAllowed && !ownCountry && m_priorityDXCC && facts.newDxcc) {
+         // Apply rarity multiplier based on Club Log Most Wanted rankings
+         int rank = getMostWantedRank(entity);
+         double multiplier = getRarityMultiplier(rank);
+@@ -366,11 +375,11 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+         dxccScore = qMax(dxccScore, m_weightNewDXCC * 9 / 10);
+         reasons << "DXCC worked-not-confirmed";
+     }
+-    if (m_historicalNoveltyAllowed && m_priorityBandSlot && m_tracker && m_tracker->isNewBandSlotByCall(decode.callsign, decode.bandIndex)) {
++    if (m_historicalNoveltyAllowed && m_priorityBandSlot && facts.bandDxcc) {
+         target.isNewBandSlot = true;
+         reasons << "New Band Slot";
+     }
+-    if (m_historicalNoveltyAllowed && m_priorityGrid && !decode.grid.isEmpty() && m_tracker && m_tracker->isNewGrid(decode.grid)) {
++    if (m_historicalNoveltyAllowed && m_priorityGrid && !decode.grid.isEmpty() && facts.newGrid) {
+         // Grid eligibility is independent of DXCC/band-slot state. The prior
+         // else-if/country-worked coupling made new-grid chase unreachable for
+         // exactly the calls that also had a new band slot.
+@@ -388,9 +397,6 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     // Tracker novelty is usable only after the attested history authority is
+     // available. Otherwise preference metadata could turn an untrusted
+     // tracker fact into positive priority while the base scorer is fail-closed.
+-    AutoDxEligibilityFacts facts = m_historicalNoveltyAllowed && m_tracker
+-        ? m_tracker->eligibilityFacts(decode.callsign, decode.grid, decode.bandIndex)
+-        : AutoDxEligibilityFacts();
+     facts.newDxcc = facts.newDxcc || target.isNewDXCC;
+     facts.newDxcc = facts.newDxcc || target.isUnconfirmedDXCC;
+     facts.bandDxcc = facts.bandDxcc || target.isNewBandSlot;
+@@ -400,11 +406,21 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     facts.lotwKnown = m_lotwDataAvailable;
+     facts.lotwMember = m_lotwMembers.contains(baseCallsign(decode.callsign));
+     const AutoDxEligibilityResult policy = m_selectionConfig.evaluate(facts);
++    const bool watchedDxpedition = isWatchedDxpedition(decode.callsign, decode.bandIndex);
++    // "Any active" still means once per call/band.  The bandCall fact comes
++    // from the Wavelog-backed tracker, preserving exact-once history policy.
++    const bool activeDxpeditionAdmission = m_dxpeditionChaseEnabled
++        && m_dxpeditionChaseAnyActive && watchedDxpedition
++        && m_historicalNoveltyAllowed && facts.bandCall;
+     bool hasNewStatus = m_selectionConfig.filterMatrixEnabled
+         ? policy.eligible : eligibility.any();
+     if (!policy.blockers.isEmpty()) {
+-        target.priorityReason = policy.blockers.join(", ");
+-        return target;
++        const bool noveltyOnlyBlock = policy.blockers.size() == 1
++            && policy.blockers.first() == "not-selected-by-filter-matrix";
++        if (!activeDxpeditionAdmission || !noveltyOnlyBlock) {
++            target.priorityReason = policy.blockers.join(", ");
++            return target;
++        }
+     }
+     if (!m_selectionConfig.filterMatrixEnabled) {
+         target.priority += eligibility.weightedScore(dxccScore, m_weightNewBandSlot,
+@@ -422,15 +438,19 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     target.eligibilityClass = policy.targetClass;
+     // Preference/catalog bonuses enhance an admitted positive-base target;
+     // they never create eligibility or resurrect a rejected target.
++    if (activeDxpeditionAdmission) {
++        hasNewStatus = true;
++        target.priority = qMax(target.priority, qMax(1, m_dxpeditionBoost));
++        target.eligibilityClass = "active-dxpedition";
++        reasons << "active-dxpedition-any-active";
++    }
+     if (!hasNewStatus || target.priority <= 0) {
+         target.priorityReason = "No priority match";
+         return target;
+     }
+     target.priority += policy.scoreBoost;
+-    const QString dxpeditionKey = baseCallsign(decode.callsign) + "@" + QString::number(decode.bandIndex);
+-    const bool watchedDxpedition = m_dxpeditionCallBands.contains(dxpeditionKey)
+-        || m_dxpeditionCallBands.contains(baseCallsign(decode.callsign) + "@*");
+-    if (target.priority > 0 && watchedDxpedition) {
++    if (target.priority > 0 && watchedDxpedition && m_dxpeditionChaseEnabled
++            && !activeDxpeditionAdmission) {
+         target.priority += m_dxpeditionBoost;
+         target.eligibilityClass = "active-dxpedition";
+         reasons << "active-dxpedition";
+@@ -468,6 +488,13 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+     return target;
+ }
+ 
++bool TargetScorer::isWatchedDxpedition(const QString &call, int bandIndex) const
++{
++    const QString base = baseCallsign(call);
++    return m_dxpeditionCallBands.contains(base + "@" + QString::number(bandIndex))
++        || m_dxpeditionCallBands.contains(base + "@*");
++}
++
+ QList<ScoredTarget> TargetScorer::scoreAllTargets(const QList<CachedDecode> &decodes)
+ {
+     QList<ScoredTarget> targets;
+@@ -494,10 +521,27 @@ QList<ScoredTarget> TargetScorer::scoreAllTargets(const QList<CachedDecode> &dec
+ 
+ ScoredTarget TargetScorer::getBestTarget(const QList<CachedDecode> &decodes)
+ {
+-    QList<ScoredTarget> scored = scoreAllTargets(decodes);
+-    if (scored.isEmpty()) return ScoredTarget();
+-    
+-    ScoredTarget best = scored.first();
++    // Selection needs only the maximum.  Avoid allocating and sorting the
++    // complete candidate list on every decode-complete callback.
++    ScoredTarget best;
++    bool found = false;
++    const bool newestFirst = m_selectionConfig.selectionOrder == "last";
++    for (const CachedDecode &decode : decodes) {
++        const ScoredTarget target = scoreTarget(decode);
++        if (target.priority <= 0) continue;
++        const bool better = !found
++            || (newestFirst
++                ? target.decodedAt > best.decodedAt
++                : (target.priority > best.priority
++                   || (target.priority == best.priority
++                       && target.decodedAt > best.decodedAt)));
++        if (better) {
++            best = target;
++            found = true;
++        }
++    }
++    if (!found) return ScoredTarget();
++
+     emit debugMessage(QString("TargetScorer: Best target %1 (%2) priority=%3 reason=%4")
+                      .arg(best.callsign).arg(best.dxccEntity)
+                      .arg(best.priority).arg(best.priorityReason));
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.h b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+index 279aac5..d7fa894 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.h
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.h
+@@ -106,6 +106,11 @@ public:
+         m_dxpeditionCallBands = callBandKeys;
+         m_dxpeditionBoost = qMax(0, boost);
+     }
++    void setDxpeditionPolicy(bool enabled, bool chaseAnyActive) {
++        m_dxpeditionChaseEnabled = enabled;
++        m_dxpeditionChaseAnyActive = chaseAnyActive;
++    }
++    bool isWatchedDxpedition(const QString &call, int bandIndex) const;
+     void setConfirmedDxccEntities(const QSet<QString> &entities, bool dataAvailable) {
+         m_confirmedDxccEntities = entities;
+         m_confirmationDataAvailable = dataAvailable;
+@@ -153,6 +158,8 @@ private:
+     bool m_lotwDataAvailable;
+     QSet<QString> m_dxpeditionCallBands;
+     int m_dxpeditionBoost;
++    bool m_dxpeditionChaseEnabled;
++    bool m_dxpeditionChaseAnyActive;
+     QSet<QString> m_confirmedDxccEntities;
+     bool m_confirmationDataAvailable;
+ 
+diff --git a/MSHV_2762/src/HvDecodeList/decodelist.cpp b/MSHV_2762/src/HvDecodeList/decodelist.cpp
+index 9b4976c..f7ccc90 100644
+--- a/MSHV_2762/src/HvDecodeList/decodelist.cpp
++++ b/MSHV_2762/src/HvDecodeList/decodelist.cpp
+@@ -5,6 +5,7 @@
+ #include "decodelist.h"
+ #include "../config.h"
+ #include "../config_str_all.h"
++#include "../HvAutoDxer/autodxmessageparser.h"
+ #include <QDebug>
+ //#include <QtGui>
+ 
+@@ -105,6 +106,19 @@ HvHeader::~HvHeader()
+ {}*/
+ //#include <QGraphicsDropShadowEffect>
+ #define COL_CY 104//to +175%
++namespace {
++const int FT_MESSAGE_COLUMN = 4;
++const int FT_COUNTRY_COLUMN = 5;
++const int FT_CS_COLUMN = 6;
++const int FT_DS_COLUMN = 7;
++const int FT_MW_COLUMN = 8;
++const int FT_DISTANCE_COLUMN = 9;
++const int FT_TYPE_COLUMN = 10;
++const int FT_QUALITY_COLUMN = 11;
++const int FT_FREQUENCY_COLUMN = 12;
++const int RAW_DECODE_ROLE = Qt::UserRole + 37;
++const int CALLSIGN_ROLE = Qt::UserRole + 38;
++}
+ DecodeList::DecodeList(int ident,bool f,QWidget *parent)
+         : QTreeView(parent)
+ {
+@@ -158,6 +172,7 @@ DecodeList::DecodeList(int ident,bool f,QWidget *parent)
+     is_filter_dec = false;
+     THvCty = new HvCty(ident);
+     m_dxccTracker = nullptr;
++    m_ftHeaderStateRestored = false;
+ 
+     THvToolTip = new HvToolTip(this);
+     //f_click_on_call_show_cty = true;//2.51 fefault
+@@ -200,7 +215,7 @@ DecodeList::DecodeList(int ident,bool f,QWidget *parent)
+ 
+     setHeader(THvHeader);
+ 
+-    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
++    setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+ 
+     setAllColumnsShowFocus(true);  // za da o4ertae delia row
+@@ -297,18 +312,33 @@ DecodeList::DecodeList(int ident,bool f,QWidget *parent)
+     f_row_color = false;
+ 
+     //qlsi_st_c = 0;
++    model_batch_repaint_pending = false;
++    model_batch_restore_updates = false;
+     list_rfresh_timer = new QTimer();
+     connect(list_rfresh_timer, SIGNAL(timeout()), this, SLOT(RefreshListTimer()));
+ 
+ }
+ DecodeList::~DecodeList()
+ {
+-    //qDebug()<<"close";
++    SaveFtHeaderState();
+ }
+ QStringList DecodeList::GetCountries()
+ {
+     return THvCty->GetCountries();
+ }
++void DecodeList::setDxccTracker(HvDxccTracker *tracker)
++{
++    if (m_dxccTracker == tracker) return;
++    if (m_dxccTracker) disconnect(m_dxccTracker, 0, this, 0);
++    m_dxccTracker = tracker;
++    m_countryCache.clear();
++    m_statusCache.clear();
++    if (m_dxccTracker) {
++        connect(m_dxccTracker, &HvDxccTracker::workedStatusChanged, this, [this]() {
++            m_statusCache.clear();
++        });
++    }
++}
+ /*void DecodeList::SetHeaderSingleClicked()
+ {
+     //if (s_mode==11 || s_mode==13) //emit EmitHeaderDoubleClicked();
+@@ -547,14 +577,14 @@ void DecodeList::ItemSelectedText(QString str,int in_column,int in_row)
+ 
+         if (in_column==1)
+             emit ListSelectedRpt(str);
+-        if (in_column==9)
++        if (in_column==FT_FREQUENCY_COLUMN)
+             emit EmitFreqDecListClick((double)str.toInt());//2.73 Dist Country
+         if (in_column==4)
+         {
+             //2.02 need first for Queued
+             emit ListSelectedTextAll(model.item(in_row, 4)->text(),str,model.item(in_row, 0)->text(),
+-                                     model.item(in_row, 1)->text(),model.item(in_row, 9)->text());//2.73 Dist Country
+-            double his_freq = (double)model.item(in_row, 9)->text().toInt();//2.73 Dist Country
++                                     model.item(in_row, 1)->text(),model.item(in_row, FT_FREQUENCY_COLUMN)->text());
++            double his_freq = (double)model.item(in_row, FT_FREQUENCY_COLUMN)->text().toInt();
+             emit EmitFreqDecListClick(his_freq);
+             emit ListSelectedRpt(model.item(in_row, 1)->text());
+         }
+@@ -575,7 +605,7 @@ void DecodeList::ItemSelectedText(QString str,int in_column,int in_row)
+     if ((s_mode == 1 || s_mode == 2 || s_mode == 3) && in_column==4 ) // jtms fsk441 fsk315  and rpt column
+         st_lineEdit_hv->setCursor(Qt::ArrowCursor);
+ 
+-    if ((s_mode == 11 || s_mode==13 || allq65) && (in_column==1 || in_column==8)) // ft8 ft4  and rpt and freq column
++    if ((s_mode == 11 || s_mode==13 || allq65) && (in_column==1 || in_column==FT_FREQUENCY_COLUMN))
+         st_lineEdit_hv->setCursor(Qt::ArrowCursor);
+ 
+     // JT6M no rpt column for selection
+@@ -940,23 +970,25 @@ void DecodeList::SetMode(int mode,bool flag_two,bool f0,bool f1,bool f2,bool f3)
+         if (allq65) qdc = "Dec";
+         if (flag_two)
+         {
+-            if (s_list_ident == 1) list_A <<tr("Time")<<"dB"<<"DT"<<"DF Of TX"<<tr("Message")<<tr("Country")<<"MW"<<tr("Dist")<<tr("Type")<<qdc<<"Freq";//10 Flags (MW=Most Wanted)
+-            if (s_list_ident == 2) list_A <<tr("Time")<<"dB"<<"DT"<<"DF Of TX"<<tr("RX Frequency Message")<<tr("Country")<<"MW"<<tr("Dist")<<"Type"<<qdc<<"Freq";//10 Flags
++            if (s_list_ident == 1) list_A <<tr("Time")<<"dB"<<"DT"<<"DF Of TX"<<tr("Message")<<tr("Country")<<"CS"<<"DS"<<"MW"<<tr("Dist")<<tr("Type")<<qdc<<"Freq";
++            if (s_list_ident == 2) list_A <<tr("Time")<<"dB"<<"DT"<<"DF Of TX"<<tr("RX Frequency Message")<<tr("Country")<<"CS"<<"DS"<<"MW"<<tr("Dist")<<"Type"<<qdc<<"Freq";
+             THvHeader->hideSection(3);
+-            THvHeader->hideSection(7);//MW column - hide in two-list mode
+-            THvHeader->hideSection(8);//2.73 Dist
+-            THvHeader->hideSection(9);//2.73 Type
++            THvHeader->hideSection(9);//Dist column - hide in two-list mode
++            THvHeader->hideSection(10);//Type
++            THvHeader->hideSection(11);//Qual/Dec
+         }
+-        else list_A <<tr("Time")<<"dB"<<"DT"<<"DF Of TX"<<tr("Message")<<tr("Country")<<"MW"<<tr("Dist")<<tr("Type")<<qdc<<"Freq";//10 Flags (MW=Most Wanted)
++        else list_A <<tr("Time")<<"dB"<<"DT"<<"DF Of TX"<<tr("Message")<<tr("Country")<<"CS"<<"DS"<<"MW"<<tr("Dist")<<tr("Type")<<qdc<<"Freq";
+ 
+-        THvHeader->showSection(10);
+-        THvHeader->hideSection(11);
+-        THvHeader->hideSection(12);
++        for (int section = 0; section <= FT_FREQUENCY_COLUMN; ++section)
++            THvHeader->showSection(section);
++        THvHeader->showSection(12);
+         THvHeader->hideSection(13);//2.73 extended
+-        if (!f0 && !allq65) THvHeader->hideSection(0);
+-        if (!f3) THvHeader->hideSection(5);//2.73 Dist Country
+-        if (!f1 ||  allq65) THvHeader->hideSection(7);//2.73 Dist (was 6, now shifted for MW)
+-        if (!f2 && !allq65) THvHeader->hideSection(10);//2.73 Freq (was 9)
++        THvHeader->hideSection(2);//DT
++        THvHeader->hideSection(3);//DF
++        THvHeader->hideSection(FT_MW_COLUMN);
++        THvHeader->hideSection(FT_DISTANCE_COLUMN);
++        THvHeader->hideSection(FT_TYPE_COLUMN);
++        THvHeader->hideSection(FT_QUALITY_COLUMN);
+ 
+         model.setHorizontalHeaderLabels(list_A);
+ 
+@@ -964,16 +996,18 @@ void DecodeList::SetMode(int mode,bool flag_two,bool f0,bool f1,bool f2,bool f3)
+         def_section_sizes[1] = 45;//THvHeader->resizeSection(1, 45);//db
+         def_section_sizes[2] = 50;//THvHeader->resizeSection(2, 50);//dt
+         def_section_sizes[3] = 90;//THvHeader->resizeSection(3, 90);//df +125% 80
+-        def_section_sizes[4] = 150;//THvHeader->resizeSection(4, 150);//Message
+-        def_section_sizes[5] = COL_CY;//2.73 Country
+-        def_section_sizes[6] = 32;//MW - Most Wanted rank (narrow column for 1-100)
+-        def_section_sizes[7] = 55;//Dist (was 6)
+-        def_section_sizes[8] = 70;//Type (was 7)
+-        def_section_sizes[9] = 50;//Qual/Dec (was 8)
+-        def_section_sizes[10] = 55;//Freq (was 9)
++        def_section_sizes[4] = 300;//Message
++        def_section_sizes[5] = 125;//Country
++        def_section_sizes[6] = 58;//CS - compact call status
++        def_section_sizes[7] = 72;//DS - compact DXCC status
++        def_section_sizes[8] = 32;//MW - Most Wanted rank
++        def_section_sizes[9] = 55;//Dist
++        def_section_sizes[10] = 70;//Type
++        def_section_sizes[11] = 50;//Qual/Dec
++        def_section_sizes[12] = 55;//Freq
+ 
+         //THvHeader->setSectionResizeMode(0, QHeaderView::Interactive);//1.81 for font
+-        THvHeader->setSectionResizeMode(4, QHeaderView::Stretch);//qt5
++        THvHeader->setSectionResizeMode(QHeaderView::Interactive);
+ 
+         msg_column = 4;
+         if (rfr_cmsginp) CountMsgInPeriod(false);
+@@ -983,6 +1017,19 @@ void DecodeList::SetMode(int mode,bool flag_two,bool f0,bool f1,bool f2,bool f3)
+     if (flag_two) CorrListSize();
+     else setMinimumWidth(100);//setMinimumSize(100,127);
+     SaveAndCorrSectionSize(); //qDebug()<<"uniformRowHeights="<<uniformRowHeights();
++    if (mode==11 || mode==13 || allq65)
++    {
++        RestoreFtHeaderState();
++        THvHeader->hideSection(2);
++        THvHeader->hideSection(3);
++        THvHeader->hideSection(FT_MW_COLUMN);
++        THvHeader->hideSection(FT_DISTANCE_COLUMN);
++        THvHeader->hideSection(FT_TYPE_COLUMN);
++        THvHeader->hideSection(FT_QUALITY_COLUMN);
++        const int visible[] = {0, 1, FT_MESSAGE_COLUMN, FT_COUNTRY_COLUMN,
++                               FT_CS_COLUMN, FT_DS_COLUMN, FT_FREQUENCY_COLUMN};
++        for (int section : visible) THvHeader->showSection(section);
++    }
+ 
+     if (s_list_ident==1)
+     {
+@@ -1111,7 +1158,7 @@ void DecodeList::keyPressEvent(QKeyEvent * event)
+             //active.append(model.data(model.index(index.row(),3,QModelIndex()),Qt::DisplayRole).toString()+" Hz ");//DF
+             //active.append(model.data(model.index(index.row(),5,QModelIndex()),Qt::DisplayRole).toString()+" W ");//W
+ 
+-            QString s_s = model.item(index.row(),9)->text();//2.73 Dist Country
++            QString s_s = model.item(index.row(),FT_FREQUENCY_COLUMN)->text();
+             active.append("Freq "+s_s+" Hz > ");//freq
+ 
+             str = model.item(index.row(),4)->text();
+@@ -1144,6 +1191,17 @@ void DecodeList::RefreshListTimer()
+     setCurrentIndex(model.index(model.rowCount()-1,6));
+     scrollToBottom();
+ }
++void DecodeList::FlushModelBatchRepaint()
++{
++    if (!model_batch_repaint_pending) return;
++    model_batch_repaint_pending = false;
++    if (model_batch_restore_updates)
++    {
++        viewport()->setUpdatesEnabled(true);
++        viewport()->update();
++    }
++    model_batch_restore_updates = false;
++}
+ void DecodeList::HideShowWfTxRefreshList()//2.64
+ {
+     if (!list_rfresh_timer->isActive() && model.rowCount()>0) list_rfresh_timer->start(80);//have min 1 item
+@@ -1299,7 +1357,8 @@ QString DecodeList::FindHisCall(QString c)
+     //"CQ RU LZ2HVV KN23"
+     //c="CQ LZ2000HV";
+     //c="W0A/B KN23";
+-    QString res = "";
++    QString res = AutoDxMessageParser::parse(c).transmitter;
++    if (!res.isEmpty()) return res;
+     QString tstr = c;
+     tstr.remove("<");
+     tstr.remove(">");
+@@ -1436,12 +1495,116 @@ bool DecodeList::HideB4Qso(QString call)
+ QString DecodeList::FindCountry(QString sid,QString txt,QString call)
+ {
+     QString res = "";
+-    if (!s_show_counc) return res;
++    if (!s_show_counc && !(s_mode==11 || s_mode==13 || allq65)) return res;
+-    if (sid.startsWith("TX") || sid=="QSY") return res;
++    if (sid=="QSY") return res;
++    // The RX-frequency/QSO panel includes transmitted exchange rows.  When
++    // their remote destination has already been parsed into `call`, resolve
++    // that station exactly as we do for received rows.  Never fall back to
++    // guessing a callsign from TX text here because that can select our own
++    // callsign instead of the DX station.
++    if (sid.startsWith("TX") && call.trimmed().isEmpty()) return res;
+     if (call.isEmpty()) call = FindHisCall(txt);
+-    res = THvCty->FindCountry(call,false);
++    const QString cacheKey = call.trimmed().toUpper();
++    if (cacheKey.isEmpty()) return res;
++    if (m_countryCache.contains(cacheKey)) return m_countryCache.value(cacheKey);
++    // Use the same cty.dat resolver as Auto DX.  It understands exact-call
++    // exceptions and portable prefixes; the legacy display resolver does not.
++    if (m_dxccTracker) {
++        DxccEntity entity;
++        if (m_dxccTracker->lookupDxcc(cacheKey, entity)) res = entity.name;
++    }
++    if (res.isEmpty()) res = THvCty->FindCountry(cacheKey,false);
++    if (m_countryCache.size() >= 4096) m_countryCache.clear();
++    m_countryCache.insert(cacheKey, res);
+     return res;
+ }
++
++QStringList DecodeList::CompactStatuses(const QString &callsign) const
++{
++    if (!m_dxccTracker || callsign.trimmed().isEmpty()) return QStringList() << "" << "";
++    const QString call = callsign.trimmed().toUpper();
++    const QString key = call + "@" + QString::number(m_dxccTracker->getCurrentBand())
++        + "@" + m_dxccTracker->getCurrentMode().toUpper();
++    if (m_statusCache.contains(key)) return m_statusCache.value(key);
++
++    const int band = m_dxccTracker->getCurrentBand();
++    const QString mode = m_dxccTracker->getCurrentMode().toUpper();
++    const bool callWorked = m_dxccTracker->isCallWorkedAllTime(call);
++    const bool callNewBand = !m_dxccTracker->isCallWorkedOnBand(call, band);
++    const bool callNewMode = !m_dxccTracker->isCallWorkedOnMode(call, mode);
++    QString cs;
++    if (!callWorked) cs = "NC";
++    else if (m_dxccTracker->isCallConfirmedBandMode(call, band, mode)) cs = "C";
++    else if (callNewBand && callNewMode) cs = "NB+NM";
++    else if (callNewBand) cs = "NB";
++    else if (callNewMode) cs = "NM";
++    else cs = "W";
++
++    QString ds;
++    const int entity = m_dxccTracker->getDxccNumber(call);
++    if (entity > 0) {
++        if (!m_dxccTracker->isDxccWorkedAllTime(entity)) ds = "ATNO";
++        else {
++            const bool newBand = !m_dxccTracker->isDxccWorked(entity, band);
++            const bool newMode = !m_dxccTracker->isDxccWorkedOnMode(entity, mode);
++            if (m_dxccTracker->isDxccConfirmedBandMode(entity, band, mode)) ds = "C";
++            else {
++                const QString prefix = m_dxccTracker->isDxccConfirmed(entity) ? "C/" : "W/";
++                if (newBand && newMode) ds = prefix + "NB+NM";
++                else if (newBand) ds = prefix + "NB";
++                else if (newMode) ds = prefix + "NM";
++                else ds = "W";
++            }
++        }
++    }
++    const QStringList result = QStringList() << cs << ds;
++    if (m_statusCache.size() >= 4096) m_statusCache.clear();
++    m_statusCache.insert(key, result);
++    return result;
++}
++
++QColor DecodeList::StatusColor(const QString &status, bool dxcc) const
++{
++    QString full = status;
++    if (status == "NC") full = "New Call";
++    else if (status == "NB") full = "New Band";
++    else if (status == "NM") full = "New Mode";
++    else if (status == "NB+NM") full = "New Band+Mode";
++    else if (status == "C") full = "Confirmed";
++    else if (status == "W") full = "Worked";
++    else if (status.startsWith("C/")) full = "C/New " + status.mid(2).replace("NB", "Band").replace("NM", "Mode");
++    else if (status.startsWith("W/")) full = "W/New " + status.mid(2).replace("NB", "Band").replace("NM", "Mode");
++    QSettings palette(QCoreApplication::applicationDirPath() + "/settings/database/status-colors.ini", QSettings::IniFormat);
++    const QString key = QString("StatusColors/%1").arg(full.replace('/', '_'));
++    const QColor configured(palette.value(key).toString());
++    if (configured.isValid()) return configured;
++    if (full == "Confirmed") return QColor("#10B981");
++    if (full == "Worked") return QColor("#B0B0B0");
++    if (full == "ATNO") return QColor("#FF8C00");
++    if (full == "New Call") return QColor("#FF6B35");
++    if (full.contains("Band+Mode")) return dxcc ? QColor("#9C27B0") : QColor("#E91E63");
++    if (full.contains("Band")) return dxcc ? QColor("#4A9EFF") : QColor("#00BFFF");
++    if (full.contains("Mode")) return dxcc ? QColor("#FFD93D") : QColor("#FFC000");
++    return QColor("#666666");
++}
++
++void DecodeList::RestoreFtHeaderState()
++{
++    if (m_ftHeaderStateRestored) return;
++    m_ftHeaderStateRestored = true;
++    QSettings settings(QCoreApplication::applicationDirPath() + "/settings/autodx.ini", QSettings::IniFormat);
++    const QByteArray state = QByteArray::fromBase64(settings.value(
++        QString("UI/DecodeHeader%1").arg(s_list_ident)).toByteArray());
++    if (!state.isEmpty()) THvHeader->restoreState(state);
++}
++
++void DecodeList::SaveFtHeaderState() const
++{
++    if (!m_ftHeaderStateRestored || !(s_mode == 11 || s_mode == 13 || allq65)) return;
++    QSettings settings(QCoreApplication::applicationDirPath() + "/settings/autodx.ini", QSettings::IniFormat);
++    settings.setValue(QString("UI/DecodeHeader%1").arg(s_list_ident), THvHeader->saveState().toBase64());
++    settings.sync();
++}
+ QString DecodeList::CalcDistance(QString sid,QString txt)
+ {
+     QString res = "";
+@@ -1514,6 +1671,7 @@ void DecodeList::InsertItem_hv(QStringList list,bool ffopen,bool forme)
+     if (g_block_list_exp) return;
+     if (!list.isEmpty())
+     {
++        const QStringList rawDecode = list;
+         bool f_show = true;
+         bool freply = true;
+         bool f_sho0 = true;
+@@ -1609,67 +1767,34 @@ void DecodeList::InsertItem_hv(QStringList list,bool ffopen,bool forme)
+ 
+         if (s_mode==11 || s_mode==13 || allq65)
+         {
+-        	if (id_vomsg>0)//2.76sf
+-        	{
+-        		list.insert(5,"");//Country
+-        		list.insert(6,"");//MW
+-        		list.insert(7,"");//Dist
+-       		}
++	        	if (id_vomsg>0)//2.76sf
++	        	{
++	        		list.insert(5,"");//Country
++	        		list.insert(6,"");//CS
++	        		list.insert(7,"");//DS
++	        		list.insert(8,"");//MW
++	        		list.insert(9,"");//Dist
++        		}
+             else
+             {
+-            	list.insert(5, FindCountry(list.at(1),list.at(4),call));
+-            	// MW - Most Wanted rank lookup
+-            	QString mwValue = "";
+-            	if (m_dxccTracker) {
+-            	    QString lookupCall = call;
+-            	    if (lookupCall.isEmpty()) lookupCall = FindHisCall(list.at(4));
+-            	    if (!lookupCall.isEmpty()) {
+-            	        int entityNum = m_dxccTracker->getDxccNumber(lookupCall);
+-            	        if (entityNum > 0) {
+-            	            DxccEntity entity = m_dxccTracker->getDxccEntityByNumber(entityNum);
+-            	            if (entity.mostWantedRank > 0 && entity.mostWantedRank <= 100) {
+-            	                mwValue = QString::number(entity.mostWantedRank);
+-            	                // Success log - only first few
+-            	                static int mwSuccessCount = 0;
+-            	                if (mwSuccessCount++ < 5) {
+-            	                    qDebug() << "[MW-DEBUG] SUCCESS:" << lookupCall << "->" << entity.name << "rank" << entity.mostWantedRank;
+-            	                }
+-            	            }
+-            	            // Debug: Log why rank wasn't displayed
+-            	            else if (entity.mostWantedRank > 100) {
+-            	                static int mwOver100Count = 0;
+-            	                if (mwOver100Count++ < 5) {
+-            	                    qDebug() << "[MW-DEBUG] Entity" << entity.name << "rank" << entity.mostWantedRank << "> 100, not shown";
+-            	                }
+-            	            }
+-            	            // Debug: entity found but not in rankings
+-            	            else if (entity.mostWantedRank == 0) {
+-            	                static int mwUnrankedCount = 0;
+-            	                if (mwUnrankedCount++ < 10) {
+-            	                    qDebug() << "[MW-DEBUG] Entity" << entity.name << "has no rank (unranked)";
+-            	                }
+-            	            }
+-            	        } else {
+-            	            // Debug: entity lookup failed
+-            	            static int mwDebugCount = 0;
+-            	            if (mwDebugCount++ < 10) {
+-            	                qDebug() << "[MW-DEBUG] No entity found for call:" << lookupCall;
+-            	            }
+-            	        }
+-            	    }
+-            	} else {
+-            	    // Debug: tracker not set
+-            	    static bool trackerWarnLogged = false;
+-            	    if (!trackerWarnLogged) {
+-            	        qDebug() << "[MW-DEBUG] m_dxccTracker is NULL - MW column will be empty";
+-            	        trackerWarnLogged = true;
+-            	    }
++	            	if (call.isEmpty()) call = FindHisCall(list.at(4));
++	            	const QString country = FindCountry(list.at(1), list.at(4), call);
++	            	const QStringList statuses = CompactStatuses(call);
++	            	QString mwValue;
++	            	if (m_dxccTracker && !call.isEmpty()) {
++	            	    const int entityNum = m_dxccTracker->getDxccNumber(call);
++	            	    const DxccEntity entity = m_dxccTracker->getDxccEntityByNumber(entityNum);
++	            	    if (entity.mostWantedRank > 0 && entity.mostWantedRank <= 100)
++	            	        mwValue = QString::number(entity.mostWantedRank);
++	            	}
++	            	list.insert(5, country);
++	            	list.insert(6, statuses.value(0));
++	            	list.insert(7, statuses.value(1));
++	            	list.insert(8, mwValue);
++	            	list.insert(9, CalcDistance(list.at(1),list.at(4)));
+             	}
+-            	list.insert(6, mwValue);
+-            	list.insert(7, CalcDistance(list.at(1),list.at(4)));
+-           	}
+             falltxt[0] = 5;
+-            falltxt[1] = 7;//Dist column now at 7
++            falltxt[1] = FT_DISTANCE_COLUMN;
+         }
+         else if (s_mode==0)
+         {
+@@ -1693,6 +1818,10 @@ void DecodeList::InsertItem_hv(QStringList list,bool ffopen,bool forme)
+             {
+                 QStandardItem *item = new QStandardItem(txtin);
+                 item->setEditable(false);// no double click all and down allow only for call and rpt
++                if (k == FT_MESSAGE_COLUMN && (s_mode==11 || s_mode==13 || allq65)) {
++                    item->setData(rawDecode, RAW_DECODE_ROLE);
++                    item->setData(call, CALLSIGN_ROLE);
++                }
+                 if (s_mode==6)//JT6M
+                 {
+                     if (k==5)
+@@ -1743,9 +1872,20 @@ void DecodeList::InsertItem_hv(QStringList list,bool ffopen,bool forme)
+                         item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+                         if (isNotTxnQsyCq(list.at(1))) item->setEditable(true); // yes double click for select call
+                     }
+-                    else if (k==5) item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);//2.73 Dist Country  freq
++                    else if (k==FT_COUNTRY_COLUMN) item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+                     else item->setTextAlignment(Qt::AlignCenter);
+-                    if (k==9)//2.73 Dist Country  freq
++                    if (k==FT_CS_COLUMN && !txtin.isEmpty()) {
++                        item->setForeground(QBrush(StatusColor(txtin, false)));
++                        QFont statusFont = item->font();
++                        statusFont.setBold(true);
++                        item->setFont(statusFont);
++                    } else if (k==FT_DS_COLUMN && !txtin.isEmpty()) {
++                        item->setForeground(QBrush(StatusColor(txtin, true)));
++                        QFont statusFont = item->font();
++                        statusFont.setBold(true);
++                        item->setFont(statusFont);
++                    }
++                    if (k==FT_FREQUENCY_COLUMN)
+                     {
+                         if (isNotTxnQsyCq(list.at(1))) item->setEditable(true);//1.60= no if my TX
+                     }
+@@ -1812,6 +1952,18 @@ void DecodeList::InsertItem_hv(QStringList list,bool ffopen,bool forme)
+         }
+         if (f_show)
+         {
++            // Rows and model signals remain synchronous. Consecutive decodes
++            // delivered in one event-loop turn share a single repaint on the
++            // next turn instead of forcing one full viewport update per row.
++            if (!model_batch_repaint_pending)
++            {
++                model_batch_repaint_pending = true;
++                model_batch_restore_updates = viewport()->updatesEnabled();
++                if (model_batch_restore_updates) viewport()->setUpdatesEnabled(false);
++                QTimer::singleShot(0, this, SLOT(FlushModelBatchRepaint()));
++            }
++            const int excessRows = model.rowCount() - 249;
++            if (excessRows > 0) model.removeRows(0, excessRows);
+             model.appendRow(qlsi);
+             is_filter_dec = true;
+         }
+@@ -1838,13 +1990,13 @@ void DecodeList::InsertItem_hv(QStringList list,bool ffopen,bool forme)
+             if (id_voms>0   && !f_show) emitudpdectxt = false;//2.76sf to DecText
+             emit EmitRxStationInfo(list,100,emitudpdectxt,id_voms);//0->to psk reporter 1->to dx cluster, bool usefudpdectxt        	
+        	}*/
+-        if (model.rowCount() > 250) model.removeRow(0);
+         if (!list_rfresh_timer->isActive() && f_show) list_rfresh_timer->start(80);
+     }
+ }
+ void DecodeList::Clear_List()
+ {
+-    for (int i = model.rowCount()-1; i >= 0; --i) model.removeRow(i);
++    // One model transaction avoids one layout/repaint cascade per old row.
++    if (model.rowCount() > 0) model.removeRows(0, model.rowCount());
+     /*qDebug()<<"Clear_List()"<<s_mode<<show_filter_list<<s_list_ident;
+        if ((s_mode==222 || s_mode==11 || s_mode==13) && show_filter_list) emit EmitLstNexColor(true);
+        else emit EmitLstNexColor(false);*/
+@@ -1853,6 +2005,23 @@ void DecodeList::Clear_List()
+     if (s_list_ident == 1) emit EmitUdpDecClr();
+     CountMsgInPeriod(false);
+ }
++void DecodeList::SetAutoDxQueuedTarget(QString callsign)
++{
++    m_autoDxQueuedCall = callsign.trimmed().toUpper();
++    for (int row = 0; row < model.rowCount(); ++row) {
++        QStandardItem *message = model.item(row, FT_MESSAGE_COLUMN);
++        QStandardItem *status = model.item(row, FT_CS_COLUMN);
++        if (!message || !status) continue;
++        const QString rowCall = message->data(CALLSIGN_ROLE).toString().trimmed().toUpper();
++        if (!m_autoDxQueuedCall.isEmpty() && rowCall == m_autoDxQueuedCall) {
++            status->setText("Q");
++            status->setToolTip(tr("Queued for Auto DX"));
++        } else if (status->text() == "Q") {
++            status->setText(CompactStatuses(rowCall).value(0));
++            status->setToolTip(QString());
++        }
++    }
++}
+ /*void DecodeList::SetDListMarkTextB4Qso(QStringList l)
+ {
+ 	s_mark_txt
+@@ -2077,7 +2246,7 @@ void DecodeList::paintEvent(QPaintEvent *event)
+             }
+             else if (s_show_counc) c_col=7;
+         }
+-        else c_col=10;//2.73 Dist Country
++        else c_col=FT_FREQUENCY_COLUMN+1;
+     }
+     else if (s_mode==7 || s_mode==8 || s_mode==9)//<<tr("Time")<<tr("Sync")<<"dB"<<"DT"<<"DF"<<"W"<<tr("Message")<<"D Inf"<<"Flags"<<"Freq";
+     {
+@@ -2110,13 +2279,24 @@ void DecodeList::ac_spot()
+ 	//2.76sf last -> 0=normal msg, 1=$VERIFY$, 2=C0ALL.123456, 3=verified
+     emit EmitRxStationInfo(list,1,false,3);//0->to psk reporter 1->to dx clusters  2.34, bool usefudpdectxt
+ }
+-/*
+ void DecodeList::mouseDoubleClickEvent(QMouseEvent * event)
+ {
+-	//THvToolTip->setTimeToStop(300);
++	const QModelIndex index = indexAt(event->pos());
++    if (event->button() == Qt::LeftButton && index.isValid()
++            && (s_mode==11 || s_mode==13 || allq65)) {
++        QStandardItem *message = model.item(index.row(), FT_MESSAGE_COLUMN);
++        if (message) {
++            const QStringList rawDecode = message->data(RAW_DECODE_ROLE).toStringList();
++            const QString call = message->data(CALLSIGN_ROLE).toString();
++            if (!rawDecode.isEmpty() && !call.isEmpty()) {
++                emit RequestAutoDxTarget(rawDecode);
++                event->accept();
++                return;
++            }
++        }
++    }
+ 	QTreeView::mouseDoubleClickEvent(event);
+ }
+-*/
+ static bool f_click_on_call_show_cty = true;
+ void DecodeList::SetStaticClickOnCallShowCty(bool f)
+ {
+@@ -2137,7 +2317,13 @@ void DecodeList::mousePressEvent(QMouseEvent * event)
+         emit EmitDetectTextInMsg(ss,call);
+         QPoint post = event->globalPos();
+         post += QPoint(+4,+6);
+-        THvToolTip->showText(post,THvCty->FindCountry(call,true),2500);//QToolTip::showText(post,THvCty->FindCountry(call),this,rect(),2500);
++        QString country;
++        if (m_dxccTracker) {
++            DxccEntity entity;
++            if (m_dxccTracker->lookupDxcc(call, entity)) country = entity.name;
++        }
++        if (country.isEmpty()) country = THvCty->FindCountry(call,true);
++        THvToolTip->showText(post,country,2500);
+     }
+ }
+ /*
+diff --git a/MSHV_2762/src/HvDecodeList/decodelist.h b/MSHV_2762/src/HvDecodeList/decodelist.h
+index d9528ab..4a48b14 100644
+--- a/MSHV_2762/src/HvDecodeList/decodelist.h
++++ b/MSHV_2762/src/HvDecodeList/decodelist.h
+@@ -17,6 +17,8 @@
+ #include <QFontDatabase>
+ #include <QItemDelegate>
+ #include <QMenu>
++#include <QHash>
++#include <QSettings>
+ //#include "../../../DirectX90c/include/dsound.h"// zaradi DWORD in pathred create
+ //#include <unistd.h> // zaradi usleep
+ //#include <QtGui>
+@@ -87,6 +89,7 @@ signals:
+     void EmitUdpDecClr();
+     void EmitDetectTextInMsg(QString,QString &);
+     void EmitHeaderDoubleClicked();//2.44
++    void RequestAutoDxTarget(QStringList decodeData);
+ 
+ public slots:
+     void InsertItem_hv(QStringList,bool,bool);
+@@ -106,9 +109,11 @@ public slots:
+     void SetHisCalls(QStringList);
+     void SetOtpVerif(QString,uint8_t);//2.76sf
+     void SetShowOtpRxMsg(bool f);//2.76sf
++    void SetAutoDxQueuedTarget(QString callsign);
+     
+ private slots:
+     void RefreshListTimer();
++    void FlushModelBatchRepaint();
+     void ItemSelectedText(QString,int,int);
+     void ac_spot();
+     //void SetHeaderSingleClicked();
+@@ -149,7 +154,11 @@ private:
+ 	bool ShowCSDecode(QString);
+ 	bool ShowCENDDecode(QString);
+ 	bool HideB4Qso(QString);
+-	QString FindCountry(QString,QString,QString);	
++    QString FindCountry(QString,QString,QString);
++    QStringList CompactStatuses(const QString &callsign) const;
++    QColor StatusColor(const QString &status, bool dxcc) const;
++    void RestoreFtHeaderState();
++    void SaveFtHeaderState() const;
+ 	QString CalcDistance(QString,QString);
+ 	bool isNotTxnQsyCq(QString);
+ 	
+@@ -158,9 +167,13 @@ private:
+ 	HvCty *THvCty;
+ public:
+     HvCty* getHvCty() const { return THvCty; }  // Accessor for Auto DXer
+-    void setDxccTracker(HvDxccTracker *tracker) { m_dxccTracker = tracker; }
++    void setDxccTracker(HvDxccTracker *tracker);
+ private:
+     HvDxccTracker *m_dxccTracker;
++    mutable QHash<QString, QString> m_countryCache;
++    mutable QHash<QString, QStringList> m_statusCache;
++    QString m_autoDxQueuedCall;
++    bool m_ftHeaderStateRestored;
+     int s_list_ident;
+     bool s_fast_dec_clr_msg_list;
+ 	QString last_pt_dec_clr_msg_list;
+@@ -168,6 +181,8 @@ private:
+     void RefreshFastDcml();
+     //bool g_block_list_exp;
+     QTimer *list_rfresh_timer;    
++    bool model_batch_repaint_pending;
++    bool model_batch_restore_updates;
+     QMenu *m_spot; 
+     //HvHeader *THvHeader;
+     QHeaderView *THvHeader;
+@@ -210,6 +225,7 @@ private:
+  
+ protected:
+     void mousePressEvent (QMouseEvent*);
++    void mouseDoubleClickEvent(QMouseEvent *event);
+     //bool isSingeWord(QString s,int b,int e) const;
+     //bool DrawCode(QString,QString,int,int) const;
+     void drawRow(QPainter *painter, const QStyleOptionViewItem & option, const QModelIndex & index ) const;
+diff --git a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp
+index f684865..df1075d 100644
+--- a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp
++++ b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.cpp
+@@ -199,8 +199,9 @@ bool HvDxccTracker::initDatabase()
+     // Load Most Wanted rankings
+     loadMostWantedRankings();
+ 
+-    // Load worked status from database
+-    loadWorkedFromDatabase();
++    // Load worked status from database
++    loadWorkedFromDatabase();
++    loadConfirmedDxcc();
+     emit debugMessage(QString("[DxccTracker] Loaded worked status: %1 DXCC, %2 grids")
+                      .arg(m_workedDxccAllTime.count()).arg(m_workedGridsAllTime.count()));
+ 
+@@ -750,10 +751,14 @@ void HvDxccTracker::loadWorkedFromDatabase()
+ {
+     m_workedDxccAllTime.clear();
+     m_workedDxccByBand.clear();
+-    m_workedDxccByBandMode.clear();
++    m_workedDxccByBandMode.clear();
++    m_workedDxccByMode.clear();
+     m_workedGridsAllTime.clear();
+     m_workedGridsByBand.clear();
+-    m_workedCalls.clear();
++    m_workedCalls.clear();
++    m_workedCallsAllTime.clear();
++    m_workedCallsByBand.clear();
++    m_workedCallsByMode.clear();
+ 
+     QSqlQuery query(m_db);
+ 
+@@ -766,7 +771,8 @@ void HvDxccTracker::loadWorkedFromDatabase()
+ 
+         m_workedDxccAllTime.insert(QString::number(entityNum));
+         m_workedDxccByBand.insert(QString("%1_%2").arg(entityNum).arg(bandIndex));
+-        m_workedDxccByBandMode.insert(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
++        m_workedDxccByBandMode.insert(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
++        m_workedDxccByMode.insert(QString("%1_%2").arg(entityNum).arg(mode));
+     }
+ 
+     // Load worked grids
+@@ -786,11 +792,14 @@ void HvDxccTracker::loadWorkedFromDatabase()
+         int bandIndex = query.value(1).toInt();
+         QString mode = query.value(2).toString();
+ 
+-        m_workedCalls.insert(QString("%1_%2_%3").arg(call).arg(bandIndex).arg(mode));
++        m_workedCalls.insert(QString("%1_%2_%3").arg(call).arg(bandIndex).arg(mode));
++        m_workedCallsAllTime.insert(call);
++        m_workedCallsByBand.insert(QString("%1_%2").arg(call).arg(bandIndex));
++        m_workedCallsByMode.insert(QString("%1_%2").arg(call).arg(mode));
+     }
+ }
+ 
+-QString HvDxccTracker::extractBaseCall(const QString& callsign)
++QString HvDxccTracker::extractBaseCall(const QString& callsign) const
+ {
+     QString call = callsign.toUpper().trimmed();
+ 
+@@ -927,7 +936,7 @@ bool HvDxccTracker::isDxccWorked(int entityNum, int bandIndex)
+     return m_workedDxccByBand.contains(QString("%1_%2").arg(entityNum).arg(bandIndex));
+ }
+ 
+-bool HvDxccTracker::isDxccWorkedMode(int entityNum, int bandIndex, const QString& mode)
++bool HvDxccTracker::isDxccWorkedMode(int entityNum, int bandIndex, const QString& mode)
+ {
+     return m_workedDxccByBandMode.contains(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
+ }
+@@ -955,13 +964,92 @@ bool HvDxccTracker::isCallWorked(const QString& callsign, int bandIndex, const Q
+     return m_workedCalls.contains(QString("%1_%2_%3").arg(call).arg(bandIndex).arg(mode));
+ }
+ 
++bool HvDxccTracker::isDxccWorkedOnMode(int entityNum, const QString& mode) const
++{
++    return m_workedDxccByMode.contains(QString("%1_%2").arg(entityNum).arg(mode));
++}
++
++bool HvDxccTracker::isCallWorkedOnBand(const QString& callsign, int bandIndex) const
++{
++    return m_workedCallsByBand.contains(
++        extractBaseCall(callsign) + "_" + QString::number(bandIndex));
++}
++
++bool HvDxccTracker::isCallWorkedOnMode(const QString& callsign, const QString& mode) const
++{
++    return m_workedCallsByMode.contains(extractBaseCall(callsign) + "_" + mode);
++}
++
+ bool HvDxccTracker::isCallWorkedAllTime(const QString& callsign)
+ {
+-    const QString prefix = extractBaseCall(callsign) + "_";
+-    for (const QString &worked : m_workedCalls) {
+-        if (worked.startsWith(prefix, Qt::CaseInsensitive)) return true;
++    return m_workedCallsAllTime.contains(extractBaseCall(callsign));
++}
++
++void HvDxccTracker::loadConfirmedDxcc()
++{
++    m_confirmedDxcc.clear();
++    m_confirmedDxccBandMode.clear();
++    m_confirmedCalls.clear();
++    m_confirmedCallsBandMode.clear();
++    QFile file(m_appPath + "/settings/database/confirmed-dxcc.txt");
++    m_confirmationDataAvailable = file.open(QIODevice::ReadOnly | QIODevice::Text);
++    if (!m_confirmationDataAvailable) return;
++    while (!file.atEnd()) {
++        const QString line = QString::fromUtf8(file.readLine()).trimmed().toUpper();
++        if (line.isEmpty() || line.startsWith('#')) continue;
++        const QStringList fields = line.split('|');
++        if (fields.size() == 2 && fields.at(0) == "DXCC") {
++            bool ok = false;
++            const int entity = fields.at(1).toInt(&ok);
++            if (ok && entity > 0) m_confirmedDxcc.insert(entity);
++        } else if (fields.size() == 2 && fields.at(0) == "CALL") {
++            const QString call = extractBaseCall(fields.at(1));
++            if (!call.isEmpty()) m_confirmedCalls.insert(call);
++        } else if (fields.size() == 4 && fields.at(0) == "DXCC_BAND_MODE") {
++            bool entityOk = false, bandOk = false;
++            const int entity = fields.at(1).toInt(&entityOk);
++            const int band = fields.at(2).toInt(&bandOk);
++            if (entityOk && bandOk && entity > 0 && band > 0)
++                m_confirmedDxccBandMode.insert(QString("%1_%2_%3").arg(entity).arg(band).arg(fields.at(3)));
++        } else if (fields.size() == 4 && fields.at(0) == "CALL_BAND_MODE") {
++            bool bandOk = false;
++            const int band = fields.at(2).toInt(&bandOk);
++            const QString call = extractBaseCall(fields.at(1));
++            if (bandOk && band > 0 && !call.isEmpty())
++                m_confirmedCallsBandMode.insert(QString("%1_%2_%3").arg(call).arg(band).arg(fields.at(3)));
++        } else if (fields.size() == 1) {
++            // Backward compatibility with the original one-country-name-per-line
++            // file. New launches publish stable ADIF entity IDs from Wavelog.
++            for (auto it = m_entityById.constBegin(); it != m_entityById.constEnd(); ++it) {
++                if (it.value().name.trimmed().toUpper() == line) {
++                    m_confirmedDxcc.insert(it.key());
++                    break;
++                }
++            }
++        }
+     }
+-    return false;
++}
++
++bool HvDxccTracker::isDxccConfirmed(int entityNum) const
++{
++    return m_confirmationDataAvailable && m_confirmedDxcc.contains(entityNum);
++}
++
++bool HvDxccTracker::isDxccConfirmedBandMode(int entityNum, int bandIndex, const QString& mode) const
++{
++    return m_confirmationDataAvailable && m_confirmedDxccBandMode.contains(
++        QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode.trimmed().toUpper()));
++}
++
++bool HvDxccTracker::isCallConfirmed(const QString& callsign) const
++{
++    return m_confirmationDataAvailable && m_confirmedCalls.contains(extractBaseCall(callsign));
++}
++
++bool HvDxccTracker::isCallConfirmedBandMode(const QString& callsign, int bandIndex, const QString& mode) const
++{
++    return m_confirmationDataAvailable && m_confirmedCallsBandMode.contains(
++        QString("%1_%2_%3").arg(extractBaseCall(callsign)).arg(bandIndex).arg(mode.trimmed().toUpper()));
+ }
+ 
+ bool HvDxccTracker::isContinentWorked(const QString& continent, int bandIndex) const
+@@ -1264,13 +1352,17 @@ bool HvDxccTracker::applyWavelogAcknowledgedQso(
+     if (entityNum > 0) {
+         m_workedDxccAllTime.insert(QString::number(entityNum));
+         m_workedDxccByBand.insert(QString("%1_%2").arg(entityNum).arg(bandIndex));
+-        m_workedDxccByBandMode.insert(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
++        m_workedDxccByBandMode.insert(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
++        m_workedDxccByMode.insert(QString("%1_%2").arg(entityNum).arg(mode));
+     }
+     if (g.length() >= 4) {
+         m_workedGridsAllTime.insert(g.left(4));
+         m_workedGridsByBand.insert(QString("%1_%2").arg(g.left(4)).arg(bandIndex));
+     }
+-    m_workedCalls.insert(QString("%1_%2_%3").arg(call).arg(bandIndex).arg(mode));
++    m_workedCalls.insert(QString("%1_%2_%3").arg(call).arg(bandIndex).arg(mode));
++    m_workedCallsAllTime.insert(call);
++    m_workedCallsByBand.insert(QString("%1_%2").arg(call).arg(bandIndex));
++    m_workedCallsByMode.insert(QString("%1_%2").arg(call).arg(mode));
+     if (newDxcc) emit newDxccWorked(entityNum, getDxccName(call), bandIndex);
+     if (newGrid) emit newGridWorked(g.left(4), bandIndex);
+     emit workedStatusChanged();
+@@ -1283,18 +1375,26 @@ void HvDxccTracker::recordQsoUnlocked(const QString& callsign, const QString& gr
+ 
+     const QSet<QString> beforeDxccAll = m_workedDxccAllTime;
+     const QSet<QString> beforeDxccBand = m_workedDxccByBand;
+-    const QSet<QString> beforeDxccMode = m_workedDxccByBandMode;
++    const QSet<QString> beforeDxccMode = m_workedDxccByBandMode;
++    const QSet<QString> beforeDxccAllMode = m_workedDxccByMode;
+     const QSet<QString> beforeGridAll = m_workedGridsAllTime;
+     const QSet<QString> beforeGridBand = m_workedGridsByBand;
+-    const QSet<QString> beforeCalls = m_workedCalls;
++    const QSet<QString> beforeCalls = m_workedCalls;
++    const QSet<QString> beforeCallsAllTime = m_workedCallsAllTime;
++    const QSet<QString> beforeCallsByBand = m_workedCallsByBand;
++    const QSet<QString> beforeCallsByMode = m_workedCallsByMode;
+     const auto rollback = [&]() {
+         m_db.rollback();
+         m_workedDxccAllTime = beforeDxccAll;
+         m_workedDxccByBand = beforeDxccBand;
+-        m_workedDxccByBandMode = beforeDxccMode;
++        m_workedDxccByBandMode = beforeDxccMode;
++        m_workedDxccByMode = beforeDxccAllMode;
+         m_workedGridsAllTime = beforeGridAll;
+         m_workedGridsByBand = beforeGridBand;
+-        m_workedCalls = beforeCalls;
++        m_workedCalls = beforeCalls;
++        m_workedCallsAllTime = beforeCallsAllTime;
++        m_workedCallsByBand = beforeCallsByBand;
++        m_workedCallsByMode = beforeCallsByMode;
+     };
+     if (!m_db.transaction()) {
+         emit databaseError("QSO tracker transaction could not start: " + m_db.lastError().text());
+@@ -1344,7 +1444,10 @@ void HvDxccTracker::recordQsoUnlocked(const QString& callsign, const QString& gr
+     // Add call to worked list
+     QString callKey = QString("%1_%2_%3").arg(call).arg(bandIndex).arg(mode);
+     if (!m_workedCalls.contains(callKey)) {
+-        m_workedCalls.insert(callKey);
++        m_workedCalls.insert(callKey);
++        m_workedCallsAllTime.insert(call);
++        m_workedCallsByBand.insert(QString("%1_%2").arg(call).arg(bandIndex));
++        m_workedCallsByMode.insert(QString("%1_%2").arg(call).arg(mode));
+ 
+         QSqlQuery query(m_db);
+         query.prepare("INSERT OR IGNORE INTO worked_calls (callsign, band_index, mode, qso_date) "
+@@ -1383,7 +1486,8 @@ bool HvDxccTracker::addWorkedDxcc(int entityNum, int bandIndex, const QString& m
+     // Update in-memory cache
+     m_workedDxccAllTime.insert(QString::number(entityNum));
+     m_workedDxccByBand.insert(QString("%1_%2").arg(entityNum).arg(bandIndex));
+-    m_workedDxccByBandMode.insert(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
++    m_workedDxccByBandMode.insert(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
++    m_workedDxccByMode.insert(QString("%1_%2").arg(entityNum).arg(mode));
+ 
+     // Update database
+     QSqlQuery query(m_db);
+@@ -1549,7 +1653,8 @@ void HvDxccTracker::importFromAdifLog(const QString& logPath)
+                 // Update in-memory cache
+                 m_workedDxccAllTime.insert(QString::number(entityNum));
+                 m_workedDxccByBand.insert(QString("%1_%2").arg(entityNum).arg(bandIndex));
+-                m_workedDxccByBandMode.insert(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
++                m_workedDxccByBandMode.insert(QString("%1_%2_%3").arg(entityNum).arg(bandIndex).arg(mode));
++                m_workedDxccByMode.insert(QString("%1_%2").arg(entityNum).arg(mode));
+ 
+                 // Database insert using prepared statement
+                 dxccQuery.bindValue(0, entityNum);
+@@ -1578,7 +1683,10 @@ void HvDxccTracker::importFromAdifLog(const QString& logPath)
+             // Add call to worked list
+             QString callKey = QString("%1_%2_%3").arg(baseCall).arg(bandIndex).arg(mode);
+             if (!m_workedCalls.contains(callKey)) {
+-                m_workedCalls.insert(callKey);
++                m_workedCalls.insert(callKey);
++                m_workedCallsAllTime.insert(baseCall);
++                m_workedCallsByBand.insert(QString("%1_%2").arg(baseCall).arg(bandIndex));
++                m_workedCallsByMode.insert(QString("%1_%2").arg(baseCall).arg(mode));
+ 
+                 callsQuery.bindValue(0, baseCall);
+                 callsQuery.bindValue(1, bandIndex);
+@@ -1686,7 +1794,8 @@ void HvDxccTracker::clearWorkedDxcc()
+ 
+     m_workedDxccAllTime.clear();
+     m_workedDxccByBand.clear();
+-    m_workedDxccByBandMode.clear();
++    m_workedDxccByBandMode.clear();
++    m_workedDxccByMode.clear();
+ 
+     QSqlQuery query(m_db);
+     query.exec("DELETE FROM worked_dxcc");
+@@ -1713,7 +1822,10 @@ void HvDxccTracker::clearAll()
+     clearWorkedGrids();
+ 
+     QMutexLocker locker(&m_mutex);
+-    m_workedCalls.clear();
++    m_workedCalls.clear();
++    m_workedCallsAllTime.clear();
++    m_workedCallsByBand.clear();
++    m_workedCallsByMode.clear();
+ 
+     QSqlQuery query(m_db);
+     query.exec("DELETE FROM worked_calls");
+@@ -1728,10 +1840,14 @@ void HvDxccTracker::clearAllWorkedData()
+     // Clear in-memory caches
+     m_workedDxccAllTime.clear();
+     m_workedDxccByBand.clear();
+-    m_workedDxccByBandMode.clear();
++    m_workedDxccByBandMode.clear();
++    m_workedDxccByMode.clear();
+     m_workedGridsAllTime.clear();
+     m_workedGridsByBand.clear();
+-    m_workedCalls.clear();
++    m_workedCalls.clear();
++    m_workedCallsAllTime.clear();
++    m_workedCallsByBand.clear();
++    m_workedCallsByMode.clear();
+ 
+     // Clear database tables
+     QSqlQuery query(m_db);
+diff --git a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.h b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.h
+index d64a208..32f3bbd 100644
+--- a/MSHV_2762/src/HvDxccTracker/hvdxcctracker.h
++++ b/MSHV_2762/src/HvDxccTracker/hvdxcctracker.h
+@@ -58,12 +58,20 @@ public:
+ 
+     // Worked Status Queries
+     bool isDxccWorked(int entityNum, int bandIndex);
+-    bool isDxccWorkedMode(int entityNum, int bandIndex, const QString& mode);
++    bool isDxccWorkedMode(int entityNum, int bandIndex, const QString& mode);
++    bool isDxccWorkedOnMode(int entityNum, const QString& mode) const;
+     bool isDxccWorkedAllTime(int entityNum);
+     bool isGridWorked(const QString& grid4, int bandIndex);
+     bool isGridWorkedAllTime(const QString& grid4);
+     bool isCallWorked(const QString& callsign, int bandIndex, const QString& mode);
++    bool isCallWorkedOnBand(const QString& callsign, int bandIndex) const;
++    bool isCallWorkedOnMode(const QString& callsign, const QString& mode) const;
+     bool isCallWorkedAllTime(const QString& callsign);
++    bool isDxccConfirmed(int entityNum) const;
++    bool isDxccConfirmedBandMode(int entityNum, int bandIndex, const QString& mode) const;
++    bool isCallConfirmed(const QString& callsign) const;
++    bool isCallConfirmedBandMode(const QString& callsign, int bandIndex, const QString& mode) const;
++    bool confirmationDataAvailable() const { return m_confirmationDataAvailable; }
+     bool isContinentWorked(const QString& continent, int bandIndex) const;
+     bool isContinentWorkedAllTime(const QString& continent) const;
+     bool isCqZoneWorked(int zone, int bandIndex) const;
+@@ -143,7 +151,7 @@ private:
+     void loadMostWantedRankings();
+ 
+     // Callsign processing
+-    QString extractBaseCall(const QString& callsign);
++    QString extractBaseCall(const QString& callsign) const;
+     QString normalizeGrid(const QString& grid);
+ 
+     // Database operations
+@@ -155,7 +163,8 @@ private:
+                            int bandIndex, const QString& mode, const QString& date);
+ 
+     // Load worked status from database
+-    void loadWorkedFromDatabase();
++    void loadWorkedFromDatabase();
++    void loadConfirmedDxcc();
+ 
+     QString m_appPath;
+     QString m_dbPath;
+@@ -173,10 +182,19 @@ private:
+     // Worked tracking: fast in-memory cache
+     QSet<QString> m_workedDxccAllTime;           // "ENTITY_NUM"
+     QSet<QString> m_workedDxccByBand;            // "ENTITY_NUM_BAND"
+-    QSet<QString> m_workedDxccByBandMode;        // "ENTITY_NUM_BAND_MODE"
++    QSet<QString> m_workedDxccByBandMode;        // "ENTITY_NUM_BAND_MODE"
++    QSet<QString> m_workedDxccByMode;            // "ENTITY_NUM_MODE"
+     QSet<QString> m_workedGridsAllTime;          // "GRID4"
+     QSet<QString> m_workedGridsByBand;           // "GRID4_BAND"
+-    QSet<QString> m_workedCalls;                 // "CALL_BAND_MODE"
++    QSet<QString> m_workedCalls;                 // "CALL_BAND_MODE"
++    QSet<QString> m_workedCallsAllTime;          // "CALL"
++    QSet<QString> m_workedCallsByBand;           // "CALL_BAND"
++    QSet<QString> m_workedCallsByMode;           // "CALL_MODE"
++    QSet<int> m_confirmedDxcc;                    // Wavelog-backed ADIF entity numbers
++    QSet<QString> m_confirmedDxccBandMode;        // "ENTITY_BAND_MODE"
++    QSet<QString> m_confirmedCalls;               // normalized callsigns
++    QSet<QString> m_confirmedCallsBandMode;       // "CALL_BAND_MODE"
++    bool m_confirmationDataAvailable = false;
+ 
+     // Priority scoring weights
+     static const int WEIGHT_NEW_DXCC_ALLTIME = 1000;
+diff --git a/MSHV_2762/src/HvTxW/hvmultianswermodw.cpp b/MSHV_2762/src/HvTxW/hvmultianswermodw.cpp
+index 79b564a..34a5b02 100644
+--- a/MSHV_2762/src/HvTxW/hvmultianswermodw.cpp
++++ b/MSHV_2762/src/HvTxW/hvmultianswermodw.cpp
+@@ -2876,7 +2876,7 @@ void MultiAnswerModW::SetTextForAutoSeq(QStringList list_in)
+     {
+         QString text_msg = list_in.at(4);
+         QString tx_rpt = list_in.at(1);
+-        QString freq = list_in.at(9);//2.73 Dist Country
++        QString freq = list_in.at(12);//Country/CS/DS/MW/Dist precede FT audio frequency
+         QString hcap;//fictive
+         QString hloc;//fictive
+         DecListTextAll(tx_rpt,text_msg,freq,false,hcap,hloc);//false f_double_click
+@@ -2928,7 +2928,7 @@ void MultiAnswerModW::SetTextForAutoSeq(QStringList list_in)
+     {
+         QString text_msg = list_in.at(4);
+         QString tx_rpt = list_in.at(1);
+-        QString freq = list_in.at(9);//2.73 Dist Country
++        QString freq = list_in.at(12);//Country/CS/DS/MW/Dist precede FT audio frequency
+         QString hcap;//fictive
+         QString hloc;//fictive
+         for (int i = 0; i < l.count(); ++i)
+diff --git a/MSHV_2762/src/HvTxW/hvtxw.cpp b/MSHV_2762/src/HvTxW/hvtxw.cpp
+index 796668b..fa7c1f7 100644
+--- a/MSHV_2762/src/HvTxW/hvtxw.cpp
++++ b/MSHV_2762/src/HvTxW/hvtxw.cpp
+@@ -4802,14 +4802,14 @@ void HvTxW::ValidateStationInfo(QStringList list_in, int id, bool emitudpdectxt,
+         			{
+         				QString st0 = strt;
+         				st0.replace("."," ");
+-        				TRadioAndNetW->SendOtpCheck(list_in.at(0)+" $VERIFY$ "+st0+" "+list_in.at(9));
++                        TRadioAndNetW->SendOtpCheck(list_in.at(0)+" $VERIFY$ "+st0+" "+list_in.at(12));
+        				}
+         			fpsk_block2 = true;                	
+                	}
+         		if (id_voms==1 && id_mshf>0)
+         		{
+         			QTime t = QTime::fromString(list_in.at(0),"hhmmss");
+-        			if (t.isValid()) TRadioAndNetW->SendOtpCheck(list_in.at(0)+" "+strt+" "+list_in.at(9));
++					if (t.isValid()) TRadioAndNetW->SendOtpCheck(list_in.at(0)+" "+strt+" "+list_in.at(12));
+         			fpsk_block2 = true;        			
+        			}
+        			if (id_voms>2) fpsk_block2 = true;
+@@ -4854,7 +4854,7 @@ void HvTxW::ValidateStationInfo(QStringList list_in, int id, bool emitudpdectxt,
+             if (s_mode == 11 || s_mode==13 || allq65) // FT8 ft4
+             {
+                 snr_spot = list_in.at(1).toInt();
+-                freq_offset = list_in.at(9).toInt();//only for ft8 //2.73 Dist Country
++                freq_offset = list_in.at(12).toInt();//FT audio frequency after Country/CS/DS/MW/Dist
+                 sdt = list_in.at(2);
+             }
+             //to here no my partner but have loc emit
+diff --git a/MSHV_2762/src/main_ms.cpp b/MSHV_2762/src/main_ms.cpp
+index a57bb6a..d8e981e 100644
+--- a/MSHV_2762/src/main_ms.cpp
++++ b/MSHV_2762/src/main_ms.cpp
+@@ -148,6 +148,7 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     closing_application = false;
+     global_start_moni = false;
+     f_auto_on = false;
++    last_ui_clock_epoch_second = -1;
+     f_once0s = true;
+     f_once_pt_15_to_30 = 0;// 0<-no 1<-30s 2<-15s
+     f_rx_only_fi_se = false;
+@@ -826,6 +827,29 @@ Main_Ms::Main_Ms(QString inst0,QWidget * parent)
+     // Connect ALL local decodes to Auto DXer (EmitRxStationInfo fires for every decode)
+     connect(TDecodeList1, SIGNAL(EmitRxStationInfo(QStringList,int,bool,uint8_t)),
+             m_autoDxerCore, SLOT(onStationInfo(QStringList,int,bool,uint8_t)));
++    connect(TDecodeList1, SIGNAL(RequestAutoDxTarget(QStringList)),
++            m_autoDxerCore, SLOT(requestManualTarget(QStringList)));
++    connect(TDecodeList2, SIGNAL(RequestAutoDxTarget(QStringList)),
++            m_autoDxerCore, SLOT(requestManualTarget(QStringList)));
++    connect(m_autoDxerCore, &AutoDxerCore::manualTargetStatus,
++            this, [this](const QString &call, bool queued, const QString &reason) {
++        // The signal also reports rejections and the transition from a queued
++        // manual request to the active target.  Preserve an unrelated queued
++        // marker on rejection, and show Q only while the request is genuinely
++        // waiting behind the current QSO/slot analysis.
++        if (queued && reason.startsWith("Queued ")) {
++            m_autoDxerQueuedCall = call;
++        } else if ((reason == "Active target"
++                    || reason == "Manual target expired or became ineligible"
++                    || reason == "Auto DX disabled; manual target cancelled")
++                   && call.compare(m_autoDxerQueuedCall, Qt::CaseInsensitive) == 0) {
++            m_autoDxerQueuedCall.clear();
++        }
++        TDecodeList1->SetAutoDxQueuedTarget(m_autoDxerQueuedCall);
++        TDecodeList2->SetAutoDxQueuedTarget(m_autoDxerQueuedCall);
++        m_autoDxerCore->appendDebugMessage(QString("MANUAL-TARGET: %1 %2 (%3)")
++            .arg(call).arg(queued ? "queued" : "rejected").arg(reason));
++    });
+ 
+     // Connect MSHV decode completion signal to AutoDxer
+     // This synchronizes AutoDxer's cycle timing with actual FT8 decode cycles
+@@ -3227,14 +3251,17 @@ void Main_Ms::Refresh()
+ {   
+     bool f_fs_se;
+     QDateTime utc_t = getDateTime();
+-    //THvTxW->SetDataTime(utc_t.toString("dd.MM.yyyy"),utc_t.toString("hh:mm:ss"));//MMMM
+-    THvTxW->SetDataTime(utc_t);//MMMM
+-    int ss = utc_t.toString("ss").toInt();
+-    //int ms = utc_t.toString("z").toInt(); //<--- error QT > QT5 v5.9.x
+-    int ms = utc_t.toString("zzz").toInt();
++    const QTime utc_clock = utc_t.time();
++    const int ss = utc_clock.second();
++    const qint64 ui_clock_second = utc_t.toMSecsSinceEpoch() / 1000;
++    if (ui_clock_second != last_ui_clock_epoch_second)
++    {
++        last_ui_clock_epoch_second = ui_clock_second;
++        THvTxW->SetDataTime(utc_t);
++    }
++    const int ms = utc_clock.msec();
+     int period_time_msec = (int)(period_time_sec*1000.0); //qDebug()<<"RX_ONLY_FS_SE="<<period_time_msec;
+-    //int min_59 = utc_t.toString("m").toInt(); //<--- error QT > QT5 v5.9.x
+-    int min_59 = utc_t.toString("mm").toInt();
++    const int min_59 = utc_clock.minute();
+ 
+     time_pos_1period = (min_59*60000)+(ss*1000)+ms; //time_pos_1period = ss+ms;
+     time_pos_2period = time_pos_1period;
+diff --git a/MSHV_2762/src/main_ms.h b/MSHV_2762/src/main_ms.h
+index 6185af6..0c77459 100644
+--- a/MSHV_2762/src/main_ms.h
++++ b/MSHV_2762/src/main_ms.h
+@@ -338,6 +338,7 @@ private:
+     // Auto DXer components
+     AutoDxerCore *m_autoDxerCore;
+     AutoDxerPanel *m_autoDxerPanel;
++    QString m_autoDxerQueuedCall;
+     bool m_autoDxerBandChangePending;
+     int m_autoDxerRequestedBand;
+     quint64 m_autoDxerBandChangeRequestId;
+@@ -416,6 +417,7 @@ private:
+         
+ protected:
+     QDateTime getDateTime();
++    qint64 last_ui_clock_epoch_second;
+     bool f_once0s;
+     int stop_tx_befor_end;//stop tx 370ms bifor rx period tx buffer is 4096=370ms
+     bool f_tx_to_rx;
+diff --git a/docs/SETTINGS.md b/docs/SETTINGS.md
+index 8c623ee..5d2593b 100644
+--- a/docs/SETTINGS.md
++++ b/docs/SETTINGS.md
+@@ -7,16 +7,17 @@ Complete documentation for all Auto DX Chaser configuration options.
+ ## Table of Contents
+ 
+ 1. [Master Control](#master-control)
+-2. [Spot Sources](#spot-sources)
+-3. [Band Selection](#band-selection)
+-4. [Band Switching](#band-switching)
+-5. [Priority Weights](#priority-weights)
+-6. [Operating Mode](#operating-mode)
+-7. [Chase Modes](#chase-modes)
+-8. [Safety Features](#safety-features)
+-9. [SMS Notifications](#sms-notifications)
+-10. [DXCC Tracker](#dxcc-tracker)
+-11. [Settings File Location](#settings-file-location)
++2. [Spot Sources](#spot-sources)
++3. [DXpedition Chase](#dxpedition-chase)
++4. [Band Selection](#band-selection)
++5. [Band Switching](#band-switching)
++6. [Priority Weights](#priority-weights)
++7. [Operating Mode](#operating-mode)
++8. [Chase Modes](#chase-modes)
++9. [Safety Features](#safety-features)
++10. [SMS Notifications](#sms-notifications)
++11. [DXCC Tracker](#dxcc-tracker)
++12. [Settings File Location](#settings-file-location)
+ 
+ ---
+ 
+@@ -159,11 +160,41 @@ When disabled:
+ 
+ **US Spotters Only:** Only accept spots from US-based skimmers/spotters. This improves accuracy for US operators by filtering spots from propagation paths you can't use.
+ 
+-**Minimum SNR:** Ignore spots weaker than this threshold. Range: -30 to 0 dB.
+-
+----
+-
+-## Band Selection
++**Minimum SNR:** Ignore spots weaker than this threshold. Range: -30 to 0 dB.
++
++---
++
++## DXpedition Chase
++
++The dedicated DXpedition section controls catalogue-driven chasing without
++weakening the normal safety boundaries. A network report must contain explicit
++FT8 mode evidence, its band must be enabled and inside its schedule, and MSHV
++must decode the station locally after QSY before it can call.
++
++| Setting | Default | Meaning |
++|---------|---------|---------|
++| Enable catalogue-driven chasing | On | Use active `dxpedition_watch.json` entries for priority and QSY handling |
++| Same-band off-standard QSY | On | Permit a verified expedition spot to move away from the standard FT8 dial on the current band |
++| Cross-band DXpedition QSY | On | Permit an idle engine to change to another open, enabled band for an expedition |
++| Chase scope | Needed only | `Any active` also permits an active catalogue call that has not yet been worked on that band |
++| Minimum independent spotters | 1 | Required network confidence before an expedition QSY |
++| Maximum spot age | 120 seconds | Maximum age of external evidence used for expedition QSY |
++| Local verification timeout | 60 seconds | Canonical cross-band/off-standard listen time before abandoning an unverified spot |
++| TX offset above expedition | 1000 Hz | Audio-frequency separation requested for a verified expedition call, clamped to the FT8 passband |
++| Priority boost | 12000 | Score added to an otherwise eligible catalogue entry |
++| Return to standard dial | On | Return after an off-standard completion or verification timeout |
++
++The read-only catalogue line shows validity, active callsign/band aliases, and
++expiry. A valid catalogue is authoritative for expedition membership. The
++small built-in rare-prefix table remains only as a conservative fallback for a
++new announcement or temporarily unavailable catalogue.
++
++`Any active` does not override Wavelog: a call already worked on that band is
++still rejected, and pending uploads remain an exact-once inhibition.
++
++---
++
++## Band Selection
+ 
+ ### Enabled Bands
+ 

@@ -14,11 +14,12 @@ import duckdb
 import httpx
 
 from radio_control import config
-from radio_control.activity_references import extract_activity_references
+from radio_control.activity_references import extract_activity_references, normalize_activity_reference
 from radio_control.postgres_store import connect as connect_postgres
 from radio_control.postgres_store import should_use_postgres
 from radio_control.rotor_math import bearing_from_coordinates, grid_to_latlon
 from radio_control.spot_intelligence import score_spot as base_score_spot
+from radio_control.log_throttle import warning as throttled_warning
 
 from .adapters import adapter_from_settings, iso_utc, parse_datetime, parse_rbn_line, stable_id
 from .models import ActivityTag, PropagationAssessment, SourceSyncState, SpotAction, StationStateSample, compact_dict
@@ -58,14 +59,11 @@ def _parse_float(value: Any) -> float | None:
 
 
 def _extract_comment_refs(text: str) -> list[str]:
-    refs: list[str] = []
-    for pattern in (
-        r"\b[A-Z]{1,3}-\d{3,5}\b",
-        r"\b[A-Z0-9]{1,3}/[A-Z]{1,3}-\d{3}\b",
-        r"\b[A-Z0-9]{1,4}FF-\d{3,5}\b",
-    ):
-        refs.extend(match.group(0).upper() for match in re.finditer(pattern, text or "", re.IGNORECASE))
-    return list(dict.fromkeys(refs))
+    return list(dict.fromkeys(
+        str(item.get("reference_id") or "").upper()
+        for item in extract_activity_references({"comment": text, "special": text})
+        if item.get("type") in {"POTA", "SOTA", "WWFF"} and item.get("reference_id")
+    ))
 
 
 def _distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -98,6 +96,64 @@ class ActivityIntelligenceService:
             self.settings = settings
             self.adapters = adapter_from_settings(self.settings)
             self._settings_signature = signature
+
+    def _publish_trusted_dxpedition_watch(self, source_id: str) -> dict[str, Any] | None:
+        """Renew the atomic native watch after a trusted source is validated.
+
+        This runs only after a successful repository commit or a successful
+        HTTP 304 revalidation. Publication failure leaves the prior file in
+        place and does not reinterpret the source refresh as failed.
+        """
+        if source_id not in {"NG3K_ADXO", "DXCAL_ICS"}:
+            return None
+        try:
+            from services.mshv_cluster_watch import publish_repository_dxpedition_watch
+            from services.mshv_configuration import runtime_path
+            return publish_repository_dxpedition_watch(self.repository, runtime_path())
+        except Exception as exc:
+            throttled_warning(
+                logger,
+                f"dxpedition-watch:{type(exc).__name__}:{exc}",
+                300.0,
+                "DXpedition watch publication failed after validated %s refresh: %s",
+                source_id,
+                exc,
+            )
+            return None
+
+    def _publish_portable_award_watch(self, source_id: str) -> dict[str, Any] | None:
+        """Renew native portable-award metadata after a validated refresh."""
+        if source_id not in {
+            "POTA_ACTIVE", "SOTA_SPOTS", "WWFF_SPOTS", "PARKSNPEAKS_ALL",
+        }:
+            return None
+        try:
+            from services.mshv_award_hunting import publish_repository_award_hunting_watch
+            from services.mshv_configuration import read_mshv_auto_dx_settings, runtime_path
+
+            policy = read_mshv_auto_dx_settings(engine_running=False)["reference_hunting"]
+            enabled_programs = [
+                program
+                for program in ("POTA", "SOTA", "WWFF")
+                if policy.get(f"{program.lower()}_enabled", True)
+            ] if policy.get("enabled", True) else []
+            return publish_repository_award_hunting_watch(
+                self.repository,
+                runtime_path(),
+                qso_db_path=self.qso_db_path if self._explicit_qso_db_path else None,
+                max_activation_age_seconds=policy["max_activation_age_seconds"],
+                enabled_programs=enabled_programs,
+            )
+        except Exception as exc:
+            throttled_warning(
+                logger,
+                f"award-hunting-watch:{type(exc).__name__}:{exc}",
+                300.0,
+                "Portable award watch publication failed after validated %s refresh: %s",
+                source_id,
+                exc,
+            )
+            return None
 
     async def refresh_due_sources(self, force: bool = False) -> dict[str, Any]:
         self.reload_settings()
@@ -138,7 +194,13 @@ class ActivityIntelligenceService:
                 state.consecutive_failures = 0
                 state.next_allowed_at_utc = iso_utc(datetime.now(UTC) + timedelta(seconds=adapter.get_recommended_poll_interval_seconds()))
                 self.repository.upsert_source_state(state)
-                return {"sourceId": adapter.source_id, "ok": True, "notModified": True}
+                return {
+                    "sourceId": adapter.source_id,
+                    "ok": True,
+                    "notModified": True,
+                    "dxpeditionWatch": self._publish_trusted_dxpedition_watch(adapter.source_id),
+                    "awardHuntingWatch": self._publish_portable_award_watch(adapter.source_id),
+                }
             if raw.http_status and raw.http_status >= 400:
                 raise RuntimeError(f"HTTP {raw.http_status}")
             parsed = adapter.parse(raw)
@@ -155,11 +217,15 @@ class ActivityIntelligenceService:
                 self.repository.upsert_portable_references(parsed.get("portable_references", []))
                 self.repository.upsert_space_weather(parsed.get("space_weather", []))
                 self.repository.upsert_source_state(state)
+            watch_result = self._publish_trusted_dxpedition_watch(adapter.source_id)
+            award_watch_result = self._publish_portable_award_watch(adapter.source_id)
             return {
                 "sourceId": adapter.source_id,
                 "ok": True,
                 "counts": {key: len(value) for key, value in parsed.items()},
                 "nextAllowedAtUtc": state.next_allowed_at_utc,
+                "dxpeditionWatch": watch_result,
+                "awardHuntingWatch": award_watch_result,
             }
         except Exception as exc:
             state.consecutive_failures += 1
@@ -168,7 +234,18 @@ class ActivityIntelligenceService:
             normal_seconds = adapter.get_recommended_poll_interval_seconds()
             state.next_allowed_at_utc = iso_utc(datetime.now(UTC) + timedelta(seconds=normal_seconds, minutes=backoff_minutes))
             self.repository.upsert_source_state(state)
-            logger.warning("Activity source %s failed: %s", adapter.source_id, exc)
+            # Optional POTA/SOTA/WWFF/NOAA feeds keep their structured health
+            # state on every failure. Coalesce identical operational warnings
+            # to one per five minutes so outages do not bury station events.
+            throttled_warning(
+                logger,
+                f"activity-source:{adapter.source_id}:{type(exc).__name__}:{exc}",
+                300.0,
+                "Activity source %s failed (%d consecutive; warning rate-limited): %s",
+                adapter.source_id,
+                state.consecutive_failures,
+                exc,
+            )
             return {"sourceId": adapter.source_id, "ok": False, "error": str(exc), "nextAllowedAtUtc": state.next_allowed_at_utc}
 
     def ingest_rbn_from_spot(self, spot: dict[str, Any]) -> None:
@@ -292,15 +369,20 @@ class ActivityIntelligenceService:
                 tags.append(ActivityTag(tag_type, f"{program} {ref}", 0.82, portable.get("source_id", program), ref))
                 ai_score += int(weights.get("portableActive", 20))
                 reasons.append(f"{program} {ref}")
-                ref_status = self.portable_reference_status(program, ref, callsign=call)
+                ref_status = self.portable_reference_status(
+                    program, ref, callsign=call,
+                    band=str(spot.get("band") or ""), mode=str(spot.get("mode") or ""),
+                )
                 reference_statuses[(program, str(ref).upper())] = ref_status
                 if ref_status.get("worked"):
                     tags.append(ActivityTag("DUPLICATE", f"Worked {ref}", 0.88, "WAVELOG", ref))
                     reasons.append(f"worked {program} ref")
-                else:
+                elif ref_status.get("authoritative"):
                     tags.append(ActivityTag("NEW_REFERENCE", f"New {ref}", 0.8, "WAVELOG", ref))
                     ai_score += int(weights.get("newPortableReference", 25))
                     reasons.append(f"new {program} ref")
+                else:
+                    reasons.append(f"{program} history unavailable")
                 actions.append(
                     SpotAction(
                         f"fill-{program.lower()}-{ref}",
@@ -344,8 +426,19 @@ class ActivityIntelligenceService:
             ref_id = str(reference.get("reference_id") or "").upper()
             status = reference_statuses.get((program, ref_id))
             if status is None:
-                status = self.portable_reference_status(program, ref_id, callsign=call)
-            if status.get("worked"):
+                status = self.portable_reference_status(
+                    program, ref_id, callsign=call,
+                    band=str(spot.get("band") or ""), mode=str(spot.get("mode") or ""),
+                )
+            reference["gaps"] = {
+                "new_reference": bool(status.get("authoritative")) and not bool(status.get("worked")),
+                "new_reference_on_band": bool(status.get("slotAuthoritative")) and not bool(status.get("workedOnBand")),
+                "new_reference_on_band_mode": bool(status.get("slotAuthoritative")) and not bool(status.get("workedOnBandMode")),
+            }
+            if not status.get("authoritative"):
+                reference["status"] = "unknown"
+                reference.pop("need_reason", None)
+            elif status.get("worked"):
                 reference["status"] = "worked"
                 reference.pop("need_reason", None)
             else:
@@ -362,14 +455,12 @@ class ActivityIntelligenceService:
         program = str(program or "").upper()
         reference = str(reference or "").upper()
         if program != "PARKSNPEAKS":
-            return program
-        if "/" in reference and re.search(r"/[A-Z]{1,3}-\d{3}$", reference):
-            return "SOTA"
-        if "FF-" in reference:
-            return "WWFF"
-        if re.match(r"^[A-Z]{1,3}-\d{3,5}$", reference):
-            return "POTA"
-        return program
+            return normalize_activity_reference(program, reference)[0] or program
+        for candidate in ("SOTA", "WWFF", "POTA"):
+            normalized_program, _ = normalize_activity_reference(candidate, reference)
+            if normalized_program:
+                return normalized_program
+        return "PARKSNPEAKS"
 
     def assess_propagation(self, spot: dict[str, Any]) -> PropagationAssessment | None:
         if not self.settings.get("propagation", {}).get("enabled", True):
@@ -871,14 +962,20 @@ class ActivityIntelligenceService:
             enriched.append({**ref, "workedState": status})
         return enriched
 
-    def portable_reference_status(self, program: str, reference: str, callsign: str | None = None) -> dict[str, Any]:
-        program = str(program or "").upper()
-        reference = str(reference or "").upper().strip()
-        if not reference:
-            return {"worked": False, "count": 0, "status": "unknown"}
+    def portable_reference_status(
+        self,
+        program: str,
+        reference: str,
+        callsign: str | None = None,
+        band: str | None = None,
+        mode: str | None = None,
+    ) -> dict[str, Any]:
+        program, reference = normalize_activity_reference(program, reference)
+        if not program or not reference:
+            return {"worked": False, "count": 0, "status": "unknown", "authoritative": False}
         use_postgres = should_use_postgres() and not self._explicit_qso_db_path
         if not use_postgres and not self.qso_db_path.exists():
-            return {"worked": False, "count": 0, "status": "no-cache"}
+            return {"worked": False, "count": 0, "status": "no-cache", "authoritative": False}
         field = {"POTA": "pota_ref", "SOTA": "sota_ref", "IOTA": "iota", "WWFF": "wwff_ref"}.get(program)
         clauses = []
         params: list[Any] = []
@@ -892,36 +989,92 @@ class ActivityIntelligenceService:
         params.extend([program, reference])
         clauses.append(f"upper(coalesce(comment, '')) LIKE {placeholder}")
         params.append(f"%{reference}%")
-        call_clause = ""
-        if callsign:
-            call_clause = f" AND upper(coalesce(call, '')) = {placeholder}"
-            params.append(_normalize_call(callsign))
-        query = f"""
-            SELECT COUNT(*) AS count, MAX(coalesce(qso_datetime, time_on)) AS last_worked
-            FROM qso_records
-            WHERE ({' OR '.join(clauses)}){call_clause}
-        """
-        try:
+        # Portable award credit is attached to the reference, not to one
+        # activator.  A park worked under another callsign is still worked.
+        # Keep the callsign argument for API compatibility, but deliberately
+        # do not narrow this reference-history query by it.
+        _ = callsign
+        band = str(band or "").strip().lower()
+        mode_text = str(mode or "").strip().upper().replace(" ", "")
+        mode = "FT8" if mode_text in {"FT8", "MFSK/FT8", "MFSK+FT8"} else mode_text
+
+        def fetchall(query: str, query_params: list[Any]) -> list[Any]:
             if use_postgres:
                 with connect_postgres() as conn:
                     with conn.cursor() as cur:
-                        cur.execute(query, params)
-                        row = cur.fetchone()
-            else:
-                conn = duckdb.connect(str(self.qso_db_path), read_only=True)
-                try:
-                    row = conn.execute(query, params).fetchone()
-                finally:
-                    conn.close()
+                        cur.execute(query, query_params)
+                        return cur.fetchall()
+            conn = duckdb.connect(str(self.qso_db_path), read_only=True)
+            try:
+                return conn.execute(query, query_params).fetchall()
+            finally:
+                conn.close()
+
+        core_columns = ["qso_datetime", "time_on"]
+        if field:
+            core_columns.append(field)
+        core_columns.extend(["sig", "sig_info", "comment"])
+        full_columns = [*core_columns, "band", "mode", "submode"]
+        slot_authoritative = False
+        try:
+            rows = fetchall(
+                f"SELECT {', '.join(full_columns)} FROM qso_records WHERE ({' OR '.join(clauses)})",
+                params,
+            )
+            row_columns = full_columns
+            slot_authoritative = True
         except Exception:
-            logger.debug("Portable reference status lookup failed for %s %s", program, reference, exc_info=True)
-            return {"worked": False, "count": 0, "status": "unavailable"}
-        count = int(row[0] or 0) if row else 0
+            try:
+                rows = fetchall(
+                    f"SELECT {', '.join(core_columns)} FROM qso_records WHERE ({' OR '.join(clauses)})",
+                    params,
+                )
+                row_columns = core_columns
+            except Exception:
+                logger.debug("Portable reference status lookup failed for %s %s", program, reference, exc_info=True)
+                return {"worked": False, "count": 0, "status": "unavailable", "authoritative": False}
+
+        matched_rows: list[dict[str, Any]] = []
+        for raw_row in rows:
+            item = dict(zip(row_columns, raw_row, strict=True))
+            identities = {
+                (ref_item.get("type"), ref_item.get("reference_id"))
+                for ref_item in extract_activity_references(item)
+            }
+            if (program, reference) in identities:
+                matched_rows.append(item)
+
+        count = len(matched_rows)
+        band_count = 0
+        band_mode_count = 0
+        if band:
+            band_rows = [row for row in matched_rows if str(row.get("band") or "").strip().lower() == band]
+            band_count = len(band_rows)
+            if mode:
+                band_mode_count = sum(
+                    1 for row in band_rows
+                    if (
+                        "FT8" if str(row.get("submode") or row.get("mode") or "").strip().upper().replace(" ", "")
+                        in {"FT8", "MFSK/FT8", "MFSK+FT8"}
+                        else str(row.get("submode") or row.get("mode") or "").strip().upper()
+                    ) == mode
+                )
+        last_worked = max(
+            (row.get("qso_datetime") or row.get("time_on") for row in matched_rows),
+            default=None,
+            key=lambda value: str(value or ""),
+        )
         return {
             "worked": count > 0,
             "count": count,
+            "authoritative": True,
+            "slotAuthoritative": slot_authoritative,
+            "workedOnBand": band_count > 0,
+            "bandCount": band_count,
+            "workedOnBandMode": band_mode_count > 0,
+            "bandModeCount": band_mode_count,
             "status": "worked" if count else "new",
-            "lastWorkedUtc": str(row[1]) if row and row[1] else None,
+            "lastWorkedUtc": str(last_worked) if last_worked else None,
         }
 
     def _portable_fill_payload(self, program: str, reference: str) -> dict[str, Any]:

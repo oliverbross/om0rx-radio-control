@@ -51,11 +51,18 @@
     </div>
     <div v-if="!configData.RADIO_SHOW_DETAILED_CONTROLS" class="compact-radio-right">
         <button v-if="shouldShowCompactDigitalButton()"
-                @click="launchPatchedWsjtxEngine"
-                :disabled="wsjtxLaunchLoading || wsjtxPreflightLoading"
-                class="ft8-digi-button wsjtx-launch-button"
+                @click="launchDigitalEngine('wsjtz')"
+                :disabled="digitalEngineBusy || wsjtxLaunchLoading || wsjtxPreflightLoading"
+                class="ft8-digi-button digital-engine-launch-button wsjtx-launch-button"
                 title="Launch OM0RX WSJT-Z WSJT-X-compatible engine">
             WSJT-Z
+        </button>
+        <button v-if="shouldShowCompactDigitalButton()"
+                @click="launchDigitalEngine('mshv_auto_dx')"
+                :disabled="digitalEngineBusy || wsjtxLaunchLoading || wsjtxPreflightLoading"
+                class="ft8-digi-button digital-engine-launch-button mshv-launch-button"
+                title="Launch MSHV Auto DX Chaser">
+            MSHV
         </button>
         <span class="utc-clock">{{ currentTime }} UTC</span>
     </div>

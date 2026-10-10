@@ -107,7 +107,20 @@ def test_ng3k_adxo_fixture_parses_dxpeditions():
     assert by_call["VJ1L"].dxcc_entity == "Lord Howe I"
 
 
-def test_refresh_replaces_stale_source_records(tmp_path):
+def test_refresh_replaces_stale_source_records_and_publishes_committed_watch(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("OM0RX_MSHV_RUNTIME", str(runtime))
+    import services.mshv_cluster_watch as cluster_watch
+    publish_calls = []
+
+    def publish_after_commit(repository, runtime_path):
+        committed = {row[0] for row in repository.conn.execute(
+            "SELECT callsign FROM ai_dxpeditions WHERE source_id = 'NG3K_ADXO'"
+        ).fetchall()}
+        publish_calls.append((Path(runtime_path), committed))
+        return {"path": str(Path(runtime_path) / "settings/database/dxpedition_watch.json"), "watch": {"schema": 1}}
+
+    monkeypatch.setattr(cluster_watch, "publish_repository_dxpedition_watch", publish_after_commit)
     repo = ActivityRepository(tmp_path / "ai.duckdb")
     repo.upsert_dxpeditions(
         [
@@ -147,6 +160,9 @@ def test_refresh_replaces_stale_source_records(tmp_path):
     assert "VJ1L" in calls
     assert "2026" not in calls
     assert "JUN01" not in aliases
+    assert result["dxpeditionWatch"]["watch"]["schema"] == 1
+    assert publish_calls == [(runtime, calls)]
+    assert "VJ1L" in publish_calls[0][1]
 
 
 def test_wa7bnm_rss_fixture_parses_contest():

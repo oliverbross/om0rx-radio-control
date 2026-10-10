@@ -1500,6 +1500,9 @@ class DigitalAutomationController:
         reason: str = "",
         target: Optional[DigitalTarget] = None,
     ) -> str:
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return "idle"
         if state not in ACTIVE_QSO_STATES:
             state = "failed"
             reason = reason or "invalid-active-qso-state"
@@ -1530,6 +1533,9 @@ class DigitalAutomationController:
             self._load_persisted_targets()
 
     def apply_operator_settings(self, operator_settings: Optional[Mapping[str, Any]]) -> None:
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return
         self.settings.apply_operator_settings(operator_settings or {})
         active = self.targets.get(self.active_target_key) if self.active_target_key else None
         if active and not active.direct_caller:
@@ -1561,22 +1567,34 @@ class DigitalAutomationController:
             self.mycall = mycall.upper()
 
     def ingest_decoded(self, message: Any) -> Optional[DigitalTarget]:
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return None
         payload = _message_dict(message)
         payload.setdefault("source", "decoded")
         return self._upsert_target(payload, heard=True)
 
     def ingest_spot(self, spot: Mapping[str, Any]) -> Optional[DigitalTarget]:
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return None
         payload = dict(spot)
         payload.setdefault("source", "spot")
         return self._upsert_target(payload, heard=False)
 
     def ingest_target(self, payload: Mapping[str, Any]) -> Optional[DigitalTarget]:
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return None
         incoming = dict(payload)
         source = str(incoming.get("source", "")).lower()
         heard = _bool(incoming.get("heard"), source in {"decoded", "wsjtx-decode-status"})
         return self._upsert_target(incoming, heard=heard)
 
     def _upsert_target(self, payload: Mapping[str, Any], *, heard: bool) -> Optional[DigitalTarget]:
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return None
         payload = dict(payload)
         if "message" in payload:
             payload["message"] = normalise_decode_message_text(payload.get("message"))
@@ -1982,6 +2000,9 @@ class DigitalAutomationController:
         cq_only: bool = False,
         auto_call_start_only: bool = False,
     ) -> Optional[DigitalTarget]:
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return None
         now = now or utc_now()
         listening = self._active_listen_target(now)
         active = self.targets.get(self.active_target_key) if self.active_target_key else None
@@ -2427,6 +2448,9 @@ class DigitalAutomationController:
 
     def next_listen_target(self, now: Optional[datetime] = None) -> Optional[DigitalTarget]:
         """Select an unheard external digital spot for a temporary listen-only QSY."""
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return None
         now = now or utc_now()
         if not self.settings.enabled or not self.settings.spot_hunt_enabled:
             self._set_decision({
@@ -2640,6 +2664,9 @@ class DigitalAutomationController:
         mode: Any = "",
         dial_frequency: Any = None,
     ) -> Optional[DigitalTarget]:
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return None
         target = self.targets.get(key)
         if not target:
             return None
@@ -2670,6 +2697,9 @@ class DigitalAutomationController:
         return dict(self.pending_return_command) if self.pending_return_command else None
 
     def mark_return_command_sent(self, key: Any = None) -> None:
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return
         command = self.pending_return_command
         self.pending_return_command = None
         target_key = str(key or (command or {}).get("target_key") or "")
@@ -2687,6 +2717,8 @@ class DigitalAutomationController:
         })
 
     def prepare_command(self, key: str) -> Optional[str]:
+        from services.digital_engine import require_om0rx_planner
+        require_om0rx_planner()
         """Reserve a stable command id before transport so WSJT-Z sees the same id we persist."""
         target = self.targets.get(key)
         if not target:
@@ -2701,6 +2733,9 @@ class DigitalAutomationController:
         return target.command_id
 
     def record_attempt(self, key: str, *, command_id: Optional[str] = None) -> Optional[DigitalTarget]:
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return None
         target = self.targets.get(key)
         if not target:
             self._set_decision({"decision": "skip", "reason": "attempt-target-missing", "key": key})
@@ -2743,6 +2778,9 @@ class DigitalAutomationController:
 
     def promote_target(self, key: str) -> Optional[DigitalTarget]:
         """Move a queued target to the top of the planner without starting TX."""
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return None
         target = self.targets.get(key)
         if not target:
             self._set_decision({"decision": "skip", "reason": "promote-target-missing", "key": key})
@@ -2766,6 +2804,9 @@ class DigitalAutomationController:
 
     def skip_target(self, key: str, *, reason: str = "operator-removed") -> Optional[DigitalTarget]:
         """Remove a target from the active planner queue while preserving history."""
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return None
         target = self.targets.get(key)
         if not target:
             self._set_decision({"decision": "skip", "reason": "skip-target-missing", "key": key})
@@ -2788,6 +2829,9 @@ class DigitalAutomationController:
 
     def release_target(self, key: str, *, reason: str = "target-released") -> Optional[DigitalTarget]:
         """Release a selected target that never became a real TX attempt."""
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return None
         target = self.targets.get(key)
         if not target:
             self._set_decision({"decision": "release", "reason": "release-target-missing", "key": key})
@@ -2896,6 +2940,9 @@ class DigitalAutomationController:
 
     def abandon_active_target(self, *, reason: str = "operator-aborted") -> Optional[DigitalTarget]:
         """Back off the currently selected/calling target without disabling automation."""
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return None
         if not self.active_target_key:
             self._set_decision({"decision": "idle", "reason": "no-active-target-to-abandon"})
             return None
@@ -2931,6 +2978,9 @@ class DigitalAutomationController:
 
     def handle_wsjtx_status(self, status: Mapping[str, Any]) -> dict[str, Any]:
         """Apply WSJT-X status changes and pause automation on manual override signals."""
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return {"status": "ignored", "reason": "mshv-provider-selected"}
         payload = dict(status or {})
         active = self.targets.get(self.active_target_key) if self.active_target_key else None
         manual_override = _bool(payload.get("manual") or payload.get("operatorAction") or payload.get("operator_action"), False)
@@ -3050,6 +3100,9 @@ class DigitalAutomationController:
         return {"status": "observed", "target": active.to_dict(), "decision": self.last_decision}
 
     def mark_done(self, key: str, *, reason: str = "qso-complete") -> Optional[DigitalTarget]:
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return None
         target = self.targets.get(key)
         if target:
             target.sync_state("done", active_state="completed")
@@ -3079,6 +3132,9 @@ class DigitalAutomationController:
         mode: Optional[str] = None,
         reason: str = "qso-complete",
     ) -> list[DigitalTarget]:
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return []
         call_upper = str(call or "").upper()
         mode_upper = normalise_mode(mode) if mode else None
         completed: list[DigitalTarget] = []
@@ -3112,6 +3168,9 @@ class DigitalAutomationController:
 
     def replay_events(self, events: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         """Replay recorded automation events through the planner for safe tests."""
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            return []
         results: list[dict[str, Any]] = []
         for index, raw_event in enumerate(events or []):
             event = dict(raw_event or {})
@@ -3259,6 +3318,11 @@ class DigitalAutomationController:
         }
 
     def _load_persisted_targets(self) -> None:
+        from services.digital_engine import selected_provider
+        if selected_provider() != "wsjtz":
+            self.targets.clear()
+            self.persistence_loaded_count = 0
+            return
         if not self.target_store:
             self.persistence_loaded_count = 0
             return

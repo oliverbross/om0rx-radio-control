@@ -6,7 +6,19 @@
     <title>OM0RX Radio Control</title>
     
     <!-- Vue.js 3 -->
-    <script src="/static/vendor/vue/vue.global.prod.js"></script>
+    <script src="/static/vendor/vue/vue.global.prod.js?v=20261010-webui-perf-1"></script>
+    <style>
+        [v-cloak] { display: none !important; }
+        #app-loading {
+            position: fixed;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            color: #d8e7f5;
+            background: #080b0e;
+            font: 600 15px/1.4 system-ui, sans-serif;
+        }
+    </style>
     
     <!-- Power Button Styles -->
     <link rel="stylesheet" href="power-button.css">
@@ -25,10 +37,11 @@
     <!-- FT8/FT4 Digital Mode Styles -->
     <link rel="stylesheet" href="ft8-modal.css?v=20260604-wsjtx-launch-outbox-2">
     <!-- Main Styles (extracted for performance) -->
-    <link rel="stylesheet" href="main-styles.css?v=20260718-spots-workspace-4">
+    <link rel="stylesheet" href="main-styles.css?v=20261006-digital-launcher-1">
 </head>
 <body>
-    <div id="app">
+    <div id="app-loading" role="status" aria-live="polite">Loading OM0RX Radio Control…</div>
+    <div id="app" v-cloak>
         <!-- Template placeholders - content will be loaded by templates-loader.js in order -->
         <div id="controls-section" style="display: contents;"></div>
         <div id="logging-panel-section"></div>
@@ -37,7 +50,7 @@
     </div>
 
     <!-- Load template fragments (controls, modals, dx-spots) -->
-    <script src="templates-loader.js?v=20260718-spots-workspace-4"></script>
+    <script src="templates-loader.js?v=20261010-webui-perf-1"></script>
     
     <!-- Load logging module first (required by other modules) -->
     <script src="js/logger.js"></script>
@@ -51,7 +64,7 @@
     <script src="js/wavelog-qso-normalizer.js"></script>
     <script src="js/dx-spots.js?v=20260718-spots-workspace-4"></script>
     <!-- TopoJSON client for proper arc decompression -->
-    <script src="/static/vendor/topojson/topojson-client.min.js"></script>
+    <script src="/static/vendor/topojson/topojson-client.min.js?v=20261010-webui-perf-1"></script>
     <script src="js/country-modal.js"></script>
     <script src="js/local-log-modal.js"></script>
     <script src="js/wavelog-log-modal.js"></script>
@@ -62,7 +75,7 @@
     <script src="js/ft8-modal.js?v=20260604-wsjtx-launch-outbox-2"></script>
     <!-- Solar & HF Conditions Overlay -->
     <script src="js/solar-overlay.js"></script>
-    <script src="js/config-modal.js?v=20260610-wsjtz-launch-restored-1"></script>
+    <script src="js/config-modal.js?v=20261006-digital-launcher-1"></script>
     <script src="js/solar-data.js"></script>
     <script src="js/wavelog-stats.js"></script>
     <!-- WinKeyer Support Scripts -->
@@ -72,6 +85,7 @@
     <script src="js/winkeyer-tester.js"></script>
     <script src="js/winkeyer-ui.js"></script>
     <script src="js/winkeyer-bootstrap.js"></script>
-    <script src="js/app-main.js?v=20260604-filters-popout-37"></script>
+    <script src="js/station-launcher.js?v=20261010-widget-reopen-17"></script>
+    <script src="js/app-main.js?v=20261010-webui-perf-1"></script>
 </body>
 </html>

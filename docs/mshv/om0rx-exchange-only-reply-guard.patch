@@ -1,0 +1,54 @@
+diff --git a/MSHV_2762/src/HvAutoDxer/autodxmessageparser.h b/MSHV_2762/src/HvAutoDxer/autodxmessageparser.h
+index 7a5d8f3..3e9a653 100644
+--- a/MSHV_2762/src/HvAutoDxer/autodxmessageparser.h
++++ b/MSHV_2762/src/HvAutoDxer/autodxmessageparser.h
+@@ -11,8 +11,12 @@ struct AutoDxParsedMessage
+     QString transmitter;
+     bool isCq;
+     bool senderResolved;
++    bool isExchangeOnly;
++    bool isTerminalAcknowledgement;
+ 
+-    AutoDxParsedMessage() : isCq(false), senderResolved(false) {}
++    AutoDxParsedMessage()
++        : isCq(false), senderResolved(false), isExchangeOnly(false),
++          isTerminalAcknowledgement(false) {}
+ };
+ 
+ class AutoDxMessageParser
+@@ -49,6 +53,13 @@ public:
+         parsed.senderResolved = !parsed.destination.isEmpty()
+             && !parsed.transmitter.isEmpty();
+         if (!parsed.senderResolved) parsed.transmitter.clear();
++        if (parsed.senderResolved && parts.size() >= 3) {
++            const QString exchange = parts.last();
++            parsed.isExchangeOnly = exchange == "RRR" || exchange == "RR73"
++                || exchange == "73";
++            parsed.isTerminalAcknowledgement = exchange == "RR73"
++                || exchange == "73";
++        }
+         return parsed;
+     }
+ 
+diff --git a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+index 0e91967..fc5e8c7 100644
+--- a/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
++++ b/MSHV_2762/src/HvAutoDxer/targetscorer.cpp
+@@ -400,6 +400,17 @@ ScoredTarget TargetScorer::scoreTarget(const CachedDecode &decode)
+         && callsignsMatch(parsedMessage.destination, m_myCallsign)
+         && callsignsMatch(parsedMessage.transmitter, decode.callsign);
+ 
++    // RRR/RR73/73 addressed to us belong to an exchange already in progress.
++    // If native queue ownership disappears near the end of a QSO, admitting
++    // one as a fresh target restarts at the signal-report stage (for example,
++    // replying R-11 to RR73).  MSHV still receives the decode and can finish
++    // its active QSO; AutoDX must never create a new target from it.
++    if (target.isCallingMe && parsedMessage.isExchangeOnly) {
++        target.isCallingMe = false;
++        target.priorityReason = "Exchange-only reply is not a new caller";
++        return target;
++    }
++
+     // Wavelog is authoritative for permanent duplicate suppression.  No
+     // selection class (including a directed caller, a manual target, a new
+     // grid, or a DXpedition) may repeat a callsign on the same band and mode.

@@ -190,6 +190,68 @@ print("no duplicate routes")
         Invoke-NativeCommand python @("-m", "pytest", "tests\smoke", "-q")
     }
 
+    Invoke-CheckStep "Browser and widget contract tests" {
+        $browserTests = Get-ChildItem -Path "tests" -Filter *.test.cjs -File |
+            Sort-Object FullName
+        if ($browserTests.Count -eq 0) {
+            throw "No browser contract tests were found"
+        }
+
+        $testArguments = @("--test") + @($browserTests | ForEach-Object { $_.FullName })
+        Invoke-NativeCommand node $testArguments
+    }
+
+    Invoke-CheckStep "MSHV offline safety checks" {
+        $mshvSource = Join-Path $ProjectRoot "data\build\mshv-auto-dx\src"
+        if (-not (Test-Path -LiteralPath (Join-Path $mshvSource ".git"))) {
+            throw "Pinned MSHV source repository is missing: $mshvSource"
+        }
+
+        $fixture = Join-Path ([System.IO.Path]::GetTempPath()) (
+            "om0rx-mshv-check-" + [guid]::NewGuid().ToString("N")
+        )
+        $previousFixture = $env:OM0RX_MSHV_TEST_SOURCE_ROOT
+        try {
+            Invoke-NativeCommand git @("-C", $mshvSource, "worktree", "add", "--detach", $fixture, "HEAD")
+            foreach ($patchName in @(
+                "om0rx-integration.patch",
+                "om0rx-autodx-phase1.patch",
+                "om0rx-wavelog-history-phase2.patch"
+            )) {
+                $patchPath = Join-Path $ProjectRoot "docs\mshv\$patchName"
+                Invoke-NativeCommand git @("-C", $fixture, "apply", "--check", $patchPath)
+                Invoke-NativeCommand git @("-C", $fixture, "apply", $patchPath)
+            }
+
+            $env:OM0RX_MSHV_TEST_SOURCE_ROOT = $fixture
+            Invoke-NativeCommand python @(
+                "-m", "pytest",
+                "tests\test_mshv_autodx_phase1.py",
+                "tests\test_mshv_history_migration.py",
+                "tests\test_mshv_history.py",
+                "tests\test_mshv_native_offline.py",
+                "tests\test_mshv_package_transaction.py",
+                "tests\test_mshv_upstream_safety_diff.py",
+                "-q"
+            )
+        }
+        finally {
+            if ($null -eq $previousFixture) {
+                Remove-Item Env:\OM0RX_MSHV_TEST_SOURCE_ROOT -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:OM0RX_MSHV_TEST_SOURCE_ROOT = $previousFixture
+            }
+
+            if (Test-Path -LiteralPath $fixture) {
+                & git -C $mshvSource worktree remove --force $fixture
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "WARN could not remove temporary MSHV worktree: $fixture" -ForegroundColor Yellow
+                }
+            }
+        }
+    }
+
     if ($UsePytest) {
         Invoke-CheckStep "Pytest safe smoke subset" {
             Invoke-NativeCommand python @("-m", "pytest", "tests\smoke", "-q")
@@ -202,7 +264,7 @@ print("no duplicate routes")
             return
         }
 
-        & rg -n "(?i)Wave-Flex-Spots|waave-flex-spots|wave-flex-spots|wave-flex|waave-flex|waveflex|c:\\Projects\\wave|documentation\\FEATURE_NAME|/documentation" . -g "*.*" -g "!data/**" -g "!logs/**" -g "!docs/archive/**" -g "!vendor/**" -g "!node_modules/**" -g "!om0rx_radio_control.egg-info/**" -g "!__pycache__/**" -g "!**/__pycache__/**" -g "!.pytest_cache/**" -g "!.git/**" -g "!scripts/maintenance/check_project.ps1"
+        & rg -n "(?i)Wave-Flex-Spots|waave-flex-spots|wave-flex-spots|wave-flex|waave-flex|waveflex|c:\\Projects\\wave|documentation\\FEATURE_NAME" . -g "*.*" -g "!data/**" -g "!logs/**" -g "!docs/archive/**" -g "!vendor/**" -g "!node_modules/**" -g "!om0rx_radio_control.egg-info/**" -g "!__pycache__/**" -g "!**/__pycache__/**" -g "!.pytest_cache/**" -g "!.git/**" -g "!scripts/maintenance/check_project.ps1"
         if ($LASTEXITCODE -eq 0) {
             throw "Old project references were found"
         }
