@@ -294,9 +294,12 @@ Do not delete the macOS evidence or safety boundary.
 - Post-push Windows installation: only the independent `OM0RX Remote Station
   Tray` task was stopped, re-registered from this branch, and started so the
   Settings GUI is available immediately. The `OM0RX Remote Station Agent`
-  process ID and creation time were unchanged across that operation, its task
-  remained running from the previously accepted FLEX-route worktree, and no
-  station action was invoked.
+  process ID and creation time were unchanged across that operation. Its
+  scheduled-task definition was then updated, without restarting the running
+  process, to load this branch and the existing dedicated virtual environment
+  on its next deliberate restart. Therefore **Save and restart agent** in the
+  GUI will load the complete new configuration model. No station action was
+  invoked.
 
 ## Handoff protocol
 
