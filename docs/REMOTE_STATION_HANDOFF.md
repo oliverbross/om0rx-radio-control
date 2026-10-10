@@ -240,6 +240,37 @@ Do not delete the macOS evidence or safety boundary.
   information alarm must remain until physical commissioning is separately
   completed.
 
+## Main integration — 2026-10-10
+
+- Timestamp (UTC): `2026-10-10T10:20:50.2994134Z`.
+- Acceptance source verified before testing:
+  `codex/mac-receive-only-acceptance` at exactly
+  `ad1b0b7b36c7b1dc0284914fc5a84e45cf9e808f`.
+- Complete Windows maintenance suite: **PASS**. Safe Python smoke tests:
+  `835 passed, 0 failed`; browser/widget Node contracts: `105 passed, 0
+  failed`; MSHV offline safety tests: `104 passed, 0 failed, 1 skipped`.
+  Aggregate test cases: `1044 passed, 0 failed, 1 skipped`. Python compile,
+  backend import, Ruff correctness, duplicate-route scan, PowerShell parsing,
+  JavaScript syntax, old-project-reference scan, and Git whitespace checks all
+  passed. Bash syntax was explicitly skipped because Bash was present but not
+  executable on this Windows host.
+- Windows-only fixture note: the first umbrella run exposed mixed line endings
+  in the ignored, cached MSHV upstream checkout. Setting that checkout's local
+  Git `apply.ignoreWhitespace=change` allowed the maintained patches to replay
+  without changing tracked repository files; the complete suite was then
+  rerun from the start and passed in 111 seconds.
+- Final `main` SHA:
+  `ad1b0b7b36c7b1dc0284914fc5a84e45cf9e808f`.
+- Remote verification: `refs/heads/main` on
+  `https://github.com/oliverbross/om0rx-radio-control.git` returned the same
+  exact SHA after the fast-forward push.
+- Safety confirmation: the running Windows station agent was not stopped or
+  restarted. No agent command endpoint, radio/CAT command, antenna, amplifier,
+  tuner, PTT, TUNE, CWX, frequency, mode, RIT/XIT, RF-power, or other
+  station-control write was issued. `station.commissioned` remained `false`;
+  the already-verified receive-only connection and KPA500 standby state were
+  left undisturbed.
+
 ## Handoff protocol
 
 After each bounded change:
