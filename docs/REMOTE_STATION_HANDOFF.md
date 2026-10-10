@@ -286,6 +286,12 @@ Do not delete the macOS evidence or safety boundary.
   PTT, TUNE, CWX, frequency/mode/antenna/RF-power write, or RF transmission was
   performed during implementation or testing. The bearer token was neither
   printed nor committed.
+- Post-push Windows installation: only the independent `OM0RX Remote Station
+  Tray` task was stopped, re-registered from this branch, and started so the
+  Settings GUI is available immediately. The `OM0RX Remote Station Agent`
+  process ID and creation time were unchanged across that operation, its task
+  remained running from the previously accepted FLEX-route worktree, and no
+  station action was invoked.
 
 ## Handoff protocol
 
