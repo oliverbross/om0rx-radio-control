@@ -92,7 +92,11 @@ class FlexCtl:
         # MultiFlex radios.  An unbound TCP client can receive an OK response
         # for ``transmit set`` while its GUI-visible RF power remains unchanged.
         self.bound_gui_client_id = None
+        self.bound_gui_client_handle = None
+        self.preferred_station_name = ""
         self._gui_binding_confirmed = False
+        self.slice_states = {}
+        self.current_tx_slice_id = None
         logging.info(f"FlexCtl initialized for {host}:{port} slice {slice_id}")
 
     def _queue_received(self, chunk: bytes) -> None:
@@ -350,6 +354,10 @@ class FlexCtl:
             except Exception as e:
                 logging.error(f"FlexCtl connect FAILED: {e}")
                 self.sock = None
+                self.bound_gui_client_id = None
+                self.bound_gui_client_handle = None
+                self.current_tx_slice_id = None
+                self.slice_states.clear()
                 self._receive_buffer = b""
                 self._pending_lines.clear()
                 return False
@@ -364,6 +372,10 @@ class FlexCtl:
                     pass
                 self.sock = None
                 self._gui_binding_confirmed = False
+                self.bound_gui_client_id = None
+                self.bound_gui_client_handle = None
+                self.current_tx_slice_id = None
+                self.slice_states.clear()
 
     def connect_tx_state_probe(
         self,
@@ -581,11 +593,21 @@ class FlexCtl:
 
     def _record_basic_status_from_line(self, line: str) -> None:
         """Update cached state from async status lines that arrive while sending commands."""
-        if "|client " in line and " connected " in line:
+        self._record_slice_status_from_line(line)
+        if ("|client " in line or "|gui_client " in line) and " connected " in line:
             client_id = re.search(r"\bclient_id=([^\s]+)", line)
             program = re.search(r"\bprogram=([^\s]+)", line)
-            if client_id and program and program.group(1).lower().startswith("smartsdr"):
+            station = re.search(r"\bstation=([^\s]+)", line)
+            handle = re.search(r"\|(?:gui_)?client\s+([^\s]+)", line)
+            preferred = re.sub(r"[^a-z0-9]", "", self.preferred_station_name.lower())
+            observed = re.sub(r"[^a-z0-9]", "", station.group(1).lower()) if station else ""
+            preferred_match = bool(preferred and observed == preferred)
+            legacy_match = bool(
+                not preferred and program and program.group(1).lower().startswith("smartsdr")
+            )
+            if client_id and (preferred_match or legacy_match):
                 self.bound_gui_client_id = client_id.group(1)
+                self.bound_gui_client_handle = handle.group(1).lower() if handle else None
 
         if "|slice" in line and f"slice {self.slice_id} " in line:
             self._record_antenna_values(line)
@@ -628,6 +650,68 @@ class FlexCtl:
                 self.current_mox = bool(int(m_mox.group(1)))
                 if self.current_mox:
                     self.last_tx_active_time = time.time()
+
+    def _record_slice_status_from_line(self, line: str) -> None:
+        """Track every station slice so CAT VFO A/B state remains addressable."""
+        match = re.search(r"\|slice\s+(\d+)\s*(.*)$", line)
+        if not match:
+            return
+        slice_id = int(match.group(1))
+        body = match.group(2)
+        properties = {
+            key: value
+            for key, value in re.findall(r"\b([A-Za-z_]+)=([^\s]+)", body)
+        }
+        if re.search(r"\bremoved(?:=1)?\b", body):
+            self.slice_states.pop(slice_id, None)
+            if self.current_tx_slice_id == slice_id:
+                self.current_tx_slice_id = None
+            return
+        state = dict(self.slice_states.get(slice_id) or {"slice_id": slice_id})
+        for source, target in (
+            ("index_letter", "index_letter"),
+            ("mode", "mode"),
+            ("client_handle", "client_handle"),
+            ("rxant", "rx_antenna"),
+            ("txant", "tx_antenna"),
+        ):
+            if source in properties:
+                state[target] = (
+                    properties[source].upper()
+                    if source != "client_handle"
+                    else properties[source].lower()
+                )
+        frequency = properties.get("RF_frequency") or properties.get("freq")
+        if frequency is not None:
+            try:
+                state["frequency"] = float(frequency)
+            except ValueError:
+                pass
+        for source, target in (
+            ("active", "active"),
+            ("tx", "transmit"),
+            ("in_use", "in_use"),
+        ):
+            if source in properties:
+                state[target] = properties[source].upper() in {"1", "T", "TRUE"}
+        state["updated_at"] = time.time()
+        self.slice_states[slice_id] = state
+        if state.get("transmit") is True:
+            self.current_tx_slice_id = slice_id
+
+    def get_slice_states(self) -> list[dict]:
+        """Return current slices owned by the bound station client, ordered by ID."""
+        if self.preferred_station_name and not self.bound_gui_client_handle:
+            return []
+        states = self.slice_states.values()
+        if self.bound_gui_client_handle:
+            states = (
+                state
+                for state in states
+                if str(state.get("client_handle") or "").lower()
+                == self.bound_gui_client_handle
+            )
+        return [dict(state) for state in sorted(states, key=lambda item: item["slice_id"])]
 
     def _send(self, cmd: str) -> bool:
         """Send command to radio and wait for the matching command response."""
@@ -876,6 +960,8 @@ class FlexCtl:
                     
                     if not line:
                         continue
+
+                    self._record_basic_status_from_line(line)
 
                     # Any complete SmartSDR status/response received by this
                     # explicit snapshot is a fresh radio observation.  The
@@ -1251,7 +1337,10 @@ class FlexCtl:
 
     def _set_tx_slice(self) -> bool:
         """Mark this slice as TX slice."""
-        return self._send(f"slice set {self.slice_id} tx=1")
+        target = self.current_tx_slice_id
+        if target is None:
+            target = self.slice_id
+        return self._send(f"slice set {target} tx=1")
 
     def _ensure_gui_binding(self, *, force: bool = False) -> bool:
         """Bind transmitter controls to the active SmartSDR GUI context.

@@ -1005,7 +1005,7 @@ class StationCoordinator:
         authorization readbacks from becoming stale between preflight and TX.
         """
         normalized = str(action or "").strip().lower()
-        if normalized not in {"mox", "tune"}:
+        if normalized not in {"mox", "tune", "cwx"}:
             raise StationActionError(
                 "raw-flex-tx-action-invalid",
                 f"Unsupported raw FLEX transmit action: {normalized or 'unknown'}",

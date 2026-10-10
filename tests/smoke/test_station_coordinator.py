@@ -1920,6 +1920,20 @@ def test_raw_flex_guard_runs_only_for_tx_on(
     ]
 
 
+def test_raw_cwx_send_uses_atomic_station_preflight(monkeypatch):
+    station, calls, _manager = build_station(monkeypatch, commissioned=True)
+    sent = []
+
+    assert asyncio.run(
+        station.execute_raw_flex_tx("cwx", lambda: sent.append("CQ TEST") or True)
+    ) is True
+
+    assert sent == ["CQ TEST"]
+    assert ("flex.readback", False) in calls
+    assert ("kpa.readback",) in calls
+    assert ("kat.readback",) in calls
+
+
 @pytest.mark.parametrize(
     ("endpoint", "method_name"),
     [

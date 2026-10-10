@@ -138,6 +138,30 @@ def test_transmit_controls_bind_to_active_smartsdr_gui_client():
     ]
 
 
+def test_preferred_maestro_station_owns_slice_a_b_and_preserves_tx_slice():
+    flex = RecordingFlex()
+    flex.preferred_station_name = "Maestro"
+    flex._record_basic_status_from_line(
+        "S123|client 0xABC connected client_id=MAESTRO-ID "
+        "program=Maestro station=Maestro"
+    )
+    flex._record_basic_status_from_line(
+        "S123|slice 0 in_use=1 RF_frequency=14.074000 client_handle=0xABC "
+        "index_letter=A mode=DIGU active=1 tx=0"
+    )
+    flex._record_basic_status_from_line(
+        "S123|slice 1 in_use=1 RF_frequency=14.080000 client_handle=0xABC "
+        "index_letter=B mode=DIGU active=0 tx=1"
+    )
+
+    assert flex.bound_gui_client_id == "MAESTRO-ID"
+    assert [item["index_letter"] for item in flex.get_slice_states()] == ["A", "B"]
+    assert flex.current_tx_slice_id == 1
+    assert flex.set_rf_power(25) is True
+    assert "slice set 1 tx=1" in flex.commands
+    assert "slice set 0 tx=1" not in flex.commands
+
+
 def test_refresh_source_does_not_force_reconnect_on_no_messages():
     source = (  # keep this focused: a regression here causes SmartSDR client spam
         __import__("pathlib")

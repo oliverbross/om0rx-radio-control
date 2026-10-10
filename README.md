@@ -4,6 +4,15 @@ Self-contained local control app for a FlexRadio station. The app combines a Fas
 
 ## Start
 
+### Independent remote-station agent
+
+For the dedicated Windows-to-macOS FLEX/KPA500/KAT500 bridge, use the
+independent remote-station agent. It starts only the hardware and guarded
+station services, has a separate configuration, and does not require the full
+OM0RX Radio Control application to be running. See
+[`docs/REMOTE_STATION_AGENT.md`](docs/REMOTE_STATION_AGENT.md).
+Install its smaller dependency set with `requirements-remote-agent.txt`.
+
 ### Windows tray agent
 
 The preferred Windows entry point is the OM0RX tray agent. It runs in the hidden-icons area, starts the local runtime, monitors the backend, bridge, Docker/Postgres, WSJT/SDC processes, WebSocket bridge ports, and exposes manual Start/Stop/Restart/Repair controls.
