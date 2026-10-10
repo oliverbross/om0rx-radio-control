@@ -24,6 +24,7 @@ else {
 }
 $logPath = Join-Path (Split-Path -Parent $configPath) "agent.log"
 $settingsScript = Join-Path $PSScriptRoot "remote_agent_settings.ps1"
+$widgetScript = Join-Path $PSScriptRoot "remote_agent_widget.ps1"
 
 $script:lastSnapshot = $null
 $script:closing = $false
@@ -163,17 +164,44 @@ function Open-AgentSettings {
         $arguments = @(
             "-NoProfile",
             "-STA",
+            "-WindowStyle", "Hidden",
             "-ExecutionPolicy", "Bypass",
             "-File", ('"{0}"' -f $settingsScript),
             "-Config", ('"{0}"' -f $configPath),
             "-Python", ('"{0}"' -f $Python),
             "-AgentTaskName", ('"{0}"' -f $AgentTaskName)
         )
-        Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -WindowStyle Normal
+        Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -WindowStyle Hidden
     }
     catch {
         [System.Windows.Forms.MessageBox]::Show(
             "Could not open agent settings.`r`n`r`n$($_.Exception.Message)",
+            "OM0RX Remote Station",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+    }
+}
+
+function Show-StationWidget {
+    try {
+        if (-not (Test-Path -LiteralPath $widgetScript)) {
+            throw "Station widget not found: $widgetScript"
+        }
+        $arguments = @(
+            "-NoProfile",
+            "-STA",
+            "-WindowStyle", "Hidden",
+            "-ExecutionPolicy", "Bypass",
+            "-File", ('"{0}"' -f $widgetScript),
+            "-Config", ('"{0}"' -f $configPath),
+            "-Python", ('"{0}"' -f $Python)
+        )
+        Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -WindowStyle Hidden
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Could not open the station widget.`r`n`r`n$($_.Exception.Message)",
             "OM0RX Remote Station",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Error
@@ -258,6 +286,7 @@ function Add-ActionButton([string]$Text, [int]$Width = 95) {
 }
 
 $settingsButton = Add-ActionButton "Settings..." 100
+$widgetButton = Add-ActionButton "Widget" 80
 $standbyButton = Add-ActionButton "Standby" 90
 $operateButton = Add-ActionButton "Operate..." 90
 $tuneButton = Add-ActionButton "Tune..." 90
@@ -288,6 +317,7 @@ $notify.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $showItem = $menu.Items.Add("Show details")
+$widgetItem = $menu.Items.Add("Show station widget")
 $settingsItem = $menu.Items.Add("Settings...")
 $refreshItem = $menu.Items.Add("Refresh")
 $stationMenu = New-Object System.Windows.Forms.ToolStripMenuItem("Station control")
@@ -360,6 +390,8 @@ function Update-AgentStatus {
 }
 
 $showItem.add_Click({ Show-DetailsWindow })
+$widgetItem.add_Click({ Show-StationWidget })
+$widgetButton.add_Click({ Show-StationWidget })
 $settingsItem.add_Click({ Open-AgentSettings })
 $settingsButton.add_Click({ Open-AgentSettings })
 $refreshItem.add_Click({ Update-AgentStatus })
@@ -420,6 +452,7 @@ $timer.Start()
 
 try {
     Update-AgentStatus
+    Show-StationWidget
     [System.Windows.Forms.Application]::Run()
 }
 finally {
