@@ -12,6 +12,10 @@ station services, has a separate configuration, and does not require the full
 OM0RX Radio Control application to be running. See
 [`docs/REMOTE_STATION_AGENT.md`](docs/REMOTE_STATION_AGENT.md).
 Install its smaller dependency set with `requirements-remote-agent.txt`.
+Cross-machine diagnosis and acceptance evidence is coordinated through
+[`docs/REMOTE_STATION_HANDOFF.md`](docs/REMOTE_STATION_HANDOFF.md). Keep that
+record free of credentials and update it whenever Windows or macOS changes the
+remote-station implementation or its verified state.
 
 ### Windows tray agent
 
