@@ -1,5 +1,6 @@
 param(
     [string]$Config = "",
+    [string]$Python = "python.exe",
     [switch]$SmokeTest
 )
 
@@ -16,6 +17,7 @@ else {
     Join-Path $env:APPDATA "OM0RX Remote Station\agent.json"
 }
 $widgetStatePath = Join-Path (Split-Path -Parent $configPath) "widget.json"
+$settingsScript = Join-Path $PSScriptRoot "remote_agent_settings.ps1"
 $instanceSuffix = if ($SmokeTest) { "SmokeTest" } else { "Live" }
 $mutexName = "Local\OM0RXRemoteStationWidget$instanceSuffix"
 $showEventName = "Local\OM0RXRemoteStationWidgetShow$instanceSuffix"
@@ -51,9 +53,25 @@ function Format-BoolState([object]$Value, [string]$TrueText, [string]$FalseText)
 }
 
 function Format-Frequency([object]$MHz) {
-    if ($null -eq $MHz) { return "--.------ MHz" }
-    try { return "{0:F6} MHz" -f [double]$MHz }
-    catch { return "--.------ MHz" }
+    if ($null -eq $MHz) { return "--.---.--- MHz" }
+    try {
+        $totalHz = [long][Math]::Round([double]$MHz * 1000000)
+        $wholeMHz = [long][Math]::Floor($totalHz / 1000000)
+        $kilohertz = [long][Math]::Floor(($totalHz % 1000000) / 1000)
+        $hertz = [long]($totalHz % 1000)
+        return "{0}.{1:000}.{2:000} MHz" -f $wholeMHz, $kilohertz, $hertz
+    }
+    catch { return "--.---.--- MHz" }
+}
+
+function Format-RouteLabel([object]$Value) {
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return "Route unavailable" }
+    # Windows PowerShell can mojibake the Unicode arrow in an otherwise valid
+    # JSON response. Keep this compact monitor deliberately ASCII-safe.
+    $text = [regex]::Replace($text, '[^\x20-\x7E]+', ' > ')
+    $text = [regex]::Replace($text, '\s*>\s*', ' > ')
+    return ([regex]::Replace($text, '\s{2,}', ' ')).Trim()
 }
 
 function Format-Number([object]$Value, [string]$Format, [string]$Suffix = "") {
@@ -92,6 +110,32 @@ function Get-AgentState {
     return $response.state
 }
 
+function Open-AgentSettings {
+    try {
+        if (-not (Test-Path -LiteralPath $settingsScript)) {
+            throw "Settings editor not found: $settingsScript"
+        }
+        $arguments = @(
+            "-NoProfile",
+            "-STA",
+            "-WindowStyle", "Hidden",
+            "-ExecutionPolicy", "Bypass",
+            "-File", ('"{0}"' -f $settingsScript),
+            "-Config", ('"{0}"' -f $configPath),
+            "-Python", ('"{0}"' -f $Python)
+        )
+        Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -WindowStyle Hidden
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Could not open agent settings.`r`n`r`n$($_.Exception.Message)",
+            "OM0RX Remote Station",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+    }
+}
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "OM0RX Station Monitor"
 $form.ClientSize = New-Object System.Drawing.Size(548, 358)
@@ -101,55 +145,83 @@ $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::SizableToolWindo
 $form.MaximizeBox = $false
 $form.ShowInTaskbar = $true
 $form.TopMost = $true
-$form.BackColor = [System.Drawing.Color]::FromArgb(15, 23, 42)
+$form.BackColor = [System.Drawing.Color]::FromArgb(7, 16, 28)
 $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Dpi
 $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
 
 $headerPanel = New-Object System.Windows.Forms.Panel
 $headerPanel.SetBounds(0, 0, 548, 78)
 $headerPanel.Anchor = "Top,Left,Right"
-$headerPanel.BackColor = [System.Drawing.Color]::FromArgb(17, 24, 39)
+$headerPanel.BackColor = [System.Drawing.Color]::FromArgb(8, 36, 55)
 $form.Controls.Add($headerPanel)
 
-$frequencyLabel = New-WidgetLabel "--.------ MHz" 14 7 330 40 23 ([System.Drawing.FontStyle]::Bold)
+$frequencyLabel = New-WidgetLabel "--.---.--- MHz" 14 7 330 40 23 ([System.Drawing.FontStyle]::Bold)
+$frequencyLabel.ForeColor = [System.Drawing.Color]::FromArgb(103, 232, 249)
 $headerPanel.Controls.Add($frequencyLabel)
 $txStateLabel = New-WidgetLabel "OFFLINE" 390 11 140 32 13 ([System.Drawing.FontStyle]::Bold) ([System.Drawing.ContentAlignment]::MiddleCenter)
 $txStateLabel.BackColor = [System.Drawing.Color]::FromArgb(71, 85, 105)
 $headerPanel.Controls.Add($txStateLabel)
 $modeRouteLabel = New-WidgetLabel "Waiting for station telemetry" 16 47 510 24 9
-$modeRouteLabel.ForeColor = [System.Drawing.Color]::FromArgb(148, 163, 184)
+$modeRouteLabel.ForeColor = [System.Drawing.Color]::FromArgb(125, 211, 252)
 $headerPanel.Controls.Add($modeRouteLabel)
 
 $vfoLabel = New-WidgetLabel "VFO A  --    |    VFO B  --" 14 82 520 32 10 ([System.Drawing.FontStyle]::Bold)
+$vfoLabel.ForeColor = [System.Drawing.Color]::FromArgb(147, 197, 253)
 $form.Controls.Add($vfoLabel)
 
 $txPowerCaption = New-WidgetLabel "TX POWER" 12 118 168 20 8 ([System.Drawing.FontStyle]::Bold) ([System.Drawing.ContentAlignment]::MiddleCenter)
 $swrCaption = New-WidgetLabel "SWR" 190 118 168 20 8 ([System.Drawing.FontStyle]::Bold) ([System.Drawing.ContentAlignment]::MiddleCenter)
 $driveCaption = New-WidgetLabel "RF DRIVE" 368 118 168 20 8 ([System.Drawing.FontStyle]::Bold) ([System.Drawing.ContentAlignment]::MiddleCenter)
+$txPowerCaption.ForeColor = [System.Drawing.Color]::FromArgb(251, 146, 60)
+$swrCaption.ForeColor = [System.Drawing.Color]::FromArgb(45, 212, 191)
+$driveCaption.ForeColor = [System.Drawing.Color]::FromArgb(196, 181, 253)
 $form.Controls.AddRange(@($txPowerCaption, $swrCaption, $driveCaption))
 
 $txPowerLabel = New-WidgetLabel "0 W" 12 137 168 48 22 ([System.Drawing.FontStyle]::Bold) ([System.Drawing.ContentAlignment]::MiddleCenter)
 $swrLabel = New-WidgetLabel "--" 190 137 168 48 22 ([System.Drawing.FontStyle]::Bold) ([System.Drawing.ContentAlignment]::MiddleCenter)
 $driveLabel = New-WidgetLabel "-- W" 368 137 168 48 22 ([System.Drawing.FontStyle]::Bold) ([System.Drawing.ContentAlignment]::MiddleCenter)
-foreach ($control in @($txPowerLabel, $swrLabel, $driveLabel)) {
-    $control.BackColor = [System.Drawing.Color]::FromArgb(30, 41, 59)
-    $form.Controls.Add($control)
-}
+$txPowerLabel.BackColor = [System.Drawing.Color]::FromArgb(66, 37, 24)
+$txPowerLabel.ForeColor = [System.Drawing.Color]::FromArgb(254, 215, 170)
+$swrLabel.BackColor = [System.Drawing.Color]::FromArgb(13, 54, 54)
+$swrLabel.ForeColor = [System.Drawing.Color]::FromArgb(153, 246, 228)
+$driveLabel.BackColor = [System.Drawing.Color]::FromArgb(42, 33, 72)
+$driveLabel.ForeColor = [System.Drawing.Color]::FromArgb(221, 214, 254)
+$form.Controls.AddRange(@($txPowerLabel, $swrLabel, $driveLabel))
 
 $kpaLabel = New-WidgetLabel "KPA500  --" 14 190 520 48 9 ([System.Drawing.FontStyle]::Bold)
 $katLabel = New-WidgetLabel "KAT500  --" 14 238 520 48 9 ([System.Drawing.FontStyle]::Bold)
 $routeLabel = New-WidgetLabel "Route --" 14 287 520 32 9
+$kpaLabel.BackColor = [System.Drawing.Color]::FromArgb(28, 38, 65)
+$kpaLabel.ForeColor = [System.Drawing.Color]::FromArgb(253, 224, 71)
+$katLabel.BackColor = [System.Drawing.Color]::FromArgb(12, 49, 55)
+$katLabel.ForeColor = [System.Drawing.Color]::FromArgb(103, 232, 249)
+$routeLabel.BackColor = [System.Drawing.Color]::FromArgb(13, 49, 39)
+$routeLabel.ForeColor = [System.Drawing.Color]::FromArgb(134, 239, 172)
 $form.Controls.AddRange(@($kpaLabel, $katLabel, $routeLabel))
 
-$footerLabel = New-WidgetLabel "Starting..." 14 324 520 24 8
+$footerLabel = New-WidgetLabel "Starting..." 14 324 414 24 8
 $footerLabel.ForeColor = [System.Drawing.Color]::FromArgb(148, 163, 184)
+$footerLabel.Anchor = "Left,Bottom,Right"
 $form.Controls.Add($footerLabel)
+
+$settingsButton = New-Object System.Windows.Forms.Button
+$settingsButton.Text = "Configure"
+$settingsButton.SetBounds(438, 321, 98, 28)
+$settingsButton.Anchor = "Right,Bottom"
+$settingsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$settingsButton.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(56, 189, 248)
+$settingsButton.BackColor = [System.Drawing.Color]::FromArgb(12, 74, 110)
+$settingsButton.ForeColor = [System.Drawing.Color]::FromArgb(224, 242, 254)
+$settingsButton.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+$settingsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
+$form.Controls.Add($settingsButton)
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $topMostItem = New-Object System.Windows.Forms.ToolStripMenuItem("Always on top")
 $topMostItem.Checked = $true
 $topMostItem.CheckOnClick = $true
 $menu.Items.Add($topMostItem) | Out-Null
+$settingsItem = $menu.Items.Add("Open configuration...")
 $resetPositionItem = $menu.Items.Add("Reset position")
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 $closeItem = $menu.Items.Add("Close widget")
@@ -221,11 +293,15 @@ function Set-WidgetState([object]$State) {
         $txStateLabel.Text = "TX"
         $txStateLabel.BackColor = [System.Drawing.Color]::FromArgb(185, 28, 28)
         $frequencyLabel.ForeColor = [System.Drawing.Color]::FromArgb(254, 202, 202)
+        $txPowerLabel.BackColor = [System.Drawing.Color]::FromArgb(127, 29, 29)
+        $txPowerLabel.ForeColor = [System.Drawing.Color]::FromArgb(254, 202, 202)
     }
     else {
         $txStateLabel.Text = "RX"
         $txStateLabel.BackColor = [System.Drawing.Color]::FromArgb(22, 101, 52)
-        $frequencyLabel.ForeColor = [System.Drawing.Color]::FromArgb(226, 232, 240)
+        $frequencyLabel.ForeColor = [System.Drawing.Color]::FromArgb(103, 232, 249)
+        $txPowerLabel.BackColor = [System.Drawing.Color]::FromArgb(66, 37, 24)
+        $txPowerLabel.ForeColor = [System.Drawing.Color]::FromArgb(254, 215, 170)
     }
 
     $aText = if ($vfoA) {
@@ -270,6 +346,19 @@ function Set-WidgetState([object]$State) {
     else {
         $swrLabel.Text = "--"
     }
+    $displaySwr = if ($kpaSwrLive -and $null -ne $kpaSwr) { [double]$kpaSwr } elseif ($null -ne $katSwr) { [double]$katSwr } else { $null }
+    if ($null -eq $displaySwr) {
+        $swrLabel.ForeColor = [System.Drawing.Color]::FromArgb(148, 163, 184)
+    }
+    elseif ($displaySwr -ge 3) {
+        $swrLabel.ForeColor = [System.Drawing.Color]::FromArgb(252, 165, 165)
+    }
+    elseif ($displaySwr -ge 2) {
+        $swrLabel.ForeColor = [System.Drawing.Color]::FromArgb(253, 224, 71)
+    }
+    else {
+        $swrLabel.ForeColor = [System.Drawing.Color]::FromArgb(110, 231, 183)
+    }
 
     $kpaState = if ($kpaOperate) { "OPERATE" } else { "STBY" }
     $kpaBand = [string](Get-PropertyValue $kpa "band" "--")
@@ -281,6 +370,7 @@ function Set-WidgetState([object]$State) {
     $kpaQuality = [string](Get-PropertyValue $kpa "quality" "--")
     $kpaSwrText = if ($null -eq $kpaSwr) { "--" } else { "{0:0.00}" -f [double]$kpaSwr }
     $kpaLabel.Text = "KPA500  $kpaState  |  $kpaBand  |  OUT $(Format-Number $kpaOutput '0' 'W')  |  SWR $kpaSwrText`r`nTEMP $kpaTemp  |  $kpaVoltage / $kpaCurrent  |  FAULT $kpaFault  |  FW $kpaFirmware  |  $kpaQuality"
+    $kpaLabel.ForeColor = if ($kpaOperate) { [System.Drawing.Color]::FromArgb(134, 239, 172) } else { [System.Drawing.Color]::FromArgb(253, 224, 71) }
 
     $katMode = ([string](Get-PropertyValue $kat "mode" "--")).ToUpperInvariant()
     $katBand = [string](Get-PropertyValue $kat "band" "--")
@@ -295,11 +385,13 @@ function Set-WidgetState([object]$State) {
     $katQuality = [string](Get-PropertyValue $kat "quality" "--")
     $katSwrText = if ($null -eq $katSwr) { "--" } else { "{0:0.00}" -f [double]$katSwr }
     $katLabel.Text = "KAT500  $katMode  |  $katBand  |  ANT$katAntenna  |  $katTuning  |  SWR $katSwrText`r`nFWD/REF $katForward/$katReflected  |  $katBypass  |  $katKey  |  FAULT $katFault  |  FW $katFirmware  |  $katQuality"
+    $katLabel.ForeColor = if ($katTuning -eq "TUNING") { [System.Drawing.Color]::FromArgb(253, 224, 71) } else { [System.Drawing.Color]::FromArgb(103, 232, 249) }
 
-    $routeName = [string](Get-PropertyValue $path "route_label" "Route unavailable")
+    $routeName = Format-RouteLabel (Get-PropertyValue $path "route_label" "Route unavailable")
     $activeDrive = Get-PropertyValue $route "active_drive_w"
     $paAllowed = Format-BoolState (Get-PropertyValue $route "amplifier_allowed") "PA allowed" "barefoot"
     $routeLabel.Text = "$routeName  |  $paAllowed  |  policy $(Format-Number $activeDrive '0' 'W')"
+    $routeLabel.ForeColor = if ($alignment -eq "confirmed") { [System.Drawing.Color]::FromArgb(134, 239, 172) } else { [System.Drawing.Color]::FromArgb(253, 224, 71) }
 
     $alarms = Get-PropertyValue $station "alarms"
     $alarmCount = Get-PropertyValue $alarms "active_count" 0
@@ -310,7 +402,7 @@ function Set-WidgetState([object]$State) {
 function Set-WidgetError([string]$Message) {
     $txStateLabel.Text = "OFFLINE"
     $txStateLabel.BackColor = [System.Drawing.Color]::FromArgb(127, 29, 29)
-    $frequencyLabel.Text = "--.------ MHz"
+    $frequencyLabel.Text = "--.---.--- MHz"
     $modeRouteLabel.Text = $Message
     $footerLabel.Text = "Retrying... $([DateTime]::Now.ToString('HH:mm:ss'))"
 }
@@ -324,6 +416,8 @@ $topMostItem.add_CheckedChanged({
     $form.TopMost = $topMostItem.Checked
     Save-WidgetLayout
 })
+$settingsButton.add_Click({ Open-AgentSettings })
+$settingsItem.add_Click({ Open-AgentSettings })
 $resetPositionItem.add_Click({
     $form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
     $screen = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
@@ -356,7 +450,14 @@ if ($SmokeTest) {
 }
 '@ | ConvertFrom-Json
         Set-WidgetState $fakeState
-        if ($txStateLabel.Text -ne "TX" -or $txPowerLabel.Text -ne "450 W" -or $swrLabel.Text -notlike "1.20*") {
+        $safeRoute = Format-RouteLabel ("FLEX ANT1 {0} KPA500" -f [char]0x2192)
+        if (
+            $txStateLabel.Text -ne "TX" -or
+            $txPowerLabel.Text -ne "450 W" -or
+            $swrLabel.Text -notlike "1.20*" -or
+            $frequencyLabel.Text -ne "14.074.000 MHz" -or
+            $safeRoute -ne "FLEX ANT1 > KPA500"
+        ) {
             throw "Transmit telemetry did not render correctly"
         }
         Write-Output "Station widget smoke test passed"

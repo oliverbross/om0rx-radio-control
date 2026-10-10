@@ -194,7 +194,8 @@ function Show-StationWidget {
             "-WindowStyle", "Hidden",
             "-ExecutionPolicy", "Bypass",
             "-File", ('"{0}"' -f $widgetScript),
-            "-Config", ('"{0}"' -f $configPath)
+            "-Config", ('"{0}"' -f $configPath),
+            "-Python", ('"{0}"' -f $Python)
         )
         Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -WindowStyle Hidden
     }

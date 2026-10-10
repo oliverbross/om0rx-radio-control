@@ -124,6 +124,18 @@ def test_station_widget_covers_live_flex_kpa_and_kat_telemetry():
     assert "/api/v1/commands" not in WIDGET
 
 
+def test_station_widget_has_configuration_access_ascii_safe_routes_and_grouped_frequency():
+    assert '$settingsButton.Text = "Configure"' in WIDGET
+    assert '"Open configuration..."' in WIDGET
+    assert "Open-AgentSettings" in WIDGET
+    assert 'Start-Process -FilePath "powershell.exe"' in WIDGET
+    assert '"-WindowStyle", "Hidden"' in WIDGET
+    assert "Format-RouteLabel" in WIDGET
+    assert "[^\\x20-\\x7E]+" in WIDGET
+    assert '"{0}.{1:000}.{2:000} MHz"' in WIDGET
+    assert '"14.074.000 MHz"' in WIDGET
+
+
 def test_station_widget_is_positionable_persistent_and_distinguishes_measured_from_set_power():
     assert "SizableToolWindow" in WIDGET
     assert "widget.json" in WIDGET
