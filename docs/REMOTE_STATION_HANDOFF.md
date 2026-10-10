@@ -347,6 +347,13 @@ Do not delete the macOS evidence or safety boundary.
 - Implementation and offline validation issued no station-control command,
   PTT, TUNE, CWX, or RF transmission and did not restart the commissioned
   station agent.
+- Windows installation at `2026-10-10T11:02:03Z`: only the tray task was
+  restarted. The station-agent process ID and creation time were unchanged.
+  The widget process launched with a hidden PowerShell host, exposed a visible
+  responding `OM0RX Station Monitor` window, and the tray and agent tasks both
+  remained running. Final readback remained commissioned `true`, coordinator
+  `safe_rx`, route `confirmed`, zero alarms, MOX `false`, interlock `READY`, and
+  KPA500 STBY. No station-control write or RF transmission occurred.
 
 ## Handoff protocol
 
