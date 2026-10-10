@@ -1,12 +1,13 @@
 param(
-    [string]$Config = ""
+    [string]$Config = "",
+    [string]$Python = "python.exe"
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $trayScript = (Resolve-Path (Join-Path $PSScriptRoot "run_remote_agent_tray.ps1")).Path
 $taskName = "OM0RX Remote Station Tray"
-$arguments = "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$trayScript`""
+$arguments = "-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$trayScript`" -Python `"$Python`""
 if ($Config) { $arguments += " -Config `"$Config`"" }
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments -WorkingDirectory $projectRoot
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME

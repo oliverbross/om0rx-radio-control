@@ -1,5 +1,6 @@
 param(
     [string]$Config = "",
+    [string]$Python = "python.exe",
     [string]$AgentTaskName = "OM0RX Remote Station Agent"
 )
 
@@ -22,7 +23,7 @@ else {
     Join-Path $env:APPDATA "OM0RX Remote Station\agent.json"
 }
 $logPath = Join-Path (Split-Path -Parent $configPath) "agent.log"
-$localStateUrl = "http://127.0.0.1:8840/api/v1/state"
+$settingsScript = Join-Path $PSScriptRoot "remote_agent_settings.ps1"
 
 $script:lastSnapshot = $null
 $script:closing = $false
@@ -44,6 +45,8 @@ function Get-AgentSnapshot {
         if ([string]::IsNullOrWhiteSpace($token)) {
             throw "The local agent configuration has no bearer token."
         }
+        $bindPort = [int]$document.server.bind_port
+        $localStateUrl = "http://127.0.0.1:$bindPort/api/v1/state"
         $headers = @{ Authorization = "Bearer $token" }
         $response = Invoke-RestMethod -Uri $localStateUrl -Headers $headers -Method Get -TimeoutSec 3
         if (-not $response.success -or -not $response.state) {
@@ -114,6 +117,9 @@ function Format-AgentDetails([object]$Snapshot) {
     $lines.Add("Route: $($station.path.alignment)   Mismatches: $routeMismatches")
     $lines.Add("Alarms: $($alarms.active_count) (critical $($alarms.counts.critical), warning $($alarms.counts.warning), info $($alarms.counts.info))")
     $lines.Add("Alarm codes: $alarmCodes")
+    $allowedActions = @($station.allowed_actions) -join ", "
+    if (-not $allowedActions) { $allowedActions = "none" }
+    $lines.Add("Allowed station actions: $allowedActions")
     if ($state.agent.last_error) {
         $lines.Add("Last agent error: $($state.agent.last_error)")
     }
@@ -149,12 +155,114 @@ function Invoke-AgentTaskAction([ValidateSet("Start", "Stop", "Restart")][string
     Update-AgentStatus
 }
 
+function Open-AgentSettings {
+    try {
+        if (-not (Test-Path -LiteralPath $settingsScript)) {
+            throw "Settings editor not found: $settingsScript"
+        }
+        $arguments = @(
+            "-NoProfile",
+            "-STA",
+            "-ExecutionPolicy", "Bypass",
+            "-File", ('"{0}"' -f $settingsScript),
+            "-Config", ('"{0}"' -f $configPath),
+            "-Python", ('"{0}"' -f $Python),
+            "-AgentTaskName", ('"{0}"' -f $AgentTaskName)
+        )
+        Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -WindowStyle Normal
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Could not open agent settings.`r`n`r`n$($_.Exception.Message)",
+            "OM0RX Remote Station",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+    }
+}
+
+function Invoke-StationAction(
+    [ValidateSet("station_standby", "station_operate", "station_tune", "station_cancel")]
+    [string]$Command
+) {
+    $labels = @{
+        station_standby = "put the station in standby"
+        station_operate = "place the amplifier in OPERATE"
+        station_tune = "start the guarded tuner transaction"
+        station_cancel = "cancel tuning and return to receive"
+    }
+    if ($Command -in @("station_operate", "station_tune")) {
+        $choice = [System.Windows.Forms.MessageBox]::Show(
+            "Request to $($labels[$Command])?`r`n`r`nThe agent will allow this only when commissioning, route, alarms and live hardware readback all pass.",
+            "Confirm station control",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+        if ($choice -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+    }
+    try {
+        $document = Get-Content -LiteralPath $configPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        $token = [string]$document.server.control_token
+        if ([string]::IsNullOrWhiteSpace($token)) { throw "The local agent configuration has no bearer token." }
+        $bindPort = [int]$document.server.bind_port
+        $localCommandUrl = "http://127.0.0.1:$bindPort/api/v1/commands"
+        $headers = @{ Authorization = "Bearer $token" }
+        $body = @{
+            request_id = "windows-tray-$([Guid]::NewGuid().ToString('N'))"
+            command = $Command
+            arguments = @{}
+        } | ConvertTo-Json -Depth 4
+        $response = Invoke-RestMethod -Uri $localCommandUrl -Headers $headers -Method Post -ContentType "application/json" -Body $body -TimeoutSec 45
+        if (-not $response.success) { throw "The station agent rejected the action." }
+        Update-AgentStatus
+    }
+    catch {
+        $message = $_.Exception.Message
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            try {
+                $errorDocument = $_.ErrorDetails.Message | ConvertFrom-Json
+                if ($errorDocument.error.message) { $message = [string]$errorDocument.error.message }
+            }
+            catch { }
+        }
+        [System.Windows.Forms.MessageBox]::Show(
+            "The station action was not completed.`r`n`r`n$message",
+            "OM0RX Remote Station",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+    }
+}
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "OM0RX Remote Station Agent"
 $form.ClientSize = New-Object System.Drawing.Size(660, 520)
 $form.MinimumSize = New-Object System.Drawing.Size(560, 420)
 $form.StartPosition = "CenterScreen"
 $form.ShowInTaskbar = $true
+
+$actions = New-Object System.Windows.Forms.FlowLayoutPanel
+$actions.Dock = "Bottom"
+$actions.Height = 46
+$actions.Padding = New-Object System.Windows.Forms.Padding(6)
+$actions.WrapContents = $false
+$form.Controls.Add($actions)
+
+function Add-ActionButton([string]$Text, [int]$Width = 95) {
+    $button = New-Object System.Windows.Forms.Button
+    $button.Text = $Text
+    $button.Width = $Width
+    $button.Height = 30
+    $actions.Controls.Add($button)
+    return $button
+}
+
+$settingsButton = Add-ActionButton "Settings..." 100
+$standbyButton = Add-ActionButton "Standby" 90
+$operateButton = Add-ActionButton "Operate..." 90
+$tuneButton = Add-ActionButton "Tune..." 90
+$cancelTuneButton = Add-ActionButton "Cancel tune" 95
+$refreshButton = Add-ActionButton "Refresh" 85
 
 $details = New-Object System.Windows.Forms.TextBox
 $details.Multiline = $true
@@ -164,6 +272,7 @@ $details.Dock = "Fill"
 $details.Font = New-Object System.Drawing.Font("Consolas", 10)
 $details.BackColor = [System.Drawing.Color]::White
 $form.Controls.Add($details)
+$actions.BringToFront()
 
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $iconPath = Join-Path $projectRoot "tools\Om0rxAgent\assets\om0rx-agent.ico"
@@ -179,7 +288,14 @@ $notify.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $showItem = $menu.Items.Add("Show details")
+$settingsItem = $menu.Items.Add("Settings...")
 $refreshItem = $menu.Items.Add("Refresh")
+$stationMenu = New-Object System.Windows.Forms.ToolStripMenuItem("Station control")
+$standbyItem = $stationMenu.DropDownItems.Add("Standby")
+$operateItem = $stationMenu.DropDownItems.Add("Operate...")
+$tuneItem = $stationMenu.DropDownItems.Add("Tune...")
+$cancelTuneItem = $stationMenu.DropDownItems.Add("Cancel tune")
+$menu.Items.Add($stationMenu) | Out-Null
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 $startItem = $menu.Items.Add("Start agent")
 $stopItem = $menu.Items.Add("Stop agent...")
@@ -210,6 +326,16 @@ function Update-AgentStatus {
     $startItem.Enabled = -not $running -and $snapshot.TaskState -ne "Not installed"
     $stopItem.Enabled = $running
     $restartItem.Enabled = $running
+    $apiAvailable = $null -ne $snapshot.State
+    $allowedActions = if ($apiAvailable) { @($snapshot.State.station.allowed_actions) } else { @() }
+    $standbyButton.Enabled = $allowedActions -contains "standby"
+    $standbyItem.Enabled = $allowedActions -contains "standby"
+    $cancelTuneButton.Enabled = $allowedActions -contains "cancel"
+    $cancelTuneItem.Enabled = $allowedActions -contains "cancel"
+    $operateButton.Enabled = $allowedActions -contains "operate"
+    $operateItem.Enabled = $allowedActions -contains "operate"
+    $tuneButton.Enabled = $allowedActions -contains "tune"
+    $tuneItem.Enabled = $allowedActions -contains "tune"
     if ($null -eq $snapshot.State) {
         $notify.Icon = [System.Drawing.SystemIcons]::Error
         $notify.Text = "OM0RX Remote Agent: unavailable"
@@ -234,8 +360,19 @@ function Update-AgentStatus {
 }
 
 $showItem.add_Click({ Show-DetailsWindow })
+$settingsItem.add_Click({ Open-AgentSettings })
+$settingsButton.add_Click({ Open-AgentSettings })
 $refreshItem.add_Click({ Update-AgentStatus })
+$refreshButton.add_Click({ Update-AgentStatus })
 $notify.add_DoubleClick({ Show-DetailsWindow })
+$standbyItem.add_Click({ Invoke-StationAction "station_standby" })
+$standbyButton.add_Click({ Invoke-StationAction "station_standby" })
+$operateItem.add_Click({ Invoke-StationAction "station_operate" })
+$operateButton.add_Click({ Invoke-StationAction "station_operate" })
+$tuneItem.add_Click({ Invoke-StationAction "station_tune" })
+$tuneButton.add_Click({ Invoke-StationAction "station_tune" })
+$cancelTuneItem.add_Click({ Invoke-StationAction "station_cancel" })
+$cancelTuneButton.add_Click({ Invoke-StationAction "station_cancel" })
 $startItem.add_Click({ Invoke-AgentTaskAction "Start" })
 $stopItem.add_Click({
     $choice = [System.Windows.Forms.MessageBox]::Show(

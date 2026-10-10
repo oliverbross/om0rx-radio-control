@@ -77,8 +77,34 @@ The tray starts at login and shows sanitized FLEX, KPA500, KAT500, route, and
 alarm details. Double-click the icon or choose **Show details**. Its menu can
 start, stop, or restart the `OM0RX Remote Station Agent` scheduled task, open
 the agent log, and quit only the tray. Stop and restart require confirmation.
-The tray calls only the local read-only state endpoint and never displays the
-bearer token or exposes radio, PTT, tune, antenna, or station-control actions.
+
+Choose **Settings** to manage the entire independent agent without editing
+JSON or using PowerShell:
+
+- loopback API port and masked bearer credential;
+- FLEX address, port, slice, GUI station name, and antenna-policy enforcement;
+- KPA500/KAT500 enable switches, serial ports, and baud rates;
+- per-band FLEX antenna, KAT output, PA eligibility, PA drive, barefoot power,
+  digital PA eligibility, and digital drive;
+- radio-follow behavior, the digital PA default, tuner power/SWR/timeout, and
+  the commissioning interlock.
+
+Saving creates `agent.json.bak`, validates the complete candidate profile with
+the Python agent, and atomically replaces the active JSON only after validation
+passes. **Save** never restarts the service. **Save and restart agent** requires
+another confirmation. Enabling commissioning additionally requires typing
+`COMMISSION`; it does not key PTT or bypass live safety checks.
+
+The details window and **Station control** menu also provide Standby, Operate,
+Tune, and Cancel. Operate and Tune remain disabled while the running agent is
+uncommissioned, request confirmation, and always use the authenticated command
+endpoint and coordinator preflight. The tray intentionally does not provide a
+raw PTT button; PTT/CW and radio commands come from the authenticated macOS
+client and remain guarded by the same coordinator.
+
+The bearer token is masked by default and is never written to the tray status
+or agent log. Regenerating it is explicit because every client credential must
+then be updated.
 
 Remove only the tray startup task with:
 

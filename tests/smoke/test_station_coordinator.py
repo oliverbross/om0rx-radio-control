@@ -1745,6 +1745,10 @@ def test_station_maintenance_api_uses_only_coordinator_lifecycle(monkeypatch):
 
 def test_station_configuration_reconfigure_is_blocked_during_maintenance(monkeypatch):
     station, _calls, _manager = build_station(monkeypatch, commissioned=True)
+    # Operator-owned local settings can legitimately disable follow-radio.
+    # Make this route-changing request deterministic so it exercises the
+    # maintenance guard instead of becoming a no-op in that environment.
+    monkeypatch.setattr(config, "ELECRAFT_FOLLOW_RADIO", True)
     asyncio.run(station.enter_maintenance())
     app = FastAPI()
     install_app_context(app, AppContext(station_coordinator=station))
