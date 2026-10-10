@@ -120,8 +120,9 @@ Do not delete the macOS evidence or safety boundary.
   `8561c3b50b7e3e819b7aafcf85e901daf0151835`.
 - Repository branch and SHA: fix branch
   `codex/fix-flex-route-validation`, based exactly on fetched `origin/main`
-  `12fa0e6bf96853ae58b5dc7a78be696bf5990f54`; exact pushed tip is reported to
-  the operator after commit because a commit cannot contain its own SHA.
+  `12fa0e6bf96853ae58b5dc7a78be696bf5990f54`; implementation commit
+  `e6a9fe3ac39a4bc4d8011d8c961b6e8439489dad`. The exact pushed branch tip is
+  reported to the operator because a commit cannot contain its own SHA.
 - Initial service/task state: `OM0RX Remote Station Agent` was `Running`, last
   task result `0x41301` (still running), with no agent error. The agent was
   bound to `Maestro`, fresh, receive-only, and uncommissioned. The tray task
@@ -154,7 +155,9 @@ Do not delete the macOS evidence or safety boundary.
   tray controller with sanitized status, confirmed start/stop/restart task
   controls, log access, and tray-only quit. The installed tray task is
   `Running` in interactive session 1; no agent lifecycle control was exercised
-  during this test.
+  during this test. The existing agent task definition now points to this fix
+  worktree for its next start, while the already-running process was left
+  undisturbed on its recorded installed SHA.
 - Tests run with exact pass/fail counts: final complete safe smoke suite
   `835 passed, 0 failed`; Node browser/widget contracts `105 passed, 0 failed`;
   focused remote-agent/tray subset `22 passed, 0 failed`; PowerShell parser
@@ -180,9 +183,10 @@ Do not delete the macOS evidence or safety boundary.
   tray task was installed/started; the station-agent task was not stopped,
   started, or restarted.
 - Remaining operator action: fetch the pushed branch/SHA on the Mac and repeat
-  receive-only acceptance. The Windows agent service should load this branch
-  at the next operator-approved maintenance restart; do not restart it merely
-  for this handoff while the strict no-station-write boundary is in force.
+  receive-only acceptance. The Windows agent task is prepared to load this
+  branch at the next operator-approved maintenance restart; do not restart it
+  merely for this handoff while the strict no-station-write boundary is in
+  force.
 
 ## Handoff protocol
 
