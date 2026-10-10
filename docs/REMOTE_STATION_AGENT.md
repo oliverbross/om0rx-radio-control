@@ -64,6 +64,28 @@ Install it at Windows login only after that pass succeeds:
 The hidden scheduled task writes a rotating diagnostic log beside the
 configuration at `%APPDATA%\OM0RX Remote Station\agent.log`.
 
+### Windows tray controller
+
+Install the separate interactive tray controller for the signed-in Windows
+user:
+
+```powershell
+.\scripts\remote_agent\install_remote_agent_tray_startup.ps1
+```
+
+The tray starts at login and shows sanitized FLEX, KPA500, KAT500, route, and
+alarm details. Double-click the icon or choose **Show details**. Its menu can
+start, stop, or restart the `OM0RX Remote Station Agent` scheduled task, open
+the agent log, and quit only the tray. Stop and restart require confirmation.
+The tray calls only the local read-only state endpoint and never displays the
+bearer token or exposes radio, PTT, tune, antenna, or station-control actions.
+
+Remove only the tray startup task with:
+
+```powershell
+.\scripts\remote_agent\uninstall_remote_agent_tray_startup.ps1
+```
+
 ## Tailscale transport
 
 The agent listens only on `127.0.0.1:8840`. In an Administrator PowerShell,

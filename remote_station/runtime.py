@@ -194,6 +194,11 @@ class RemoteStationRuntime:
             "tx_ant": "tx_antenna",
         }
         normalized = {mapping.get(key, key): value for key, value in levels.items()}
+        # Keep the driver's canonical antenna keys for the station-path safety
+        # evaluator while also publishing the descriptive API field names.
+        for driver_key, api_key in (("rx_ant", "rx_antenna"), ("tx_ant", "tx_antenna")):
+            if api_key in normalized:
+                normalized[driver_key] = normalized[api_key]
         normalized.setdefault("frequency", getattr(self.flex, "current_freq", None))
         normalized.setdefault("mode", getattr(self.flex, "current_mode", None))
         normalized.setdefault("drive", getattr(self.flex, "current_rfpower", None))
@@ -228,6 +233,17 @@ class RemoteStationRuntime:
         if transmit and transmit.get("frequency") is not None:
             normalized["frequency"] = transmit["frequency"]
             normalized["mode"] = transmit.get("mode") or normalized.get("mode")
+        # FLEX transmit/interlock telemetry can report tx_antenna=INVALID even
+        # while the bound Maestro transmit slice has an authoritative ANT1/ANT2/
+        # XVTR route. Use that slice only when the aggregate value is unusable;
+        # a different valid aggregate value remains visible and fails policy
+        # validation rather than being hidden.
+        aggregate_tx_ant = str(normalized.get("tx_antenna") or "").strip().upper()
+        slice_tx_ant = str((transmit or {}).get("tx_antenna") or "").strip().upper()
+        valid_tx_antennas = {"ANT1", "ANT2", "XVTR"}
+        if aggregate_tx_ant not in valid_tx_antennas and slice_tx_ant in valid_tx_antennas:
+            normalized["tx_antenna"] = slice_tx_ant
+            normalized["tx_ant"] = slice_tx_ant
         if normalized_slices:
             normalized.update(
                 {

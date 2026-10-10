@@ -65,7 +65,7 @@ The macOS installation and receive-only data path are working:
 - No RF transmission or prohibited station-control write was performed.
 - The complete OM0RX-xCat Swift suite passed: 26 tests, 0 failures, 6 suites.
 
-## Open Windows-side blockers
+## Windows-side blockers reported by macOS
 
 OM0RX-xCat currently reports `ALARM 2` and will not accept the station as
 healthy:
@@ -76,7 +76,10 @@ healthy:
 The same state summary shows `Route 15m KAT ANT1`. The Windows investigation
 must therefore inspect the FLEX antenna/port field and the KAT output field
 independently rather than treating that route summary as proof that both are
-valid. The station must remain uncommissioned while either alarm exists.
+valid. The station must remain uncommissioned while either route warning
+exists. The Windows investigation below established that the two displayed
+lines are the two halves of one warning message; the other counted item was
+the intentional informational commissioning lock.
 
 ## Windows investigation checklist
 
@@ -102,30 +105,84 @@ valid. The station must remain uncommissioned while either alarm exists.
 9. For a code defect, add regression coverage, run the complete maintained
    test suite, commit on a `codex/` branch, and push the branch.
 10. Revalidate that FLEX is connected and bound correctly, KPA is `STBY`, KAT
-    is readable, the route is truthfully confirmed, the alarm count is zero,
+    is readable, the route is truthfully confirmed, warning/critical alarm
+    counts are zero, the expected commissioning information remains visible,
     and `commissioned` remains `false`.
 
 ## Windows findings and test record
 
-The Windows Codex agent should replace the placeholders below and commit the
-update. Do not delete the macOS evidence or safety boundary.
+Do not delete the macOS evidence or safety boundary.
 
-- Timestamp (UTC): _pending_
-- Operator-visible Windows agent version: _pending_
-- Repository branch and SHA: _pending_
-- Initial service/task state: _pending_
-- Root cause of `FLEX reports INVALID`: _pending_
-- Root cause of `policy expects ANT1 on 15m`: _pending_
-- Configuration changes: _pending_
-- Code changes and branch: _pending_
-- Tests run with exact pass/fail counts: _pending_
-- Final FLEX state: _pending_
-- Final KPA500 state: _pending_
-- Final KAT500 state: _pending_
-- Final route and alarm state: _pending_
-- Final `commissioned` value: _pending_
-- Confirmation that no RF or prohibited write occurred: _pending_
-- Remaining operator action: _pending_
+- Timestamp (UTC): `2026-10-10T08:26:26.1537265Z` final live readback.
+- Operator-visible Windows agent version: FastAPI application `1.0.0`,
+  protocol `v1`; running scheduled agent was installed from clean branch
+  `codex/windows-agent-install` at
+  `8561c3b50b7e3e819b7aafcf85e901daf0151835`.
+- Repository branch and SHA: fix branch
+  `codex/fix-flex-route-validation`, based exactly on fetched `origin/main`
+  `12fa0e6bf96853ae58b5dc7a78be696bf5990f54`; exact pushed tip is reported to
+  the operator after commit because a commit cannot contain its own SHA.
+- Initial service/task state: `OM0RX Remote Station Agent` was `Running`, last
+  task result `0x41301` (still running), with no agent error. The agent was
+  bound to `Maestro`, fresh, receive-only, and uncommissioned. The tray task
+  did not exist initially.
+- Root cause of `FLEX reports INVALID`: FLEX slice telemetry truthfully showed
+  the bound transmit slice on `ANT1`, but a later generic transmit/interlock
+  status line reported `tx_antenna=INVALID` and overwrote the driver's
+  aggregate `current_tx_ant`. The runtime already selected the authoritative
+  transmit slice for frequency and mode but passed only the unusable aggregate
+  antenna value to station-path validation. The log reproduced alternating
+  `INVALID -> ANT1` and `ANT1 -> INVALID` transitions through
+  `2026-10-10 10:15:02` local time.
+- Root cause of `policy expects ANT1 on 15m`: this was not a second physical or
+  KAT500 fault. It is the second half of the single
+  `flex-tx-port-mismatch` message, `FLEX reports INVALID; policy expects ANT1
+  on 15m`. The second item in `ALARM 2` was the intentional informational
+  `station-commissioning-required` alarm. Live policy values were independently
+  confirmed as FLEX `ANT1` and KAT output `1`; KAT live readback was also
+  `ANT1` on `15m`.
+- Configuration changes: none. Read-only redacted verification confirmed
+  loopback `127.0.0.1:8840`, FLEX station `Maestro`, COM17/COM15 at 38,400,
+  15m FLEX policy `ANT1`, 15m KAT policy `1`, and
+  `station.commissioned=false`. No token value was printed or committed, so no
+  configuration backup was required.
+- Code changes and branch: on `codex/fix-flex-route-validation`, the runtime
+  now preserves canonical `rx_ant`/`tx_ant` fields and, only when the aggregate
+  TX antenna is unusable, uses the bound transmit slice's valid
+  `ANT1`/`ANT2`/`XVTR` readback. A different valid aggregate value remains
+  visible and still fails closed. The branch also adds an interactive Windows
+  tray controller with sanitized status, confirmed start/stop/restart task
+  controls, log access, and tray-only quit. The installed tray task is
+  `Running` in interactive session 1; no agent lifecycle control was exercised
+  during this test.
+- Tests run with exact pass/fail counts: final complete safe smoke suite
+  `835 passed, 0 failed`; Node browser/widget contracts `105 passed, 0 failed`;
+  focused remote-agent/tray subset `22 passed, 0 failed`; PowerShell parser
+  `9 passed, 0 failed`; Ruff `F,E9` checks, Python compile, and Git whitespace
+  checks passed. Preliminary isolated-worktree runs exposed missing local test
+  dependencies/configuration (`12`, then `2`, then `1` failures); after using
+  the normal project Python, ignored local test configuration, existing Node
+  dependencies, and vendored decoder, the complete suite passed as above.
+- Final FLEX state: connected, known, fresh, bound to `Maestro`, `21.04756 MHz`
+  CW, active/TX slice `A`, RX `ANT1`, TX `ANT1`, MOX `false`, interlock
+  `READY`.
+- Final KPA500 state: connected, `15m`, `operate=false` (`STBY`).
+- Final KAT500 state: connected, `15m`, antenna output `1` (`ANT1`).
+- Final route and alarm state: route `confirmed`, zero mismatches, zero
+  critical alarms, zero warning alarms, and one expected info alarm
+  (`station-commissioning-required`). HTTPS returned 200, authenticated WSS
+  returned a protocol-v1 state message, and Tailscale Serve 1.102.3 still maps
+  the tailnet-only hostname to loopback port 8840.
+- Final `commissioned` value: `false`.
+- Confirmation that no RF or prohibited write occurred: confirmed. All station
+  validation used authenticated GET/WSS reads, log inspection, or offline
+  replay. MOX remained false and KPA remained in standby. Only the independent
+  tray task was installed/started; the station-agent task was not stopped,
+  started, or restarted.
+- Remaining operator action: fetch the pushed branch/SHA on the Mac and repeat
+  receive-only acceptance. The Windows agent service should load this branch
+  at the next operator-approved maintenance restart; do not restart it merely
+  for this handoff while the strict no-station-write boundary is in force.
 
 ## Handoff protocol
 

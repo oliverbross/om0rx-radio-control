@@ -1,4 +1,5 @@
 import json
+import time
 from asyncio import run
 from pathlib import Path
 
@@ -10,6 +11,8 @@ from starlette.websockets import WebSocketDisconnect
 from remote_station.app import create_app
 from remote_station.config import AgentConfigError, default_config_document, load_agent_config
 from remote_station.runtime import RemoteCommandError, RemoteStationRuntime
+from radio_control.elecraft import build_station_path
+from services.station_alarms import build_station_alarms
 
 TOKEN = "test-token-that-is-at-least-thirty-two-characters"
 
@@ -283,6 +286,122 @@ def test_radio_snapshot_is_stale_until_frequency_is_known(tmp_path):
     runtime._update_radio_snapshot({"freq": 14.074, "mode": "DIGU"})
     assert runtime.radio_snapshot["known"] is True
     assert runtime.radio_snapshot["stale"] is False
+
+
+def test_radio_snapshot_retains_station_path_antenna_keys(tmp_path):
+    runtime = _runtime(tmp_path)
+    runtime._update_radio_snapshot(
+        {"freq": 14.074, "mode": "DIGU", "rx_ant": "ANT1", "tx_ant": "ANT1"}
+    )
+
+    assert runtime.radio_snapshot["rx_antenna"] == "ANT1"
+    assert runtime.radio_snapshot["tx_antenna"] == "ANT1"
+    assert runtime.radio_snapshot["rx_ant"] == "ANT1"
+    assert runtime.radio_snapshot["tx_ant"] == "ANT1"
+
+
+def test_radio_snapshot_uses_bound_transmit_slice_when_aggregate_tx_ant_is_invalid(tmp_path):
+    runtime = _runtime(tmp_path)
+    runtime.flex.current_tx_slice_id = 1
+    slices = runtime.flex.get_slice_states()
+    slices[0]["tx_antenna"] = "ANT1"
+    slices[1]["tx_antenna"] = "ANT1"
+    runtime.flex.get_slice_states = lambda: slices
+
+    runtime._update_radio_snapshot(
+        {"freq": 14.074, "mode": "DIGU", "rx_ant": "ANT1", "tx_ant": "INVALID"}
+    )
+
+    assert runtime.radio_snapshot["frequency"] == 14.08
+    assert runtime.radio_snapshot["transmit"]["index_letter"] == "B"
+    assert runtime.radio_snapshot["tx_antenna"] == "ANT1"
+    assert runtime.radio_snapshot["tx_ant"] == "ANT1"
+
+
+def test_radio_snapshot_does_not_hide_valid_aggregate_tx_route_mismatch(tmp_path):
+    runtime = _runtime(tmp_path)
+    runtime.flex.current_tx_slice_id = 1
+    slices = runtime.flex.get_slice_states()
+    slices[1]["tx_antenna"] = "ANT1"
+    runtime.flex.get_slice_states = lambda: slices
+
+    runtime._update_radio_snapshot(
+        {"freq": 14.074, "mode": "DIGU", "rx_ant": "ANT1", "tx_ant": "ANT2"}
+    )
+
+    assert runtime.radio_snapshot["tx_antenna"] == "ANT2"
+    assert runtime.radio_snapshot["tx_ant"] == "ANT2"
+
+
+def test_live_15m_shape_clears_false_route_warning_but_keeps_commissioning_info(tmp_path):
+    runtime = _runtime(tmp_path)
+    runtime.flex.current_tx_slice_id = 1
+    slices = runtime.flex.get_slice_states()
+    slices[0].update(tx_antenna="ANT1", rx_antenna="ANT1")
+    slices[1].update(tx_antenna="ANT1", rx_antenna="ANT1", frequency=21.049, mode="CW")
+    runtime.flex.get_slice_states = lambda: slices
+    runtime._update_radio_snapshot(
+        {
+            "freq": 21.049,
+            "mode": "CW",
+            "rx_ant": "ANT1",
+            "tx_ant": "INVALID",
+            "mox": False,
+            "interlock_state": "RECEIVE",
+        }
+    )
+
+    now = time.time()
+    elecraft = {
+        "updated_at": now,
+        "kpa500": {
+            "enabled": True,
+            "connected": True,
+            "responsive": True,
+            "power": True,
+            "operate": False,
+            "band": "15m",
+            "fault": "00",
+            "observed_at": now,
+        },
+        "kat500": {
+            "enabled": True,
+            "connected": True,
+            "responsive": True,
+            "power": True,
+            "mode": "auto",
+            "antenna": 1,
+            "band": "15m",
+            "frequency_khz": 21049,
+            "tuning": False,
+            "fault": "00",
+            "observed_at": now,
+        },
+    }
+    path = build_station_path(
+        elecraft,
+        runtime.radio_snapshot,
+        antenna_policy={"15m": 1},
+        flex_antenna_policy={"bands": {"15m": {"tx": "ANT1"}}},
+        now=now,
+    )
+    alarms = build_station_alarms(
+        {
+            "generated_at": path["generated_at"],
+            "commissioned": False,
+            "coordinator_state": "commissioning_locked",
+            "recovery_required": False,
+            "path": path,
+        },
+        elecraft_state=elecraft,
+    )
+
+    assert path["alignment"] == "confirmed"
+    assert path["mismatches"] == []
+    assert path["transmit_authorized"] is False
+    assert alarms["active_count"] == 1
+    assert alarms["counts"] == {"critical": 0, "warning": 0, "info": 1}
+    assert alarms["items"][0]["code"] == "station-commissioning-required"
 
 
 def test_split_uses_flex_slice_b_as_transmit_vfo(tmp_path):
