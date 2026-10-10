@@ -209,6 +209,20 @@ def test_preferred_maestro_station_owns_slice_a_b_and_preserves_tx_slice():
     assert "slice set 0 tx=1" not in flex.commands
 
 
+def test_command_path_transmit_status_updates_live_drive_cache():
+    flex = FlexCtl("127.0.0.1", 4992)
+    flex.current_rfpower = 65
+
+    flex._record_basic_status_from_line("S123|transmit rfpower=25 mox=0")
+    assert flex.current_rfpower == 25
+
+    # Saved band rows are presets, not the live transmitter drive.
+    flex._record_basic_status_from_line(
+        "S123|transmit band 20 band_name=6 rfpower=90 tunepower=20"
+    )
+    assert flex.current_rfpower == 25
+
+
 def test_refresh_source_does_not_force_reconnect_on_no_messages():
     source = (  # keep this focused: a regression here causes SmartSDR client spam
         __import__("pathlib")

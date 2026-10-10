@@ -74,3 +74,34 @@ policy, tune limits, commissioning, KAT antenna names, and per-band PA,
 barefoot, digital-PA, drive-power, FLEX TX, and KAT-output rules. Do not use a
 configuration save as a transmit test; after the controlled restart, verify
 readback with MOX false and the KPA in standby.
+
+## 2026-10-10 Mac acceptance and OPERATE follow-up
+
+- Windows deployment \`b436936e0377122fad5e3d32afa7f3c6f69fe5c4\` remained
+  continuously authenticated from OM0RX-xCat. Full Mac control mode remained
+  enabled; automated acceptance did not key RF.
+- The Mac Swift suite passed 35 tests in 7 suites. The installed 0.4.0 (6)
+  application was validly signed.
+- Eight discrete frequency changes measured agent-observation-to-Mac-receipt at
+  155–5,088 ms (median 1,239 ms). Mac-receipt-to-SwiftUI Status/Monitor render
+  was 35–94 ms (median 43 ms). Multi-second lag is therefore before the Mac
+  render stage. Rapid Maestro tuning also reproduced temporary follow-route
+  reconciliation delays before the route returned to confirmed.
+- Six colour-category acceptance markers (\`N0GRY3\` through \`N0CYN3\`) and
+  ongoing real RUMlog spots received acknowledged \`add_spot\` success. The Mac
+  cannot inspect Maestro pixels; the Windows operator should confirm the six
+  colours on the connected Maestro.
+- OM0RX-xCat now displays both VFO A and VFO B at full 1 Hz precision in the
+  compact station-monitor header whenever B is present. The KPA control is a
+  single stateful toggle: standby shows **Operate**, operate shows **Standby**.
+- A live **Operate** request reached the Windows coordinator but was rejected:
+  \`FLEX RF drive is 65 W, expected 25 W\`. The station remained safe in KPA
+  standby. Root cause was the command-response path consuming the subscribed
+  live \`rfpower\` update without copying it into \`current_rfpower\`, so the
+  immediate guarded readback compared the requested 25 W with the previous
+  cached 65 W. \`FlexCtl._record_basic_status_from_line\` now updates the live
+  drive cache while still ignoring saved \`transmit band\` preset rows.
+- The focused Windows regression set passed 133 tests. Windows Codex must fetch
+  the new exact branch tip reported by the Mac session, deploy it without
+  replacing \`agent.json\`, restart the agent, and verify Standby → Operate →
+  Standby with MOX off and no RF carrier.

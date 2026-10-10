@@ -646,6 +646,16 @@ class FlexCtl:
         if "|transmit " in line or "|interlock " in line:
             self._record_antenna_values(line)
 
+            # Command responses and their subscribed status updates share one
+            # TCP stream.  A live transmit update can therefore be consumed by
+            # ``_send_with_response`` while it waits for an ACK.  Keep the
+            # authoritative drive cache current here so an immediate guarded
+            # OPERATE readback does not compare against the previous band value.
+            if "|transmit band " not in line:
+                m_rfpower = re.search(r"\brfpower=(\d+)", line)
+                if m_rfpower:
+                    self.current_rfpower = int(m_rfpower.group(1))
+
             m_mox = re.search(r"\bmox=([01])", line)
             if m_mox:
                 self.last_tx_state_time = time.time()
