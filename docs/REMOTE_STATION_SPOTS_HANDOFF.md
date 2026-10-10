@@ -13,6 +13,12 @@ The agent advertises `add_spot` in `capabilities.commands`. Its arguments are
 bounds, printable ASCII content, and `#RRGGBB` colour syntax before calling the
 existing `FlexCtl.add_spot` method.
 
+`FlexCtl.add_spot` converts the client-facing `#RRGGBB` colour to the
+SmartSDR Spot API's opaque `#AARRGGBB` form. A spot is reported as forwarded
+only after the driver receives the matching zero-success radio response; a
+socket write by itself is not success. This acknowledgement check is required
+for truthful Maestro visibility diagnostics.
+
 This command adds a SmartSDR panadapter marker only. It does not change
 frequency, mode, route, antenna, RF power, PTT, TUNE, CWX, KPA state, KAT state,
 or commissioning. It is therefore deliberately independent of the RF command
