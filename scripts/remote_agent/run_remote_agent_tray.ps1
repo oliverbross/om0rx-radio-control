@@ -167,12 +167,13 @@ $form.Controls.Add($details)
 
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $iconPath = Join-Path $projectRoot "tools\Om0rxAgent\assets\om0rx-agent.ico"
-$notify.Icon = if (Test-Path -LiteralPath $iconPath) {
+$script:customIcon = if (Test-Path -LiteralPath $iconPath) {
     New-Object System.Drawing.Icon($iconPath)
 }
 else {
-    [System.Drawing.SystemIcons]::Application
+    $null
 }
+$notify.Icon = if ($script:customIcon) { $script:customIcon } else { [System.Drawing.SystemIcons]::Information }
 $notify.Text = "OM0RX Remote Station Agent"
 $notify.Visible = $true
 
@@ -224,7 +225,7 @@ function Update-AgentStatus {
             $notify.Icon = [System.Drawing.SystemIcons]::Warning
         }
         else {
-            $notify.Icon = [System.Drawing.SystemIcons]::Information
+            $notify.Icon = if ($script:customIcon) { $script:customIcon } else { [System.Drawing.SystemIcons]::Information }
         }
         $alignment = if ($snapshot.State.station.path) { $snapshot.State.station.path.alignment } else { "unknown" }
         $alarmCount = if ($alarmState) { $alarmState.active_count } else { "?" }
@@ -289,6 +290,7 @@ finally {
     $timer.Dispose()
     $notify.Visible = $false
     $notify.Dispose()
+    if ($script:customIcon) { $script:customIcon.Dispose() }
     $form.Dispose()
     $mutex.ReleaseMutex()
     $mutex.Dispose()
