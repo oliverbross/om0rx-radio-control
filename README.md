@@ -17,6 +17,12 @@ Cross-machine diagnosis and acceptance evidence is coordinated through
 record free of credentials and update it whenever Windows or macOS changes the
 remote-station implementation or its verified state.
 
+The independent remote-station tray includes its own complete Settings window
+for FLEX/KPA500/KAT500 connections, per-band antenna and RF policy, tuning
+limits, credentials, and commissioning. It also exposes guarded station
+Standby/Operate/Tune/Cancel controls, so normal operation does not require
+PowerShell or direct JSON editing.
+
 ### Windows tray agent
 
 The preferred Windows entry point is the OM0RX tray agent. It runs in the hidden-icons area, starts the local runtime, monitors the backend, bridge, Docker/Postgres, WSJT/SDC processes, WebSocket bridge ports, and exposes manual Start/Stop/Restart/Repair controls.

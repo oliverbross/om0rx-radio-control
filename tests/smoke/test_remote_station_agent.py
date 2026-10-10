@@ -44,9 +44,13 @@ class FakeRuntime:
 
 def test_clean_profile_uses_configurable_vspe_ports_and_keeps_tx_locked(tmp_path):
     config = _config(tmp_path)
+    assert config.kpa_enabled is True
+    assert config.kat_enabled is True
     assert config.kpa_port == "COM17"
     assert config.kat_port == "COM15"
     assert config.kpa_baudrate == config.kat_baudrate == 38400
+    assert config.follow_radio is True
+    assert config.digital_kpa_policy == "operate"
     assert config.commissioned is False
     assert config.bind_host == "127.0.0.1"
     assert config.flex_station_name == "Maestro"
@@ -57,6 +61,9 @@ def test_public_config_never_exposes_control_token(tmp_path):
     public = config.public_summary()
     assert TOKEN not in repr(public)
     assert "control_token" not in repr(public)
+    assert public["kpa500"]["enabled"] is True
+    assert public["kat500"]["enabled"] is True
+    assert public["policy"]["follow_radio"] is True
 
 
 def test_api_requires_bearer_token_and_forwards_idempotent_envelope(tmp_path):
@@ -87,6 +94,10 @@ def test_profile_applies_separate_policy_to_device_runtime(tmp_path, monkeypatch
         for key in (
             "KPA500_PORT",
             "KAT500_PORT",
+            "KPA500_ENABLED",
+            "KAT500_ENABLED",
+            "ELECRAFT_FOLLOW_RADIO",
+            "DIGITAL_KPA_POLICY",
             "STATION_COORDINATOR_COMMISSIONED",
             "STATION_BAREFOOT_DRIVE_W",
         )
@@ -95,11 +106,85 @@ def test_profile_applies_separate_policy_to_device_runtime(tmp_path, monkeypatch
         config.apply_to_radio_config()
         assert radio_config.KPA500_PORT == "COM17"
         assert radio_config.KAT500_PORT == "COM15"
+        assert radio_config.KPA500_ENABLED is True
+        assert radio_config.KAT500_ENABLED is True
+        assert radio_config.ELECRAFT_FOLLOW_RADIO is True
+        assert radio_config.DIGITAL_KPA_POLICY == "operate"
         assert radio_config.STATION_COORDINATOR_COMMISSIONED is False
         assert radio_config.STATION_BAREFOOT_DRIVE_W["40m"] == 100
     finally:
         for key, value in original.items():
             monkeypatch.setattr(radio_config, key, value)
+
+
+def test_profile_applies_explicit_accessory_disable_and_digital_standby(tmp_path, monkeypatch):
+    from radio_control import config as radio_config
+
+    document = default_config_document(control_token=TOKEN)
+    document["kpa500"]["enabled"] = False
+    document["kat500"]["enabled"] = False
+    document["station"]["follow_radio"] = False
+    document["station"]["digital_kpa_policy"] = "standby"
+    path = tmp_path / "accessories-disabled.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    config = load_agent_config(path)
+    original = {
+        key: getattr(radio_config, key)
+        for key in (
+            "KPA500_ENABLED",
+            "KAT500_ENABLED",
+            "ELECRAFT_FOLLOW_RADIO",
+            "DIGITAL_KPA_POLICY",
+        )
+    }
+    try:
+        config.apply_to_radio_config()
+        assert radio_config.KPA500_ENABLED is False
+        assert radio_config.KAT500_ENABLED is False
+        assert radio_config.ELECRAFT_FOLLOW_RADIO is False
+        assert radio_config.DIGITAL_KPA_POLICY == "standby"
+    finally:
+        for key, value in original.items():
+            monkeypatch.setattr(radio_config, key, value)
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "expected"),
+    (
+        ("kpa500", "enabled", "kpa500.enabled=true"),
+        ("kat500", "enabled", "kat500.enabled=true"),
+        ("station", "follow_radio", "station.follow_radio=true"),
+    ),
+)
+def test_commissioned_profile_requires_transmit_safety_components(
+    tmp_path, section, key, expected
+):
+    document = default_config_document(control_token=TOKEN)
+    document["station"]["commissioned"] = True
+    document[section][key] = False
+    path = tmp_path / f"commissioned-{section}-{key}.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(AgentConfigError, match=expected):
+        load_agent_config(path)
+
+
+def test_commissioned_profile_requires_flex_antenna_policy(tmp_path):
+    document = default_config_document(control_token=TOKEN)
+    document["station"]["commissioned"] = True
+    document["flex"]["antenna_policy"]["enabled"] = False
+    path = tmp_path / "commissioned-flex-policy-disabled.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(AgentConfigError, match="flex.antenna_policy.enabled=true"):
+        load_agent_config(path)
+
+
+def test_profile_rejects_unknown_digital_kpa_policy(tmp_path):
+    document = default_config_document(control_token=TOKEN)
+    document["station"]["digital_kpa_policy"] = "automatic"
+    path = tmp_path / "bad-digital-policy.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(AgentConfigError, match="must be operate or standby"):
+        load_agent_config(path)
 
 
 def test_profile_refuses_non_loopback_binding(tmp_path):

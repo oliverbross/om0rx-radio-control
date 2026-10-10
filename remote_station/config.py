@@ -88,10 +88,14 @@ class AgentConfig:
     flex_port: int
     flex_slice_id: int
     flex_station_name: str
+    kpa_enabled: bool
     kpa_port: str
     kpa_baudrate: int
+    kat_enabled: bool
     kat_port: str
     kat_baudrate: int
+    follow_radio: bool
+    digital_kpa_policy: str
     commissioned: bool
     flex_antenna_policy: dict[str, Any]
     kat_antenna_policy: dict[str, int]
@@ -118,10 +122,20 @@ class AgentConfig:
                 "slice_id": self.flex_slice_id,
                 "station_name": self.flex_station_name,
             },
-            "kpa500": {"port": self.kpa_port, "baudrate": self.kpa_baudrate},
-            "kat500": {"port": self.kat_port, "baudrate": self.kat_baudrate},
+            "kpa500": {
+                "enabled": self.kpa_enabled,
+                "port": self.kpa_port,
+                "baudrate": self.kpa_baudrate,
+            },
+            "kat500": {
+                "enabled": self.kat_enabled,
+                "port": self.kat_port,
+                "baudrate": self.kat_baudrate,
+            },
             "commissioned": self.commissioned,
             "policy": {
+                "follow_radio": self.follow_radio,
+                "digital_kpa_policy": self.digital_kpa_policy,
                 "flex_antenna": self.flex_antenna_policy,
                 "kat_antenna": self.kat_antenna_policy,
                 "kat_antenna_names": self.kat_antenna_names,
@@ -146,20 +160,20 @@ class AgentConfig:
             "FLEX_TCP_PORT": self.flex_port,
             "FLEX_SLICE_ID": self.flex_slice_id,
             "FLEX_ANTENNA_POLICY": self.flex_antenna_policy,
-            "KPA500_ENABLED": True,
+            "KPA500_ENABLED": self.kpa_enabled,
             "KPA500_PORT": self.kpa_port,
             "KPA500_BAUDRATE": self.kpa_baudrate,
-            "KAT500_ENABLED": True,
+            "KAT500_ENABLED": self.kat_enabled,
             "KAT500_PORT": self.kat_port,
             "KAT500_BAUDRATE": self.kat_baudrate,
-            "ELECRAFT_FOLLOW_RADIO": True,
+            "ELECRAFT_FOLLOW_RADIO": self.follow_radio,
             "STATION_COORDINATOR_COMMISSIONED": self.commissioned,
             "STATION_AMPLIFIER_ALLOWED_BANDS": self.amplifier_allowed_bands,
             "STATION_AMPLIFIER_DRIVE_W": self.amplifier_drive_w,
             "STATION_BAREFOOT_DRIVE_W": self.barefoot_drive_w,
             "STATION_DIGITAL_AMPLIFIER_ALLOWED_BANDS": self.digital_amplifier_allowed_bands,
             "STATION_DIGITAL_AMPLIFIER_DRIVE_W": self.digital_amplifier_drive_w,
-            "DIGITAL_KPA_POLICY": "operate",
+            "DIGITAL_KPA_POLICY": self.digital_kpa_policy,
             "KAT500_ANTENNA_POLICY": self.kat_antenna_policy,
             "KAT500_ANTENNA_NAMES": self.kat_antenna_names,
             "STATION_TUNE_POWER_W": self.tune_power_w,
@@ -203,10 +217,12 @@ def default_config_document(*, control_token: str | None = None) -> dict[str, An
                 },
             },
         },
-        "kpa500": {"port": "COM17", "baudrate": 38400},
-        "kat500": {"port": "COM15", "baudrate": 38400},
+        "kpa500": {"enabled": True, "port": "COM17", "baudrate": 38400},
+        "kat500": {"enabled": True, "port": "COM15", "baudrate": 38400},
         "station": {
             "commissioned": False,
+            "follow_radio": True,
+            "digital_kpa_policy": "operate",
             "kat_antenna_policy": {
                 "160m": 2,
                 "80m": 2,
@@ -336,9 +352,31 @@ def load_agent_config(path: Path | None = None) -> AgentConfig:
     commissioned = station.get("commissioned", False)
     if type(commissioned) is not bool:
         raise AgentConfigError("station.commissioned must be true or false")
+    kpa_enabled = kpa.get("enabled", True)
+    if type(kpa_enabled) is not bool:
+        raise AgentConfigError("kpa500.enabled must be true or false")
+    kat_enabled = kat.get("enabled", True)
+    if type(kat_enabled) is not bool:
+        raise AgentConfigError("kat500.enabled must be true or false")
+    follow_radio = station.get("follow_radio", True)
+    if type(follow_radio) is not bool:
+        raise AgentConfigError("station.follow_radio must be true or false")
+    digital_kpa_policy = str(station.get("digital_kpa_policy") or "operate").strip().lower()
+    if digital_kpa_policy not in {"operate", "standby"}:
+        raise AgentConfigError("station.digital_kpa_policy must be operate or standby")
     antenna_enabled = antenna_policy.get("enabled", True)
     if type(antenna_enabled) is not bool:
         raise AgentConfigError("flex.antenna_policy.enabled must be true or false")
+    if commissioned and not kpa_enabled:
+        raise AgentConfigError("a commissioned station requires kpa500.enabled=true")
+    if commissioned and not kat_enabled:
+        raise AgentConfigError("a commissioned station requires kat500.enabled=true")
+    if commissioned and not follow_radio:
+        raise AgentConfigError("a commissioned station requires station.follow_radio=true")
+    if commissioned and not antenna_enabled:
+        raise AgentConfigError(
+            "a commissioned station requires flex.antenna_policy.enabled=true"
+        )
 
     def positive_float(name: str, default: float) -> float:
         try:
@@ -363,6 +401,7 @@ def load_agent_config(path: Path | None = None) -> AgentConfig:
         flex_port=_port(flex.get("port", 4992), "flex.port"),
         flex_slice_id=slice_id,
         flex_station_name=flex_station_name,
+        kpa_enabled=kpa_enabled,
         kpa_port=kpa_port,
         kpa_baudrate=_integer(
             kpa.get("baudrate", 38400),
@@ -370,6 +409,7 @@ def load_agent_config(path: Path | None = None) -> AgentConfig:
             minimum=300,
             maximum=1_000_000,
         ),
+        kat_enabled=kat_enabled,
         kat_port=kat_port,
         kat_baudrate=_integer(
             kat.get("baudrate", 38400),
@@ -377,6 +417,8 @@ def load_agent_config(path: Path | None = None) -> AgentConfig:
             minimum=300,
             maximum=1_000_000,
         ),
+        follow_radio=follow_radio,
+        digital_kpa_policy=digital_kpa_policy,
         commissioned=commissioned,
         flex_antenna_policy={"enabled": antenna_enabled, "bands": normalized_flex_bands},
         kat_antenna_policy=_band_map(

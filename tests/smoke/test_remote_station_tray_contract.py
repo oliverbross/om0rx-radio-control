@@ -8,11 +8,15 @@ TRAY = (ROOT / "scripts" / "remote_agent" / "run_remote_agent_tray.ps1").read_te
 INSTALLER = (
     ROOT / "scripts" / "remote_agent" / "install_remote_agent_tray_startup.ps1"
 ).read_text(encoding="utf-8")
+SETTINGS = (
+    ROOT / "scripts" / "remote_agent" / "remote_agent_settings.ps1"
+).read_text(encoding="utf-8")
 
 
 def test_tray_exposes_requested_process_controls_and_status_window():
     for label in (
         "Show details",
+        "Settings...",
         "Start agent",
         "Stop agent...",
         "Restart agent...",
@@ -23,12 +27,18 @@ def test_tray_exposes_requested_process_controls_and_status_window():
     assert "Application]::ExitThread()" in TRAY
 
 
-def test_tray_status_is_read_only_and_never_uses_the_command_endpoint():
+def test_tray_status_is_read_only_and_station_actions_use_the_command_endpoint():
     assert "/api/v1/state" in TRAY
     assert "-Method Get" in TRAY
-    assert "/api/v1/commands" not in TRAY
-    assert "-Method Post" not in TRAY
-    assert "radio, PTT, tune, antenna, or station-control commands" in TRAY
+    assert "/api/v1/commands" in TRAY
+    assert "-Method Post" in TRAY
+    for command in (
+        "station_standby",
+        "station_operate",
+        "station_tune",
+        "station_cancel",
+    ):
+        assert command in TRAY
 
 
 def test_tray_shows_sanitized_station_evidence_without_rendering_the_token():
@@ -48,3 +58,34 @@ def test_tray_installer_registers_an_interactive_login_task():
     assert "New-ScheduledTaskTrigger -AtLogOn" in INSTALLER
     assert "-LogonType Interactive" in INSTALLER
     assert "-STA -WindowStyle Hidden" in INSTALLER
+    assert '-Python `"$Python`"' in INSTALLER
+
+
+def test_settings_gui_covers_connections_accessories_band_policy_and_commissioning():
+    for label in (
+        "Connections and security",
+        "Band, antenna and RF policy",
+        "Tuning and commissioning",
+        "KPA500 enabled",
+        "KAT500 enabled",
+        "Automatically follow the observed radio band",
+        "PA allowed",
+        "PA drive W",
+        "Barefoot W",
+        "Digital PA",
+        "Digital drive W",
+        "Tune power (W)",
+        "Station physically commissioned",
+        "Save and restart agent...",
+    ):
+        assert label in SETTINGS
+
+
+def test_settings_gui_masks_credentials_validates_before_atomic_save_and_requires_commissioning_confirmation():
+    assert "UseSystemPasswordChar = $true" in SETTINGS
+    assert "python -m remote_station" not in SETTINGS
+    assert "-m remote_station check" in SETTINGS
+    assert "[System.IO.File]::Replace" in SETTINGS
+    assert 'confirmation -cne "COMMISSION"' in SETTINGS
+    assert "does not key PTT" in SETTINGS
+    assert "does not restart the agent" in SETTINGS

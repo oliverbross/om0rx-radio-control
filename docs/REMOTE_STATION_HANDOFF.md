@@ -240,6 +240,53 @@ Do not delete the macOS evidence or safety boundary.
   information alarm must remain until physical commissioning is separately
   completed.
 
+## Windows full-agent GUI implementation — 2026-10-10
+
+- Branch: `codex/windows-agent-gui`, based on `main` at
+  `ad1b0b7b36c7b1dc0284914fc5a84e45cf9e808f`. The exact pushed tip is
+  reported to the operator after the commit because a commit cannot contain
+  its own SHA.
+- The remote-station tray now provides a complete local Settings window; the
+  operator no longer needs PowerShell or direct JSON editing for routine
+  configuration. It covers loopback server settings and masked token handling,
+  FLEX connection/binding and antenna enforcement, KPA500/KAT500 enable and
+  serial settings, per-band FLEX/KAT/PA/barefoot/digital policy, tuner limits,
+  route-follow behavior, digital amplifier policy, and commissioning.
+- Candidate settings are validated through the real Python configuration
+  loader before an atomic replacement. The previous profile is retained as
+  `agent.json.bak`. Save does not restart; Save-and-restart requires separate
+  confirmation. Enabling commissioning requires typing `COMMISSION` and also
+  requires KPA500, KAT500, follow-radio, and FLEX antenna enforcement to remain
+  enabled.
+- The tray details window and context menu now expose coordinator-backed
+  Standby, Operate, Tune, and Cancel controls. Buttons follow the running
+  coordinator's `allowed_actions`; Operate and Tune require confirmation.
+  There is no raw local PTT button, and no guard or alarm is bypassed.
+- The agent profile now supports explicit `kpa500.enabled`, `kat500.enabled`,
+  `station.follow_radio`, and `station.digital_kpa_policy` settings while
+  remaining backward-compatible with the existing JSON profile.
+- Tests: complete Python smoke suite `843 passed, 0 failed`; Node UI/contract
+  suite `105 passed, 0 failed`; focused remote-agent/tray suite `30 passed, 0
+  failed`; settings WinForms load/build/validate/atomic-save smoke `1 passed, 0
+  failed`; PowerShell parser `3 passed, 0 failed`; Ruff `F,E9`, Python compile,
+  and Git whitespace checks passed. The maintained smoke suite was made
+  independent of the operator-owned full-app follow-radio setting; no live
+  configuration was changed by the tests.
+- Read-only live check at `2026-10-10T10:42:46Z`: the station agent and tray
+  tasks remained running; FLEX was connected and bound, MOX was false,
+  interlock was `READY`, KPA500 was connected in STBY, and KAT500 was connected
+  on ANT1. `station.commissioned` remained `false`.
+- The read-only check also recorded a current receive-only route warning: FLEX
+  had been moved to 20m while KPA500/KAT500 still reported 15m. This is not the
+  former FLEX `INVALID` defect. Automatic accessory route following is
+  intentionally inactive while uncommissioned; the GUI exposes the guarded
+  commissioning workflow, and a commissioned restart/follow transaction must
+  align and verify the hardware before transmit is authorized.
+- Safety confirmation: no agent restart, station-control request, CAT write,
+  PTT, TUNE, CWX, frequency/mode/antenna/RF-power write, or RF transmission was
+  performed during implementation or testing. The bearer token was neither
+  printed nor committed.
+
 ## Handoff protocol
 
 After each bounded change:
