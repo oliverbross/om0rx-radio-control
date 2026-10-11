@@ -83,9 +83,8 @@ the intentional informational commissioning lock.
 
 ## Windows investigation checklist
 
-1. Read `AGENTS.md` when present, `README.md`,
-   `docs/REMOTE_STATION_AGENT.md`, and
-   `docs/REMOTE_STATION_PROTOCOL_V1.md` completely.
+1. Read the canonical deployment and protocol guides under `WindowsAgent/docs`
+   in <https://github.com/oliverbross/OM0RX-xCat> completely.
 2. Record the branch, SHA, working-tree state, installed version, service/task
    status, and redacted configuration.
 3. Back up the non-secret configuration before changing it.

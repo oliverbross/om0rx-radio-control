@@ -4,26 +4,13 @@ Self-contained local control app for a FlexRadio station. The app combines a Fas
 
 ## Start
 
-### Independent remote-station agent
+### Independent remote-station agent relocated
 
-For the dedicated Windows-to-macOS FLEX/KPA500/KAT500 bridge, use the
-independent remote-station agent. It starts only the hardware and guarded
-station services, has a separate configuration, and does not require the full
-OM0RX Radio Control application to be running. See
-[`docs/REMOTE_STATION_AGENT.md`](docs/REMOTE_STATION_AGENT.md).
-Install its smaller dependency set with `requirements-remote-agent.txt`.
-Cross-machine diagnosis and acceptance evidence is coordinated through
-[`docs/REMOTE_STATION_HANDOFF.md`](docs/REMOTE_STATION_HANDOFF.md). Keep that
-record free of credentials and update it whenever Windows or macOS changes the
-remote-station implementation or its verified state.
-
-The independent remote-station tray includes its own complete Settings window
-for FLEX/KPA500/KAT500 connections, per-band antenna and RF policy, tuning
-limits, credentials, and commissioning. It also exposes guarded station
-Standby/Operate/Tune/Cancel controls, so normal operation does not require
-PowerShell or direct JSON editing. A movable always-on-top station widget shows
-FLEX VFO/frequency, live TX state, RF drive, KPA500 power/temperature/SWR, and
-KAT500 antenna/tuner telemetry without displaying a PowerShell console.
+The Windows-to-macOS FLEX/KPA500/KAT500 Remote Station Agent is now owned and
+maintained by [`oliverbross/OM0RX-xCat`](https://github.com/oliverbross/OM0RX-xCat)
+under its self-contained `WindowsAgent/` directory. Clone that repository for
+all agent source, setup scripts, tests, protocol documentation, tray/settings,
+and station widget. This repository no longer supplies or runs that agent.
 
 ### Windows tray agent
 

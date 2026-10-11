@@ -1,5 +1,0 @@
-# Minimal dependencies for the independent Windows remote-station agent.
-fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
-websockets>=13.0
-pyserial>=3.5

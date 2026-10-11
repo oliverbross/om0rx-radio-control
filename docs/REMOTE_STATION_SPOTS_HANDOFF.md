@@ -26,11 +26,14 @@ coordinator while remaining authenticated and idempotent.
 
 ## Windows agent steps
 
-1. Fetch `codex/remote-agent-flex-spots` and verify the exact pushed SHA from
-   the Mac Codex report.
-2. Run `uv run --extra dev pytest -q tests/smoke/test_remote_station_agent.py`.
-3. Install/update the Remote Station Agent using the repository's existing
-   deployment instructions and restart it.
+The agent has moved to the `WindowsAgent/` directory of
+<https://github.com/oliverbross/OM0RX-xCat>. This section is retained as
+historical coordination evidence; use the current xCat deployment guide.
+
+1. Fetch the reviewed OM0RX-xCat Windows-agent branch and verify its exact SHA.
+2. From `WindowsAgent`, run `.\.venv\Scripts\python.exe -m pytest -q`.
+3. Install/update the Remote Station Agent using the xCat deployment
+   instructions and restart it.
 4. Confirm authenticated `/api/v1/state` includes `add_spot` under
    `state.capabilities.commands`; do not print the bearer token.
 5. Leave the existing FLEX/KPA/KAT ports and station policy unchanged.
