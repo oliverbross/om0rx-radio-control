@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 PROTOCOL_VERSION = 1
 FLEX_SNAPSHOT_WINDOW_SECONDS = 0.2
 FLEX_POLL_IDLE_SECONDS = 0.05
+ATOMIC_ROUTE_CONFIRM_TIMEOUT_SECONDS = 60.0
 
 
 class RemoteCommandError(RuntimeError):
@@ -66,6 +67,7 @@ class RemoteStationRuntime:
         self._command_lock = asyncio.Lock()
         self._revision = 0
         self._last_radio_observation = 0.0
+        self._pending_frequency_mode: dict[str, Any] | None = None
         self._active_config_fingerprint = config.fingerprint()
         self._saved_config_fingerprint = self._active_config_fingerprint
         self._idempotency: OrderedDict[str, tuple[str, dict[str, Any]]] = OrderedDict()
@@ -144,23 +146,24 @@ class RemoteStationRuntime:
                     )
                 )
                 if levels:
-                    self._update_radio_snapshot(levels)
+                    route_ready = self._update_radio_snapshot(levels)
                     self.elecraft.observe_radio_tx_state(
                         self.radio_snapshot.get("mox"),
                         self.radio_snapshot.get("interlock_state"),
                     )
-                    await self.elecraft.sync_radio_state(
-                        self.radio_snapshot.get("frequency"),
-                        self.radio_snapshot.get("mode"),
-                    )
-                    try:
-                        await self.coordinator.follow_observed_radio_route(
-                            self.radio_snapshot.get("frequency")
+                    if route_ready:
+                        await self.elecraft.sync_radio_state(
+                            self.radio_snapshot.get("frequency"),
+                            self.radio_snapshot.get("mode"),
                         )
-                        self.last_error = None
-                    except Exception as exc:  # noqa: BLE001 - keep healthy FLEX state visible
-                        self.last_error = f"Accessory route follow failed: {exc}"
-                        logger.warning(self.last_error)
+                        try:
+                            await self.coordinator.follow_observed_radio_route(
+                                self.radio_snapshot.get("frequency")
+                            )
+                            self.last_error = None
+                        except Exception as exc:  # noqa: BLE001 - keep healthy FLEX state visible
+                            self.last_error = f"Accessory route follow failed: {exc}"
+                            logger.warning(self.last_error)
                 else:
                     age = time.time() - self._last_radio_observation
                     connected = bool(getattr(self.flex, "sock", None))
@@ -199,7 +202,7 @@ class RemoteStationRuntime:
             except TimeoutError:
                 pass
 
-    def _update_radio_snapshot(self, levels: dict[str, Any]) -> None:
+    def _update_radio_snapshot(self, levels: dict[str, Any]) -> bool:
         observed_at = time.time()
         self._last_radio_observation = observed_at
         mapping = {
@@ -223,6 +226,8 @@ class RemoteStationRuntime:
         normalized.setdefault(
             "interlock_state", getattr(self.flex, "current_interlock_state", None)
         )
+        polled_frequency = normalized.get("frequency") if "freq" in levels else None
+        polled_mode = normalized.get("mode") if "mode" in levels else None
         station_bound = bool(getattr(self.flex, "bound_gui_client_handle", None))
         normalized["station_name"] = self.config.flex_station_name
         normalized["station_bound"] = station_bound
@@ -271,7 +276,7 @@ class RemoteStationRuntime:
                 }
             )
         known = normalized.get("frequency") is not None and station_bound
-        self.radio_snapshot = {
+        candidate = {
             **self.radio_snapshot,
             **normalized,
             "connected": True,
@@ -281,6 +286,89 @@ class RemoteStationRuntime:
             "observed_at": datetime.fromtimestamp(observed_at, tz=UTC).isoformat(),
             "updated_at": observed_at,
         }
+        pending = self._pending_frequency_mode
+        if pending is not None:
+            target_frequency = float(pending["frequency"])
+            target_mode = str(pending["mode"])
+            observed_frequency = candidate.get("frequency")
+            observed_mode = str(candidate.get("mode") or "").upper()
+            polled_target_confirmed = (
+                polled_frequency is not None
+                and abs(float(polled_frequency) - target_frequency) <= 0.000001
+                and str(polled_mode or "").upper() == target_mode
+            )
+            target_confirmed = polled_target_confirmed or (
+                observed_frequency is not None
+                and abs(float(observed_frequency) - target_frequency) <= 0.000001
+                and observed_mode == target_mode
+            )
+            if target_confirmed:
+                if polled_target_confirmed:
+                    slice_id = int(pending["slice_id"])
+
+                    def confirmed_slice(item: dict[str, Any]) -> dict[str, Any]:
+                        updated = dict(item)
+                        if int(updated.get("slice_id", -1)) == slice_id:
+                            updated.update(
+                                {
+                                    "frequency": target_frequency,
+                                    "frequency_hz": round(target_frequency * 1_000_000),
+                                    "mode": target_mode,
+                                }
+                            )
+                        return updated
+
+                    candidate["frequency"] = target_frequency
+                    candidate["mode"] = target_mode
+                    if "slices" in candidate:
+                        candidate["slices"] = [
+                            confirmed_slice(item) for item in candidate["slices"]
+                        ]
+                    if "vfos" in candidate:
+                        candidate["vfos"] = {
+                            key: confirmed_slice(item)
+                            for key, item in candidate["vfos"].items()
+                        }
+                    for key in ("active_receive", "transmit"):
+                        if isinstance(candidate.get(key), dict):
+                            candidate[key] = confirmed_slice(candidate[key])
+                candidate.pop("route_change_pending", None)
+                self._pending_frequency_mode = None
+            else:
+                # FLEX can acknowledge the mode before its slice-frequency
+                # subscription reports the tune. Keep the last coherent route
+                # visible until both values are observed together. Safety
+                # telemetry above (especially MOX/interlock) remains live.
+                for key in (
+                    "frequency",
+                    "mode",
+                    "slices",
+                    "vfos",
+                    "active_receive",
+                    "transmit",
+                ):
+                    if key in self.radio_snapshot:
+                        candidate[key] = self.radio_snapshot[key]
+                    else:
+                        candidate.pop(key, None)
+                age_seconds = max(0.0, observed_at - float(pending["started_at"]))
+                candidate["route_change_pending"] = {
+                    "frequency_hz": round(target_frequency * 1_000_000),
+                    "mode": target_mode,
+                    "vfo": pending["vfo"],
+                    "age_seconds": round(age_seconds, 3),
+                }
+                if age_seconds > ATOMIC_ROUTE_CONFIRM_TIMEOUT_SECONDS:
+                    candidate["known"] = False
+                    candidate["stale"] = True
+                    self.last_error = (
+                        "FLEX atomic route change remains unconfirmed after "
+                        f"{ATOMIC_ROUTE_CONFIRM_TIMEOUT_SECONDS:.0f} seconds"
+                    )
+                self.radio_snapshot = candidate
+                return False
+        self.radio_snapshot = candidate
+        return True
 
     @staticmethod
     def _required_bool(arguments: dict[str, Any], name: str) -> bool:
@@ -551,13 +639,33 @@ class RemoteStationRuntime:
                     )
                 vfo, slice_state = self._slice_for_vfo(arguments)
                 slice_id = int(slice_state["slice_id"])
+                self._pending_frequency_mode = {
+                    "frequency": frequency_mhz,
+                    "mode": mode,
+                    "vfo": vfo,
+                    "slice_id": slice_id,
+                    "started_at": time.time(),
+                }
+                self.radio_snapshot = {
+                    **self.radio_snapshot,
+                    "route_change_pending": {
+                        "frequency_hz": frequency_hz,
+                        "mode": mode,
+                        "vfo": vfo,
+                        "age_seconds": 0.0,
+                    },
+                }
 
                 def apply_frequency_and_mode() -> bool:
+                    mode_ok = self.flex._send(f"slice set {slice_id} mode={mode}")
+                    if not mode_ok:
+                        return False
                     frequency_ok = self.flex._send(
                         f"slice tune {slice_id} {frequency_mhz:.6f}"
                     )
-                    mode_ok = self.flex._send(f"slice set {slice_id} mode={mode}")
-                    return bool(frequency_ok and mode_ok)
+                    if frequency_ok and self.flex._send("sub slice all"):
+                        self.flex.last_resubscribe_time = time.time()
+                    return bool(frequency_ok)
 
                 await self.coordinator.execute_flex_route_change(
                     f"remote-frequency-mode-{vfo.lower()}",

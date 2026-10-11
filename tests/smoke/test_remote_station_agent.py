@@ -433,9 +433,64 @@ def test_remote_frequency_and_mode_share_one_guarded_route_transaction(tmp_path)
     }
     assert runtime.coordinator.calls == ["remote-frequency-mode-a"]
     assert runtime.flex.calls == [
-        ("send", "slice tune 0 3.698000"),
         ("send", "slice set 0 mode=LSB"),
+        ("send", "slice tune 0 3.698000"),
+        ("send", "sub slice all"),
     ]
+    assert result["state"]["radio"]["route_change_pending"] == {
+        "frequency_hz": 3_698_000,
+        "mode": "LSB",
+        "vfo": "A",
+        "age_seconds": pytest.approx(0.0, abs=0.05),
+    }
+
+
+def test_atomic_frequency_mode_publication_waits_for_coherent_flex_state(tmp_path):
+    runtime = _runtime(tmp_path)
+    runtime._pending_frequency_mode = {
+        "frequency": 7.195,
+        "mode": "LSB",
+        "vfo": "A",
+        "slice_id": 0,
+        "started_at": time.time(),
+    }
+    runtime.flex.current_freq = 7.185
+    runtime.flex.current_mode = "LSB"
+    runtime.flex.get_slice_states = lambda: [
+        {
+            "slice_id": 0,
+            "index_letter": "A",
+            "frequency": 7.185,
+            "mode": "LSB",
+            "active": True,
+            "transmit": True,
+            "in_use": True,
+        }
+    ]
+
+    route_ready = runtime._update_radio_snapshot(
+        {"freq": 7.185, "mode": "LSB", "mox": False, "interlock_state": "READY"}
+    )
+
+    assert route_ready is False
+    assert runtime.radio_snapshot["frequency"] == 14.074
+    assert runtime.radio_snapshot["mode"] == "DIGU"
+    assert runtime.radio_snapshot["mox"] is False
+    assert runtime.radio_snapshot["interlock_state"] == "READY"
+    assert runtime.radio_snapshot["route_change_pending"]["frequency_hz"] == 7_195_000
+
+    route_ready = runtime._update_radio_snapshot(
+        {"freq": 7.195, "mode": "LSB", "mox": False, "interlock_state": "READY"}
+    )
+
+    assert route_ready is True
+    assert runtime.radio_snapshot["frequency"] == 7.195
+    assert runtime.radio_snapshot["mode"] == "LSB"
+    assert runtime.radio_snapshot["transmit"]["frequency"] == 7.195
+    assert runtime.radio_snapshot["transmit"]["mode"] == "LSB"
+    assert runtime.radio_snapshot["vfos"]["A"]["frequency"] == 7.195
+    assert runtime.radio_snapshot["vfos"]["A"]["mode"] == "LSB"
+    assert "route_change_pending" not in runtime.radio_snapshot
 
 
 def test_remote_spot_command_adds_receive_only_flex_marker(tmp_path):
