@@ -29,6 +29,7 @@ AMP_KEY_RELAY_SETTLE_SECONDS = 0.05
 AMP_KEY_VERIFY_ATTEMPTS = 3
 KAT_TUNE_CANCEL_SETTLE_SECONDS = 0.1
 KAT_TUNE_CANCEL_VERIFY_ATTEMPTS = 10
+OBSERVED_ROUTE_REUSE_MAX_AGE_SECONDS = 1.0
 
 RECEIVE_INTERLOCK_STATES = {"READY", "RECEIVE"}
 EXTERNAL_RX_WAIT_SECONDS = 20.0
@@ -291,6 +292,37 @@ class StationCoordinator:
                 "No complete route matches the current FLEX frequency",
             )
         return route
+
+    def _recent_receive_route_observation(self, route: RouteTarget) -> bool:
+        """Return whether the shared FLEX poll is a just-observed RX route proof.
+
+        This proof is used only to avoid immediately repeating the same FLEX
+        levels transaction at the start of automatic route following.  The
+        guarded transaction still performs its independent ordered RX proof and
+        exact FLEX route proof before any accessory route mutation.
+        """
+        radio = self._radio_snapshot()
+        observed_at = radio.get("updated_at", radio.get("observed_at"))
+        try:
+            if isinstance(observed_at, str):
+                observed_seconds = datetime.fromisoformat(observed_at).timestamp()
+            else:
+                observed_seconds = float(observed_at)
+            age = time.time() - observed_seconds
+            frequency_khz = round(float(radio.get("frequency")) * 1000)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        interlock = str(radio.get("interlock_state") or "").upper()
+        return bool(
+            0 <= age <= OBSERVED_ROUTE_REUSE_MAX_AGE_SECONDS
+            and radio.get("connected") is True
+            and radio.get("known") is True
+            and radio.get("stale") is False
+            and radio.get("mox") is False
+            and interlock in RECEIVE_INTERLOCK_STATES
+            and frequency_khz == round(route.frequency_mhz * 1000)
+            and str(radio.get("tx_ant") or "").upper() == route.flex_tx_ant
+        )
 
     def _route_verification_is_fresh(self, route: Optional[RouteTarget]) -> bool:
         if not self._route_verified or not route:
@@ -915,19 +947,32 @@ class StationCoordinator:
                     if not any_needs_follow:
                         return False
                     if topology_needs_follow:
-                        # Both sides of the route display are cached. A delayed
-                        # FLEX status line (especially TX antenna) or one late
-                        # Elecraft serial reply can otherwise look like a route
-                        # change long enough to launch an unnecessary standby
-                        # cycle. Refresh FLEX first, then both Elecraft devices,
-                        # while the route lock is held. No KPA state is changed
-                        # unless those direct readbacks still disagree.
-                        current_route = await self._refresh_route_for_action()
-                        follow_stage("flex_preflight_ms")
-                        await self.elecraft.refresh_status()
+                        # Confirm the exact passive accessory route without
+                        # repeating meters, firmware, voltage, and other idle
+                        # telemetry.  A just-published FLEX RX observation can
+                        # be reused while KPA standby is freshly proven; an
+                        # OPERATE, old, incomplete, or mismatched observation
+                        # still forces a direct FLEX preflight before any write.
+                        route_refresh = getattr(
+                            self.elecraft, "refresh_route_status", None
+                        )
+                        if callable(route_refresh):
+                            await route_refresh()
+                        else:
+                            await self.elecraft.refresh_status()
                         follow_stage("accessory_preflight_ms")
                         self._assert_follow_current(follow_generation, current_route)
                         current_route = self._require_fresh_route()
+                        observed_kpa = self.elecraft.snapshot().get("kpa500") or {}
+                        reuse_flex_observation = bool(
+                            observed_kpa.get("route_complete") is True
+                            and observed_kpa.get("operate") is False
+                            and self._recent_receive_route_observation(current_route)
+                        )
+                        if not reuse_flex_observation:
+                            current_route = await self._refresh_route_for_action()
+                        follow_stage("flex_preflight_ms")
+                        self._assert_follow_current(follow_generation, current_route)
                         current_radio = self._radio_snapshot()
                         topology_needs_follow = self._observed_route_needs_follow(
                             current_route,

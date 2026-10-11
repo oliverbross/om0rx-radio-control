@@ -684,6 +684,86 @@ def test_overlapping_status_refreshes_share_one_hardware_pass():
     assert device.calls == 1
 
 
+def test_route_status_queries_only_exact_route_fields():
+    kpa_serials = []
+    kat_serials = []
+    kpa = KPA500(
+        "KPA500",
+        "COM6",
+        38400,
+        serial_factory=serial_factory_with(
+            {"^OS;": "^OS0;", "^BN;": "^BN05;"}, kpa_serials
+        ),
+    )
+    kat = KAT500(
+        "KAT500",
+        "COM11",
+        38400,
+        serial_factory=serial_factory_with(
+            {"AN;": "AN2;", "BN;": "BN05;", "F;": "F 14074;"}, kat_serials
+        ),
+    )
+
+    kpa_status = kpa.route_status()
+    kat_status = kat.route_status()
+
+    assert kpa_status["route_complete"] is True
+    assert kpa_status["operate"] is False
+    assert kpa_status["band"] == "20m"
+    assert kpa_serials[0].writes == ["^OS;", "^BN;"]
+    assert kat_status["route_complete"] is True
+    assert kat_status["antenna"] == 2
+    assert kat_status["band"] == "20m"
+    assert kat_status["frequency_khz"] == 14074
+    assert kat_serials[0].writes == [";;;", "AN;", "BN;", "F;"]
+
+
+def test_manager_route_refresh_merges_only_fresh_route_proofs():
+    class RouteDevice:
+        connected = True
+        io_enabled = True
+
+        def __init__(self, result):
+            self.result = result
+            self.calls = 0
+
+        def route_status(self):
+            self.calls += 1
+            return dict(self.result)
+
+    kpa = RouteDevice(
+        {"operate": False, "band": "40m", "route_complete": True, "observed_at": 10.0}
+    )
+    kat = RouteDevice(
+        {
+            "antenna": 2,
+            "band": "40m",
+            "frequency_khz": 7074,
+            "route_complete": True,
+            "observed_at": 11.0,
+        }
+    )
+    manager = ElecraftManager(kpa500=kpa, kat500=kat)
+    manager._status = {
+        "kpa500": {"temperature_c": 33},
+        "kat500": {"mode": "auto"},
+    }
+
+    status = asyncio.run(manager.refresh_route_status())
+
+    assert kpa.calls == 1
+    assert kat.calls == 1
+    assert status["kpa500"]["temperature_c"] == 33
+    assert status["kpa500"]["operate"] is False
+    assert status["kpa500"]["band"] == "40m"
+    assert status["kat500"]["mode"] == "auto"
+    assert status["kat500"]["frequency_khz"] == 7074
+    assert manager.last_kpa_band == "40m"
+    assert manager.last_kat_band == "40m"
+    assert manager.last_kat_frequency == 7.074
+    manager._executor.shutdown(wait=True)
+
+
 def test_fast_meter_refresh_does_not_advance_critical_status_freshness():
     kpa_serials = []
     kat_serials = []

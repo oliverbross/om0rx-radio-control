@@ -854,6 +854,26 @@ class KPA500(SerialCommandDevice):
             )
             return result
 
+    def route_status(self) -> dict[str, Any]:
+        """Read only the KPA fields needed to decide whether a route must move.
+
+        This is observation-only.  Full fault and meter evidence is deliberately
+        left to the guarded route transaction and the normal telemetry poll.
+        """
+        with self.lock:
+            result: dict[str, Any] = {
+                "operate": self.read_operate(),
+                "band": self.read_band(),
+            }
+            missing_fields = [key for key, value in result.items() if value is None]
+            result.update(
+                observed_at=self.last_seen,
+                route_missing_fields=missing_fields,
+                route_complete=not missing_fields,
+                error=self.last_error,
+            )
+            return result
+
     def verify_target(
         self,
         expected: dict[str, Any],
@@ -1162,6 +1182,24 @@ class KAT500(SerialCommandDevice):
                 observed_at=self.last_seen,
                 missing_fields=missing_fields,
                 complete=not missing_fields,
+                error=self.last_error,
+            )
+            return result
+
+    def route_status(self) -> dict[str, Any]:
+        """Read only the KAT fields that identify its passive RF route."""
+        with self.lock:
+            self._wake()
+            result: dict[str, Any] = {
+                "antenna": self.read_antenna(),
+                "band": self.read_band(),
+                "frequency_khz": self.read_frequency_khz(),
+            }
+            missing_fields = [key for key, value in result.items() if value is None]
+            result.update(
+                observed_at=self.last_seen,
+                route_missing_fields=missing_fields,
+                route_complete=not missing_fields,
                 error=self.last_error,
             )
             return result
@@ -1762,6 +1800,70 @@ class ElecraftManager:
         finally:
             if task.done() and self._status_refresh_task is task:
                 self._status_refresh_task = None
+
+    async def refresh_route_status(self) -> dict[str, Any]:
+        """Refresh the exact accessory fields used by the observed-route follower.
+
+        KPA and KAT have independent serial transports, so their read-only route
+        proofs run concurrently.  The full status poll remains responsible for
+        operational telemetry; this pass only replaces the route fields it has
+        actually observed.
+        """
+        if self._maintenance_suspended:
+            return self.snapshot()
+        async with self._lock:
+            kpa_device = self.kpa500
+            kat_device = self.kat500
+            lifecycle_generation = self._lifecycle_generation
+        device_tasks = []
+        if kpa_device and hasattr(kpa_device, "route_status"):
+            device_tasks.append(
+                ("kpa500", kpa_device, self._run_io(kpa_device.route_status))
+            )
+        if kat_device and hasattr(kat_device, "route_status"):
+            device_tasks.append(
+                ("kat500", kat_device, self._run_io(kat_device.route_status))
+            )
+        if not device_tasks:
+            return self.snapshot()
+        device_results = await asyncio.gather(
+            *(task for _, _, task in device_tasks),
+            return_exceptions=True,
+        )
+        async with self._lock:
+            if lifecycle_generation != self._lifecycle_generation:
+                return self.snapshot()
+            for (name, device, _), result in zip(
+                device_tasks, device_results, strict=True
+            ):
+                current = self.kpa500 if name == "kpa500" else self.kat500
+                if (
+                    device is not current
+                    or not getattr(device, "io_enabled", True)
+                    or not isinstance(result, dict)
+                ):
+                    continue
+                merged = dict(self._status.get(name) or {})
+                merged.update(result)
+                merged.update(
+                    enabled=True,
+                    connected=bool(device.connected),
+                    responsive=bool(result.get("route_complete")),
+                )
+                self._status[name] = merged
+                if name == "kpa500":
+                    self.last_kpa_band = result.get("band")
+                else:
+                    self.last_kat_band = result.get("band")
+                    frequency_khz = result.get("frequency_khz")
+                    self.last_kat_frequency = (
+                        float(frequency_khz) / 1000
+                        if frequency_khz is not None
+                        else None
+                    )
+                    self.last_kat_antenna = result.get("antenna")
+            self._status["updated_at"] = time.time()
+            return self.snapshot()
 
     async def publish_verified_readbacks(
         self,
