@@ -63,6 +63,7 @@ class RemoteStationRuntime:
         self.started_at = time.time()
         self.last_error: str | None = None
         self._poll_task: asyncio.Task | None = None
+        self._route_follow_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._command_lock = asyncio.Lock()
         self._revision = 0
@@ -108,6 +109,11 @@ class RemoteStationRuntime:
         if task and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        # Let an in-flight guarded route complete before shutting its devices
+        # down. Polling never cancels a hardware transaction to chase a QSY.
+        if self._route_follow_task:
+            await asyncio.gather(self._route_follow_task, return_exceptions=True)
+            self._route_follow_task = None
         if self.coordinator:
             try:
                 await self.coordinator.stop()
@@ -156,14 +162,7 @@ class RemoteStationRuntime:
                             self.radio_snapshot.get("frequency"),
                             self.radio_snapshot.get("mode"),
                         )
-                        try:
-                            await self.coordinator.follow_observed_radio_route(
-                                self.radio_snapshot.get("frequency")
-                            )
-                            self.last_error = None
-                        except Exception as exc:  # noqa: BLE001 - keep healthy FLEX state visible
-                            self.last_error = f"Accessory route follow failed: {exc}"
-                            logger.warning(self.last_error)
+                        self._schedule_route_follow()
                 else:
                     age = time.time() - self._last_radio_observation
                     connected = bool(getattr(self.flex, "sock", None))
@@ -201,6 +200,29 @@ class RemoteStationRuntime:
                 )
             except TimeoutError:
                 pass
+
+    def _schedule_route_follow(self) -> None:
+        # Serial accessory readbacks can take seconds. Keep radio/MOX telemetry
+        # flowing during them, with at most one follower and no queued old QSYs.
+        # The coordinator revalidates the latest observed route at its existing
+        # checkpoints; the next poll picks up any newer target after completion.
+        if self._route_follow_task and not self._route_follow_task.done():
+            return
+        self._route_follow_task = asyncio.create_task(
+            self._follow_latest_route(), name="remote_station_route_follow"
+        )
+
+    async def _follow_latest_route(self) -> None:
+        try:
+            await self.coordinator.follow_observed_radio_route(
+                self.radio_snapshot.get("frequency")
+            )
+            self.last_error = None
+        except Exception as exc:  # noqa: BLE001 - keep healthy FLEX state visible
+            self.last_error = f"Accessory route follow failed: {exc}"
+            logger.warning(self.last_error)
+        finally:
+            self._revision += 1
 
     def _update_radio_snapshot(self, levels: dict[str, Any]) -> bool:
         observed_at = time.time()
@@ -482,6 +504,7 @@ class RemoteStationRuntime:
     async def execute(
         self, request_id: str, command: str, arguments: dict[str, Any]
     ) -> dict[str, Any]:
+        received_at = time.monotonic()
         fingerprint = hashlib.sha256(
             json.dumps(
                 {"command": command, "arguments": arguments}, sort_keys=True, separators=(",", ":")
@@ -507,7 +530,9 @@ class RemoteStationRuntime:
                         status_code=422,
                     )
                 return {**copy.deepcopy(cached[1]), "replayed": True}
+            execution_started = time.monotonic()
             result = await self._execute_once(command, arguments)
+            completed_at = time.monotonic()
             self._revision += 1
             response = {
                 "success": True,
@@ -515,6 +540,11 @@ class RemoteStationRuntime:
                 "result": result,
                 "state": self.snapshot(),
                 "replayed": False,
+                "timing_ms": {
+                    "queue": round((execution_started - received_at) * 1000, 3),
+                    "execution": round((completed_at - execution_started) * 1000, 3),
+                    "total": round((completed_at - received_at) * 1000, 3),
+                },
             }
             self._idempotency[request_id] = (fingerprint, copy.deepcopy(response))
             self._idempotency.move_to_end(request_id)

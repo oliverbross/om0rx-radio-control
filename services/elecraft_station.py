@@ -1126,7 +1126,10 @@ class StationCoordinator:
         allow_digital_owner: bool = False,
     ) -> bool:
         """De-escalate to standby before any FLEX frequency/band mutation."""
+        started = time.monotonic()
+        stages: dict[str, float] = {}
         async with self._action_lock:
+            stages["action_lock_ms"] = (time.monotonic() - started) * 1000
             self._require_no_training()
             self._require_operational()
             if self._stopped:
@@ -1141,9 +1144,11 @@ class StationCoordinator:
                     "A station transaction is already running",
                 )
             async with self.radio_lock:
+                stages["radio_lock_ms"] = (time.monotonic() - started) * 1000
                 if not allow_digital_owner:
                     self._assert_digital_idle()
                 await self._fresh_receive_state()
+                stages["receive_confirmed_ms"] = (time.monotonic() - started) * 1000
                 if not await self._request_fail_safe_standby():
                     raise StationActionError(
                         "kpa-standby-not-confirmed",
@@ -1151,6 +1156,7 @@ class StationCoordinator:
                         status_code=503,
                     )
                 self._route_verified = None
+                stages["standby_confirmed_ms"] = (time.monotonic() - started) * 1000
                 result = await asyncio.wait_for(run_radio_io(operation), timeout=3.0)
                 if result is not True:
                     raise StationActionError(
@@ -1158,6 +1164,9 @@ class StationCoordinator:
                         f"FLEX rejected route change: {reason}",
                         status_code=503,
                     )
+                stages["command_complete_ms"] = (time.monotonic() - started) * 1000
+                logger.info("FLEX route timing reason=%s cumulative_ms=%s", reason,
+                            {key: round(value, 1) for key, value in stages.items()})
                 return True
 
     async def _claim_training_tx_monitor(self, job_id: str) -> None:

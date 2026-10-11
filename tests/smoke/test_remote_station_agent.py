@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 from asyncio import run
@@ -391,6 +392,38 @@ def _runtime(tmp_path):
 def test_remote_flex_poll_is_fast_enough_for_live_monitoring():
     assert FLEX_SNAPSHOT_WINDOW_SECONDS <= 0.2
     assert FLEX_POLL_IDLE_SECONDS <= 0.05
+
+
+def test_accessory_follow_does_not_block_radio_or_queue_obsolete_targets(tmp_path):
+    async def scenario():
+        runtime = _runtime(tmp_path)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        followed = []
+
+        async def slow_follow(frequency):
+            followed.append(frequency)
+            entered.set()
+            await release.wait()
+
+        runtime.coordinator.follow_observed_radio_route = slow_follow
+        runtime._schedule_route_follow()
+        await asyncio.wait_for(entered.wait(), 1)
+        first = runtime._route_follow_task
+        # The next radio observation remains publishable while accessories wait.
+        runtime._update_radio_snapshot({"freq": 14.074, "mode": "DIGU", "mox": True})
+        assert runtime.radio_snapshot["mox"] is True
+        runtime.radio_snapshot["frequency"] = 7.195
+        runtime._schedule_route_follow()
+        assert runtime._route_follow_task is first
+        assert followed == [14.074]
+        release.set()
+        await first
+        runtime._schedule_route_follow()
+        await runtime._route_follow_task
+        assert followed == [14.074, 7.195]
+
+    run(scenario())
 
 
 def test_remote_frequency_command_is_guarded_and_idempotent(tmp_path):
