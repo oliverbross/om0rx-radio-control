@@ -2325,10 +2325,11 @@ class StationCoordinator:
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         """Collect independent final proofs in one bounded observation window.
 
-        The KPA, KAT, and FLEX use separate transports.  Querying all three
-        concurrently retains every exact final readback while avoiding an
-        unnecessary serial-then-radio wait and reduces the interval in which
-        an external route change could split the evidence.
+        FLEX uses a transport independent from the manager-protected KPA/KAT
+        serial reads.  Starting all three together retains every exact final
+        readback while overlapping the FLEX proof with the serial proofs and
+        reducing the interval in which an external route change could split
+        the evidence.
         """
         kpa_status, kat_status, levels = await asyncio.gather(
             self._device_readback(kpa),
