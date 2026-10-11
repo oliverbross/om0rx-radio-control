@@ -376,6 +376,55 @@ The complete corrected Windows prompt, safety constraints, regression matrix,
 and acceptance procedure are in
 [`WINDOWS_CODEX_EXCLUSIVE_CONTROLLER_HANDOFF_2026-10-11.md`](WINDOWS_CODEX_EXCLUSIVE_CONTROLLER_HANDOFF_2026-10-11.md).
 
+### Offline implementation and pre-deployment evidence
+
+- Starting point was verified exactly as
+  `e6f78bd4401617d615d3ff3a0c46a2aa84d12c05` on
+  `codex/remote-agent-flex-spots`; the working tree was clean before editing.
+- Live inventory found the Python Remote Station Agent task, remote tray, and
+  widget running. The old legacy `Om0rxAgent.exe` UI also remained open from
+  Explorer, although its supervised backend had already been stopped and no
+  listener remained on 8080/8091/8092. The FLEX TCP owners were SmartSDR DAX,
+  SmartSDR CAT, and the Python remote agent. The legacy HKCU Run value was
+  absent; the remote controller and allowed tray scheduled tasks were present.
+- Both controller families now acquire the same Windows kernel mutex,
+  `Global\OM0RX.StationController`, before the Python runtime or legacy
+  supervisor can open/start station resources. Conflict exit code 73 is
+  distinct and actionable. The named mutex is authoritative; a small atomic
+  `%LOCALAPPDATA%\OM0RX\station-controller-owner.json` record contains only
+  controller family, PID, executable path, UTC start time, and launch source.
+  Stale metadata never blocks ownership, and abandoned mutex recovery is
+  reported without bypassing normal startup safety validation.
+- The remote tray and widget do not acquire controller ownership. The tray
+  reads the sanitized owner record only when the agent API is unavailable.
+  Scheduled-task conflict exit 73 is absorbed by the launcher after one log
+  entry so Task Scheduler does not repeat the failure five times.
+- The remote installer refuses a dual-startup configuration unless the
+  operator explicitly supplies `-DisableLegacyStartup`; that switch backs up
+  and removes only the legacy HKCU Run value. A separate restore script refuses
+  to restore it while the remote controller task is enabled. The legacy
+  installer and GUI startup toggle likewise refuse while the remote controller
+  task is enabled. Shortcuts, settings, application data, and the allowed
+  remote tray task are retained.
+- Cross-language regression coverage proves legacy-first refusal,
+  Python-first refusal, duplicate-family refusal, clean release, abandoned
+  recovery, stale-metadata tolerance, exactly-one-winner launch races,
+  tray/widget non-ownership, startup migration detection, and scheduled-task
+  retry suppression. Focused controller/remote-agent/tray tests passed 58 with
+  one dependency deprecation warning and zero failures. Both .NET controller
+  projects built with zero warnings and zero errors; the active legacy binary
+  was not stopped for offline compilation, so its build was directed to an
+  isolated temporary output.
+- The complete maintained gate passed: 876 Python smoke tests, 105 browser and
+  widget tests, and 105 MSHV offline safety tests. Python compile, Ruff, backend
+  import, duplicate-route scan, PowerShell/JavaScript syntax, old-reference
+  scan, and Git whitespace checks all passed.
+- Pre-deployment live state remained receive-safe: FLEX connected, known,
+  fresh, and Maestro-bound; MOX false; interlock READY; KPA500 in standby at
+  0 W; KAT500 readable; route confirmed; zero alarms; recovery not required.
+  No controller was stopped before the operator explicitly authorized the
+  replacement, and no PTT, TUNE, CWX, Operate, or RF command was issued.
+
 ## Handoff protocol
 
 After each bounded change:

@@ -19,7 +19,7 @@ if (-not (Test-Path -LiteralPath $AgentExe)) {
     throw "Agent executable not found after build: $AgentExe"
 }
 
-$arguments = @("--project-root", "`"$ProjectRoot`"", "--port", "$Port")
+$arguments = @("--project-root", "`"$ProjectRoot`"", "--port", "$Port", "--launch-source", "powershell-launcher")
 if ($NoAutostart) {
     $arguments += "--no-autostart"
 }

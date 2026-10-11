@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $AgentProject = Join-Path $ProjectRoot "tools\Om0rxAgent\Om0rxAgent.csproj"
-$argsList = @("--project-root", $ProjectRoot, "--port", "$Port")
+$argsList = @("--project-root", $ProjectRoot, "--port", "$Port", "--launch-source", "powershell-launcher")
 if ($NoAutostart) {
     $argsList += "--no-autostart"
 }

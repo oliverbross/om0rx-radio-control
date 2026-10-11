@@ -11,6 +11,12 @@ import uvicorn
 
 from .app import create_app
 from .config import AgentConfigError, default_config_path, load_agent_config, write_default_config
+from .controller_ownership import (
+    CONFLICT_EXIT_CODE,
+    ControllerOwnershipConflict,
+    ControllerOwnershipError,
+    StationControllerOwnership,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -22,6 +28,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--log-level", default="info", choices=("debug", "info", "warning", "error")
     )
+    parser.add_argument("--launch-source", default="direct-python")
     return parser
 
 
@@ -64,15 +71,43 @@ def main() -> int:
             logging.StreamHandler(),
         ],
     )
-    logging.getLogger(__name__).info("Remote station agent log: %s", log_path)
-    uvicorn.run(
-        create_app(config),
-        host=config.bind_host,
-        port=config.bind_port,
-        log_level=args.log_level,
-        log_config=None,
-        access_log=False,
+    entry_logger = logging.getLogger(__name__)
+    entry_logger.info("Remote station agent log: %s", log_path)
+    ownership = StationControllerOwnership(
+        "python-remote-station-agent",
+        args.launch_source,
     )
+    try:
+        ownership.acquire()
+    except ControllerOwnershipConflict as exc:
+        entry_logger.critical("%s", exc)
+        return CONFLICT_EXIT_CODE
+    except (ControllerOwnershipError, OSError) as exc:
+        entry_logger.critical("Station controller ownership could not be established: %s", exc)
+        return CONFLICT_EXIT_CODE + 1
+    try:
+        if ownership.abandoned:
+            previous = ownership.previous_owner
+            prior = (
+                f"{previous.controller_family} PID {previous.pid}"
+                if previous
+                else "unknown prior controller"
+            )
+            entry_logger.warning(
+                "Recovered abandoned station-controller ownership from %s; "
+                "normal startup safety validation remains required.",
+                prior,
+            )
+        uvicorn.run(
+            create_app(config),
+            host=config.bind_host,
+            port=config.bind_port,
+            log_level=args.log_level,
+            log_config=None,
+            access_log=False,
+        )
+    finally:
+        ownership.release()
     return 0
 
 

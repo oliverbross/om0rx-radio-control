@@ -14,6 +14,7 @@ public sealed class AgentApplicationContext : ApplicationContext
     private ToolStripMenuItem? _startupItem;
     private readonly List<ToolStripItem> _actionItems = new();
     private bool _actionInProgress;
+    private bool _updatingStartupItem;
 
     public AgentApplicationContext(AgentSettings settings, AgentSupervisor supervisor)
     {
@@ -74,7 +75,22 @@ public sealed class AgentApplicationContext : ApplicationContext
         };
         _startupItem.CheckedChanged += (_, _) =>
         {
-            StartupRegistration.SetEnabled(_startupItem.Checked, _settings);
+            if (_updatingStartupItem) return;
+            try
+            {
+                StartupRegistration.SetEnabled(_startupItem.Checked, _settings);
+            }
+            catch (Exception ex)
+            {
+                _updatingStartupItem = true;
+                _startupItem.Checked = StartupRegistration.IsEnabled();
+                _updatingStartupItem = false;
+                MessageBox.Show(
+                    ex.Message,
+                    "OM0RX startup conflict",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
         };
         menu.Items.Add(_startupItem);
         menu.Items.Add("Settings...", null, (_, _) => ShowSettings());

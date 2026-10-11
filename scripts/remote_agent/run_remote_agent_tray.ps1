@@ -34,6 +34,7 @@ else {
     Join-Path $env:APPDATA "OM0RX Remote Station\agent.json"
 }
 $logPath = Join-Path (Split-Path -Parent $configPath) "agent.log"
+$controllerOwnerPath = Join-Path $env:LOCALAPPDATA "OM0RX\station-controller-owner.json"
 $settingsScript = Join-Path $PSScriptRoot "remote_agent_settings.ps1"
 $widgetScript = Join-Path $PSScriptRoot "remote_agent_widget.ps1"
 
@@ -68,6 +69,7 @@ function Get-AgentSnapshot {
             TaskState = $taskState
             State = $response.state
             Error = $null
+            ControllerOwner = Get-ControllerOwnerInfo
         }
     }
     catch {
@@ -75,7 +77,23 @@ function Get-AgentSnapshot {
             TaskState = $taskState
             State = $null
             Error = $_.Exception.Message
+            ControllerOwner = Get-ControllerOwnerInfo
         }
+    }
+}
+
+function Get-ControllerOwnerInfo {
+    try {
+        $owner = Get-Content -LiteralPath $controllerOwnerPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ([int]$owner.schema -ne 1 -or [int]$owner.pid -le 0) { return $null }
+        return [pscustomobject]@{
+            Family = ([string]$owner.controller_family -replace '[^A-Za-z0-9._-]', '')
+            Pid = [int]$owner.pid
+            LaunchSource = ([string]$owner.launch_source -replace '[^A-Za-z0-9._-]', '')
+        }
+    }
+    catch {
+        return $null
     }
 }
 
@@ -95,6 +113,15 @@ function Format-AgentDetails([object]$Snapshot) {
         $lines.Add("")
         $lines.Add("Local API: unavailable")
         $lines.Add("Reason: $($Snapshot.Error)")
+        if ($Snapshot.ControllerOwner) {
+            $lines.Add(
+                "Active station controller: $($Snapshot.ControllerOwner.Family) " +
+                "(PID $($Snapshot.ControllerOwner.Pid), $($Snapshot.ControllerOwner.LaunchSource))"
+            )
+        }
+        else {
+            $lines.Add("Active station controller: unknown; inspect both controller startup entries.")
+        }
         return $lines -join [Environment]::NewLine
     }
 

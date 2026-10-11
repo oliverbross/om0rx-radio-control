@@ -28,7 +28,7 @@ function New-AgentShortcut {
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($ShortcutPath)
     $shortcut.TargetPath = $AgentExe
-    $shortcut.Arguments = "--project-root `"$ProjectRoot`" --port $Port"
+    $shortcut.Arguments = "--project-root `"$ProjectRoot`" --port $Port --launch-source shortcut"
     $shortcut.WorkingDirectory = $ProjectRoot
     $shortcut.IconLocation = "$AgentExe,0"
     $shortcut.Description = "Start OM0RX Radio Control Agent"

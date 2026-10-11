@@ -67,6 +67,13 @@ def test_tray_shows_sanitized_station_evidence_without_rendering_the_token():
     )
 
 
+def test_tray_surfaces_shared_controller_owner_without_acquiring_the_mutex():
+    assert "station-controller-owner.json" in TRAY
+    assert "Get-ControllerOwnerInfo" in TRAY
+    assert "Active station controller:" in TRAY
+    assert "Global\\OM0RX.StationController" not in TRAY
+
+
 def test_tray_installer_registers_an_interactive_login_task():
     assert '"OM0RX Remote Station Tray"' in INSTALLER
     assert "New-ScheduledTaskTrigger -AtLogOn" in INSTALLER
