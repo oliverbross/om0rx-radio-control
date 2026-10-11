@@ -25,6 +25,10 @@ from services.station_alarms import build_station_alarms
 
 
 logger = logging.getLogger(__name__)
+AMP_KEY_RELAY_SETTLE_SECONDS = 0.05
+AMP_KEY_VERIFY_ATTEMPTS = 3
+KAT_TUNE_CANCEL_SETTLE_SECONDS = 0.1
+KAT_TUNE_CANCEL_VERIFY_ATTEMPTS = 10
 
 RECEIVE_INTERLOCK_STATES = {"READY", "RECEIVE"}
 EXTERNAL_RX_WAIT_SECONDS = 20.0
@@ -89,6 +93,9 @@ class RouteTarget:
     antenna_name: str
     radio_mode: str = ""
     digital_mode: bool = False
+    policy_profile: str = "standard"
+    amplifier_allowed_bands: tuple[str, ...] = ()
+    amplifier_inhibitors: tuple[str, ...] = ()
     amplifier_allowed: bool = True
     amplifier_drive_w: int = 25
     barefoot_drive_w: int = 25
@@ -106,6 +113,9 @@ class RouteTarget:
             "antenna_name": self.antenna_name,
             "radio_mode": self.radio_mode,
             "digital_mode": self.digital_mode,
+            "policy_profile": self.policy_profile,
+            "amplifier_allowed_bands": list(self.amplifier_allowed_bands),
+            "amplifier_inhibitors": list(self.amplifier_inhibitors),
             "amplifier_allowed": self.amplifier_allowed,
             "amplifier_drive_w": self.amplifier_drive_w,
             "barefoot_drive_w": self.barefoot_drive_w,
@@ -119,8 +129,8 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _flex_policy_tx_antenna(frequency_mhz: float) -> Optional[str]:
-    policy = getattr(config, "FLEX_ANTENNA_POLICY", {}) or {}
+def _flex_policy_tx_antenna(frequency_mhz: float, source: Any = config) -> Optional[str]:
+    policy = getattr(source, "FLEX_ANTENNA_POLICY", {}) or {}
     if policy.get("enabled") is False:
         return None
     band = band_from_frequency(frequency_mhz)
@@ -146,6 +156,7 @@ class StationCoordinator:
         digital_guard: Optional[Callable[[], Any]] = None,
         radio_lock: Optional[asyncio.Lock] = None,
         recovery_required: bool = False,
+        policy_source: Any = None,
     ) -> None:
         self.elecraft = elecraft
         self.flex_provider = flex_provider
@@ -154,6 +165,7 @@ class StationCoordinator:
         self._uses_default_digital_guard = digital_guard is None
         self.digital_guard = digital_guard or _default_digital_guard
         self.radio_lock = radio_lock or get_radio_command_lock()
+        self.policy_source = policy_source or config
         self._action_lock = asyncio.Lock()
         self._cancel_event = asyncio.Event()
         self._active_task: Optional[asyncio.Task] = None
@@ -173,7 +185,13 @@ class StationCoordinator:
 
     @property
     def commissioned(self) -> bool:
-        return bool(getattr(config, "STATION_COORDINATOR_COMMISSIONED", False))
+        return bool(self._policy_value("STATION_COORDINATOR_COMMISSIONED", False))
+
+    def _policy_value(self, name: str, default: Any) -> Any:
+        """Read immutable runtime policy first, then non-profile defaults."""
+        if hasattr(self.policy_source, name):
+            return getattr(self.policy_source, name)
+        return getattr(config, name, default)
 
     @property
     def busy(self) -> bool:
@@ -205,16 +223,16 @@ class StationCoordinator:
         band = band_from_frequency(frequency_mhz)
         if not band:
             return None
-        flex_tx_ant = _flex_policy_tx_antenna(frequency_mhz)
+        flex_tx_ant = _flex_policy_tx_antenna(frequency_mhz, self.policy_source)
         if not flex_tx_ant:
             return None
         antenna = int(self.elecraft.antenna_policy.get(band, 0) or 0)
         if antenna not in {1, 2, 3}:
             return None
-        names = getattr(config, "KAT500_ANTENNA_NAMES", {}) or {}
+        names = self._policy_value("KAT500_ANTENNA_NAMES", {}) or {}
         name = str(names.get(str(antenna), names.get(antenna, f"KAT ANT{antenna}"))).strip()
         name = name or f"KAT ANT{antenna}"
-        amplifier_policy = resolve_amplifier_policy(config, band, radio_mode)
+        amplifier_policy = resolve_amplifier_policy(self.policy_source, band, radio_mode)
         return RouteTarget(
             route_id=f"{band}-flex-{flex_tx_ant.lower()}-kat-ant{antenna}",
             band=band,
@@ -224,6 +242,9 @@ class StationCoordinator:
             antenna_name=name,
             radio_mode=amplifier_policy.radio_mode,
             digital_mode=amplifier_policy.digital_mode,
+            policy_profile=amplifier_policy.profile,
+            amplifier_allowed_bands=amplifier_policy.allowed_bands,
+            amplifier_inhibitors=amplifier_policy.inhibitors,
             amplifier_allowed=amplifier_policy.amplifier_allowed,
             amplifier_drive_w=amplifier_policy.amplifier_drive_w,
             barefoot_drive_w=amplifier_policy.barefoot_drive_w,
@@ -236,7 +257,16 @@ class StationCoordinator:
         frequency = radio.get("frequency")
         if frequency is None:
             frequency = self.elecraft.last_frequency
-        return self._route_for_frequency(frequency, radio.get("mode"))
+        route = self._route_for_frequency(frequency, radio.get("mode"))
+        if self._route_verified and (
+            route is None
+            or self._route_verified.get("route_id") != route.route_id
+            or self._route_verified.get("frequency_khz")
+            != round(route.frequency_mhz * 1000)
+            or self._route_verified.get("digital_mode", False) is not route.digital_mode
+        ):
+            self._route_verified = None
+        return route
 
     def _require_fresh_route(self) -> RouteTarget:
         radio = self._radio_snapshot()
@@ -261,7 +291,7 @@ class StationCoordinator:
     def _route_verification_is_fresh(self, route: Optional[RouteTarget]) -> bool:
         if not self._route_verified or not route:
             return False
-        ttl = float(getattr(config, "STATION_ROUTE_VERIFY_TTL_SECONDS", 10.0))
+        ttl = float(self._policy_value("STATION_ROUTE_VERIFY_TTL_SECONDS", 10.0))
         return bool(
             self._route_verified.get("route_id") == route.route_id
             and self._route_verified.get("frequency_khz")
@@ -285,9 +315,7 @@ class StationCoordinator:
         state = self.elecraft.snapshot()
         kpa = state.get("kpa500") or {}
         kat = state.get("kat500") or {}
-        max_age = float(
-            getattr(config, "STATION_OPERATE_CACHE_MAX_AGE_SECONDS", 15.0)
-        )
+        max_age = float(self._policy_value("STATION_OPERATE_CACHE_MAX_AGE_SECONDS", 15.0))
         now = time.time()
 
         def recent(device: dict[str, Any]) -> bool:
@@ -1503,15 +1531,62 @@ class StationCoordinator:
                 "kat-fault-active",
                 f"KAT500 fault {fault or 'unknown'} prevents amplifier key-line reconnect",
             )
+        tuning = await self._device_value(kat, "tune_status")
+        if tuning is True:
+            self._transaction_step("cancelling-stale-tuner-state", 40)
+            await self._device_call(kat, "cancel_tune")
+            for _attempt in range(KAT_TUNE_CANCEL_VERIFY_ATTEMPTS):
+                await asyncio.sleep(KAT_TUNE_CANCEL_SETTLE_SECONDS)
+                tuning = await self._device_value(kat, "tune_status")
+                if tuning is False:
+                    break
+            if tuning is not False:
+                raise StationActionError(
+                    "kat-tune-cancel-not-confirmed",
+                    "KAT500 did not confirm idle after the receive-only cancel request",
+                    status_code=503,
+                )
+            # Cancellation can take until the end of the current tuning step.
+            # Re-prove receive and KPA standby immediately before touching K23.
+            await self._fresh_receive_state()
+            kpa_status = await self._device_readback(kpa)
+            kpa_safe = verify_exact_target(
+                kpa_status,
+                {"power": True, "operate": False, "fault": "00"},
+            )
+            if not kpa_safe["verified"]:
+                raise StationActionError(
+                    "kpa-standby-not-confirmed",
+                    "KPA500 standby/no-fault readback changed while cancelling KAT500 tune",
+                )
+            fault = str(await self._device_value(kat, "read_fault") or "").strip()
+            if fault != "0":
+                raise StationActionError(
+                    "kat-fault-active",
+                    f"KAT500 fault {fault or 'unknown'} prevents amplifier key-line reconnect",
+                )
+        elif tuning is not False:
+            raise StationActionError(
+                "kat-tune-state-unknown",
+                "KAT500 tuning state must be confirmed idle before reconnecting its key line",
+                status_code=503,
+            )
         self._transaction_step("reconnecting-amplifier-key", 45)
         await self._fresh_receive_state()
         await self._device_call(kat, "set_amp_key_interrupted", False)
-        if await self._device_value(kat, "read_amp_key_interrupted") is not False:
-            raise StationActionError(
-                "kat-key-interrupt-not-cleared",
-                "KAT500 did not reconnect the amplifier key line",
-                status_code=503,
-            )
+        # Elecraft documents that K23 may take a few milliseconds to move
+        # after AMPI0.  Verify the single guarded write with bounded read-only
+        # retries rather than immediately treating the old relay state as a
+        # failure and flooding the follower with another route transaction.
+        for _attempt in range(AMP_KEY_VERIFY_ATTEMPTS):
+            await asyncio.sleep(AMP_KEY_RELAY_SETTLE_SECONDS)
+            if await self._device_value(kat, "read_amp_key_interrupted") is False:
+                return
+        raise StationActionError(
+            "kat-key-interrupt-not-cleared",
+            "KAT500 did not reconnect the amplifier key line",
+            status_code=503,
+        )
 
     def _start_transaction(self, kind: str, route: Optional[RouteTarget]) -> dict[str, Any]:
         self._transaction = {
@@ -2509,7 +2584,7 @@ class StationCoordinator:
                     "FLEX frequency or route changed after the tune transaction started",
                 )
 
-            tune_power = int(getattr(config, "STATION_TUNE_POWER_W", 20))
+            tune_power = int(self._policy_value("STATION_TUNE_POWER_W", 20))
             tune_power = max(15, min(30, tune_power))
             self._transaction_step("arming-tuner", 30)
             if hasattr(kat, "start_tune"):
@@ -2543,7 +2618,9 @@ class StationCoordinator:
             carrier_started = True
             await self._fresh_transmit_state()
 
-            timeout_seconds = float(getattr(config, "STATION_TUNE_TIMEOUT_SECONDS", 30.0))
+            timeout_seconds = float(
+                self._policy_value("STATION_TUNE_TIMEOUT_SECONDS", 30.0)
+            )
             deadline = time.monotonic() + max(5.0, min(60.0, timeout_seconds))
             saw_tuning = False
             stable_idle_polls = 0
@@ -2604,8 +2681,8 @@ class StationCoordinator:
                 swr_value = float(swr)
             except (TypeError, ValueError) as exc:
                 raise StationActionError("tune-swr-unknown", "No valid tuned SWR was returned") from exc
-            abort_swr = float(getattr(config, "STATION_TUNE_ABORT_SWR", 3.0))
-            target_swr = float(getattr(config, "STATION_TUNE_TARGET_SWR", 1.5))
+            abort_swr = float(self._policy_value("STATION_TUNE_ABORT_SWR", 3.0))
+            target_swr = float(self._policy_value("STATION_TUNE_TARGET_SWR", 1.5))
             try:
                 forward_adc = int(final_status.get("forward_adc"))
             except (TypeError, ValueError) as exc:
@@ -2805,7 +2882,10 @@ class StationCoordinator:
             await self._fresh_receive_state()
             await self._fresh_flex_route(route)
 
-            tune_power = max(15, min(30, int(getattr(config, "STATION_TUNE_POWER_W", 20))))
+            tune_power = max(
+                15,
+                min(30, int(self._policy_value("STATION_TUNE_POWER_W", 20))),
+            )
             self._transaction_step("starting-survey-carrier", 45)
             tune_power_ok = await self._bounded_flex_io(
                 lambda: flex.set_tune_power(tune_power),
@@ -2867,7 +2947,7 @@ class StationCoordinator:
                     "survey-swr-unconfirmed",
                     "KAT500 SWR or forward-power evidence is not valid",
                 )
-            abort_swr = float(getattr(config, "STATION_TUNE_ABORT_SWR", 3.0))
+            abort_swr = float(self._policy_value("STATION_TUNE_ABORT_SWR", 3.0))
             if measured_swr >= abort_swr:
                 raise StationActionError(
                     "survey-swr-unsafe",
@@ -2881,7 +2961,7 @@ class StationCoordinator:
                     status_code=503,
                 )
             carrier_started = False
-            target_swr = float(getattr(config, "STATION_TUNE_TARGET_SWR", 1.5))
+            target_swr = float(self._policy_value("STATION_TUNE_TARGET_SWR", 1.5))
             if self._transaction is not None:
                 self._transaction.update(
                     swr_before=measured_swr,

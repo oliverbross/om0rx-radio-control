@@ -375,6 +375,7 @@ def test_startup_disarm_clears_and_persists_pending_targets(service, monkeypatch
 
     ft8 = get_ft8_service()
     controller = ft8.automation_controller
+    monkeypatch.setattr(controller, "target_store", None)
     digital.atomic_write_json(digital.STATE_PATH, {"provider": "wsjtz"})
     target = controller.ingest_target({
         "message": "CQ A1AA JN88", "callsign": "A1AA", "band": "20m",

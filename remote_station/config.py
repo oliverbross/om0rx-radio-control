@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 SCHEMA_VERSION = 1
@@ -109,6 +112,37 @@ class AgentConfig:
     tune_target_swr: float
     tune_abort_swr: float
     tune_timeout_seconds: float
+
+    def fingerprint(self) -> str:
+        """Return a stable, non-secret fingerprint of the validated profile."""
+        payload = json.dumps(
+            self.public_summary(),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def station_policy_source(self) -> SimpleNamespace:
+        """Freeze the active coordinator policy independently of saved edits."""
+        return SimpleNamespace(
+            FLEX_ANTENNA_POLICY=deepcopy(self.flex_antenna_policy),
+            KAT500_ANTENNA_NAMES=deepcopy(self.kat_antenna_names),
+            STATION_COORDINATOR_COMMISSIONED=self.commissioned,
+            STATION_AMPLIFIER_ALLOWED_BANDS=tuple(self.amplifier_allowed_bands),
+            STATION_AMPLIFIER_DRIVE_W=deepcopy(self.amplifier_drive_w),
+            STATION_BAREFOOT_DRIVE_W=deepcopy(self.barefoot_drive_w),
+            STATION_DIGITAL_AMPLIFIER_ALLOWED_BANDS=tuple(
+                self.digital_amplifier_allowed_bands
+            ),
+            STATION_DIGITAL_AMPLIFIER_DRIVE_W=deepcopy(
+                self.digital_amplifier_drive_w
+            ),
+            DIGITAL_KPA_POLICY=self.digital_kpa_policy,
+            STATION_TUNE_POWER_W=self.tune_power_w,
+            STATION_TUNE_TARGET_SWR=self.tune_target_swr,
+            STATION_TUNE_ABORT_SWR=self.tune_abort_swr,
+            STATION_TUNE_TIMEOUT_SECONDS=self.tune_timeout_seconds,
+        )
 
     def public_summary(self) -> dict[str, Any]:
         """Return configuration safe to expose to an authenticated client."""

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -343,6 +344,80 @@ def build_station(
         radio_lock=asyncio.Lock(),
     )
     return station, calls, manager
+
+
+def build_80m_station(
+    *,
+    mode: str = "LSB",
+    accessory_band: str = "80m",
+    digital_allowed_bands: tuple[str, ...] = ("80m",),
+) -> tuple[StationCoordinator, list[tuple], FakeManager, FakeFlex, dict]:
+    calls: list[tuple] = []
+    manager = FakeManager(calls)
+    manager.antenna_policy.update({"80m": 2, "20m": 1})
+    manager.last_frequency = 3.698
+    manager.kpa500.band = accessory_band
+    manager.kat500.band = accessory_band
+    manager.kat500.antenna = 2
+    manager.kat500.frequency_khz = 3698 if accessory_band == "80m" else 14296
+    flex = FakeFlex(calls)
+    flex.current_freq = 3.698
+    flex.current_mode = mode
+    radio = {
+        "connected": True,
+        "known": True,
+        "stale": False,
+        "frequency": 3.698,
+        "mode": mode,
+        "mox": False,
+        "interlock_state": "READY",
+        "tx_ant": "ANT1",
+    }
+    policy = SimpleNamespace(
+        FLEX_ANTENNA_POLICY={
+            "enabled": True,
+            "bands": {"80m": "ANT1", "20m": "ANT1"},
+        },
+        KAT500_ANTENNA_NAMES={"1": "KAT ANT1", "2": "KAT ANT2"},
+        STATION_COORDINATOR_COMMISSIONED=True,
+        DIGITAL_KPA_POLICY="operate",
+        STATION_AMPLIFIER_ALLOWED_BANDS=("80m",),
+        STATION_AMPLIFIER_DRIVE_W={"80m": 25, "20m": 25},
+        STATION_BAREFOOT_DRIVE_W={"80m": 90, "20m": 65},
+        STATION_DIGITAL_AMPLIFIER_ALLOWED_BANDS=digital_allowed_bands,
+        STATION_DIGITAL_AMPLIFIER_DRIVE_W={"80m": 25, "20m": 25},
+    )
+
+    def station_path(_radio: dict) -> dict:
+        mismatches = []
+        if manager.kpa500.band != "80m":
+            mismatches.append(
+                {"code": "kpa-band-mismatch", "message": "KPA500 is not on 80m"}
+            )
+        if manager.kat500.band != "80m":
+            mismatches.append(
+                {"code": "kat-band-mismatch", "message": "KAT500 is not on 80m"}
+            )
+        if manager.kat500.antenna != 2:
+            mismatches.append(
+                {"code": "kat-antenna-mismatch", "message": "KAT500 is not on ANT2"}
+            )
+        return {
+            "alignment": "mismatch" if mismatches else "confirmed",
+            "mismatches": mismatches,
+            "unknown_reasons": [],
+        }
+
+    manager.station_path = station_path
+    station = StationCoordinator(
+        manager,
+        lambda: flex,
+        lambda: radio,
+        digital_guard=lambda: None,
+        radio_lock=asyncio.Lock(),
+        policy_source=policy,
+    )
+    return station, calls, manager, flex, radio
 
 
 def test_commissioning_lock_exposes_no_actions_and_rejects_write(monkeypatch):
@@ -977,6 +1052,168 @@ def test_amplifier_allowlist_blocks_operate_on_prohibited_band(monkeypatch):
     with pytest.raises(StationActionError) as exc_info:
         asyncio.run(station.perform("operate"))
     assert exc_info.value.code == "amplifier-not-allowed"
+
+
+@pytest.mark.parametrize("mode", ("LSB", "USB", "CW"))
+def test_80m_standard_policy_prepares_and_operates_only_after_exact_route(mode):
+    station, calls, manager, _flex, radio = build_80m_station(mode=mode)
+
+    initial = station.snapshot()
+    assert initial["route"]["band"] == "80m"
+    assert initial["route"]["radio_mode"] == mode
+    assert initial["route"]["policy_profile"] == "standard"
+    assert initial["route"]["amplifier_allowed_bands"] == ["80m"]
+    assert initial["route"]["amplifier_inhibitors"] == []
+    assert initial["route"]["amplifier_allowed"] is True
+    assert "operate" not in initial["allowed_actions"]
+
+    prepared = asyncio.run(station.perform("prepare-route"))
+    assert prepared["route_verified"] is True
+    assert prepared["path"]["alignment"] == "confirmed"
+    assert "operate" in prepared["allowed_actions"]
+
+    operated = asyncio.run(station.perform("operate"))
+    assert operated["transaction"]["state"] == "succeeded"
+    assert manager.kpa500.operate is True
+    assert radio["mox"] is False
+    assert ("flex.rfpower", 25) in calls
+    assert not any(call == ("flex.mox", True) for call in calls)
+    assert not any(call == ("flex.tune", True) for call in calls)
+    assert not any(call[0] == "kat.start_tune" for call in calls)
+
+    stood_by = asyncio.run(station.perform("standby"))
+    assert stood_by["transaction"]["state"] == "succeeded"
+    assert manager.kpa500.operate is False
+
+
+def test_80m_digital_policy_uses_independent_allow_list():
+    blocked, _calls, _manager, _flex, _radio = build_80m_station(
+        mode="DIGU",
+        digital_allowed_bands=(),
+    )
+    allowed, _calls2, _manager2, _flex2, _radio2 = build_80m_station(
+        mode="DIGU",
+        digital_allowed_bands=("80m",),
+    )
+
+    blocked_route = blocked.snapshot()["route"]
+    allowed_route = allowed.snapshot()["route"]
+    assert blocked_route["policy_profile"] == "digital"
+    assert blocked_route["amplifier_allowed"] is False
+    assert blocked_route["amplifier_allowed_bands"] == []
+    assert blocked_route["amplifier_inhibitors"] == [
+        "band-not-in-active-amplifier-allow-list"
+    ]
+    assert allowed_route["policy_profile"] == "digital"
+    assert allowed_route["amplifier_allowed"] is True
+    assert allowed_route["amplifier_allowed_bands"] == ["80m"]
+
+
+def test_20m_stays_barefoot_under_the_80m_active_policy():
+    station, _calls, manager, flex, radio = build_80m_station()
+    radio.update(frequency=14.296, mode="USB")
+    flex.current_freq = 14.296
+    flex.current_mode = "USB"
+    manager.last_frequency = 14.296
+
+    route = station.snapshot()["route"]
+
+    assert route["band"] == "20m"
+    assert route["policy_profile"] == "standard"
+    assert route["amplifier_allowed"] is False
+    assert route["amplifier_inhibitors"] == [
+        "band-not-in-active-amplifier-allow-list"
+    ]
+    assert "operate" not in station.snapshot()["allowed_actions"]
+
+
+def test_band_change_discards_prior_route_proof_before_operate_is_advertised():
+    station, _calls, _manager, _flex, _radio = build_80m_station()
+    prior = station._route_for_frequency(14.296, "USB")
+    assert prior is not None
+    station._route_verified = {
+        "route_id": prior.route_id,
+        "frequency_khz": round(prior.frequency_mhz * 1000),
+        "digital_mode": prior.digital_mode,
+        "verified_at": time.time(),
+    }
+
+    state = station.snapshot()
+
+    assert state["route"]["band"] == "80m"
+    assert state["route_verified"] is False
+    assert state["route_verification"] is None
+    assert "operate" not in state["allowed_actions"]
+
+
+def test_80m_mismatch_and_open_kat_key_are_safely_aligned_before_operate():
+    station, calls, manager, _flex, radio = build_80m_station(accessory_band="20m")
+    manager.kat500.amp_key_interrupted = True
+
+    mismatched = station.snapshot()
+    assert mismatched["path"]["alignment"] == "mismatch"
+    assert "operate" not in mismatched["allowed_actions"]
+
+    operated = asyncio.run(station.perform("operate"))
+
+    assert operated["path"]["alignment"] == "confirmed"
+    assert manager.kpa500.band == "80m"
+    assert manager.kat500.band == "80m"
+    assert manager.kat500.antenna == 2
+    assert manager.kat500.amp_key_interrupted is False
+    assert manager.kpa500.operate is True
+    assert radio["mox"] is False
+    assert calls.index(("kpa.operate", False)) < calls.index(
+        ("kat.cancel_tune",)
+    )
+    assert calls.index(("kat.cancel_tune",)) < calls.index(
+        ("kat.set_amp_key_interrupted", False)
+    )
+    assert calls.index(("kat.set_amp_key_interrupted", False)) < calls.index(
+        ("kpa.operate", True)
+    )
+    assert not any(call == ("flex.mox", True) for call in calls)
+    assert not any(call == ("flex.tune", True) for call in calls)
+
+    asyncio.run(station.perform("standby"))
+    assert manager.kpa500.operate is False
+
+
+def test_kat_amp_key_reconnect_waits_for_delayed_relay_readback():
+    station, calls, manager, _flex, _radio = build_80m_station()
+    manager.kat500.amp_key_interrupted = True
+    reads_after_set = 0
+    set_requested = False
+
+    def delayed_set(value: bool) -> bool:
+        nonlocal set_requested
+        calls.append(("kat.set_amp_key_interrupted", value))
+        set_requested = value is False
+        return True
+
+    def delayed_read() -> bool:
+        nonlocal reads_after_set
+        if set_requested:
+            reads_after_set += 1
+            if reads_after_set >= 2:
+                manager.kat500.amp_key_interrupted = False
+        calls.append(
+            ("kat.amp_key_interrupted", manager.kat500.amp_key_interrupted)
+        )
+        return manager.kat500.amp_key_interrupted
+
+    manager.kat500.set_amp_key_interrupted = delayed_set
+    manager.kat500.read_amp_key_interrupted = delayed_read
+
+    prepared = asyncio.run(station.perform("prepare-route"))
+
+    assert prepared["route_verified"] is True
+    assert manager.kat500.amp_key_interrupted is False
+    assert reads_after_set == 2
+    assert calls.count(("kat.set_amp_key_interrupted", False)) == 1
+    assert manager.kpa500.operate is False
+    assert not any(call == ("flex.mox", True) for call in calls)
+    assert not any(call == ("flex.tune", True) for call in calls)
 
 
 def test_prepare_route_keeps_flex_and_kat_antenna_stages_distinct(monkeypatch):

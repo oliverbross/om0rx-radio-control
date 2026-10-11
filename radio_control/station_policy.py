@@ -73,6 +73,9 @@ class AmplifierBandPolicy:
     band: str
     radio_mode: str
     digital_mode: bool
+    profile: str
+    allowed_bands: tuple[str, ...]
+    inhibitors: tuple[str, ...]
     configured_mode: str
     effective_mode: str
     amplifier_allowed: bool
@@ -88,6 +91,9 @@ class AmplifierBandPolicy:
             "band": self.band,
             "radio_mode": self.radio_mode,
             "digital_mode": self.digital_mode,
+            "profile": self.profile,
+            "allowed_bands": list(self.allowed_bands),
+            "inhibitors": list(self.inhibitors),
             "configured_kpa500": self.configured_mode,
             "kpa500": self.effective_mode,
             "amplifier_allowed": self.amplifier_allowed,
@@ -129,6 +135,13 @@ def resolve_amplifier_policy(
         configured_mode = "operate"
         allowed_bands = set(standard_allowed_bands)
     amplifier_allowed = bool(normalized_band and normalized_band in allowed_bands)
+    inhibitors: list[str] = []
+    if not normalized_band:
+        inhibitors.append("band-unresolved")
+    elif configured_mode != "operate":
+        inhibitors.append("digital-amplifier-policy-standby")
+    elif normalized_band not in allowed_bands:
+        inhibitors.append("band-not-in-active-amplifier-allow-list")
     effective_mode = (
         "operate" if configured_mode == "operate" and amplifier_allowed else "standby"
     )
@@ -158,6 +171,11 @@ def resolve_amplifier_policy(
         band=normalized_band,
         radio_mode=normalized_mode,
         digital_mode=digital_mode,
+        profile="digital" if digital_mode else "standard",
+        allowed_bands=tuple(
+            band for band in SUPPORTED_STATION_BANDS if band in allowed_bands
+        ),
+        inhibitors=tuple(inhibitors),
         configured_mode=configured_mode,
         effective_mode=effective_mode,
         amplifier_allowed=amplifier_allowed,

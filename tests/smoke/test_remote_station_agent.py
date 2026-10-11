@@ -88,6 +88,46 @@ def test_authenticated_remote_config_update_is_validated_and_preserves_token(tmp
     assert saved["station"]["kat_antenna_policy"]["20m"] == 2
 
 
+def test_saved_config_is_explicitly_pending_until_runtime_restart(tmp_path):
+    config = _config(tmp_path)
+    runtime = RemoteStationRuntime(config)
+    client = TestClient(create_app(config, runtime=runtime))
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    before = client.get("/api/v1/config", headers=headers).json()
+    updated = before["config"]
+    updated["policy"]["amplifier_allowed_bands"] = ["80m"]
+
+    response = client.put(
+        "/api/v1/config",
+        headers=headers,
+        json={"config": updated},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["config_status"]["restart_required"] is True
+    assert payload["restart_required"] is True
+    assert payload["saved_config"]["policy"]["amplifier_allowed_bands"] == ["80m"]
+    assert "80m" in payload["active_config"]["policy"]["amplifier_allowed_bands"]
+    assert payload["active_config"]["policy"]["amplifier_allowed_bands"] != ["80m"]
+    assert (
+        payload["config_status"]["active_fingerprint"]
+        != payload["config_status"]["saved_fingerprint"]
+    )
+    state = client.get("/api/v1/state", headers=headers).json()["state"]
+    assert state["agent"]["config"]["restart_required"] is True
+    assert TOKEN not in repr(payload)
+    assert TOKEN not in repr(state)
+
+    restarted = RemoteStationRuntime(load_agent_config(config.path))
+    restarted_client = TestClient(
+        create_app(restarted.config, runtime=restarted)
+    )
+    after = restarted_client.get("/api/v1/config", headers=headers).json()
+    assert after["config_status"]["restart_required"] is False
+    assert after["active_config"]["policy"]["amplifier_allowed_bands"] == ["80m"]
+
+
 def test_remote_config_update_rejects_invalid_drive_without_changing_file(tmp_path):
     config = _config(tmp_path)
     client = TestClient(create_app(config, runtime=FakeRuntime()))

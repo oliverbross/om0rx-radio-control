@@ -1309,7 +1309,7 @@ def register_digital_endpoints(app) -> None:
             _service.watchdog_task = asyncio.create_task(watch_engine_state())
 
     _service.ensure_watchdog = ensure_watchdog
-    app.add_event_handler("startup", ensure_watchdog)
+    app.router.add_event_handler("startup", ensure_watchdog)
 
     @app.get("/api/digital/logging/provisional")
     async def provisional_status():

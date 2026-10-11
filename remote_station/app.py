@@ -69,6 +69,26 @@ def create_app(
     app.state.remote_station = station_runtime
     app.state.agent_config = resolved_config
 
+    def config_response(saved: AgentConfig) -> dict[str, Any]:
+        active = getattr(station_runtime, "config", resolved_config)
+        active_fingerprint = active.fingerprint()
+        saved_fingerprint = saved.fingerprint()
+        return {
+            "success": True,
+            # Compatibility field: this is the validated saved profile that
+            # the Settings UI edits.  active_config is authoritative until
+            # restart when the fingerprints differ.
+            "config": saved.public_summary(),
+            "saved_config": saved.public_summary(),
+            "active_config": active.public_summary(),
+            "config_status": {
+                "path": str(active.path),
+                "active_fingerprint": active_fingerprint,
+                "saved_fingerprint": saved_fingerprint,
+                "restart_required": saved_fingerprint != active_fingerprint,
+            },
+        }
+
     async def authorize(authorization: str | None = Header(default=None)) -> None:
         supplied = _bearer_token(authorization)
         if not supplied or not hmac.compare_digest(supplied, resolved_config.control_token):
@@ -110,7 +130,7 @@ def create_app(
 
     @app.get("/api/v1/config", dependencies=[Depends(authorize)])
     async def public_config():
-        return {"success": True, "config": app.state.agent_config.public_summary()}
+        return config_response(app.state.agent_config)
 
     @app.put("/api/v1/config", dependencies=[Depends(authorize)])
     async def update_config(body: ConfigUpdateRequest):
@@ -119,11 +139,12 @@ def create_app(
         except AgentConfigError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         app.state.agent_config = saved
-        return {
-            "success": True,
-            "config": saved.public_summary(),
-            "restart_required": True,
-        }
+        note_saved = getattr(station_runtime, "note_saved_config", None)
+        if callable(note_saved):
+            note_saved(saved)
+        response = config_response(saved)
+        response["restart_required"] = response["config_status"]["restart_required"]
+        return response
 
     @app.get("/api/v1/state", dependencies=[Depends(authorize)])
     async def state():
