@@ -355,6 +355,27 @@ Do not delete the macOS evidence or safety boundary.
   `safe_rx`, route `confirmed`, zero alarms, MOX `false`, interlock `READY`, and
   KPA500 STBY. No station-control write or RF transmission occurred.
 
+## Windows receive-route interlock investigation — 2026-10-11
+
+The macOS side reproduced a spot-transfer failure while the loopback
+RUMlogNG/OM0RX-xCat connection remained established. Callsign, mode, and note
+were transferred to RUMlogNG, but the requested frequency did not persist.
+OM0RX-xCat and RUMlogNG both continued to read back `7.217600 MHz LSB`, while
+the selected xCluster target was AA3B at `3.862700 MHz` SSB.
+
+OM0RX-xCat showed HTTP 409 command failures and the live agent advisory
+reported FLEX interlock `NOT_READY`, KPA500/KAT500 on 160m, FLEX on 40m, and
+`ALARM 3`. The current coordinator calls `_fresh_receive_state()` before the
+receive-side route mutation and accepts only `READY`/`RECEIVE`, creating a
+possible recovery deadlock when the accessories and FLEX are already on
+different bands.
+
+The complete Windows investigation, safety constraints, regression matrix,
+and acceptance prompt are in
+[`WINDOWS_CODEX_INTERLOCK_HANDOFF_2026-10-11.md`](WINDOWS_CODEX_INTERLOCK_HANDOFF_2026-10-11.md).
+The Windows agent must determine the precise meaning/cause of `NOT_READY`
+before changing policy and must not implement a blanket interlock bypass.
+
 ## Handoff protocol
 
 After each bounded change:
