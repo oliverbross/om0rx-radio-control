@@ -687,15 +687,28 @@ class RemoteStationRuntime:
                 }
 
                 def apply_frequency_and_mode() -> bool:
-                    mode_ok = self.flex._send(f"slice set {slice_id} mode={mode}")
-                    if not mode_ok:
-                        return False
-                    frequency_ok = self.flex._send(
-                        f"slice tune {slice_id} {frequency_mhz:.6f}"
-                    )
-                    if frequency_ok and self.flex._send("sub slice all"):
-                        self.flex.last_resubscribe_time = time.time()
-                    return bool(frequency_ok)
+                    # Keep the coherent pair and its immediate subscription
+                    # refresh ahead of the fast snapshot poll on the one FLEX
+                    # socket. Without the refresh, some SmartSDR versions defer
+                    # the slice update until the periodic 60-second refresh.
+                    io_lock = getattr(self.flex, "_io_lock", None)
+                    if io_lock:
+                        io_lock.acquire()
+                    try:
+                        current_mode = str(slice_state.get("mode") or "").upper()
+                        if current_mode != mode and not self.flex._send(
+                            f"slice set {slice_id} mode={mode}"
+                        ):
+                            return False
+                        frequency_ok = self.flex._send(
+                            f"slice tune {slice_id} {frequency_mhz:.6f}"
+                        )
+                        if frequency_ok and self.flex._send("sub slice all"):
+                            self.flex.last_resubscribe_time = time.time()
+                        return bool(frequency_ok)
+                    finally:
+                        if io_lock:
+                            io_lock.release()
 
                 await self.coordinator.execute_flex_route_change(
                     f"remote-frequency-mode-{vfo.lower()}",

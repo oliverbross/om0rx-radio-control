@@ -331,6 +331,9 @@ class FakeFlex:
         self.calls.append(("spot", arguments))
         return True
 
+    def close(self):
+        self.calls.append(("close",))
+
     def get_slice_states(self):
         return [
             {
@@ -372,6 +375,14 @@ class FakeCoordinator:
     async def follow_observed_radio_route(self, frequency):
         self.calls.append(("follow", frequency))
         return True
+
+    async def stop(self):
+        self.calls.append("stop")
+
+
+class FakeElecraft:
+    async def stop(self):
+        return None
 
 
 def _runtime(tmp_path):
@@ -426,6 +437,31 @@ def test_accessory_follow_does_not_block_radio_or_queue_obsolete_targets(tmp_pat
     run(scenario())
 
 
+def test_shutdown_waits_for_in_flight_route_follow(tmp_path):
+    async def scenario():
+        runtime = _runtime(tmp_path)
+        runtime.elecraft = FakeElecraft()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_follow(_frequency):
+            entered.set()
+            await release.wait()
+
+        runtime.coordinator.follow_observed_radio_route = slow_follow
+        runtime._schedule_route_follow()
+        await asyncio.wait_for(entered.wait(), 1)
+        stopping = asyncio.create_task(runtime.stop())
+        await asyncio.sleep(0)
+        assert stopping.done() is False
+        release.set()
+        await asyncio.wait_for(stopping, 1)
+        assert runtime._route_follow_task is None
+        assert "stop" in runtime.coordinator.calls
+
+    run(scenario())
+
+
 def test_remote_frequency_command_is_guarded_and_idempotent(tmp_path):
     runtime = _runtime(tmp_path)
     first = run(
@@ -470,12 +506,32 @@ def test_remote_frequency_and_mode_share_one_guarded_route_transaction(tmp_path)
         ("send", "slice tune 0 3.698000"),
         ("send", "sub slice all"),
     ]
+    assert result["timing_ms"]["queue"] >= 0
+    assert result["timing_ms"]["execution"] >= 0
+    assert result["timing_ms"]["total"] >= result["timing_ms"]["execution"]
     assert result["state"]["radio"]["route_change_pending"] == {
         "frequency_hz": 3_698_000,
         "mode": "LSB",
         "vfo": "A",
         "age_seconds": pytest.approx(0.0, abs=0.05),
     }
+
+
+def test_remote_frequency_mode_skips_redundant_mode_but_refreshes_subscription(tmp_path):
+    runtime = _runtime(tmp_path)
+    result = run(
+        runtime.execute(
+            "xlog-frequency-mode-unchanged-0001",
+            "set_frequency_mode",
+            {"frequency_hz": 14_080_000, "mode": "DIGU", "vfo": "A"},
+        )
+    )
+
+    assert result["success"] is True
+    assert runtime.flex.calls == [
+        ("send", "slice tune 0 14.080000"),
+        ("send", "sub slice all"),
+    ]
 
 
 def test_atomic_frequency_mode_publication_waits_for_coherent_flex_state(tmp_path):
