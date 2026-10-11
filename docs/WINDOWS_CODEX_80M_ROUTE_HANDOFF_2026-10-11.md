@@ -209,3 +209,65 @@ Windows Codex should:
 6. Finish in receive, explicitly request Standby, and report commit, test
    counts and redacted before/after state. Do not invoke PTT, TUNE-start or CWX
    and do not emit RF during this acceptance.
+
+## Windows follow-on completion — 2026-10-11
+
+Windows fetched and verified follow-on source commit
+`3366f92dc6f6d001e8c25df9629d29546db16842`. Live acceptance exposed two
+additional defects in the new combined command: FLEX could publish the mode
+before its frequency subscription caught up, and a long-lived cached slice
+could override the fresh ordered `slice list` readback. CW also required mode
+to be applied before the final tune so the requested dial frequency was not
+shifted by the CW pitch.
+
+The source fix is commit `7b8a9491355658367da8cd9de2fe8edfceb3df78`
+on `codex/remote-agent-flex-spots`. It keeps the last coherent route visible
+until both requested values have matching readback, continues publishing MOX
+and interlock safety state during that window, pauses accessory route following,
+fails stale after a bounded timeout, applies mode before frequency, and requests
+one slice subscription refresh per explicit combined command. The refresh is
+not sent by the polling loop. The corresponding deployed OM0RX-xCat Windows
+controller is commit `c49dfd32d174507b2104d0946b9172a0f4475fe4` on
+`codex/windows-agent-migration`.
+
+### Final regression evidence
+
+- Focused station-policy/coordinator/remote-agent suites: **117 passed**.
+- Complete maintained source gate: **888 Python smoke passed**, **105
+  browser/widget passed**, and **105 MSHV offline safety passed**. Python
+  compile, backend import, duplicate-route scan, PowerShell parsing, JavaScript
+  syntax, Ruff correctness, old-project reference scan and Git whitespace
+  checks also passed.
+- Canonical standalone WindowsAgent suite: **210 passed**.
+- Production Python/FastAPI 0.143 compile/import check: passed.
+- Native WinForms station-widget telemetry smoke: **1 passed**.
+
+### Final guarded live evidence
+
+- Only the existing `OM0RX Remote Station Agent` scheduled task was restarted;
+  the tray task remained running and no duplicate controller was created. The
+  deployed source was exactly
+  `c49dfd32d174507b2104d0946b9172a0f4475fe4`. The configuration SHA-256 stayed
+  `FFA28083E47DFDDBEE7A047140B5F2F0C934E03A6CA689DD6D1CE95C3A54FB47`;
+  policy, commissioning, VSPE ports, Tailscale and credentials were unchanged.
+- A WebSocket-observed combined transition from **7.185 MHz/CW** to
+  **7.195 MHz/LSB** published the old coherent pair with a pending marker and
+  then the complete new pair after **7.204 seconds**. No mixed frequency/mode
+  pair appeared. MOX stayed false, radio state stayed known/non-stale after
+  confirmation, and alarms were zero.
+- On allowed 40 m, one explicit Operate request set the configured **25 W**
+  drive and KPA500 OPERATE with 0 W output. It remained requested across a
+  same-band retune. A transition to prohibited 20 m forced confirmed KPA500
+  standby, aligned KPA/KAT to 20 m with KAT ANT1, applied the 65 W barefoot
+  default and did not erase intent. Returning to 40 m restored KPA500 OPERATE,
+  aligned both accessories to 40 m/KAT ANT2 and retained 25 W. Explicit
+  Standby then cleared the intent.
+- A manual Maestro change to **30 W** at 7.195 MHz/LSB was observed without an
+  agent power command. A same-band retune to **7.190 MHz/LSB** preserved 30 W.
+  Moving to **14.015 MHz/CW** applied the configured 20 m barefoot default of
+  65 W; returning to **7.195 MHz/LSB** applied the configured 40 m barefoot
+  default of 98 W. Each route settled with matching KPA/KAT bands and antenna,
+  recovery clear and zero alarms.
+- Final state was **7.195 MHz/LSB**, FLEX drive **98 W**, MOX false, interlock
+  READY, KPA500 40 m standby at 0 W, KAT500 40 m ANT2, recovery clear and zero
+  alarms. PTT, TUNE-start and CWX were never invoked, and no RF was transmitted.
