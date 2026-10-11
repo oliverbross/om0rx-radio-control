@@ -245,3 +245,51 @@ Final live state was restored to 18.082500 MHz CW on 17 m: FLEX known/fresh,
 MOX false, interlock READY, KPA500 standby at 0 W, KPA/KAT both on 17 m, KAT
 antenna 1, recovery false, and zero alarms. HTTPS/WebSocket operation remained
 healthy. No PTT, TUNE-start, CWX, amplifier OPERATE, or RF transmission occurred.
+
+## Phase 3 closure handoff — 2026-10-12
+
+Point 1 is not closed: final accessory readiness still measures about nine
+seconds. Phase 2 proves a redundant refresh was removed, not that every remaining
+wait is necessary. Preserve exact proofs; do not silently relabel this as done.
+
+Mac follow-up (installed locally): bridge telemetry now uses the Remote Agent's
+observed snapshot rather than optimistic pending-write display values. xLog
+requires observed matching frequency/mode plus simplex A RX/TX before success;
+older spot completions cannot overwrite a newer selection. The timer includes
+main-thread scheduling, not just network task execution. 29 xLog and 58 xCat
+tests passed; both signed releases packaged and installed. A receive-only live
+band-map JJ0PKS selection from B RX/A TX split confirmed 18.082500 MHz CW simplex
+A in 2629 ms from the recorded spot event (1755 ms from task start). Local
+read-only telemetry took 16–43 ms. This one sample is not a p95 or an external
+xCluster-launcher acceptance test. No QSO was saved, no transmit/tune/operate
+command was issued. The selection exercised normal automatic rotor targeting.
+
+Both RustDesk and AnyDesk time out while attaching from the Mac control tool.
+Windows Codex must perform the remaining hardware investigation:
+
+1. Start from source `169106d` and canonical `2fc1043`, then fetch this branch's
+   latest documentation. Preserve configuration and the single agent owner.
+2. Capture at least ten receive-only cross-band transitions, with per-stage,
+   per-device/query and lock-wait timings. Separate waiting for a lock from
+   time waiting for serial replies. Include the gap from radio publication to
+   route-task start and internal finish to published route readiness.
+3. Inspect repeated KPA/KAT complete readbacks, receive proofs, wake delays and
+   serial framing for demonstrable duplicate or idle work. Reuse observations
+   only within a justified unchanged transaction; keep fresh checks around
+   hardware mutations and final exact readbacks. Do not decrease timeouts,
+   suppress unknown states or bypass guards just to obtain faster numbers.
+4. Implement the largest demonstrated safe improvement; run the existing full
+   maintenance/WindowsAgent/safety gates, plus regression tests for the changed
+   scheduling/query behavior. Deploy only the existing task and remeasure the
+   same matrix, separately reporting ACK, coherent radio and accessory readiness.
+5. Test rapid supersession, split exit and mode changes, preserving manual drive
+   and amp-band policy. Receive-only: no PTT, TUNE-start, CWX or OPERATE.
+6. If the remaining cost cannot be safely reduced, provide individual stage
+   measurements and the precise protocol/physical constraint, not merely
+   "mandatory readback". Document the accepted residual bound as a limitation;
+   do not claim completion without evidence. Record deployed SHAs, unchanged
+   config hash, final safe state and before/after median/p95 in this file.
+
+Read-only Mac probes: `scripts/probe_xcat_latency.py` queries only loopback
+telemetry; `scripts/probe_xlog_activity.swift` reads only persisted tune events.
+Neither sends radio commands or accesses account credentials.
