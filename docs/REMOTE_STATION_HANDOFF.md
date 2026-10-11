@@ -355,26 +355,26 @@ Do not delete the macOS evidence or safety boundary.
   `safe_rx`, route `confirmed`, zero alarms, MOX `false`, interlock `READY`, and
   KPA500 STBY. No station-control write or RF transmission occurred.
 
-## Windows receive-route interlock investigation — 2026-10-11
+## Windows exclusive controller ownership — 2026-10-11
 
-The macOS side reproduced a spot-transfer failure while the loopback
-RUMlogNG/OM0RX-xCat connection remained established. Callsign, mode, and note
-were transferred to RUMlogNG, but the requested frequency did not persist.
-OM0RX-xCat and RUMlogNG both continued to read back `7.217600 MHz LSB`, while
-the selected xCluster target was AA3B at `3.862700 MHz` SSB.
+The operator confirmed that the legacy **OM0RX Radio Control Agent** and the
+newer **OM0RX Remote Station Agent** were running concurrently on Windows.
+Stopping the legacy agent immediately resolved the Maestro interlock errors,
+conflicting station-route state, and RUMlogNG/OM0RX-xCat spot-frequency
+failures. This supersedes the earlier receive-route-interlock theory; no
+interlock relaxation is requested or justified by this incident.
 
-OM0RX-xCat showed HTTP 409 command failures and the live agent advisory
-reported FLEX interlock `NOT_READY`, KPA500/KAT500 on 160m, FLEX on 40m, and
-`ALARM 3`. The current coordinator calls `_fresh_receive_state()` before the
-receive-side route mutation and accepts only `READY`/`RECEIVE`, creating a
-possible recovery deadlock when the accessories and FLEX are already on
-different bands.
+The legacy .NET agent currently prevents only another copy of itself with the
+mutex `OM0RX.RadioControl.Agent`. The Python remote station agent does not
+participate in that mutex, so the two controller families can still collide.
+They require one shared Windows-wide controller-ownership mutex plus clear
+startup migration and conflict diagnostics. The remote tray and station widget
+are allowed control surfaces and must not be classified as competing station
+controllers.
 
-The complete Windows investigation, safety constraints, regression matrix,
-and acceptance prompt are in
-[`WINDOWS_CODEX_INTERLOCK_HANDOFF_2026-10-11.md`](WINDOWS_CODEX_INTERLOCK_HANDOFF_2026-10-11.md).
-The Windows agent must determine the precise meaning/cause of `NOT_READY`
-before changing policy and must not implement a blanket interlock bypass.
+The complete corrected Windows prompt, safety constraints, regression matrix,
+and acceptance procedure are in
+[`WINDOWS_CODEX_EXCLUSIVE_CONTROLLER_HANDOFF_2026-10-11.md`](WINDOWS_CODEX_EXCLUSIVE_CONTROLLER_HANDOFF_2026-10-11.md).
 
 ## Handoff protocol
 
