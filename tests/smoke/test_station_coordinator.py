@@ -770,6 +770,35 @@ def test_operate_state_never_reuses_cached_flex_route_observation(monkeypatch):
     assert manager.kpa500.operate is True
 
 
+def test_final_route_readbacks_use_independent_transports_concurrently(monkeypatch):
+    station, _calls, manager = build_station(monkeypatch, commissioned=True)
+    route = station._require_fresh_route()
+    flex_started = asyncio.Event()
+
+    async def device_readback(device):
+        await asyncio.wait_for(flex_started.wait(), timeout=0.2)
+        return device.readback()
+
+    async def flex_readback(_route):
+        flex_started.set()
+        await asyncio.sleep(0)
+        return {"frequency_khz": 14074, "tx_ant": "ANT1", "rfpower": 50}
+
+    station._device_readback = device_readback
+    station._fresh_flex_route = flex_readback
+
+    kpa, kat, levels = asyncio.run(
+        asyncio.wait_for(
+            station._final_route_readbacks(manager.kpa500, manager.kat500, route),
+            timeout=0.5,
+        )
+    )
+
+    assert kpa["band"] == "20m"
+    assert kat["frequency_khz"] == 14074
+    assert levels["tx_ant"] == "ANT1"
+
+
 def test_external_flex_route_follow_preserves_manual_barefoot_power_override(monkeypatch):
     station, calls, manager = build_station(monkeypatch, commissioned=True)
     monkeypatch.setattr(config, "STATION_BAREFOOT_DRIVE_W", {"20m": 70})

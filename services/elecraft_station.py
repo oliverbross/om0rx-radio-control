@@ -2317,6 +2317,26 @@ class StationCoordinator:
             )
         return observed_drive
 
+    async def _final_route_readbacks(
+        self,
+        kpa: Any,
+        kat: Any,
+        route: RouteTarget,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        """Collect independent final proofs in one bounded observation window.
+
+        The KPA, KAT, and FLEX use separate transports.  Querying all three
+        concurrently retains every exact final readback while avoiding an
+        unnecessary serial-then-radio wait and reduces the interval in which
+        an external route change could split the evidence.
+        """
+        kpa_status, kat_status, levels = await asyncio.gather(
+            self._device_readback(kpa),
+            self._device_readback(kat),
+            self._fresh_flex_route(route),
+        )
+        return kpa_status, kat_status, levels
+
     async def _prepare_route(
         self,
         *,
@@ -2435,11 +2455,11 @@ class StationCoordinator:
 
             self._transaction_step("verifying-readback", 80)
             timed_stage("drive_verified_ms")
-            kpa_status, kat_status = await asyncio.gather(
-                self._device_readback(kpa),
-                self._device_readback(kat),
+            kpa_status, kat_status, levels = await self._final_route_readbacks(
+                kpa,
+                kat,
+                route,
             )
-            levels = await self._fresh_flex_route(route)
             timed_stage("final_readbacks_ms")
             if follow_generation is not None:
                 self._assert_follow_current(follow_generation, route)
