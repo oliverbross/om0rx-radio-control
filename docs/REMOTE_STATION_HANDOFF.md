@@ -425,6 +425,44 @@ and acceptance procedure are in
   No controller was stopped before the operator explicitly authorized the
   replacement, and no PTT, TUNE, CWX, Operate, or RF command was issued.
 
+### Authorized live replacement and refusal acceptance
+
+- Oliver explicitly authorized stopping and replacing the old controller
+  processes. The inactive legacy UI process PID 6968 was identity-checked,
+  stopped, and replaced with the guarded Release build. Its supervised backend
+  already had zero listeners on 8080/8091/8092; no legacy station process was
+  stopped by this step.
+- The Python Remote Station Agent was then restarted once through its existing
+  scheduled task to deploy exact code commit
+  `4b4e25faf06d2d3797b1539d775de26e2bff3209`. The task action now identifies
+  its launch source as `scheduled-task`. The old station-agent PID 11748 was
+  replaced by PID 7928; the owner record reports
+  `python-remote-station-agent`, PID 7928, and `scheduled-task`, exactly matching
+  the 8840 listener. The credential-bearing configuration SHA-256 remained
+  `568A7355581A7E60F3882641B5C253D73DBB4E9DDDA46189F940114987868B3A`.
+- The rebuilt real legacy `Om0rxAgent.exe` was launched once with its normal
+  project/port arguments plus non-interactive acceptance mode. It exited with
+  the required code 73 before creating a legacy process, backend listener, or
+  supervisor. Exactly one sanitized conflict was written to the existing
+  legacy log. The Python PID, process start time, owner family, and owner PID
+  were unchanged across the refusal.
+- After the refusal, the only established FLEX TCP owners were SmartSDR DAX,
+  SmartSDR CAT, and Python PID 7928. The remote tray and widget each remained a
+  single running instance. Port 8840 retained three established client
+  connections. A separate authenticated read-only WebSocket observation ran
+  continuously for 16.0 seconds and received 41 state messages without a
+  disconnect or unsafe state.
+- Final station evidence: FLEX connected, known, fresh, and Maestro-bound on
+  7.058600 MHz; MOX false; interlock READY; KPA500 standby on 40 m at 0 W;
+  KAT500 readable on 40 m ANT2; route confirmed; zero alarms; recovery not
+  required. The Windows side cannot inspect RUMlogNG's local Mac CAT socket,
+  so the retained authenticated client connections are Windows-side continuity
+  evidence; Mac may independently confirm its CAT readback without a write.
+- The legacy HKCU Run entry remains absent. The remote controller and allowed
+  tray tasks are both running. No PTT-on, TUNE, CWX, Operate, frequency/mode/
+  antenna write, or RF transmission was issued. The controlled restart used
+  only the agent's existing receive/standby startup recovery.
+
 ## Handoff protocol
 
 After each bounded change:
