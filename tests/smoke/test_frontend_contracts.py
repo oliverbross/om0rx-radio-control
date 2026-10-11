@@ -173,8 +173,18 @@ WEBSOCKET_ROUTES = [
 ]
 
 
+def iter_registered_routes(routes):
+    """Flatten FastAPI 0.143+ lazy included-router wrappers for contracts."""
+    for route in routes:
+        original_router = getattr(route, "original_router", None)
+        if original_router is not None:
+            yield from iter_registered_routes(original_router.routes)
+        else:
+            yield route
+
+
 def route_exists(method: str, path: str) -> bool:
-    for route in app.routes:
+    for route in iter_registered_routes(app.routes):
         route_path = getattr(route, "path", None)
         route_methods = getattr(route, "methods", set()) or set()
         if route_path == path and method in route_methods:
@@ -183,7 +193,10 @@ def route_exists(method: str, path: str) -> bool:
 
 
 def websocket_route_exists(path: str) -> bool:
-    return any(getattr(route, "path", None) == path for route in app.routes)
+    return any(
+        getattr(route, "path", None) == path
+        for route in iter_registered_routes(app.routes)
+    )
 
 
 def assert_response_has_keys(method: str, path: str, expected_keys: set[str], **kwargs) -> dict:
