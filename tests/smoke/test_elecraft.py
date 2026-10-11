@@ -1079,6 +1079,65 @@ def test_band_sync_interrupts_slow_status_telemetry():
     assert device.bands == ["30m"]
 
 
+def test_control_io_priority_is_reference_counted():
+    manager = ElecraftManager()
+
+    manager.begin_control_io()
+    manager.begin_control_io()
+    assert manager._sync_requested.is_set()
+
+    manager.end_control_io()
+    assert manager._sync_requested.is_set()
+    manager.end_control_io()
+    assert not manager._sync_requested.is_set()
+    manager._executor.shutdown(wait=True)
+
+
+def test_verified_readbacks_publish_without_a_second_serial_poll():
+    class Device:
+        connected = True
+
+    manager = ElecraftManager(kpa500=Device(), kat500=Device())
+    manager.last_band = "40m"
+    manager.last_frequency = 7.074
+    manager.last_radio_mode = "DIGU"
+    manager._status = {
+        "kpa500": {"port": "COM17", "temperature_c": 31},
+        "kat500": {"port": "COM15", "swr": 1.2},
+    }
+    kpa = {
+        "power": True,
+        "operate": False,
+        "band": "40m",
+        "fault": "00",
+        "complete": True,
+    }
+    kat = {
+        "power": True,
+        "mode": "auto",
+        "antenna": 2,
+        "band": "40m",
+        "frequency_khz": 7074,
+        "tuning": False,
+        "fault": "0",
+        "bypass": False,
+        "amp_key_interrupted": False,
+        "complete": True,
+    }
+
+    snapshot = asyncio.run(manager.publish_verified_readbacks(kpa, kat))
+
+    assert snapshot["kpa500"]["band"] == "40m"
+    assert snapshot["kpa500"]["temperature_c"] == 31
+    assert snapshot["kat500"]["frequency_khz"] == 7074
+    assert snapshot["kat500"]["swr"] == 1.2
+    assert manager.last_kpa_band == "40m"
+    assert manager.last_kat_band == "40m"
+    assert manager.last_kat_frequency == 7.074
+    assert manager.last_kat_antenna == 2
+    manager._executor.shutdown(wait=True)
+
+
 def test_radio_band_command_immediately_synchronizes_elecraft(monkeypatch):
     from radio_control import elecraft
     from services import radio

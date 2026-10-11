@@ -1350,6 +1350,17 @@ class ElecraftManager:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, partial(operation, *args))
 
+    def begin_control_io(self) -> None:
+        """Give a guarded coordinator transaction priority over telemetry polls."""
+        self._sync_waiters += 1
+        self._sync_requested.set()
+
+    def end_control_io(self) -> None:
+        """Release coordinator priority without disturbing another waiter."""
+        self._sync_waiters = max(0, self._sync_waiters - 1)
+        if self._sync_waiters == 0:
+            self._sync_requested.clear()
+
     def _build_from_config(self) -> None:
         self.follow_radio = bool(getattr(config, "ELECRAFT_FOLLOW_RADIO", True))
         # Legacy per-device writes are intentionally retired. All station
@@ -1721,6 +1732,58 @@ class ElecraftManager:
         finally:
             if task.done() and self._status_refresh_task is task:
                 self._status_refresh_task = None
+
+    async def publish_verified_readbacks(
+        self,
+        kpa_status: dict[str, Any],
+        kat_status: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Publish coordinator readbacks without immediately polling twice.
+
+        The coordinator has already obtained complete, fresh readbacks from both
+        devices and compared every route-critical field. Reusing that evidence
+        avoids a redundant full status pass while retaining the normal periodic
+        poll as an independent subsequent observation.
+        """
+        async with self._lock:
+            now = time.time()
+            current_kpa = dict(self._status.get("kpa500") or {})
+            current_kat = dict(self._status.get("kat500") or {})
+            current_kpa.update(kpa_status)
+            current_kat.update(kat_status)
+            current_kpa.update(
+                enabled=True,
+                connected=bool(self.kpa500 and self.kpa500.connected),
+                responsive=True,
+                quality="good",
+                error=None,
+            )
+            current_kat.update(
+                enabled=True,
+                connected=bool(self.kat500 and self.kat500.connected),
+                responsive=True,
+                quality="good",
+                error=None,
+            )
+            self.last_kpa_band = kpa_status.get("band")
+            self.last_kat_band = kat_status.get("band")
+            frequency_khz = kat_status.get("frequency_khz")
+            self.last_kat_frequency = (
+                float(frequency_khz) / 1000 if frequency_khz is not None else None
+            )
+            self.last_kat_antenna = kat_status.get("antenna")
+            self._status = {
+                **self._status,
+                "following_radio": self.follow_radio,
+                "control_enabled": self.control_enabled,
+                "radio_frequency": self.last_frequency,
+                "radio_mode": self.last_radio_mode,
+                "radio_band": self.last_band,
+                "kpa500": current_kpa,
+                "kat500": current_kat,
+                "updated_at": now,
+            }
+            return self.snapshot()
 
     async def _refresh_status_pass(self) -> dict[str, Any]:
         # The independent serial devices can be queried in parallel. Do not

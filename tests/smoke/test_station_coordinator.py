@@ -162,12 +162,23 @@ class FakeManager:
         self.maintenance_suspended = False
         self.fail_reopen = False
         self.follow_radio = True
+        self.control_io_depth = 0
 
     async def _run_io(self, operation, *args):
         return operation(*args)
 
     async def refresh_status(self, *, maintenance_verification: bool = False) -> dict:
         self.calls.append(("manager.refresh", maintenance_verification))
+        return self.snapshot()
+
+    def begin_control_io(self) -> None:
+        self.control_io_depth += 1
+
+    def end_control_io(self) -> None:
+        self.control_io_depth -= 1
+
+    async def publish_verified_readbacks(self, kpa_status: dict, kat_status: dict) -> dict:
+        self.calls.append(("manager.publish_verified", kpa_status, kat_status))
         return self.snapshot()
 
     async def suspend_for_maintenance(self) -> dict:
@@ -663,9 +674,14 @@ def test_external_flex_band_change_safely_follows_kpa_and_kat_in_receive(monkeyp
         "receive_confirmed_ms", "standby_confirmed_ms", "kat_fault_checked_ms",
         "kat_key_connected_ms", "flex_port_verified_ms", "kpa_band_ms",
         "kat_band_ms", "kat_frequency_ms", "kat_antenna_ms", "drive_verified_ms",
-        "final_readbacks_ms", "status_refreshed_ms", "total_ms",
+        "final_readbacks_ms", "status_published_ms", "total_ms",
     ]
     assert list(timing.values()) == sorted(timing.values())
+    assert manager.control_io_depth == 0
+    published_at = next(
+        index for index, call in enumerate(calls) if call[0] == "manager.publish_verified"
+    )
+    assert not any(call[0] == "manager.refresh" for call in calls[published_at + 1 :])
 
 
 def test_external_flex_route_follow_preserves_manual_barefoot_power_override(monkeypatch):

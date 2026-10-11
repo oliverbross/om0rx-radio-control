@@ -2257,6 +2257,7 @@ class StationCoordinator:
         if not reuse_transaction:
             self._start_transaction("prepare-route", route)
         kpa_safety_engaged = False
+        control_io_started = False
         started = time.monotonic()
         stages: dict[str, float] = {}
 
@@ -2264,6 +2265,10 @@ class StationCoordinator:
             stages[name] = round((time.monotonic() - started) * 1000, 1)
 
         try:
+            begin_control_io = getattr(self.elecraft, "begin_control_io", None)
+            if callable(begin_control_io):
+                begin_control_io()
+                control_io_started = True
             self._transaction_step("confirming-receive", 10)
             if not allow_digital_owner:
                 self._assert_digital_idle()
@@ -2422,8 +2427,12 @@ class StationCoordinator:
                 "station.route_prepared",
                 {"route": route.as_dict(), "readback": dict(self._route_verified)},
             )
-            await self.elecraft.refresh_status()
-            timed_stage("status_refreshed_ms")
+            publish_readbacks = getattr(self.elecraft, "publish_verified_readbacks", None)
+            if callable(publish_readbacks):
+                await publish_readbacks(kpa_status, kat_status)
+            else:
+                await self.elecraft.refresh_status()
+            timed_stage("status_published_ms")
             return route
         except StationActionError as exc:
             self._route_verified = None
@@ -2457,6 +2466,8 @@ class StationCoordinator:
                 self._finish_transaction("failed", error)
             raise error from exc
         finally:
+            if control_io_started:
+                self.elecraft.end_control_io()
             timed_stage("total_ms")
             logger.info("Accessory route timing route=%s cumulative_ms=%s", route.route_id, stages)
 
