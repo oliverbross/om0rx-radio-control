@@ -178,3 +178,34 @@ config evidence, and before/after live state. Push the completed fix to
 - The radio was restored to **14.015 MHz/CW**. Final state again showed the
   confirmed 20 m barefoot route described above. No PTT, TUNE-start or CWX was
   sent and no RF was transmitted.
+
+## Follow-on deployment — atomic tune and persistent operator intent
+
+The macOS xLog/xCat integration now prefers the Remote Station Agent command
+`set_frequency_mode`, which applies frequency and mode as one guarded route
+change. The same follow-on commit also changes station-following policy so an
+explicit successful amplifier Operate request remains the operator's intent
+until an explicit Standby request clears it.
+
+Windows Codex should:
+
+1. Preserve `%APPDATA%\OM0RX Remote Station\agent.json` and any uncommitted
+   work. Fetch `origin/codex/remote-agent-flex-spots` and fast-forward the
+   existing deployment checkout to the latest commit on that branch.
+2. Run the focused station-policy, coordinator and remote-agent suites before
+   restarting the existing `OM0RX Remote Station Agent` scheduled task. Do not
+   start a second controller process.
+3. Confirm `/api/v1/state` advertises `set_frequency_mode`. From xLog, select a
+   receive-only cluster spot and verify the new frequency and mode arrive in
+   one state transition, with MOX false throughout.
+4. On an amplifier-allowed band, explicitly request Operate once. Verify it
+   remains requested across same-band retunes and is restored after a safe
+   route transition away from and back to an allowed band. A prohibited band
+   must remain in verified standby; it must not erase the stored operator
+   intent.
+5. Change RF power manually on Maestro, retune within the same band, and verify
+   the observed value is preserved. Then change bands and verify only that
+   transition applies the destination band's configured default.
+6. Finish in receive, explicitly request Standby, and report commit, test
+   counts and redacted before/after state. Do not invoke PTT, TUNE-start or CWX
+   and do not emit RF during this acceptance.

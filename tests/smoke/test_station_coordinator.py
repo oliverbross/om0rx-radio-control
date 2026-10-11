@@ -658,7 +658,7 @@ def test_external_flex_band_change_safely_follows_kpa_and_kat_in_receive(monkeyp
     assert not any(call[0] in {"flex.tune", "flex.mox"} for call in calls)
 
 
-def test_external_flex_route_follow_corrects_barefoot_power_only_drift(monkeypatch):
+def test_external_flex_route_follow_preserves_manual_barefoot_power_override(monkeypatch):
     station, calls, manager = build_station(monkeypatch, commissioned=True)
     monkeypatch.setattr(config, "STATION_BAREFOOT_DRIVE_W", {"20m": 70})
     station.radio_snapshot_provider = lambda: {
@@ -674,9 +674,9 @@ def test_external_flex_route_follow_corrects_barefoot_power_only_drift(monkeypat
 
     followed = asyncio.run(station.follow_observed_radio_route(14.074))
 
-    assert followed is True
+    assert followed is False
     assert manager.kpa500.operate is False
-    assert ("flex.rfpower", 70) in calls
+    assert ("flex.rfpower", 70) not in calls
     assert not any(call[0] == "kpa.operate" for call in calls)
 
 
@@ -697,10 +697,10 @@ def test_switching_to_disallowed_digital_profile_forces_pa_standby(monkeypatch):
     assert followed is True
     assert manager.kpa500.operate is False
     assert ("kpa.operate", False) in calls
-    assert ("flex.rfpower", 25) in calls
+    assert not any(call[0] == "flex.rfpower" for call in calls)
 
 
-def test_external_owner_route_follow_corrects_power_only_drift_in_receive(monkeypatch):
+def test_external_owner_route_follow_preserves_power_override_in_receive(monkeypatch):
     station, calls, _manager = build_station(monkeypatch, commissioned=True)
     station.radio_snapshot_provider = lambda: {
         "connected": True,
@@ -723,8 +723,8 @@ def test_external_owner_route_follow_corrects_power_only_drift_in_receive(monkey
 
     followed = asyncio.run(station.follow_observed_radio_route(14.074))
 
-    assert followed is True
-    assert ("flex.rfpower", 25) in calls
+    assert followed is False
+    assert ("flex.rfpower", 25) not in calls
 
 
 def test_external_flex_route_follow_accepts_operate_drive_without_forcing_standby(monkeypatch):
@@ -838,7 +838,7 @@ def test_unchanged_verified_route_never_automatically_drops_operate(monkeypatch)
     assert not any(call[0] == "kpa.operate" for call in calls)
 
 
-def test_external_flex_drive_drift_is_corrected_without_dropping_operate(monkeypatch):
+def test_external_flex_drive_override_is_preserved_without_dropping_operate(monkeypatch):
     station, calls, manager = build_station(monkeypatch, commissioned=True)
     manager.kpa500.operate = True
     flex = station.flex_provider()
@@ -856,10 +856,10 @@ def test_external_flex_drive_drift_is_corrected_without_dropping_operate(monkeyp
 
     followed = asyncio.run(station.follow_observed_radio_route(14.074))
 
-    assert followed is True
+    assert followed is False
     assert manager.kpa500.operate is True
-    assert flex.current_rfpower == 25
-    assert ("flex.rfpower", 25) in calls
+    assert flex.current_rfpower == 90
+    assert ("flex.rfpower", 25) not in calls
     assert not any(call[0] == "kpa.operate" for call in calls)
 
 
@@ -1277,6 +1277,7 @@ def test_guarded_operate_and_standby_actions_toggle_kpa_with_exact_readback(monk
     assert operated["transaction"]["state"] == "succeeded"
     assert manager.kpa500.operate is True
     assert operated["route"]["amplifier_drive_w"] == 25
+    assert station._manual_operate_requested is True
     assert ("flex.rfpower", 25) in calls
     assert calls.index(("flex.rfpower", 25)) < calls.index(("kpa.operate", True))
     assert ("kpa.operate", True) in calls
@@ -1285,6 +1286,7 @@ def test_guarded_operate_and_standby_actions_toggle_kpa_with_exact_readback(monk
 
     assert stood_by["transaction"]["state"] == "succeeded"
     assert manager.kpa500.operate is False
+    assert station._manual_operate_requested is False
     assert calls[-2:] == [("kpa.readback",), ("manager.refresh", False)]
 
 

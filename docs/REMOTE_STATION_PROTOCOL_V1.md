@@ -31,6 +31,7 @@ human-readable `message`.
 | --- | --- | --- |
 | `set_frequency_hz` | `frequency_hz: integer`, optional `vfo: A or B` | Ham-band frequencies only; guarded route change; VFO defaults to A. |
 | `set_mode` | `mode: string`, optional `vfo: A or B` | Guarded route change; VFO defaults to A. |
+| `set_frequency_mode` | `frequency_hz: integer`, `mode: string`, optional `vfo: A or B` | Preferred coherent tune path. Applies frequency and mode inside one guarded route change so clients do not expose an intermediate old-mode/new-frequency state; VFO defaults to A. |
 | `set_ptt` | `enabled: boolean` | PTT-on is atomic with station preflight; PTT-off remains available for recovery. |
 | `set_rit` | `enabled: boolean`, `offset_hz: integer`, optional `vfo` | Offset range −9999…9999 Hz. |
 | `set_xit` | `enabled: boolean`, `offset_hz: integer`, optional `vfo` | Guarded because it changes the transmit route. |

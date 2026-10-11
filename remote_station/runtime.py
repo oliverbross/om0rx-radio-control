@@ -331,6 +331,7 @@ class RemoteStationRuntime:
                 "capabilities": {
                     "commands": [
                         "set_frequency_hz",
+                        "set_frequency_mode",
                         "set_mode",
                         "set_ptt",
                         "set_rit",
@@ -534,6 +535,35 @@ class RemoteStationRuntime:
                     lambda: self.flex._send(f"slice tune {slice_id} {frequency_mhz:.6f}"),
                 )
                 return {"frequency_hz": frequency_hz, "vfo": vfo}
+            if normalized == "set_frequency_mode":
+                frequency_hz = self._required_int(arguments, "frequency_hz")
+                frequency_mhz = frequency_hz / 1_000_000.0
+                if not band_from_frequency(frequency_mhz):
+                    raise RemoteCommandError(
+                        "frequency-outside-policy",
+                        "Frequency is outside the configured station bands",
+                        status_code=422,
+                    )
+                mode = str(arguments.get("mode") or "").strip().upper()
+                if not mode or len(mode) > 12 or not mode.replace("-", "").isalnum():
+                    raise RemoteCommandError(
+                        "mode-invalid", "Radio mode is invalid", status_code=422
+                    )
+                vfo, slice_state = self._slice_for_vfo(arguments)
+                slice_id = int(slice_state["slice_id"])
+
+                def apply_frequency_and_mode() -> bool:
+                    frequency_ok = self.flex._send(
+                        f"slice tune {slice_id} {frequency_mhz:.6f}"
+                    )
+                    mode_ok = self.flex._send(f"slice set {slice_id} mode={mode}")
+                    return bool(frequency_ok and mode_ok)
+
+                await self.coordinator.execute_flex_route_change(
+                    f"remote-frequency-mode-{vfo.lower()}",
+                    apply_frequency_and_mode,
+                )
+                return {"frequency_hz": frequency_hz, "mode": mode, "vfo": vfo}
             if normalized == "set_mode":
                 mode = str(arguments.get("mode") or "").strip().upper()
                 if not mode or len(mode) > 12 or not mode.replace("-", "").isalnum():

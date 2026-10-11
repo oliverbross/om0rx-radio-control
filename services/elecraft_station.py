@@ -182,6 +182,10 @@ class StationCoordinator:
         self._last_follow_attempt_at = 0.0
         self._follow_generation = 0
         self._follow_inflight_target: Optional[tuple[str, int, str, int, int, bool]] = None
+        # Operator intent is deliberately separate from the instantaneous KPA
+        # readback. Route changes temporarily force standby, but only an
+        # explicit Standby command clears the request to operate.
+        self._manual_operate_requested = False
 
     @property
     def commissioned(self) -> bool:
@@ -843,7 +847,7 @@ class StationCoordinator:
         any_needs_follow = self._observed_route_needs_follow(
             route,
             radio,
-            include_drive=True,
+            include_drive=False,
         )
         if (
             radio.get("connected") is not True
@@ -899,7 +903,7 @@ class StationCoordinator:
                     any_needs_follow = self._observed_route_needs_follow(
                         current_route,
                         current_radio,
-                        include_drive=True,
+                        include_drive=False,
                     )
                     if not any_needs_follow:
                         return False
@@ -934,6 +938,10 @@ class StationCoordinator:
                             )
                             return False
                     observed_kpa = self.elecraft.snapshot().get("kpa500") or {}
+                    if observed_kpa.get("operate") is True:
+                        self._manual_operate_requested = True
+                    observed_band = str(observed_kpa.get("band") or "").strip().lower()
+                    band_changed = observed_band != current_route.band.lower()
                     same_verified_target = bool(
                         self._route_verified
                         and self._route_verified.get("route_id")
@@ -962,29 +970,8 @@ class StationCoordinator:
                         )
                         return False
                     restore_operate = bool(
-                        observed_kpa.get("operate") is True
-                        and current_route.amplifier_allowed
+                        self._manual_operate_requested and current_route.amplifier_allowed
                     )
-                    if not topology_needs_follow:
-                        desired_drive = (
-                            current_route.amplifier_drive_w
-                            if restore_operate
-                            else current_route.barefoot_drive_w
-                        )
-                        await self._set_and_verify_flex_drive(
-                            current_route,
-                            desired_drive,
-                            label="amplifier" if restore_operate else "barefoot",
-                        )
-                        if self._route_verified is not None:
-                            self._route_verified["flex_drive_w"] = desired_drive
-                        logger.info(
-                            "Corrected FLEX drive on %s to %d W without changing "
-                            "KPA500 operate state",
-                            current_route.band,
-                            desired_drive,
-                        )
-                        return True
                     # A selected digital engine may be armed for a future slot even
                     # though the authoritative FLEX readback is presently RX.  The
                     # route has to follow that engine's observed CAT QSY *before*
@@ -998,16 +985,17 @@ class StationCoordinator:
                         route=current_route,
                         allow_digital_owner=True,
                         follow_generation=follow_generation,
-                        # Preserve drive while an already-operating KPA is
-                        # temporarily in standby. Standby or prohibited routes
-                        # still receive their configured barefoot drive.
-                        preserve_observed_drive=restore_operate,
+                        # A current-band Maestro override belongs to the
+                        # operator. Apply configured drive only when the band
+                        # changes; same-band frequency/mode changes preserve it.
+                        preserve_observed_drive=not band_changed,
                     )
                     if restore_operate:
                         self._assert_follow_current(follow_generation, current_route)
                         await self._operate(
                             route=current_route,
                             allow_digital_owner=True,
+                            preserve_observed_drive=not band_changed,
                         )
         finally:
             if follow_generation == self._follow_generation:
@@ -1802,6 +1790,7 @@ class StationCoordinator:
             if normalized == "tune":
                 await self._start_tune()
             elif normalized == "standby":
+                self._manual_operate_requested = False
                 await self._standby()
             else:
                 async with self.radio_lock:
@@ -1845,6 +1834,7 @@ class StationCoordinator:
                                         route=route,
                                         allow_digital_owner=external_owner,
                                     )
+                                    self._manual_operate_requested = True
                                     break
                                 except StationActionError as exc:
                                     retry_receive_collision = bool(
@@ -2445,6 +2435,7 @@ class StationCoordinator:
         *,
         route: Optional[RouteTarget] = None,
         allow_digital_owner: bool = False,
+        preserve_observed_drive: bool = False,
     ) -> None:
         route = route or self._require_fresh_route()
         transaction = self._start_transaction("operate", route)
@@ -2477,10 +2468,21 @@ class StationCoordinator:
             )
 
             self._transaction_step("setting-flex-drive", 70)
-            observed_drive = await self._set_flex_drive_for_operate(
-                route,
-                route.amplifier_drive_w,
-            )
+            if preserve_observed_drive:
+                drive_readback = await self._fresh_flex_route(route)
+                try:
+                    observed_drive = int(drive_readback.get("rfpower"))
+                except (TypeError, ValueError) as exc:
+                    raise StationActionError(
+                        "flex-drive-readback-unconfirmed",
+                        "FLEX RF drive readback is unavailable",
+                        status_code=503,
+                    ) from exc
+            else:
+                observed_drive = await self._set_flex_drive_for_operate(
+                    route,
+                    route.amplifier_drive_w,
+                )
 
             # Recheck the two KAT interlocks after the FLEX write and its
             # readback.  If either changed, fail safe to standby rather than

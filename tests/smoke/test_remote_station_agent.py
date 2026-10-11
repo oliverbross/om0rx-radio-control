@@ -416,6 +416,28 @@ def test_remote_frequency_command_is_guarded_and_idempotent(tmp_path):
     assert runtime.flex.calls == [("send", "slice tune 0 14.080000")]
 
 
+def test_remote_frequency_and_mode_share_one_guarded_route_transaction(tmp_path):
+    runtime = _runtime(tmp_path)
+    result = run(
+        runtime.execute(
+            "xlog-frequency-mode-0001",
+            "set_frequency_mode",
+            {"frequency_hz": 3_698_000, "mode": "LSB", "vfo": "A"},
+        )
+    )
+
+    assert result["result"] == {
+        "frequency_hz": 3_698_000,
+        "mode": "LSB",
+        "vfo": "A",
+    }
+    assert runtime.coordinator.calls == ["remote-frequency-mode-a"]
+    assert runtime.flex.calls == [
+        ("send", "slice tune 0 3.698000"),
+        ("send", "slice set 0 mode=LSB"),
+    ]
+
+
 def test_remote_spot_command_adds_receive_only_flex_marker(tmp_path):
     runtime = _runtime(tmp_path)
     result = run(
