@@ -673,8 +673,22 @@ class SerialCommandDevice:
         update_last_seen: bool = True,
     ) -> Optional[str]:
         """Send a GET and return the first matching semicolon-framed response."""
+        started = time.monotonic()
+        acquired_at = started
+        sent_at: Optional[float] = None
+        outcome = "not-open"
         with self.lock:
+            acquired_at = time.monotonic()
             if not self.open():
+                logger.info(
+                    "Elecraft serial query timing device=%s query=%s lock_wait_ms=%.1f "
+                    "reply_ms=0.0 total_ms=%.1f outcome=%s",
+                    self.name,
+                    command.strip(),
+                    (acquired_at - started) * 1000,
+                    (time.monotonic() - started) * 1000,
+                    outcome,
+                )
                 return None
             try:
                 # VSPE mirrors traffic from the other client. Discard old
@@ -685,6 +699,7 @@ class SerialCommandDevice:
                     self.serial.read(waiting)
                 self.serial.write(command.encode("ascii"))
                 self.serial.flush()
+                sent_at = time.monotonic()
                 deadline = time.monotonic() + (timeout or self.timeout)
                 pending = ""
                 wanted = prefix.upper()
@@ -704,16 +719,31 @@ class SerialCommandDevice:
                             re.IGNORECASE,
                         )
                         if prefix_matches and shape_matches:
+                            outcome = "matched"
                             if update_last_seen:
                                 self.last_seen = time.time()
                             self.last_error = None
                             return response
                 self.last_error = f"No {prefix} response from {self.name}"
+                outcome = "timeout"
                 return None
             except Exception as exc:
+                outcome = "error"
                 self.last_error = self._friendly_error(exc)
                 self.close()
                 return None
+            finally:
+                finished = time.monotonic()
+                logger.info(
+                    "Elecraft serial query timing device=%s query=%s lock_wait_ms=%.1f "
+                    "reply_ms=%.1f total_ms=%.1f outcome=%s",
+                    self.name,
+                    command.strip(),
+                    (acquired_at - started) * 1000,
+                    ((finished - sent_at) * 1000) if sent_at is not None else 0.0,
+                    (finished - started) * 1000,
+                    outcome,
+                )
 
     def _friendly_error(self, exc: Exception) -> str:
         text = str(exc).strip() or exc.__class__.__name__

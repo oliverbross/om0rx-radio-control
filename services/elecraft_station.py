@@ -877,9 +877,15 @@ class StationCoordinator:
         self._follow_inflight_target = target
         self._last_follow_attempt = target
         self._last_follow_attempt_at = now
+        follow_started = time.monotonic()
+        follow_stages: dict[str, float] = {}
+
+        def follow_stage(name: str) -> None:
+            follow_stages[name] = round((time.monotonic() - follow_started) * 1000, 1)
 
         try:
             async with self._action_lock:
+                follow_stage("action_lock_acquired_ms")
                 self._require_no_training()
                 self._require_commissioned()
                 self._require_operational()
@@ -888,6 +894,7 @@ class StationCoordinator:
                 if self._active_task and not self._active_task.done():
                     return False
                 async with self.radio_lock:
+                    follow_stage("radio_lock_acquired_ms")
                     self._assert_follow_current(follow_generation, route)
                     current_route = self._require_fresh_route()
                     current_radio = self._radio_snapshot()
@@ -916,7 +923,9 @@ class StationCoordinator:
                         # while the route lock is held. No KPA state is changed
                         # unless those direct readbacks still disagree.
                         current_route = await self._refresh_route_for_action()
+                        follow_stage("flex_preflight_ms")
                         await self.elecraft.refresh_status()
+                        follow_stage("accessory_preflight_ms")
                         self._assert_follow_current(follow_generation, current_route)
                         current_route = self._require_fresh_route()
                         current_radio = self._radio_snapshot()
@@ -990,6 +999,7 @@ class StationCoordinator:
                         # changes; same-band frequency/mode changes preserve it.
                         preserve_observed_drive=not band_changed,
                     )
+                    follow_stage("route_prepared_ms")
                     if restore_operate:
                         self._assert_follow_current(follow_generation, current_route)
                         await self._operate(
@@ -1000,6 +1010,12 @@ class StationCoordinator:
         finally:
             if follow_generation == self._follow_generation:
                 self._follow_inflight_target = None
+            follow_stage("total_ms")
+            logger.info(
+                "Accessory follow timing route=%s cumulative_ms=%s",
+                route.route_id,
+                follow_stages,
+            )
         logger.info(
             "Safely followed observed FLEX route to %s at %d kHz "
             "(operate_restored=%s)",
@@ -1422,8 +1438,20 @@ class StationCoordinator:
                 f"{getattr(device, 'name', 'Device')} does not support {method}",
                 status_code=503,
             )
+        started = time.monotonic()
         async with self.elecraft._lock:
+            acquired_at = time.monotonic()
             result = await self.elecraft._run_io(operation, *args)
+        finished = time.monotonic()
+        logger.info(
+            "Elecraft device call timing device=%s method=%s manager_lock_wait_ms=%.1f "
+            "io_ms=%.1f total_ms=%.1f",
+            getattr(device, "name", "Device"),
+            method,
+            (acquired_at - started) * 1000,
+            (finished - acquired_at) * 1000,
+            (finished - started) * 1000,
+        )
         if result is None or (result is False and not allow_false):
             raise StationActionError(
                 "device-command-failed",
