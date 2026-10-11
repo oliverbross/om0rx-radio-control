@@ -194,3 +194,54 @@ deployment or physical latency acceptance results.
 6. Report before/after median/p95 for accessories separately from FLEX, failed
    tests, final safe state and all SHAs here. Mac end-to-end UI acceptance remains
    a separate gate after the Windows deployment.
+
+### Windows Phase 2 completion
+
+Completed receive-only on 2026-10-11. The requested source tip
+`b5ab3dcbd0dbd5223fa281ab1c3c1187aafb4fe5` was verified before work began.
+The Phase 2 port was deployed to the canonical
+`C:\Projects\OM0RX-xCat\WindowsAgent` checkout, then the measured accessory
+redundancy was fixed in source commit
+`f66e1adcd9019800f6b07ce2bf04925cc4937fb0` and canonical/deployed commit
+`2fc10430281424a99802b82c4601e34e9113a441`. Only the existing
+`OM0RX Remote Station Agent` scheduled task was restarted; the tray task stayed
+running. The `agent.json` SHA-256 remained
+`FFA28083E47DFDDBEE7A047140B5F2F0C934E03A6CA689DD6D1CE95C3A54FB47`.
+
+Five actual `tune_simplex` split/B exits improved from a fresh legacy baseline
+of 3078.826/3469.631 ms ACK median/p95 and 3531.103/3777.569 ms coherent
+publish median/p95 to 845.975/938.478 ms ACK and 1239.536/1347.753 ms publish.
+All five selected A as both RX and TX, published no mixed frequency/mode pair,
+and completed their already-aligned route with the coherent publication. Five
+already-simplex mode changes measured 904.022/1200.501 ms ACK and
+1259.344/1694.125 ms publish, also with zero mixed pairs. An invalid 1 Hz
+`tune_simplex` returned HTTP 422, left no pending target, and the command remained
+advertised.
+
+For the five 40 m/20 m accessory transitions, the pre-optimization external
+median/p95 was 730.957/913.926 ms ACK, 1159.855/1225.919 ms radio publication,
+and 9062.024/9816.273 ms final route. The corresponding final values were
+699.660/977.312 ms, 1089.963/1440.899 ms, and 9129.133/9857.364 ms. This last
+end-to-end route result is statistically flat at five samples rather than a
+claimed speedup. Stage logging identified mandatory final device readbacks as
+the largest accessory-only stage (1638.7 ms baseline median, 1666.7 ms final)
+and an immediately repeated full status refresh as demonstrated redundancy
+(530.6 ms baseline median). Guarded route work now signals priority over
+background status telemetry and atomically publishes the already-complete,
+exact KPA/KAT readbacks. The redundant publication stage fell to 0.2 ms median;
+coordinator-internal total fell from 7056.6/7564.0 ms median/p95 to
+6990.3/7483.6 ms. Receive proofs, exact final device readbacks, fault/key checks,
+superseded-target checks, amplifier-band policy, and manual-drive behavior were
+not removed or relaxed.
+
+Final validation passed: 899 source smoke tests, 221 canonical WindowsAgent
+tests, 120 focused source coordinator/Elecraft tests, 102 focused canonical
+tests, 105 browser/widget contracts, 105 MSHV offline safety tests, and the
+native Windows widget smoke test. The complete maintenance gate also passed
+syntax compilation, backend import, Ruff correctness, duplicate-route scan,
+PowerShell parsing, JavaScript syntax, old-reference scan, and whitespace check.
+
+Final live state was restored to 18.082500 MHz CW on 17 m: FLEX known/fresh,
+MOX false, interlock READY, KPA500 standby at 0 W, KPA/KAT both on 17 m, KAT
+antenna 1, recovery false, and zero alarms. HTTPS/WebSocket operation remained
+healthy. No PTT, TUNE-start, CWX, amplifier OPERATE, or RF transmission occurred.
