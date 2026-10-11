@@ -324,6 +324,15 @@ class RemoteStationRuntime:
                 and abs(float(observed_frequency) - target_frequency) <= 0.000001
                 and observed_mode == target_mode
             )
+            if pending.get("simplex"):
+                # Frequency alone is insufficient when leaving split: wait for
+                # authoritative A RX and TX ownership as well as the tune.
+                target_confirmed = target_confirmed and all(
+                    item is not None
+                    and item.get("index_letter") == "A"
+                    and item.get(flag) is True
+                    for item, flag in ((active_receive, "active"), (transmit, "transmit"))
+                ) and pending.get("applied") is True
             if target_confirmed:
                 if polled_target_confirmed:
                     slice_id = int(pending["slice_id"])
@@ -442,6 +451,7 @@ class RemoteStationRuntime:
                     "commands": [
                         "set_frequency_hz",
                         "set_frequency_mode",
+                        "tune_simplex",
                         "set_mode",
                         "set_ptt",
                         "set_rit",
@@ -653,7 +663,8 @@ class RemoteStationRuntime:
                     lambda: self.flex._send(f"slice tune {slice_id} {frequency_mhz:.6f}"),
                 )
                 return {"frequency_hz": frequency_hz, "vfo": vfo}
-            if normalized == "set_frequency_mode":
+            if normalized in {"set_frequency_mode", "tune_simplex"}:
+                simplex = normalized == "tune_simplex"
                 frequency_hz = self._required_int(arguments, "frequency_hz")
                 frequency_mhz = frequency_hz / 1_000_000.0
                 if not band_from_frequency(frequency_mhz):
@@ -667,7 +678,7 @@ class RemoteStationRuntime:
                     raise RemoteCommandError(
                         "mode-invalid", "Radio mode is invalid", status_code=422
                     )
-                vfo, slice_state = self._slice_for_vfo(arguments)
+                vfo, slice_state = self._slice_for_vfo({"vfo": "A"} if simplex else arguments)
                 slice_id = int(slice_state["slice_id"])
                 self._pending_frequency_mode = {
                     "frequency": frequency_mhz,
@@ -675,6 +686,8 @@ class RemoteStationRuntime:
                     "vfo": vfo,
                     "slice_id": slice_id,
                     "started_at": time.time(),
+                    "simplex": simplex,
+                    "applied": False,
                 }
                 self.radio_snapshot = {
                     **self.radio_snapshot,
@@ -695,6 +708,14 @@ class RemoteStationRuntime:
                     if io_lock:
                         io_lock.acquire()
                     try:
+                        if simplex:
+                            # One receive/standby guard and socket transaction;
+                            # no intermediate accessory follow between A/RX,
+                            # A/TX and the final spot frequency/mode.
+                            if not self.flex._send(f"slice set {slice_id} active=1"):
+                                return False
+                            if not self.flex._send(f"slice set {slice_id} tx=1"):
+                                return False
                         current_mode = str(slice_state.get("mode") or "").upper()
                         if current_mode != mode and not self.flex._send(
                             f"slice set {slice_id} mode={mode}"
@@ -710,10 +731,20 @@ class RemoteStationRuntime:
                         if io_lock:
                             io_lock.release()
 
-                await self.coordinator.execute_flex_route_change(
-                    f"remote-frequency-mode-{vfo.lower()}",
-                    apply_frequency_and_mode,
-                )
+                try:
+                    await self.coordinator.execute_flex_route_change(
+                        "remote-simplex-a" if simplex else f"remote-frequency-mode-{vfo.lower()}",
+                        apply_frequency_and_mode,
+                    )
+                except BaseException:
+                    # A rejected/partial operation is not a pending success.
+                    # Require a fresh poll to expose its actual physical state.
+                    self._pending_frequency_mode = None
+                    self.radio_snapshot.pop("route_change_pending", None)
+                    self.radio_snapshot.update({"known": False, "stale": True})
+                    raise
+                if self._pending_frequency_mode is not None:
+                    self._pending_frequency_mode["applied"] = True
                 return {"frequency_hz": frequency_hz, "mode": mode, "vfo": vfo}
             if normalized == "set_mode":
                 mode = str(arguments.get("mode") or "").strip().upper()

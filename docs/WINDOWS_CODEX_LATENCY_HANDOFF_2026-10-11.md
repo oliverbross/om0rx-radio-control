@@ -144,3 +144,53 @@ Final live state was restored to 18.082500 MHz CW on 17 m with FLEX known and
 fresh, MOX false, interlock READY, KPA500 standby at 0 W, KPA/KAT both on 17 m,
 KAT antenna 1, recovery not required and zero alarms. No PTT, TUNE-start or CWX
 command was sent and no RF was transmitted.
+
+## Phase 2: combined split exit and accessory stage profiling
+
+Status: implemented locally; Windows deployment and hardware measurements pending.
+
+Local phase-2 validation: 157 focused Python tests passed (agent, coordinator,
+policy and FLEX lifecycle); 58 Swift tests passed; correctness lint and diff
+checks passed; signed macOS release packaging passed. These are not Windows
+deployment or physical latency acceptance results.
+
+- New advertised command `tune_simplex` takes `frequency_hz` and `mode` and
+  always targets VFO A. It selects A RX/TX and applies frequency/mode inside one
+  existing `execute_flex_route_change` guard/socket lock, retaining the immediate
+  `sub slice all` refresh. This replaces three guarded requests for split exit.
+- Publication waits for confirmed A RX/TX ownership plus coherent frequency/mode;
+  MOX/interlock remain live. Rejected/partial commands invalidate the cached route
+  until a new poll instead of leaving a permanently pending success target.
+- xCat uses the advertised capability for split/B exit; older agents retain the
+  existing fallback. Already-simplex A retains `set_frequency_mode`.
+- `Accessory route timing` logs cumulative monotonic stage milliseconds through
+  receive proof, standby proof, fault/key checks, FLEX port verification, KPA band,
+  KAT band/frequency/antenna, drive, final readbacks and final status refresh.
+  Subtract consecutive values to identify each stage's cost. Failed/cancelled
+  routes also log completed stages and total. No safety readbacks were removed.
+
+### Windows Codex follow-up
+
+1. Fetch the latest `codex/latency-route-polling` source branch. Review phase-2
+   changes after `d54cd94`; port runtime, coordinator and regression tests into
+   the actual canonical `C:\Projects\OM0RX-xCat\WindowsAgent` checkout. Keep
+   all unrelated work, policy, configuration, credentials and commissioning.
+2. Run the full established Windows gate and confirm command capability
+   advertisement. Include invalid targets, early command rejection, failed
+   RX/TX ownership proof, live MOX during pending publication, and legacy tuning.
+3. Deploy only the existing agent task with a recoverable previous revision.
+   Record source/canonical SHAs and unchanged configuration hash. Do not start
+   a second hardware owner or initiate PTT, TUNE-start, CWX or RF.
+4. Measure at least five split/B-to-simplex transitions through `tune_simplex`
+   against the previous 3544/3935 ms publish median/p95. Do not benchmark the old
+   three-command sequence accidentally. Report ACK, coherent publish and route
+   times separately. Verify A actually owns RX/TX, no mixed state and no stuck
+   pending target after failure. Retest already-simplex mode changes.
+5. Measure five 40m/20m round trips and capture `Accessory route timing` stage
+   data. Identify the largest measured stage(s); inspect serial poll contention
+   and redundant refreshes there. Optimize only demonstrated redundancy while
+   retaining current receive proof, exact device readbacks, fault handling,
+   superseded-target checks, allowed amp bands and manual power behavior.
+6. Report before/after median/p95 for accessories separately from FLEX, failed
+   tests, final safe state and all SHAs here. Mac end-to-end UI acceptance remains
+   a separate gate after the Windows deployment.

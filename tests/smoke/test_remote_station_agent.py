@@ -19,6 +19,7 @@ from remote_station.runtime import (
     RemoteStationRuntime,
 )
 from services.station_alarms import build_station_alarms
+from services.elecraft_station import StationActionError
 
 TOKEN = "test-token-that-is-at-least-thirty-two-characters"
 
@@ -580,6 +581,60 @@ def test_atomic_frequency_mode_publication_waits_for_coherent_flex_state(tmp_pat
     assert runtime.radio_snapshot["vfos"]["A"]["frequency"] == 7.195
     assert runtime.radio_snapshot["vfos"]["A"]["mode"] == "LSB"
     assert "route_change_pending" not in runtime.radio_snapshot
+
+
+def test_simplex_spot_uses_one_guard_and_waits_for_tx_ownership(tmp_path):
+    runtime = _runtime(tmp_path)
+    runtime.flex.current_tx_slice_id = 1
+    result = run(runtime.execute("simplex-0001", "tune_simplex", {
+        "frequency_hz": 7_195_000, "mode": "LSB",
+    }))
+    assert result["success"] is True
+    assert runtime.coordinator.calls == ["remote-simplex-a"]
+    assert runtime.flex.calls == [
+        ("send", "slice set 0 active=1"),
+        ("send", "slice set 0 tx=1"),
+        ("send", "slice set 0 mode=LSB"),
+        ("send", "slice tune 0 7.195000"),
+        ("send", "sub slice all"),
+    ]
+    # Matching frequency/mode must not hide an old B transmit slice.
+    levels = {"freq": 7.195, "mode": "LSB", "mox": True}
+    assert runtime._update_radio_snapshot(levels) is False
+    assert runtime.radio_snapshot["mox"] is True
+    runtime.flex.current_tx_slice_id = 0
+    assert runtime._update_radio_snapshot(levels) is True
+    assert runtime.radio_snapshot["transmit"]["index_letter"] == "A"
+
+
+@pytest.mark.parametrize("failure", ["active=1", "tx=1", "mode=LSB", "7.195000"])
+def test_simplex_spot_stops_on_first_rejected_command(tmp_path, failure):
+    runtime = _runtime(tmp_path)
+    def send(command):
+        runtime.flex.calls.append(command)
+        return failure not in command
+    runtime.flex._send = send
+    async def guarded(reason, operation):
+        assert operation() is False
+        raise StationActionError("flex-route-failed", "Rejected")
+    runtime.coordinator.execute_flex_route_change = guarded
+    with pytest.raises(RemoteCommandError):
+        run(runtime.execute("simplex-rejected", "tune_simplex", {
+            "frequency_hz": 7_195_000, "mode": "LSB",
+        }))
+    assert failure in runtime.flex.calls[-1]
+    assert runtime._pending_frequency_mode is None
+    assert runtime.radio_snapshot["stale"] is True
+
+
+def test_simplex_invalid_target_never_enters_guard(tmp_path):
+    runtime = _runtime(tmp_path)
+    with pytest.raises(RemoteCommandError):
+        run(runtime.execute("simplex-invalid", "tune_simplex", {
+            "frequency_hz": 1, "mode": "LSB",
+        }))
+    assert runtime.coordinator.calls == []
+    assert runtime.flex.calls == []
 
 
 def test_remote_spot_command_adds_receive_only_flex_marker(tmp_path):

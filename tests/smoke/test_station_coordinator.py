@@ -635,7 +635,8 @@ def test_route_change_confirms_standby_before_flex_mutation(monkeypatch):
     assert calls.index(("kpa.operate", False)) < calls.index(("flex.qsy", 7.074))
 
 
-def test_external_flex_band_change_safely_follows_kpa_and_kat_in_receive(monkeypatch):
+def test_external_flex_band_change_safely_follows_kpa_and_kat_in_receive(monkeypatch, caplog):
+    caplog.set_level("INFO")
     station, calls, manager = build_station(monkeypatch, commissioned=True)
     monkeypatch.setattr(config, "STATION_BAREFOOT_DRIVE_W", {"20m": 65})
     manager.kpa500.band = "12m"
@@ -656,6 +657,15 @@ def test_external_flex_band_change_safely_follows_kpa_and_kat_in_receive(monkeyp
     assert ("flex.rfpower", 65) in calls
     assert calls.index(("kpa.operate", False)) < calls.index(("flex.rfpower", 65))
     assert not any(call[0] in {"flex.tune", "flex.mox"} for call in calls)
+    timing = next(record.args[1] for record in caplog.records
+                  if record.msg.startswith("Accessory route timing"))
+    assert list(timing) == [
+        "receive_confirmed_ms", "standby_confirmed_ms", "kat_fault_checked_ms",
+        "kat_key_connected_ms", "flex_port_verified_ms", "kpa_band_ms",
+        "kat_band_ms", "kat_frequency_ms", "kat_antenna_ms", "drive_verified_ms",
+        "final_readbacks_ms", "status_refreshed_ms", "total_ms",
+    ]
+    assert list(timing.values()) == sorted(timing.values())
 
 
 def test_external_flex_route_follow_preserves_manual_barefoot_power_override(monkeypatch):

@@ -2257,11 +2257,18 @@ class StationCoordinator:
         if not reuse_transaction:
             self._start_transaction("prepare-route", route)
         kpa_safety_engaged = False
+        started = time.monotonic()
+        stages: dict[str, float] = {}
+
+        def timed_stage(name: str) -> None:
+            stages[name] = round((time.monotonic() - started) * 1000, 1)
+
         try:
             self._transaction_step("confirming-receive", 10)
             if not allow_digital_owner:
                 self._assert_digital_idle()
             await self._fresh_receive_state()
+            timed_stage("receive_confirmed_ms")
             if follow_generation is not None:
                 self._assert_follow_current(follow_generation, route)
             flex = self.flex_provider()
@@ -2281,16 +2288,19 @@ class StationCoordinator:
                 self._assert_follow_current(follow_generation, route)
             if kpa_standby.get("operate") is not False:
                 raise StationActionError("kpa-standby-not-confirmed", "KPA500 did not confirm standby")
+            timed_stage("standby_confirmed_ms")
 
             # A KAT fault is latched by firmware and otherwise blocks the
             # exact route proof forever.  We are in fresh receive with KPA in
             # standby, so this is the safe point to clear and verify it.
             await self._clear_kat_fault_in_receive(kat)
+            timed_stage("kat_fault_checked_ms")
             await self._ensure_kat_amp_key_connected_in_receive(
                 kat,
                 kpa,
                 fault_confirmed_clear=True,
             )
+            timed_stage("kat_key_connected_ms")
 
             self._transaction_step("selecting-flex-port", 40)
             flex_ok = await self._bounded_flex_io(
@@ -2307,18 +2317,23 @@ class StationCoordinator:
             if follow_generation is not None:
                 self._assert_follow_current(follow_generation, route)
             await self._fresh_flex_route(route)
+            timed_stage("flex_port_verified_ms")
             if follow_generation is not None:
                 self._assert_follow_current(follow_generation, route)
 
             self._transaction_step("selecting-elecraft-route", 60)
             await self._fresh_receive_state()
             await self._device_call(kpa, "set_band", route.band)
+            timed_stage("kpa_band_ms")
             await self._fresh_receive_state()
             await self._device_call(kat, "set_band", route.band)
+            timed_stage("kat_band_ms")
             await self._fresh_receive_state()
             await self._device_call(kat, "set_frequency", route.frequency_mhz)
+            timed_stage("kat_frequency_ms")
             await self._fresh_receive_state()
             await self._device_call(kat, "set_antenna", route.kat_antenna)
+            timed_stage("kat_antenna_ms")
 
             self._transaction_step("setting-barefoot-drive", 72)
             if preserve_observed_drive:
@@ -2341,11 +2356,13 @@ class StationCoordinator:
                 self._assert_follow_current(follow_generation, route)
 
             self._transaction_step("verifying-readback", 80)
+            timed_stage("drive_verified_ms")
             kpa_status, kat_status = await asyncio.gather(
                 self._device_readback(kpa),
                 self._device_readback(kat),
             )
             levels = await self._fresh_flex_route(route)
+            timed_stage("final_readbacks_ms")
             if follow_generation is not None:
                 self._assert_follow_current(follow_generation, route)
             kpa_verification = verify_exact_target(
@@ -2406,6 +2423,7 @@ class StationCoordinator:
                 {"route": route.as_dict(), "readback": dict(self._route_verified)},
             )
             await self.elecraft.refresh_status()
+            timed_stage("status_refreshed_ms")
             return route
         except StationActionError as exc:
             self._route_verified = None
@@ -2438,6 +2456,9 @@ class StationCoordinator:
             if not reuse_transaction:
                 self._finish_transaction("failed", error)
             raise error from exc
+        finally:
+            timed_stage("total_ms")
+            logger.info("Accessory route timing route=%s cumulative_ms=%s", route.route_id, stages)
 
     async def _operate(
         self,
