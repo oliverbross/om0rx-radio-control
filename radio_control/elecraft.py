@@ -773,26 +773,42 @@ class KPA500(SerialCommandDevice):
             response = self.query(
                 "^WS;",
                 "^WS",
-                response_pattern=r"\^WS\s*\d+\s+[\d.]+;",
+                response_pattern=r"\^WS\s*\d+\s+\d+(?:\.\d+)?;",
                 update_last_seen=False,
             )
             observed_at = time.time() if response else None
-            result: dict[str, Any] = {
-                "meter_observed_at": observed_at,
-                "meter_complete": False,
-                "meter_error": None if response else self.last_error,
-            }
-            match = re.search(r"\^WS\s*(\d+)\s+([\d.]+)", response or "", re.I)
-            if match:
-                output_power = int(match.group(1))
-                raw_swr = match.group(2)
-                result.update(
-                    output_power_w=output_power,
-                    swr=0.0 if raw_swr == "000" else _parse_tenths(raw_swr),
-                    swr_live=output_power > 0 and raw_swr != "000",
-                    meter_complete=True,
-                )
-            return result
+            return self._meter_sample(response, observed_at, self.last_error)
+
+    @staticmethod
+    def _meter_sample(
+        response: str | None, observed_at: float | None, error: str | None
+    ) -> dict[str, Any]:
+        """Keep a complete WS reading and its own receipt time inseparable."""
+        result: dict[str, Any] = {
+            "meter_sample_observed_at": None,
+            "meter_observed_at": None,
+            "meter_complete": False,
+            "swr_live": False,
+            "meter_error": error,
+        }
+        match = re.fullmatch(
+            r"\^WS\s*(\d+)\s+(\d+(?:\.\d+)?);", response or "", re.IGNORECASE
+        )
+        if match and observed_at is not None:
+            output_power = int(match.group(1))
+            raw_swr = match.group(2)
+            result.update(
+                output_power_w=output_power,
+                swr=0.0 if raw_swr == "000" else _parse_tenths(raw_swr),
+                swr_live=output_power > 0 and raw_swr != "000",
+                meter_sample_observed_at=observed_at,
+                meter_observed_at=observed_at,
+                meter_complete=True,
+                meter_error=None,
+            )
+        elif response:
+            result["meter_error"] = "Incomplete KPA500 meter response"
+        return result
 
     def readback(self) -> dict[str, Any]:
         """Return a fresh, focused readback for a coordinator transaction."""
@@ -841,6 +857,7 @@ class KPA500(SerialCommandDevice):
             "port": self.port,
             "baudrate": self.baudrate,
             "error": self.last_error,
+            **self._meter_sample(None, None, None),
         }
         if not self.open():
             result["connected"] = False
@@ -879,7 +896,7 @@ class KPA500(SerialCommandDevice):
             "fault": ("^FL;", "^FL", r"\^FL[^;]+;"),
             "temperature_c": ("^TM;", "^TM", r"\^TM\s*\d+;"),
             "volts_amps": ("^VI;", "^VI", r"\^VI\s*[\d.]+\s+[\d.]+;"),
-            "power_swr": ("^WS;", "^WS", r"\^WS\s*\d+\s+[\d.]+;"),
+            "power_swr": ("^WS;", "^WS", r"\^WS\s*\d+\s+\d+(?:\.\d+)?;"),
             "firmware": ("^RVM;", "^RVM", r"\^RVM[^;]+;"),
         }
         responses: dict[str, Optional[str]] = {}
@@ -888,7 +905,12 @@ class KPA500(SerialCommandDevice):
             if stop_event and stop_event.is_set():
                 interrupted = True
                 break
-            responses[key] = self.query(command, prefix, response_pattern=pattern)
+            with self.lock:
+                responses[key] = self.query(command, prefix, response_pattern=pattern)
+                if key == "power_swr":
+                    # Firmware and later state queries must never renew WS age.
+                    observed_at = time.time() if responses[key] else None
+                    result.update(self._meter_sample(responses[key], observed_at, self.last_error))
         missing_fields = [key for key in queries if key not in responses or not responses[key]]
         if responses.get("operate"):
             result["operate"] = responses["operate"].upper().startswith("^OS1")
@@ -906,16 +928,6 @@ class KPA500(SerialCommandDevice):
             if match:
                 result["voltage"] = _parse_tenths(match.group(1))
                 result["current"] = _parse_tenths(match.group(2))
-        if responses.get("power_swr"):
-            match = re.search(r"\^WS\s*(\d+)\s+([\d.]+)", responses["power_swr"], re.I)
-            if match:
-                output_power = int(match.group(1))
-                raw_swr = match.group(2)
-                result["output_power_w"] = output_power
-                result["swr"] = 0.0 if raw_swr == "000" else _parse_tenths(raw_swr)
-                result["swr_live"] = output_power > 0 and raw_swr != "000"
-                result["meter_observed_at"] = self.last_seen
-                result["meter_complete"] = True
         if responses.get("firmware"):
             result["firmware"] = responses["firmware"][4:-1]
         result["_interrupted"] = interrupted
@@ -1664,16 +1676,40 @@ class ElecraftManager:
             )
             return
         merged = dict(self._meter_cache.get(device_name) or {})
+        if not merged and not any(key in sample for key in (
+            "output_power_w", "swr", "swr_live", "meter_observed_at",
+            "meter_sample_observed_at", "meter_complete", "meter_error",
+        )):
+            return
+        observed_at = sample.get("meter_sample_observed_at")
+        complete = (
+            sample.get("meter_complete") is True
+            and observed_at is not None
+            and sample.get("output_power_w") is not None
+            and sample.get("swr") is not None
+        )
+        previous_observed_at = merged.get("meter_sample_observed_at")
+        if complete and previous_observed_at is not None and observed_at < previous_observed_at:
+            # A slow full poll can finish after a newer fast-meter read.
+            return
         for key in (
             "output_power_w",
             "swr",
             "swr_live",
             "meter_observed_at",
+            "meter_sample_observed_at",
             "meter_complete",
             "meter_error",
         ):
             if key in sample:
                 merged[key] = sample[key]
+        # Failed/partial reads explicitly retire the old sample identity even
+        # when last-known values remain available for display.
+        merged["meter_sample_observed_at"] = observed_at if complete else None
+        merged["meter_observed_at"] = observed_at if complete else None
+        merged["meter_complete"] = complete
+        if not complete:
+            merged["swr_live"] = False
         self._meter_cache[device_name] = merged
 
     async def refresh_meters(self) -> dict[str, Any]:
@@ -1709,9 +1745,11 @@ class ElecraftManager:
                 if (
                     device is current
                     and getattr(device, "io_enabled", True)
-                    and isinstance(result, dict)
                 ):
-                    self._merge_meter_sample(name, result)
+                    if isinstance(result, dict):
+                        self._merge_meter_sample(name, result)
+                    elif name == "kpa500":
+                        self._merge_meter_sample(name, {"meter_error": "KPA500 meter read failed"})
             return self.snapshot()
 
     async def refresh_status(
@@ -1751,6 +1789,10 @@ class ElecraftManager:
             current_kat = dict(self._status.get("kat500") or {})
             current_kpa.update(kpa_status)
             current_kat.update(kat_status)
+            if any(key in kpa_status for key in (
+                "meter_complete", "meter_observed_at", "meter_sample_observed_at"
+            )):
+                self._merge_meter_sample("kpa500", kpa_status)
             current_kpa.update(
                 enabled=True,
                 connected=bool(self.kpa500 and self.kpa500.connected),
@@ -1807,16 +1849,20 @@ class ElecraftManager:
         }
         async with self._lock:
             # A settings save may have replaced either device while these
-            # reads were in flight. Never publish incomplete or retired data.
+            # reads were in flight. Never publish retired device data.
             interrupted = any(result.pop("_interrupted", False) for result in results.values())
             if (
-                interrupted
-                or lifecycle_generation != self._lifecycle_generation
+                lifecycle_generation != self._lifecycle_generation
                 or kpa_device is not self.kpa500
                 or kat_device is not self.kat500
                 or (kpa_device is not None and not getattr(kpa_device, "io_enabled", True))
                 or (kat_device is not None and not getattr(kat_device, "io_enabled", True))
             ):
+                return self.snapshot()
+            if interrupted:
+                # Keep critical state age, but retire any failed WS identity.
+                if "kpa" in results:
+                    self._merge_meter_sample("kpa500", results["kpa"])
                 return self.snapshot()
             kpa = results.get("kpa") or {
                 "enabled": kpa_enabled,
@@ -1838,8 +1884,7 @@ class ElecraftManager:
                 "kat500": kat,
                 "updated_at": time.time(),
             }
-            if kpa.get("meter_observed_at") is not None:
-                self._merge_meter_sample("kpa500", kpa)
+            self._merge_meter_sample("kpa500", kpa)
             if kat.get("meter_observed_at") is not None:
                 self._merge_meter_sample("kat500", kat)
             return self.snapshot()
