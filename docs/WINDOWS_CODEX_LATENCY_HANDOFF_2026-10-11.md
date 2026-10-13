@@ -293,3 +293,94 @@ Windows Codex must perform the remaining hardware investigation:
 Read-only Mac probes: `scripts/probe_xcat_latency.py` queries only loopback
 telemetry; `scripts/probe_xlog_activity.swift` reads only persisted tune events.
 Neither sends radio commands or accesses account credentials.
+
+### Phase 3 Windows closure record — 2026-10-12
+
+Windows fetched and verified requested tip
+`91e0902d4555910e44fa2ba747d6975b5fb5022f` before making changes. The existing
+configuration, VSPE ports, credentials, station policy, commissioning state and
+single agent owner were preserved. Only the existing `OM0RX Remote Station
+Agent` scheduled task was restarted; the tray remained running. The canonical
+deployment is `C:\Projects\OM0RX-xCat\WindowsAgent`. Its final deployed commit
+is `9897d86323551fa3fa09c79b94f351a38cdcf92d`; the corresponding source work is
+on `codex/latency-route-polling`. The `agent.json` SHA-256 remained
+`FFA28083E47DFDDBEE7A047140B5F2F0C934E03A6CA689DD6D1CE95C3A54FB47` before
+and after both controlled restarts.
+
+The ten-transition 40 m/20 m receive-only baseline and final matrix were run
+with the same four alternating targets. Values below are median/p95 in ms:
+
+| Measurement | Phase 3 baseline | Final |
+| --- | ---: | ---: |
+| command ACK | 862.156 / 1063.939 | 748.920 / 1019.513 |
+| coherent radio publication | 1228.312 / 1458.990 | 1200.818 / 1393.100 |
+| aligned accessory readiness | 8914.953 / 9851.177 | 7821.788 / 8525.914 |
+| coordinator follower total | 7811.6 / 8483.6 | 6476.2 / 7454.1 |
+| route-critical accessory preflight | 1248.0 / 1517.4 | 176.2 / 207.9 |
+| final KPA/KAT/FLEX proofs | 1676.6 / 1690.6 | 1270.2 / 1294.1 |
+
+The first safe reduction replaces the follower's repeated full accessory
+telemetry sweep with exact route-only GETs: KPA OPERATE/band and KAT
+antenna/band/frequency. It reuses the just-published FLEX observation only when
+it is at most one second old, exact for frequency/TX antenna, confirmed RX with
+READY/RECEIVE interlock, and the new KPA proof says STBY. OPERATE, incomplete,
+old or mismatched evidence still forces the direct FLEX preflight. The second
+reduction starts final FLEX proof concurrently with the manager-protected
+KPA/KAT exact readbacks. No proof was removed: the transaction still performs
+ordered RX checks around mutations, KPA standby proof, KAT fault and key-line
+checks, exact FLEX port/drive proof, supersession checks and complete final
+KPA/KAT/FLEX verification.
+
+Per-query profiling over the final ten transitions found these total-time
+median/p95 values in ms (query lock wait was 0.0 ms maximum unless noted):
+
+- KPA500: `^ON` 18.0/50.8, `^OS` 15.6/50.8, `^BN` 15.6/51.0,
+  `^FL` 15.5/50.8, `^TM` 15.7/50.6, `^VI` 15.6/50.5, `^WS`
+  15.5/25.8 and `^RVM` 15.6/50.9.
+- KAT500: `PS` 18.0/50.9, `MD` 15.6/50.7, `AN` 15.6/51.0, `BN`
+  15.6/50.6, `F` 15.6/50.9, `VFWD` 15.3/15.8, `VRFL` 16.0/51.2,
+  `VSWR` 15.3/51.4, `TP` 15.4/50.9, `FLT` 15.8/51.2, `BYP`
+  15.4/50.5, `AMPI` 15.8/51.3 and `RV` 15.4/50.7. Only `AMPI` saw
+  a device-lock wait, 50.2 ms maximum, when it met another KAT read.
+
+Action and radio-lock waits were 0.0/0.0 ms median/p95. Manager-lock waits for
+route setters and fault/key reads were 0.0 ms (0.1 ms worst p95); the final KAT
+readback waited 90.2/140.1 ms behind the KPA readback by design. Radio
+publication-to-scheduling was 0.6/0.7 ms and route-task schedule wait was
+0.1/0.1 ms. Completion increments the stream revision synchronously; observed
+finish-to-WebSocket availability was inside the stream's 250 ms cadence
+(derived median about 62 ms, worst positive sample 238 ms).
+
+The final coordinator stage deltas, median/p95 ms, were: RX proof 227.8/260.3;
+standby proof 131.7/233.5; KAT fault 35.0/53.5; KAT key relay 52.1/102.5;
+FLEX antenna command plus exact route proof 1048.8/1400.8; KPA band
+378.9/418.0; KAT band 210.9/404.0; KAT frequency 244.9/403.8; KAT antenna
+324.0/540.7; drive set plus post-write RX/route/drive proof 2474.2/2951.7;
+and concurrent final proofs 1270.2/1294.1. Publication itself was 0.3/0.3 ms.
+
+This is the accepted residual bound. Further material reduction would require
+removing or reusing evidence across a hardware mutation: the approximately
+1.05 s FLEX antenna proof, approximately 2.47 s drive command plus post-write
+RX/route/drive proof, repeated receive barriers before each relay-setting write,
+or the complete final device/radio proof. Doing so would weaken protection
+against an external Maestro QSY, PTT/interlock transition, delayed relay change
+or stale drive, so no timeout or safety proof was reduced.
+
+Live follow-up also passed five combined split-B-to-simplex exits at
+847.219/2933.099 ms ACK and 1211.168/3341.716 ms coherent publication, and five
+same-band mode changes at 702.259/864.957 ms ACK and 1177.368/1263.568 ms
+publication. All fifteen follow-up samples plus both ten-transition matrices
+published zero mixed frequency/mode pairs. Rapid supersession, manual-drive
+preservation and amplifier-band policy regression coverage passed offline.
+
+Final gates on the final source commit passed: 904 Python smoke tests, 105
+browser/widget tests, 105 MSHV safety tests and every maintenance syntax/import/
+Ruff/duplicate-route/reference/whitespace check. The final canonical agent suite
+passed 226 tests, the focused source coordinator/Elecraft gate passed 125 tests,
+the focused canonical gate passed 107 tests, and the native Windows widget
+smoke test passed.
+
+The station was restored to 18.082500 MHz CW on 17 m with FLEX known/fresh,
+MOX false, interlock READY, KPA500 STBY at 0 W, KPA/KAT both on 17 m, KAT
+antenna 1, recovery false and zero alarms. No PTT, TUNE-start, CWX, OPERATE or RF
+transmission occurred during Phase 3.

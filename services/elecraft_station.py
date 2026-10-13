@@ -29,6 +29,7 @@ AMP_KEY_RELAY_SETTLE_SECONDS = 0.05
 AMP_KEY_VERIFY_ATTEMPTS = 3
 KAT_TUNE_CANCEL_SETTLE_SECONDS = 0.1
 KAT_TUNE_CANCEL_VERIFY_ATTEMPTS = 10
+OBSERVED_ROUTE_REUSE_MAX_AGE_SECONDS = 1.0
 
 RECEIVE_INTERLOCK_STATES = {"READY", "RECEIVE"}
 EXTERNAL_RX_WAIT_SECONDS = 20.0
@@ -291,6 +292,37 @@ class StationCoordinator:
                 "No complete route matches the current FLEX frequency",
             )
         return route
+
+    def _recent_receive_route_observation(self, route: RouteTarget) -> bool:
+        """Return whether the shared FLEX poll is a just-observed RX route proof.
+
+        This proof is used only to avoid immediately repeating the same FLEX
+        levels transaction at the start of automatic route following.  The
+        guarded transaction still performs its independent ordered RX proof and
+        exact FLEX route proof before any accessory route mutation.
+        """
+        radio = self._radio_snapshot()
+        observed_at = radio.get("updated_at", radio.get("observed_at"))
+        try:
+            if isinstance(observed_at, str):
+                observed_seconds = datetime.fromisoformat(observed_at).timestamp()
+            else:
+                observed_seconds = float(observed_at)
+            age = time.time() - observed_seconds
+            frequency_khz = round(float(radio.get("frequency")) * 1000)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        interlock = str(radio.get("interlock_state") or "").upper()
+        return bool(
+            0 <= age <= OBSERVED_ROUTE_REUSE_MAX_AGE_SECONDS
+            and radio.get("connected") is True
+            and radio.get("known") is True
+            and radio.get("stale") is False
+            and radio.get("mox") is False
+            and interlock in RECEIVE_INTERLOCK_STATES
+            and frequency_khz == round(route.frequency_mhz * 1000)
+            and str(radio.get("tx_ant") or "").upper() == route.flex_tx_ant
+        )
 
     def _route_verification_is_fresh(self, route: Optional[RouteTarget]) -> bool:
         if not self._route_verified or not route:
@@ -877,9 +909,15 @@ class StationCoordinator:
         self._follow_inflight_target = target
         self._last_follow_attempt = target
         self._last_follow_attempt_at = now
+        follow_started = time.monotonic()
+        follow_stages: dict[str, float] = {}
+
+        def follow_stage(name: str) -> None:
+            follow_stages[name] = round((time.monotonic() - follow_started) * 1000, 1)
 
         try:
             async with self._action_lock:
+                follow_stage("action_lock_acquired_ms")
                 self._require_no_training()
                 self._require_commissioned()
                 self._require_operational()
@@ -888,6 +926,7 @@ class StationCoordinator:
                 if self._active_task and not self._active_task.done():
                     return False
                 async with self.radio_lock:
+                    follow_stage("radio_lock_acquired_ms")
                     self._assert_follow_current(follow_generation, route)
                     current_route = self._require_fresh_route()
                     current_radio = self._radio_snapshot()
@@ -908,17 +947,32 @@ class StationCoordinator:
                     if not any_needs_follow:
                         return False
                     if topology_needs_follow:
-                        # Both sides of the route display are cached. A delayed
-                        # FLEX status line (especially TX antenna) or one late
-                        # Elecraft serial reply can otherwise look like a route
-                        # change long enough to launch an unnecessary standby
-                        # cycle. Refresh FLEX first, then both Elecraft devices,
-                        # while the route lock is held. No KPA state is changed
-                        # unless those direct readbacks still disagree.
-                        current_route = await self._refresh_route_for_action()
-                        await self.elecraft.refresh_status()
+                        # Confirm the exact passive accessory route without
+                        # repeating meters, firmware, voltage, and other idle
+                        # telemetry.  A just-published FLEX RX observation can
+                        # be reused while KPA standby is freshly proven; an
+                        # OPERATE, old, incomplete, or mismatched observation
+                        # still forces a direct FLEX preflight before any write.
+                        route_refresh = getattr(
+                            self.elecraft, "refresh_route_status", None
+                        )
+                        if callable(route_refresh):
+                            await route_refresh()
+                        else:
+                            await self.elecraft.refresh_status()
+                        follow_stage("accessory_preflight_ms")
                         self._assert_follow_current(follow_generation, current_route)
                         current_route = self._require_fresh_route()
+                        observed_kpa = self.elecraft.snapshot().get("kpa500") or {}
+                        reuse_flex_observation = bool(
+                            observed_kpa.get("route_complete") is True
+                            and observed_kpa.get("operate") is False
+                            and self._recent_receive_route_observation(current_route)
+                        )
+                        if not reuse_flex_observation:
+                            current_route = await self._refresh_route_for_action()
+                        follow_stage("flex_preflight_ms")
+                        self._assert_follow_current(follow_generation, current_route)
                         current_radio = self._radio_snapshot()
                         topology_needs_follow = self._observed_route_needs_follow(
                             current_route,
@@ -990,6 +1044,7 @@ class StationCoordinator:
                         # changes; same-band frequency/mode changes preserve it.
                         preserve_observed_drive=not band_changed,
                     )
+                    follow_stage("route_prepared_ms")
                     if restore_operate:
                         self._assert_follow_current(follow_generation, current_route)
                         await self._operate(
@@ -1000,6 +1055,12 @@ class StationCoordinator:
         finally:
             if follow_generation == self._follow_generation:
                 self._follow_inflight_target = None
+            follow_stage("total_ms")
+            logger.info(
+                "Accessory follow timing route=%s cumulative_ms=%s",
+                route.route_id,
+                follow_stages,
+            )
         logger.info(
             "Safely followed observed FLEX route to %s at %d kHz "
             "(operate_restored=%s)",
@@ -1422,8 +1483,20 @@ class StationCoordinator:
                 f"{getattr(device, 'name', 'Device')} does not support {method}",
                 status_code=503,
             )
+        started = time.monotonic()
         async with self.elecraft._lock:
+            acquired_at = time.monotonic()
             result = await self.elecraft._run_io(operation, *args)
+        finished = time.monotonic()
+        logger.info(
+            "Elecraft device call timing device=%s method=%s manager_lock_wait_ms=%.1f "
+            "io_ms=%.1f total_ms=%.1f",
+            getattr(device, "name", "Device"),
+            method,
+            (acquired_at - started) * 1000,
+            (finished - acquired_at) * 1000,
+            (finished - started) * 1000,
+        )
         if result is None or (result is False and not allow_false):
             raise StationActionError(
                 "device-command-failed",
@@ -2244,6 +2317,27 @@ class StationCoordinator:
             )
         return observed_drive
 
+    async def _final_route_readbacks(
+        self,
+        kpa: Any,
+        kat: Any,
+        route: RouteTarget,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        """Collect independent final proofs in one bounded observation window.
+
+        FLEX uses a transport independent from the manager-protected KPA/KAT
+        serial reads.  Starting all three together retains every exact final
+        readback while overlapping the FLEX proof with the serial proofs and
+        reducing the interval in which an external route change could split
+        the evidence.
+        """
+        kpa_status, kat_status, levels = await asyncio.gather(
+            self._device_readback(kpa),
+            self._device_readback(kat),
+            self._fresh_flex_route(route),
+        )
+        return kpa_status, kat_status, levels
+
     async def _prepare_route(
         self,
         *,
@@ -2362,11 +2456,11 @@ class StationCoordinator:
 
             self._transaction_step("verifying-readback", 80)
             timed_stage("drive_verified_ms")
-            kpa_status, kat_status = await asyncio.gather(
-                self._device_readback(kpa),
-                self._device_readback(kat),
+            kpa_status, kat_status, levels = await self._final_route_readbacks(
+                kpa,
+                kat,
+                route,
             )
-            levels = await self._fresh_flex_route(route)
             timed_stage("final_readbacks_ms")
             if follow_generation is not None:
                 self._assert_follow_current(follow_generation, route)
