@@ -1190,6 +1190,35 @@ class FlexCtl:
                 if value is not None:
                     levels.setdefault(key, value)
 
+            # ``freq`` is the active receive slice and is therefore not the
+            # station route when SmartSDR is operating split.  Expose the
+            # freshly listed bound-station slices alongside the legacy fields
+            # so guarded route callers can prove the exact transmit frequency
+            # without confusing RX A with TX B.
+            slices = self.get_slice_states()
+            active_receive = next(
+                (item for item in slices if item.get("active") is True),
+                None,
+            )
+            transmit = next(
+                (item for item in slices if item.get("transmit") is True),
+                None,
+            )
+            if slices:
+                levels["slices"] = slices
+            if active_receive is not None:
+                levels["active_receive"] = dict(active_receive)
+                if active_receive.get("frequency") is not None:
+                    levels["rx_frequency"] = active_receive["frequency"]
+                if active_receive.get("mode"):
+                    levels["rx_mode"] = active_receive["mode"]
+            if transmit is not None:
+                levels["transmit"] = dict(transmit)
+                if transmit.get("frequency") is not None:
+                    levels["tx_frequency"] = transmit["frequency"]
+                if transmit.get("mode"):
+                    levels["tx_mode"] = transmit["mode"]
+
         # Update instance tracking
         if "filter_lo" in levels:
             self.current_filter_lo = levels["filter_lo"]

@@ -113,6 +113,20 @@ class SubscriptionCacheFlex(RecordingFlex):
         return True, ""
 
 
+class SplitSnapshotFlex(RecordingFlex):
+    def _send_with_response(self, cmd: str):
+        assert cmd == "slice list"
+        self._record_basic_status_from_line(
+            "S1|slice 1 index_letter=B RF_frequency=24.945000 mode=USB "
+            "active=0 tx=1 in_use=1 client_handle=0xabc"
+        )
+        self._record_basic_status_from_line(
+            "S1|slice 0 index_letter=A RF_frequency=24.940000 mode=USB "
+            "active=1 tx=0 in_use=1 client_handle=0xabc"
+        )
+        return True, ""
+
+
 def test_add_spot_uses_argb_and_the_acknowledged_command_path():
     flex = RecordingFlex()
 
@@ -636,6 +650,21 @@ def test_repeated_snapshot_polls_publish_consumed_subscription_updates_without_f
     assert (second["freq"], second["mode"]) == (28.465000, "USB")
     assert (unchanged["freq"], unchanged["mode"]) == (28.465000, "USB")
     assert not any("sub slice all" in wire or "sub tx all" in wire for wire in sock.sent)
+
+
+def test_snapshot_poll_exposes_exact_split_transmit_route():
+    flex = SplitSnapshotFlex()
+    flex.bound_gui_client_handle = "0xabc"
+    flex.sock = RecordingScriptedSocket([TimeoutError()])
+    flex.last_resubscribe_time = time.time()
+
+    levels = flex.get_current_levels(timeout=0.01, apply_antenna_policy=False)
+
+    assert levels["freq"] == 24.940
+    assert levels["rx_frequency"] == 24.940
+    assert levels["tx_frequency"] == 24.945
+    assert levels["active_receive"]["index_letter"] == "A"
+    assert levels["transmit"]["index_letter"] == "B"
 
 
 def test_antenna_policy_falls_back_to_transmit_tx_antenna_command():

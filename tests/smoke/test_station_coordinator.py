@@ -431,6 +431,107 @@ def build_80m_station(
     return station, calls, manager, flex, radio
 
 
+def build_12m_split_station(
+    _monkeypatch: pytest.MonkeyPatch,
+) -> tuple[StationCoordinator, list[tuple], FakeManager, FakeFlex, dict]:
+    calls: list[tuple] = []
+    manager = FakeManager(calls)
+    manager.antenna_policy["12m"] = 1
+    flex = FakeFlex(calls)
+    flex.current_freq = 24.940
+    flex.current_mode = "USB"
+    now = time.time()
+    radio = {
+        "connected": True,
+        "known": True,
+        "stale": False,
+        # Keep the legacy field at RX A to reproduce the live failure.  The
+        # marked transmit slice is the authoritative route.
+        "frequency": 24.940,
+        "mode": "USB",
+        "mox": False,
+        "interlock_state": "READY",
+        "tx_ant": "ANT1",
+        "drive": 50,
+        "updated_at": now,
+        "active_receive": {
+            "index_letter": "A",
+            "frequency": 24.940,
+            "mode": "USB",
+            "active": True,
+            "transmit": False,
+            "updated_at": now,
+        },
+        "transmit": {
+            "index_letter": "B",
+            "frequency": 24.945,
+            "mode": "USB",
+            "active": False,
+            "transmit": True,
+            "updated_at": now,
+        },
+    }
+
+    def split_levels(_timeout: float, *, apply_antenna_policy: bool) -> dict:
+        calls.append(("flex.readback", apply_antenna_policy))
+        return {
+            "freq": 24.940,
+            "mode": "USB",
+            "tx_frequency": 24.945,
+            "tx_mode": "USB",
+            "active_receive": dict(radio["active_receive"]),
+            "transmit": dict(radio["transmit"]),
+            "tx_ant": flex.current_tx_ant,
+            "rfpower": flex.current_rfpower,
+            "mox": False,
+            "interlock_state": "READY",
+        }
+
+    flex.get_current_levels = split_levels
+
+    policy = SimpleNamespace(
+        FLEX_ANTENNA_POLICY={"enabled": True, "bands": {"12m": "ANT1"}},
+        KAT500_ANTENNA_NAMES={"1": "KAT ANT1"},
+        STATION_COORDINATOR_COMMISSIONED=True,
+        DIGITAL_KPA_POLICY="operate",
+        STATION_AMPLIFIER_ALLOWED_BANDS=("12m",),
+        STATION_AMPLIFIER_DRIVE_W={"12m": 25},
+        STATION_BAREFOOT_DRIVE_W={"12m": 50},
+        STATION_DIGITAL_AMPLIFIER_ALLOWED_BANDS=("12m",),
+        STATION_DIGITAL_AMPLIFIER_DRIVE_W={"12m": 25},
+    )
+
+    def station_path(current_radio: dict) -> dict:
+        tx_frequency, _mode, _observed_at = (
+            StationCoordinator._transmit_route_observation(current_radio)
+        )
+        confirmed = bool(
+            tx_frequency == 24.945
+            and current_radio.get("tx_ant") == "ANT1"
+            and manager.kpa500.band == "12m"
+            and manager.kat500.band == "12m"
+            and manager.kat500.antenna == 1
+        )
+        return {
+            "alignment": "confirmed" if confirmed else "mismatch",
+            "mismatches": [] if confirmed else [
+                {"code": "split-route-not-ready", "message": "12 m TX route is not ready"}
+            ],
+            "unknown_reasons": [],
+        }
+
+    manager.station_path = station_path
+    station = StationCoordinator(
+        manager,
+        lambda: flex,
+        lambda: radio,
+        digital_guard=lambda: None,
+        radio_lock=asyncio.Lock(),
+        policy_source=policy,
+    )
+    return station, calls, manager, flex, radio
+
+
 def test_commissioning_lock_exposes_no_actions_and_rejects_write(monkeypatch):
     station, calls, _manager = build_station(monkeypatch, commissioned=False)
 
@@ -1206,7 +1307,7 @@ def test_80m_standard_policy_prepares_and_operates_only_after_exact_route(mode):
     assert initial["route"]["amplifier_allowed_bands"] == ["80m"]
     assert initial["route"]["amplifier_inhibitors"] == []
     assert initial["route"]["amplifier_allowed"] is True
-    assert "operate" not in initial["allowed_actions"]
+    assert "operate" in initial["allowed_actions"]
 
     prepared = asyncio.run(station.perform("prepare-route"))
     assert prepared["route_verified"] is True
@@ -1268,7 +1369,7 @@ def test_20m_stays_barefoot_under_the_80m_active_policy():
     assert "operate" not in station.snapshot()["allowed_actions"]
 
 
-def test_band_change_discards_prior_route_proof_before_operate_is_advertised():
+def test_band_change_discards_prior_proof_but_keeps_guarded_operate_available():
     station, _calls, _manager, _flex, _radio = build_80m_station()
     prior = station._route_for_frequency(14.296, "USB")
     assert prior is not None
@@ -1284,7 +1385,7 @@ def test_band_change_discards_prior_route_proof_before_operate_is_advertised():
     assert state["route"]["band"] == "80m"
     assert state["route_verified"] is False
     assert state["route_verification"] is None
-    assert "operate" not in state["allowed_actions"]
+    assert "operate" in state["allowed_actions"]
 
 
 def test_80m_mismatch_and_open_kat_key_are_safely_aligned_before_operate():
@@ -1293,7 +1394,7 @@ def test_80m_mismatch_and_open_kat_key_are_safely_aligned_before_operate():
 
     mismatched = station.snapshot()
     assert mismatched["path"]["alignment"] == "mismatch"
-    assert "operate" not in mismatched["allowed_actions"]
+    assert "operate" in mismatched["allowed_actions"]
 
     operated = asyncio.run(station.perform("operate"))
 
@@ -1441,6 +1542,169 @@ def test_operate_atomically_prepares_unverified_route_before_switching_kpa(monke
     assert ("flex.route", 14.074, "station coordinator route preparation") in calls
     assert calls.index(("kpa.operate", False)) < calls.index(("flex.rfpower", 25))
     assert calls.index(("flex.rfpower", 25)) < calls.index(("kpa.operate", True))
+
+
+def test_split_route_and_fresh_proof_use_exact_transmit_slice_frequency(monkeypatch):
+    station, _calls, _manager, _flex, _radio = build_12m_split_station(monkeypatch)
+
+    route = station._require_fresh_route()
+    proof = asyncio.run(station._fresh_flex_route(route))
+
+    assert route.frequency_mhz == 24.945
+    assert route.band == "12m"
+    assert proof["frequency_khz"] == 24945
+
+
+def test_split_route_refresh_updates_shared_snapshot_with_tx_frequency(monkeypatch):
+    station, _calls, _manager, _flex, radio = build_12m_split_station(monkeypatch)
+    radio.update(known=False, stale=True, frequency=24.940)
+
+    route = asyncio.run(station._refresh_route_for_action())
+
+    assert route.frequency_mhz == 24.945
+    assert radio["known"] is True
+    assert radio["stale"] is False
+    assert radio["frequency"] == 24.945
+    assert radio["tx_frequency"] == 24.945
+    assert radio["active_receive"]["frequency"] == 24.940
+    assert radio["transmit"]["frequency"] == 24.945
+
+
+def test_split_cached_and_recent_route_proofs_use_tx_frequency(monkeypatch):
+    station, _calls, manager, _flex, _radio = build_12m_split_station(monkeypatch)
+    manager.kpa500.band = "12m"
+    manager.kat500.band = "12m"
+    manager.kat500.frequency_khz = 24945
+    manager.kat500.antenna = 1
+    original_snapshot = manager.snapshot
+
+    def complete_snapshot():
+        state = original_snapshot()
+        observed_at = time.time()
+        state["updated_at"] = observed_at
+        state["kpa500"].update(
+            power=True,
+            responsive=True,
+            operate=False,
+            fault="00",
+            observed_at=observed_at,
+            missing_fields=[],
+            quality="good",
+        )
+        state["kat500"].update(
+            power=True,
+            responsive=True,
+            mode="auto",
+            tuning=False,
+            fault="0",
+            amp_key_interrupted=False,
+            observed_at=observed_at,
+            missing_fields=[],
+            quality="good",
+        )
+        return state
+
+    manager.snapshot = complete_snapshot
+    route = station._require_fresh_route()
+
+    assert station._recent_receive_route_observation(route) is True
+    proof = station._cached_operate_route_proof(route)
+    assert proof is not None
+    assert proof["frequency_khz"] == 24945
+
+
+def test_operate_is_advertised_before_split_route_preparation(monkeypatch):
+    station, _calls, _manager, _flex, _radio = build_12m_split_station(monkeypatch)
+
+    state = station.snapshot()
+
+    assert state["route"]["frequency_mhz"] == 24.945
+    assert state["route_verified"] is False
+    assert state["path"]["alignment"] == "mismatch"
+    assert "operate" in state["allowed_actions"]
+
+
+def test_split_operate_atomically_prepares_exact_tx_route_without_rf(monkeypatch):
+    station, calls, manager, flex, radio = build_12m_split_station(monkeypatch)
+
+    operated = asyncio.run(station.perform("operate"))
+
+    assert operated["transaction"]["state"] == "succeeded"
+    assert operated["route"]["frequency_mhz"] == 24.945
+    assert manager.kpa500.band == "12m"
+    assert manager.kat500.band == "12m"
+    assert manager.kat500.frequency_khz == 24945
+    assert manager.kat500.antenna == 1
+    assert manager.kpa500.operate is True
+    assert radio["mox"] is False
+    assert flex.tune_enabled is False
+    assert ("kat.frequency", 24.945) in calls
+    assert calls.index(("kpa.operate", False)) < calls.index(
+        ("kat.frequency", 24.945)
+    )
+    assert calls.index(("kat.frequency", 24.945)) < calls.index(
+        ("kpa.operate", True)
+    )
+    assert not any(call == ("flex.mox", True) for call in calls)
+    assert not any(call == ("flex.tune", True) for call in calls)
+    assert not any(call[0] == "cwx" for call in calls)
+
+
+def test_split_rx_return_does_not_drop_operating_amplifier(monkeypatch):
+    station, calls, manager, _flex, radio = build_12m_split_station(monkeypatch)
+    manager.kpa500.band = "12m"
+    manager.kpa500.operate = True
+    manager.kat500.band = "12m"
+    manager.kat500.frequency_khz = 24945
+    manager.kat500.antenna = 1
+    radio["frequency"] = 24.940
+    radio["active_receive"]["frequency"] = 24.940
+    radio["transmit"]["frequency"] = 24.945
+    radio["drive"] = 25
+    calls.clear()
+
+    followed = asyncio.run(station.follow_observed_radio_route(24.940))
+
+    assert followed is False
+    assert manager.kpa500.operate is True
+    assert not any(call == ("kpa.operate", False) for call in calls)
+
+
+@pytest.mark.parametrize(
+    "blocked_state",
+    (
+        "ptt-active",
+        "stale",
+        "unknown",
+        "uncommissioned",
+        "maintenance",
+        "recovery",
+        "transaction-active",
+        "disallowed-band",
+    ),
+)
+def test_operate_advertisement_remains_fail_closed(monkeypatch, blocked_state):
+    station, _calls, _manager, _flex, radio = build_12m_split_station(monkeypatch)
+
+    if blocked_state == "ptt-active":
+        radio.update(mox=True, interlock_state="TRANSMITTING")
+    elif blocked_state == "stale":
+        radio["stale"] = True
+    elif blocked_state == "unknown":
+        radio["known"] = False
+    elif blocked_state == "uncommissioned":
+        station.policy_source.STATION_COORDINATOR_COMMISSIONED = False
+    elif blocked_state == "maintenance":
+        station._maintenance = True
+    elif blocked_state == "recovery":
+        station._recovery_required = True
+    elif blocked_state == "transaction-active":
+        station._active_task = SimpleNamespace(done=lambda: False)
+        station._transaction = {"state": "preparing"}
+    elif blocked_state == "disallowed-band":
+        station.policy_source.STATION_AMPLIFIER_ALLOWED_BANDS = ()
+
+    assert "operate" not in station.snapshot()["allowed_actions"]
 
 
 def test_operate_reuses_recent_exact_path_without_repreparing_route(monkeypatch):
@@ -1611,7 +1875,11 @@ def test_external_digital_owner_allows_manual_rx_only_operate(monkeypatch):
         )
 
     station.digital_guard = external_owner_guard
-    assert station.snapshot()["allowed_actions"] == ["standby", "prepare-route"]
+    assert station.snapshot()["allowed_actions"] == [
+        "standby",
+        "prepare-route",
+        "operate",
+    ]
 
     prepared = asyncio.run(station.perform("prepare-route"))
     assert "operate" in prepared["allowed_actions"]

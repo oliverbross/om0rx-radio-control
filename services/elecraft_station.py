@@ -216,6 +216,35 @@ class StationCoordinator:
     def _radio_snapshot(self) -> dict[str, Any]:
         return dict(self.radio_snapshot_provider() or {})
 
+    @staticmethod
+    def _transmit_route_observation(radio: dict[str, Any]) -> tuple[Any, Any, Any]:
+        """Return authoritative TX frequency, mode, and observation time.
+
+        ``frequency``/``freq`` historically describe the active receive slice.
+        In split operation the station route belongs to the slice marked TX.
+        Prefer that slice (or the driver's explicit TX fields) and retain the
+        legacy fields only as the simplex fallback.
+        """
+        transmit = radio.get("transmit")
+        if isinstance(transmit, dict) and transmit.get("frequency") is not None:
+            return (
+                transmit.get("frequency"),
+                transmit.get("mode") or radio.get("tx_mode") or radio.get("mode"),
+                transmit.get("updated_at", radio.get("updated_at", radio.get("observed_at"))),
+            )
+        tx_frequency = radio.get("tx_frequency")
+        if tx_frequency is not None:
+            return (
+                tx_frequency,
+                radio.get("tx_mode") or radio.get("mode"),
+                radio.get("updated_at", radio.get("observed_at")),
+            )
+        return (
+            radio.get("frequency", radio.get("freq")),
+            radio.get("mode"),
+            radio.get("updated_at", radio.get("observed_at")),
+        )
+
     def _route_for_frequency(
         self,
         frequency: Any,
@@ -259,10 +288,10 @@ class StationCoordinator:
         )
 
     def _route_for_snapshot(self, radio: dict[str, Any]) -> Optional[RouteTarget]:
-        frequency = radio.get("frequency")
+        frequency, mode, _observed_at = self._transmit_route_observation(radio)
         if frequency is None:
             frequency = self.elecraft.last_frequency
-        route = self._route_for_frequency(frequency, radio.get("mode"))
+        route = self._route_for_frequency(frequency, mode)
         if self._route_verified and (
             route is None
             or self._route_verified.get("route_id") != route.route_id
@@ -275,11 +304,12 @@ class StationCoordinator:
 
     def _require_fresh_route(self) -> RouteTarget:
         radio = self._radio_snapshot()
+        frequency, _mode, _observed_at = self._transmit_route_observation(radio)
         if (
             radio.get("connected") is not True
             or radio.get("known") is not True
             or radio.get("stale") is not False
-            or radio.get("frequency") is None
+            or frequency is None
         ):
             raise StationActionError(
                 "flex-route-state-unconfirmed",
@@ -302,14 +332,14 @@ class StationCoordinator:
         exact FLEX route proof before any accessory route mutation.
         """
         radio = self._radio_snapshot()
-        observed_at = radio.get("updated_at", radio.get("observed_at"))
+        frequency, _mode, observed_at = self._transmit_route_observation(radio)
         try:
             if isinstance(observed_at, str):
                 observed_seconds = datetime.fromisoformat(observed_at).timestamp()
             else:
                 observed_seconds = float(observed_at)
             age = time.time() - observed_seconds
-            frequency_khz = round(float(radio.get("frequency")) * 1000)
+            frequency_khz = round(float(frequency) * 1000)
         except (TypeError, ValueError, OverflowError):
             return False
         interlock = str(radio.get("interlock_state") or "").upper()
@@ -348,6 +378,7 @@ class StationCoordinator:
         if route is None:
             return None
         radio = self._radio_snapshot()
+        frequency, _mode, _observed_at = self._transmit_route_observation(radio)
         state = self.elecraft.snapshot()
         kpa = state.get("kpa500") or {}
         kat = state.get("kat500") or {}
@@ -369,7 +400,7 @@ class StationCoordinator:
             )
 
         try:
-            radio_frequency_khz = round(float(radio.get("frequency")) * 1000)
+            radio_frequency_khz = round(float(frequency) * 1000)
         except (TypeError, ValueError):
             return None
         interlock = str(radio.get("interlock_state") or "").upper()
@@ -515,7 +546,9 @@ class StationCoordinator:
             coordinator_state = "safe_rx"
 
         allowed_actions: list[str] = []
-        kpa = self.elecraft.snapshot().get("kpa500") or {}
+        elecraft_state = self.elecraft.snapshot()
+        kpa = elecraft_state.get("kpa500") or {}
+        kat = elecraft_state.get("kat500") or {}
         if self._maintenance:
             allowed_actions.append("exit-maintenance")
         elif not active and kpa.get("enabled") and kpa.get("connected"):
@@ -530,19 +563,28 @@ class StationCoordinator:
         ):
             if radio.get("connected") and not radio.get("stale") and radio.get("mox") is False:
                 allowed_actions.append("prepare-route")
-                blocking_issues = [
-                    issue
-                    for issue in issues
-                    if issue.get("code") != "digital-engine-owns-radio"
-                ]
-                cached_operate_ready = bool(self._cached_operate_route_proof(route))
+                interlock = str(radio.get("interlock_state") or "").upper()
+                receive_ready = bool(
+                    radio.get("known") is True
+                    and radio.get("stale") is False
+                    and radio.get("mox") is False
+                    and interlock in RECEIVE_INTERLOCK_STATES
+                )
                 if (
-                    (verified or cached_operate_ready)
-                    and not blocking_issues
+                    receive_ready
                     and route.amplifier_allowed
+                    and kpa.get("enabled")
+                    and kpa.get("connected")
+                    and kat.get("enabled")
+                    and kat.get("connected")
                 ):
                     allowed_actions.append("operate")
-                    if verified and digital_ready:
+                    blocking_issues = [
+                        issue
+                        for issue in issues
+                        if issue.get("code") != "digital-engine-owns-radio"
+                    ]
+                    if verified and digital_ready and not blocking_issues:
                         allowed_actions.append("tune")
         if active and (self._transaction or {}).get("kind") == "tune":
             allowed_actions.append("cancel")
@@ -566,7 +608,6 @@ class StationCoordinator:
             "issues": issues,
             "transaction": dict(self._transaction) if self._transaction else None,
         }
-        elecraft_state = self.elecraft.snapshot()
         state["alarms"] = build_station_alarms(
             state,
             elecraft_state=elecraft_state,
@@ -864,11 +905,16 @@ class StationCoordinator:
             return False
 
         radio = self._radio_snapshot()
-        route = self._route_for_frequency(frequency, radio.get("mode"))
+        observed_frequency, observed_mode, _observed_at = (
+            self._transmit_route_observation(radio)
+        )
+        if observed_frequency is None:
+            observed_frequency = frequency
+        route = self._route_for_frequency(observed_frequency, observed_mode)
         if route is None:
             return False
         try:
-            observed_khz = round(float(radio.get("frequency")) * 1000)
+            observed_khz = round(float(observed_frequency) * 1000)
         except (TypeError, ValueError):
             return False
         topology_needs_follow = self._observed_route_needs_follow(
@@ -1364,7 +1410,7 @@ class StationCoordinator:
             code="flex-route-proof-timeout",
             message="Fresh FLEX frequency and antenna readback timed out",
         )
-        frequency = levels.get("freq", levels.get("frequency"))
+        frequency, _mode, _observed_at = self._transmit_route_observation(levels)
         try:
             frequency_khz = round(float(frequency) * 1000)
         except (TypeError, ValueError) as exc:
@@ -1406,8 +1452,8 @@ class StationCoordinator:
             code="flex-route-proof-timeout",
             message="Fresh FLEX route readback timed out",
         )
-        frequency = levels.get("freq", levels.get("frequency"))
-        route = self._route_for_frequency(frequency, levels.get("mode"))
+        frequency, mode, _observed_at = self._transmit_route_observation(levels)
+        route = self._route_for_frequency(frequency, mode)
         if route is None:
             raise StationActionError(
                 "route-unresolved",
@@ -1432,10 +1478,22 @@ class StationCoordinator:
                 stale=False,
                 observed_at=_utc_now(),
                 frequency=float(frequency),
+                mode=mode,
                 tx_ant=tx_ant,
             )
+            if levels.get("tx_frequency") is not None:
+                shared_snapshot["tx_frequency"] = levels["tx_frequency"]
+            if levels.get("tx_mode") is not None:
+                shared_snapshot["tx_mode"] = levels["tx_mode"]
+            for key in ("slices", "vfos", "active_receive", "transmit"):
+                if key in levels:
+                    value = levels[key]
+                    if isinstance(value, dict):
+                        value = dict(value)
+                    elif isinstance(value, list):
+                        value = [dict(item) for item in value]
+                    shared_snapshot[key] = value
             level_mapping = {
-                "mode": "mode",
                 "rfpower": "drive",
                 "tunepower": "tune_power",
                 "mox": "mox",

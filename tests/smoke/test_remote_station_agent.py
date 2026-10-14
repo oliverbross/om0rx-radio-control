@@ -790,6 +790,48 @@ def test_radio_snapshot_uses_bound_transmit_slice_when_aggregate_tx_ant_is_inval
     assert runtime.radio_snapshot["tx_ant"] == "ANT1"
 
 
+def test_radio_snapshot_publishes_split_route_from_transmit_slice(tmp_path):
+    runtime = _runtime(tmp_path)
+    runtime.flex.get_slice_states = lambda: [
+        {
+            "slice_id": 0,
+            "index_letter": "A",
+            "frequency": 24.940,
+            "mode": "USB",
+            "active": True,
+            "transmit": False,
+            "in_use": True,
+            "tx_antenna": "ANT1",
+        },
+        {
+            "slice_id": 1,
+            "index_letter": "B",
+            "frequency": 24.945,
+            "mode": "USB",
+            "active": False,
+            "transmit": True,
+            "in_use": True,
+            "tx_antenna": "ANT1",
+        },
+    ]
+
+    runtime._update_radio_snapshot(
+        {
+            "freq": 24.940,
+            "mode": "USB",
+            "tx_ant": "ANT1",
+            "mox": False,
+            "interlock_state": "READY",
+        }
+    )
+
+    assert runtime.radio_snapshot["rx_frequency"] == 24.940
+    assert runtime.radio_snapshot["tx_frequency"] == 24.945
+    assert runtime.radio_snapshot["frequency"] == 24.945
+    assert runtime.radio_snapshot["active_receive"]["index_letter"] == "A"
+    assert runtime.radio_snapshot["transmit"]["index_letter"] == "B"
+
+
 def test_radio_snapshot_does_not_hide_valid_aggregate_tx_route_mismatch(tmp_path):
     runtime = _runtime(tmp_path)
     runtime.flex.current_tx_slice_id = 1

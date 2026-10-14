@@ -270,7 +270,12 @@ class RemoteStationRuntime:
         normalized["station_name"] = self.config.flex_station_name
         normalized["station_bound"] = station_bound
         getter = getattr(self.flex, "get_slice_states", None)
-        slices = getter() if callable(getter) else []
+        supplied_slices = levels.get("slices")
+        slices = (
+            list(supplied_slices)
+            if isinstance(supplied_slices, list)
+            else getter() if callable(getter) else []
+        )
         vfos: dict[str, dict[str, Any]] = {}
         active_receive: dict[str, Any] | None = None
         transmit: dict[str, Any] | None = None
@@ -288,11 +293,26 @@ class RemoteStationRuntime:
             if item.get("transmit") is True and transmit is None:
                 transmit = item
             normalized_slices.append(item)
-        active_receive = active_receive or vfos.get("A")
-        transmit = transmit or active_receive
+        supplied_receive = levels.get("active_receive")
+        supplied_transmit = levels.get("transmit")
+        active_receive = (
+            active_receive
+            or (dict(supplied_receive) if isinstance(supplied_receive, dict) else None)
+            or vfos.get("A")
+        )
+        transmit = (
+            transmit
+            or (dict(supplied_transmit) if isinstance(supplied_transmit, dict) else None)
+            or active_receive
+        )
+        if active_receive and active_receive.get("frequency") is not None:
+            normalized["rx_frequency"] = active_receive["frequency"]
+            normalized["rx_mode"] = active_receive.get("mode") or normalized.get("mode")
         if transmit and transmit.get("frequency") is not None:
             normalized["frequency"] = transmit["frequency"]
             normalized["mode"] = transmit.get("mode") or normalized.get("mode")
+            normalized["tx_frequency"] = transmit["frequency"]
+            normalized["tx_mode"] = transmit.get("mode") or normalized.get("mode")
         # FLEX transmit/interlock telemetry can report tx_antenna=INVALID even
         # while the bound Maestro transmit slice has an authoritative ANT1/ANT2/
         # XVTR route. Use that slice only when the aggregate value is unusable;
