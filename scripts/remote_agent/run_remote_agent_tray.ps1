@@ -375,8 +375,16 @@ $quitItem = $menu.Items.Add("Quit tray")
 $notify.ContextMenuStrip = $menu
 
 function Show-DetailsWindow {
+    # The details form is intentionally reusable for the lifetime of the tray.
+    # Ignore late launcher/event signals while the UI is shutting down instead
+    # of asking WinForms to show an object that is already being disposed.
+    if ($script:closing -or $form.IsDisposed -or $form.Disposing) {
+        return
+    }
     Update-AgentStatus
-    $form.Show()
+    if (-not $form.Visible) {
+        $form.Show()
+    }
     $form.WindowState = "Normal"
     $form.Activate()
 }
@@ -477,7 +485,10 @@ $quitItem.add_Click({
 })
 $form.add_FormClosing({
     param($sender, $eventArgs)
-    if (-not $script:closing -and $eventArgs.CloseReason -eq [System.Windows.Forms.CloseReason]::UserClosing) {
+    # Keep the modeless status form alive when anything other than the tray's
+    # explicit Quit command tries to close it.  A disposed form cannot be shown
+    # again from the tray icon or Start-menu launcher.
+    if (-not $script:closing) {
         $eventArgs.Cancel = $true
         $sender.Hide()
     }
@@ -491,7 +502,7 @@ $timer.Start()
 $showTimer = New-Object System.Windows.Forms.Timer
 $showTimer.Interval = 250
 $showTimer.add_Tick({
-    if ($showEvent.WaitOne(0)) {
+    if (-not $script:closing -and $showEvent.WaitOne(0)) {
         Show-DetailsWindow
     }
 })

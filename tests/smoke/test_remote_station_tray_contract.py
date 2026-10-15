@@ -93,6 +93,15 @@ def test_tray_installer_adds_a_start_menu_entry_that_opens_existing_details():
     assert '"OM0RX Remote Station Agent.lnk"' in UNINSTALLER
 
 
+def test_tray_keeps_details_form_reusable_and_ignores_shutdown_show_races():
+    assert "$form.IsDisposed" in TRAY
+    assert "$form.Disposing" in TRAY
+    assert "if (-not $form.Visible)" in TRAY
+    assert "if (-not $script:closing)" in TRAY
+    assert "if (-not $script:closing -and $showEvent.WaitOne(0))" in TRAY
+    assert "CloseReason]::UserClosing" not in TRAY
+
+
 def test_settings_gui_covers_connections_accessories_band_policy_and_commissioning():
     for label in (
         "Connections and security",
