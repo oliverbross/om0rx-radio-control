@@ -86,11 +86,20 @@ def test_tray_installer_adds_a_start_menu_entry_that_opens_existing_details():
     assert '[Environment]::GetFolderPath("Programs")' in INSTALLER
     assert '"OM0RX Remote Station Agent.lnk"' in INSTALLER
     assert "$shortcut.Save()" in INSTALLER
-    assert '-ShowDetails"' in INSTALLER
+    assert '-ShowDetails -EnsureAgentStarted"' in INSTALLER
     assert '"Local\\OM0RXRemoteStationTrayShow"' in TRAY
     assert "if ($ShowDetails)" in TRAY
     assert "$showEvent.Set()" in TRAY
     assert '"OM0RX Remote Station Agent.lnk"' in UNINSTALLER
+
+
+def test_start_menu_launcher_starts_only_the_existing_agent_task_when_needed():
+    assert "[switch]$EnsureAgentStarted" in TRAY
+    assert "if ($EnsureAgentStarted)" in TRAY
+    assert 'if ($agentTask.State -ne "Running")' in TRAY
+    assert "Start-ScheduledTask -TaskName $AgentTaskName" in TRAY
+    assert "AddSeconds(10)" in TRAY
+    assert "New-ScheduledTaskAction" not in TRAY
 
 
 def test_tray_keeps_details_form_reusable_and_ignores_shutdown_show_races():

@@ -2,7 +2,8 @@ param(
     [string]$Config = "",
     [string]$Python = "python.exe",
     [string]$AgentTaskName = "OM0RX Remote Station Agent",
-    [switch]$ShowDetails
+    [switch]$ShowDetails,
+    [switch]$EnsureAgentStarted
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,6 +11,27 @@ Set-StrictMode -Version Latest
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
+
+# The Start-menu launcher uses this switch because its user-facing name says
+# "Remote Station Agent".  The ordinary at-logon tray task omits it and remains
+# a passive status/control surface.  Task Scheduler's IgnoreNew policy and the
+# station-controller mutex remain the authoritative duplicate-instance guards.
+if ($EnsureAgentStarted) {
+    try {
+        $agentTask = Get-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
+        if ($agentTask.State -ne "Running") {
+            Start-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
+            $deadline = [DateTime]::UtcNow.AddSeconds(10)
+            do {
+                Start-Sleep -Milliseconds 200
+                $agentTask = Get-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
+            } while ($agentTask.State -ne "Running" -and [DateTime]::UtcNow -lt $deadline)
+        }
+    }
+    catch {
+        Write-Warning "Could not ensure the Remote Station Agent task is started: $($_.Exception.Message)"
+    }
+}
 
 $showEvent = [System.Threading.EventWaitHandle]::new(
     $false,

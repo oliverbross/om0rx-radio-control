@@ -23,7 +23,7 @@ New-Item -ItemType Directory -Force -Path $menuDirectory | Out-Null
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = (Join-Path $PSHOME "powershell.exe")
-$shortcut.Arguments = "$arguments -ShowDetails"
+$shortcut.Arguments = "$arguments -ShowDetails -EnsureAgentStarted"
 $shortcut.WorkingDirectory = $projectRoot
 if (Test-Path -LiteralPath $iconPath) {
     $shortcut.IconLocation = "$iconPath,0"
