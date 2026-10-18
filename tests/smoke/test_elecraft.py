@@ -312,9 +312,10 @@ def test_kpa500_commands_and_status_parsing():
 
     assert device.set_band("20m") is True
     assert device.set_operate(False) is True
+    assert device.clear_fault() is True
     status = device.status()
 
-    assert serials[0].writes[:2] == ["^BN05;", "^OS0;"]
+    assert serials[0].writes[:3] == ["^BN05;", "^OS0;", "^FLC;"]
     assert status["power"] is True
     assert status["operate"] is True
     assert status["band"] == "20m"

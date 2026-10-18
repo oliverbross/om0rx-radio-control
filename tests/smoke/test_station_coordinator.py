@@ -28,6 +28,9 @@ class FakeKPA:
         self.last_error = None
         self.operate = False
         self.band = "20m"
+        self.fault = "00"
+        self.output_power_w = 0
+        self.persist_fault = False
         self.ignore_band = ignore_band
 
     def set_operate(self, value: bool) -> bool:
@@ -47,13 +50,30 @@ class FakeKPA:
             "power": True,
             "operate": self.operate,
             "band": self.band,
-            "fault": "00",
+            "fault": self.fault,
             "complete": True,
         }
 
     def read_operate(self) -> bool:
         self.calls.append(("kpa.read_operate",))
         return self.operate
+
+    def read_fault(self) -> str:
+        self.calls.append(("kpa.fault", self.fault))
+        return self.fault
+
+    def clear_fault(self) -> bool:
+        self.calls.append(("kpa.clear_fault",))
+        if not self.persist_fault:
+            self.fault = "00"
+        return True
+
+    def meter_status(self) -> dict:
+        self.calls.append(("kpa.meter_status",))
+        return {
+            "output_power_w": self.output_power_w,
+            "meter_complete": True,
+        }
 
 
 class FakeKAT:
@@ -68,6 +88,7 @@ class FakeKAT:
         self.antenna = 2
         self.mode = "auto"
         self.fault = "0"
+        self.tuning = False
         self.amp_key_interrupted = False
         self.tune_states = list(tune_states or [True, False])
         self.forward_adc = 25
@@ -100,7 +121,7 @@ class FakeKAT:
             "antenna": self.antenna,
             "band": self.band,
             "frequency_khz": self.frequency_khz,
-            "tuning": False,
+            "tuning": self.tuning,
             "fault": self.fault,
             "bypass": False,
             "amp_key_interrupted": self.amp_key_interrupted,
@@ -1539,9 +1560,65 @@ def test_operate_atomically_prepares_unverified_route_before_switching_kpa(monke
 
     assert operated["transaction"]["state"] == "succeeded"
     assert manager.kpa500.operate is True
+    assert ("kpa.clear_fault",) not in calls
     assert ("flex.route", 14.074, "station coordinator route preparation") in calls
     assert calls.index(("kpa.operate", False)) < calls.index(("flex.rfpower", 25))
     assert calls.index(("flex.rfpower", 25)) < calls.index(("kpa.operate", True))
+
+
+def test_explicit_operate_clears_latched_kpa_fault_then_reverifies_route(monkeypatch):
+    station, calls, manager = build_station(monkeypatch, commissioned=True)
+    manager.kpa500.fault = "09"
+
+    operated = asyncio.run(station.perform("operate"))
+
+    assert operated["transaction"]["state"] == "succeeded"
+    assert manager.kpa500.fault == "00"
+    assert manager.kpa500.operate is True
+    assert calls.index(("kpa.meter_status",)) < calls.index(("kpa.clear_fault",))
+    assert calls.index(("kpa.clear_fault",)) < calls.index(("kpa.operate", True))
+    assert calls.count(("kpa.readback",)) >= 3
+
+
+def test_explicit_operate_refuses_kpa_fault_that_persists_after_clear(monkeypatch):
+    station, calls, manager = build_station(monkeypatch, commissioned=True)
+    manager.kpa500.fault = "09"
+    manager.kpa500.persist_fault = True
+
+    with pytest.raises(StationActionError) as exc_info:
+        asyncio.run(station.perform("operate"))
+
+    assert exc_info.value.code == "kpa-fault-not-cleared"
+    assert str(exc_info.value) == "KPA500 fault 09: REFL HI remains active after fault clear."
+    assert ("kpa.clear_fault",) in calls
+    assert ("kpa.operate", True) not in calls
+
+
+@pytest.mark.parametrize(
+    "unsafe_state",
+    ["transmitting", "tuning", "disconnected", "already-operating", "output-present"],
+)
+def test_explicit_operate_never_clears_kpa_fault_in_unsafe_state(monkeypatch, unsafe_state):
+    station, calls, manager = build_station(
+        monkeypatch,
+        commissioned=True,
+        tx_confirmed=unsafe_state != "transmitting",
+    )
+    manager.kpa500.fault = "09"
+    if unsafe_state == "tuning":
+        manager.kat500.tuning = True
+    elif unsafe_state == "disconnected":
+        manager.kpa500.connected = False
+    elif unsafe_state == "already-operating":
+        manager.kpa500.operate = True
+    elif unsafe_state == "output-present":
+        manager.kpa500.output_power_w = 5
+
+    with pytest.raises(StationActionError):
+        asyncio.run(station.perform("operate"))
+
+    assert ("kpa.clear_fault",) not in calls
+    assert ("kpa.operate", True) not in calls
 
 
 def test_split_route_and_fresh_proof_use_exact_transmit_slice_frequency(monkeypatch):

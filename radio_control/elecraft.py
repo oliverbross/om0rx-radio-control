@@ -797,6 +797,10 @@ class KPA500(SerialCommandDevice):
         response = self.query("^FL;", "^FL", response_pattern=r"\^FL[^;]+;")
         return None if response is None else response[3:-1]
 
+    def clear_fault(self) -> bool:
+        """Clear the current KPA500 fault using the documented ``^FLC`` command."""
+        return self.write("^FLC;")
+
     def meter_status(self) -> dict[str, Any]:
         """Read only the fast KPA power/SWR meter without refreshing state age."""
         with self.lock:

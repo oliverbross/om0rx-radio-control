@@ -39,6 +39,10 @@ EXTERNAL_RX_RETRY_CODES = {
     "flex-tx-state-unconfirmed",
 }
 
+KPA500_FAULT_DESCRIPTIONS = {
+    "09": "REFL HI",
+}
+
 
 class StationActionError(RuntimeError):
     """A rejected or failed station transaction with an operator-facing code."""
@@ -1607,6 +1611,61 @@ class StationCoordinator:
                 status_code=503,
             )
 
+    async def _clear_kpa_fault_for_explicit_operate(
+        self,
+        kpa: Any,
+        kat: Any,
+    ) -> bool:
+        """Clear one latched KPA fault only for an explicit guarded OPERATE.
+
+        A KPA fault can remain latched after the underlying RF condition has
+        ended.  Fault clear is nevertheless a write, so require fresh receive,
+        powered standby, an idle tuner, and an exact zero-output meter before
+        issuing it.  The caller invalidates any prior route proof when this
+        returns ``True`` and then performs the normal exact route preparation.
+        """
+        await self._fresh_receive_state()
+        fault = str(await self._device_value(kpa, "read_fault") or "").strip()
+        if fault == "00":
+            return False
+
+        kpa_status = await self._device_readback(kpa)
+        kat_status = await self._device_readback(kat)
+        meter = await self._device_call(kpa, "meter_status")
+        output_power = meter.get("output_power_w") if isinstance(meter, dict) else None
+        safe_to_clear = bool(
+            getattr(kpa, "connected", False)
+            and kpa_status.get("power") is True
+            and kpa_status.get("operate") is False
+            and kat_status.get("tuning") is False
+            and isinstance(meter, dict)
+            and meter.get("meter_complete") is True
+            and not isinstance(output_power, bool)
+            and output_power == 0
+        )
+        if not safe_to_clear:
+            raise StationActionError(
+                "kpa-fault-clear-unsafe",
+                f"KPA500 fault {fault or 'unknown'} cannot be cleared unless the amplifier is "
+                "connected, powered, in standby, the tuner is idle, output is 0 W, and the "
+                "radio is in receive",
+            )
+
+        # Re-prove receive immediately before the serialized KPA write.  The
+        # outer action/radio locks remain held across this entire operation.
+        await self._fresh_receive_state()
+        await self._device_call(kpa, "clear_fault")
+        cleared_status = await self._device_readback(kpa)
+        cleared_fault = str(cleared_status.get("fault") or "").strip()
+        if cleared_fault != "00":
+            description = KPA500_FAULT_DESCRIPTIONS.get(cleared_fault)
+            decoded = f": {description}" if description else ""
+            raise StationActionError(
+                "kpa-fault-not-cleared",
+                f"KPA500 fault {cleared_fault or fault}{decoded} remains active after fault clear.",
+            )
+        return True
+
     async def _ensure_kat_amp_key_connected_in_receive(
         self,
         kat: Any,
@@ -1962,6 +2021,19 @@ class StationCoordinator:
                                             "amplifier-not-allowed",
                                             "Amplifier operation is not allowed on this route",
                                         )
+                                    kpa = self.elecraft.kpa500
+                                    kat = self.elecraft.kat500
+                                    if kpa is None or kat is None:
+                                        raise StationActionError(
+                                            "station-device-missing",
+                                            "KPA500 and KAT500 are required",
+                                        )
+                                    if await self._clear_kpa_fault_for_explicit_operate(kpa, kat):
+                                        # Clearing a latched fault changes one
+                                        # of the exact route proof fields.  The
+                                        # full KPA/KAT/FLEX proof must be
+                                        # rebuilt before OPERATE can continue.
+                                        self._route_verified = None
                                     if (
                                         not self._route_verification_is_fresh(route)
                                         and not self._adopt_cached_operate_route(route)
