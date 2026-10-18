@@ -632,6 +632,34 @@ class SerialCommandDevice:
                 except Exception:
                     logger.debug("Could not close %s serial port", self.name, exc_info=True)
 
+    def _write_payload(self, payload: bytes) -> None:
+        """Write without pyserial's unbounded Windows ``flush`` call.
+
+        On Windows ``Serial.flush()`` maps to ``FlushFileBuffers``. A VSPE
+        endpoint whose peer has disappeared can leave that call blocked
+        indefinitely, preventing the Agent's ASGI startup from completing.
+        ``write_timeout`` does not bound ``flush``. Polling the output queue
+        provides a bounded delivery check; transports without ``out_waiting``
+        retain their normal synchronous-write semantics.
+        """
+        written = self.serial.write(payload)
+        if written is not None and int(written) != len(payload):
+            raise TimeoutError(
+                f"{self.name} accepted only {written} of {len(payload)} command bytes"
+            )
+        try:
+            pending = int(self.serial.out_waiting)
+        except (AttributeError, NotImplementedError):
+            return
+        deadline = time.monotonic() + self.timeout
+        while pending > 0:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"{self.name} serial output did not drain within {self.timeout:.2f}s"
+                )
+            time.sleep(0.005)
+            pending = int(self.serial.out_waiting)
+
     def resume(self) -> None:
         with self.lock:
             if not self.retired:
@@ -654,8 +682,7 @@ class SerialCommandDevice:
                 return False
             try:
                 payload = command if isinstance(command, bytes) else command.encode("ascii")
-                self.serial.write(payload)
-                self.serial.flush()
+                self._write_payload(payload)
                 self.last_error = None
                 return True
             except Exception as exc:
@@ -697,8 +724,7 @@ class SerialCommandDevice:
                 waiting = int(getattr(self.serial, "in_waiting", 0) or 0)
                 if waiting:
                     self.serial.read(waiting)
-                self.serial.write(command.encode("ascii"))
-                self.serial.flush()
+                self._write_payload(command.encode("ascii"))
                 sent_at = time.monotonic()
                 deadline = time.monotonic() + (timeout or self.timeout)
                 pending = ""

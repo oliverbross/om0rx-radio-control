@@ -16,37 +16,11 @@ Add-Type -AssemblyName System.Windows.Forms
 # "Remote Station Agent".  The ordinary at-logon tray task omits it and remains
 # a passive status/control surface.  Task Scheduler's IgnoreNew policy and the
 # station-controller mutex remain the authoritative duplicate-instance guards.
-if ($EnsureAgentStarted) {
-    try {
-        $agentTask = Get-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
-        if ($agentTask.State -ne "Running") {
-            Start-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
-            $deadline = [DateTime]::UtcNow.AddSeconds(10)
-            do {
-                Start-Sleep -Milliseconds 200
-                $agentTask = Get-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
-            } while ($agentTask.State -ne "Running" -and [DateTime]::UtcNow -lt $deadline)
-        }
-    }
-    catch {
-        Write-Warning "Could not ensure the Remote Station Agent task is started: $($_.Exception.Message)"
-    }
-}
-
 $showEvent = [System.Threading.EventWaitHandle]::new(
     $false,
     [System.Threading.EventResetMode]::AutoReset,
     "Local\OM0RXRemoteStationTrayShow"
 )
-$mutex = [System.Threading.Mutex]::new($false, "Local\OM0RXRemoteStationTray")
-if (-not $mutex.WaitOne(0, $false)) {
-    if ($ShowDetails) {
-        $showEvent.Set() | Out-Null
-    }
-    $showEvent.Dispose()
-    $mutex.Dispose()
-    exit 0
-}
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $configPath = if ($Config) {
@@ -117,6 +91,55 @@ function Get-ControllerOwnerInfo {
     catch {
         return $null
     }
+}
+
+function Wait-AgentApi([int]$TimeoutSeconds) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $snapshot = Get-AgentSnapshot
+        if ($null -ne $snapshot.State) { return $true }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $false
+}
+
+# Task Scheduler reports a process as Running before the Agent has opened its
+# API. Treating that state alone as healthy left a wedged startup impossible to
+# recover from the Start-menu shortcut. The explicit launcher now waits for the
+# authenticated local API and performs one controlled task restart if the first
+# process never becomes ready. The passive at-logon tray remains passive.
+if ($EnsureAgentStarted) {
+    try {
+        $agentTask = Get-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
+        if ($agentTask.State -ne "Running") {
+            Start-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
+        }
+        if (-not (Wait-AgentApi 20)) {
+            Stop-ScheduledTask -TaskName $AgentTaskName -ErrorAction SilentlyContinue
+            $deadline = [DateTime]::UtcNow.AddSeconds(10)
+            do {
+                Start-Sleep -Milliseconds 200
+                $agentTask = Get-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
+            } while ($agentTask.State -eq "Running" -and [DateTime]::UtcNow -lt $deadline)
+            Start-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
+            if (-not (Wait-AgentApi 30)) {
+                Write-Warning "The Remote Station Agent task started but its local API did not become ready."
+            }
+        }
+    }
+    catch {
+        Write-Warning "Could not ensure the Remote Station Agent is healthy: $($_.Exception.Message)"
+    }
+}
+
+$mutex = [System.Threading.Mutex]::new($false, "Local\OM0RXRemoteStationTray")
+if (-not $mutex.WaitOne(0, $false)) {
+    if ($ShowDetails) {
+        $showEvent.Set() | Out-Null
+    }
+    $showEvent.Dispose()
+    $mutex.Dispose()
+    exit 0
 }
 
 function Format-Boolean([object]$Value, [string]$TrueText, [string]$FalseText) {

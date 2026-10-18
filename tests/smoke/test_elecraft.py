@@ -51,6 +51,17 @@ class FakeSerial:
         self.is_open = False
 
 
+class FlushWouldBlockSerial(FakeSerial):
+    """Model the Windows/VSPE failure where FlushFileBuffers never returns."""
+
+    @property
+    def out_waiting(self):
+        return 0
+
+    def flush(self):
+        raise AssertionError("serial.flush() must not be used for command delivery")
+
+
 def serial_factory_with(responses, holder):
     def factory(**kwargs):
         instance = FakeSerial(responses, **kwargs)
@@ -58,6 +69,43 @@ def serial_factory_with(responses, holder):
         return instance
 
     return factory
+
+
+def test_serial_commands_do_not_use_unbounded_windows_flush():
+    serial_port = FlushWouldBlockSerial({"^ON;": "^ON1;"})
+    device = KPA500(
+        "KPA500",
+        "COM17",
+        38400,
+        serial_factory=lambda **_kwargs: serial_port,
+    )
+
+    assert device.query("^ON;", "^ON", response_pattern=r"\^ON[01];") == "^ON1;"
+    assert device.write("^OS0;") is True
+    assert serial_port.writes == ["^ON;", "^OS0;"]
+
+
+def test_serial_output_queue_timeout_fails_closed_without_hanging():
+    class StalledOutputSerial(FakeSerial):
+        @property
+        def out_waiting(self):
+            return 4
+
+    serial_port = StalledOutputSerial()
+    device = KPA500(
+        "KPA500",
+        "COM17",
+        38400,
+        timeout=0.03,
+        serial_factory=lambda **_kwargs: serial_port,
+    )
+    started = time.monotonic()
+
+    assert device.query("^ON;", "^ON") is None
+
+    assert time.monotonic() - started < 0.25
+    assert "did not drain" in str(device.last_error)
+    assert serial_port.is_open is False
 
 
 def test_frequency_to_elecraft_band_codes_cover_hf_and_6m():

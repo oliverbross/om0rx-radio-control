@@ -17,6 +17,9 @@ SETTINGS = (
 WIDGET = (
     ROOT / "scripts" / "remote_agent" / "remote_agent_widget.ps1"
 ).read_text(encoding="utf-8")
+STARTUP_INSTALLER = (
+    ROOT / "scripts" / "remote_agent" / "install_remote_agent_startup.ps1"
+).read_text(encoding="utf-8")
 
 
 def test_tray_exposes_requested_process_controls_and_status_window():
@@ -100,6 +103,18 @@ def test_start_menu_launcher_starts_only_the_existing_agent_task_when_needed():
     assert "Start-ScheduledTask -TaskName $AgentTaskName" in TRAY
     assert "AddSeconds(10)" in TRAY
     assert "New-ScheduledTaskAction" not in TRAY
+
+
+def test_start_menu_launcher_requires_api_health_and_repairs_one_stuck_start():
+    assert "function Wait-AgentApi" in TRAY
+    assert "if (-not (Wait-AgentApi 20))" in TRAY
+    assert "Stop-ScheduledTask -TaskName $AgentTaskName" in TRAY
+    assert "if (-not (Wait-AgentApi 30))" in TRAY
+
+
+def test_agent_startup_task_is_not_blocked_or_stopped_by_battery_state():
+    assert "-AllowStartIfOnBatteries" in STARTUP_INSTALLER
+    assert "-DontStopIfGoingOnBatteries" in STARTUP_INSTALLER
 
 
 def test_tray_keeps_details_form_reusable_and_ignores_shutdown_show_races():
