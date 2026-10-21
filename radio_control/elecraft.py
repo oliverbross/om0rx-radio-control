@@ -791,6 +791,19 @@ class KPA500(SerialCommandDevice):
         code = BAND_CODES.get(band)
         return bool(code and self.write(f"^BN{code};"))
 
+    def set_standby_on_band_change(self, standby: bool) -> bool:
+        """Configure the documented KPA500 BAND CHG behavior.
+
+        ``False`` (``^BC0;``) preserves the operator's prior OPER/STBY mode
+        after the amplifier completes its own guarded band change.  ``True``
+        (``^BC1;``) leaves it in standby.
+        """
+        return self.write(f"^BC{1 if standby else 0};")
+
+    def read_standby_on_band_change(self) -> Optional[bool]:
+        response = self.query("^BC;", "^BC", response_pattern=r"\^BC[01];")
+        return None if response is None else response.upper().startswith("^BC1")
+
     def set_operate(self, operate: bool) -> bool:
         return self.write(f"^OS{1 if operate else 0};")
 

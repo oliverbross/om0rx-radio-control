@@ -852,6 +852,7 @@ class StationCoordinator:
         radio: dict[str, Any],
         *,
         include_drive: bool = True,
+        include_kat_frequency: bool = True,
     ) -> bool:
         """Return whether cached hardware evidence differs from a FLEX route.
 
@@ -882,7 +883,10 @@ class StationCoordinator:
             kpa.get("band") != route.band
             or (kpa.get("operate") is True and not route.amplifier_allowed)
             or kat.get("band") != route.band
-            or kat.get("frequency_khz") != round(route.frequency_mhz * 1000)
+            or (
+                include_kat_frequency
+                and kat.get("frequency_khz") != round(route.frequency_mhz * 1000)
+            )
             or kat.get("antenna") != route.kat_antenna
             or str(radio.get("tx_ant") or "").upper() != route.flex_tx_ant
             or (
@@ -925,6 +929,7 @@ class StationCoordinator:
             route,
             radio,
             include_drive=False,
+            include_kat_frequency=False,
         )
         any_needs_follow = self._observed_route_needs_follow(
             route,
@@ -988,6 +993,7 @@ class StationCoordinator:
                         current_route,
                         current_radio,
                         include_drive=False,
+                        include_kat_frequency=False,
                     )
                     any_needs_follow = self._observed_route_needs_follow(
                         current_route,
@@ -1028,6 +1034,7 @@ class StationCoordinator:
                             current_route,
                             current_radio,
                             include_drive=False,
+                            include_kat_frequency=False,
                         )
                         any_needs_follow = self._observed_route_needs_follow(
                             current_route,
@@ -1044,6 +1051,20 @@ class StationCoordinator:
                     observed_kpa = self.elecraft.snapshot().get("kpa500") or {}
                     if observed_kpa.get("operate") is True:
                         self._manual_operate_requested = True
+                        if not topology_needs_follow:
+                            # The station path is unchanged; only the KAT's
+                            # advisory frequency-memory address differs.  Do
+                            # not start a relay transaction or alter the
+                            # operator-selected amplifier mode for a
+                            # same-band QSY.  The KAT remains in AUTO and the
+                            # exact memory address is refreshed after an
+                            # explicit Standby selection.
+                            logger.info(
+                                "Deferred same-band KAT frequency follow to %d kHz "
+                                "while KPA500 remains in operator-selected OPERATE",
+                                round(current_route.frequency_mhz * 1000),
+                            )
+                            return False
                     observed_band = str(observed_kpa.get("band") or "").strip().lower()
                     band_changed = observed_band != current_route.band.lower()
                     same_verified_target = bool(
@@ -1076,6 +1097,9 @@ class StationCoordinator:
                     restore_operate = bool(
                         self._manual_operate_requested and current_route.amplifier_allowed
                     )
+                    preserve_operate = bool(
+                        restore_operate and observed_kpa.get("operate") is True
+                    )
                     # A selected digital engine may be armed for a future slot even
                     # though the authoritative FLEX readback is presently RX.  The
                     # route has to follow that engine's observed CAT QSY *before*
@@ -1093,9 +1117,10 @@ class StationCoordinator:
                         # operator. Apply configured drive only when the band
                         # changes; same-band frequency/mode changes preserve it.
                         preserve_observed_drive=not band_changed,
+                        preserve_kpa_operate=preserve_operate,
                     )
                     follow_stage("route_prepared_ms")
-                    if restore_operate:
+                    if restore_operate and not preserve_operate:
                         self._assert_follow_current(follow_generation, current_route)
                         await self._operate(
                             route=current_route,
@@ -2476,6 +2501,7 @@ class StationCoordinator:
         allow_digital_owner: bool = False,
         follow_generation: Optional[int] = None,
         preserve_observed_drive: bool = False,
+        preserve_kpa_operate: bool = False,
     ) -> RouteTarget:
         route = route or self._require_fresh_route()
         if not reuse_transaction:
@@ -2509,15 +2535,49 @@ class StationCoordinator:
                     "Both KPA500 and KAT500 must be configured for the amplified route",
                 )
 
-            self._transaction_step("amplifier-standby", 25)
             kpa_safety_engaged = True
-            await self._device_call(kpa, "set_operate", False)
-            kpa_standby = await self._device_readback(kpa)
-            if follow_generation is not None:
-                self._assert_follow_current(follow_generation, route)
-            if kpa_standby.get("operate") is not False:
-                raise StationActionError("kpa-standby-not-confirmed", "KPA500 did not confirm standby")
-            timed_stage("standby_confirmed_ms")
+            if preserve_kpa_operate:
+                self._transaction_step("preserving-amplifier-operate", 25)
+                kpa_before = await self._device_readback(kpa)
+                kpa_ready = verify_exact_target(
+                    kpa_before,
+                    {"power": True, "operate": True, "fault": "00"},
+                )
+                if not kpa_ready["verified"]:
+                    raise StationActionError(
+                        "kpa-operate-readback-unconfirmed",
+                        "KPA500 must freshly confirm powered, fault-free OPERATE "
+                        "before preserving operator intent across a route change",
+                    )
+                if not hasattr(kpa, "set_standby_on_band_change") or not hasattr(
+                    kpa, "read_standby_on_band_change"
+                ):
+                    raise StationActionError(
+                        "kpa-band-change-policy-unavailable",
+                        "KPA500 band-change mode preservation is unavailable",
+                    )
+                await self._device_call(kpa, "set_standby_on_band_change", False)
+                stay_standby = await self._device_value(
+                    kpa, "read_standby_on_band_change"
+                )
+                if stay_standby is not False:
+                    raise StationActionError(
+                        "kpa-band-change-policy-unconfirmed",
+                        "KPA500 did not confirm OPERATE-preserving band-change mode",
+                    )
+                timed_stage("operate_preserved_ms")
+            else:
+                self._transaction_step("amplifier-standby", 25)
+                await self._device_call(kpa, "set_operate", False)
+                kpa_standby = await self._device_readback(kpa)
+                if follow_generation is not None:
+                    self._assert_follow_current(follow_generation, route)
+                if kpa_standby.get("operate") is not False:
+                    raise StationActionError(
+                        "kpa-standby-not-confirmed",
+                        "KPA500 did not confirm standby",
+                    )
+                timed_stage("standby_confirmed_ms")
 
             # A KAT fault is latched by firmware and otherwise blocks the
             # exact route proof forever.  We are in fresh receive with KPA in
@@ -2576,10 +2636,15 @@ class StationCoordinator:
                         status_code=503,
                     ) from exc
             else:
+                target_drive = (
+                    route.amplifier_drive_w
+                    if preserve_kpa_operate
+                    else route.barefoot_drive_w
+                )
                 observed_drive = await self._set_and_verify_flex_drive(
                     route,
-                    route.barefoot_drive_w,
-                    label="barefoot",
+                    target_drive,
+                    label="amplifier" if preserve_kpa_operate else "barefoot",
                 )
             if follow_generation is not None:
                 self._assert_follow_current(follow_generation, route)
@@ -2598,7 +2663,7 @@ class StationCoordinator:
                 kpa_status,
                 {
                     "power": True,
-                    "operate": False,
+                    "operate": preserve_kpa_operate,
                     "band": route.band,
                     "fault": "00",
                 },
@@ -2639,7 +2704,7 @@ class StationCoordinator:
                 "frequency_khz": round(route.frequency_mhz * 1000),
                 "verified_at": time.time(),
                 "verified_at_iso": _utc_now(),
-                "kpa_operate": False,
+                "kpa_operate": preserve_kpa_operate,
                 "flex_tx_ant": observed_flex_tx,
                 "kat_antenna": int(kat_status["antenna"]),
                 "flex_drive_w": observed_drive,

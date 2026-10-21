@@ -32,6 +32,7 @@ class FakeKPA:
         self.output_power_w = 0
         self.persist_fault = False
         self.ignore_band = ignore_band
+        self.standby_on_band_change = True
 
     def set_operate(self, value: bool) -> bool:
         self.calls.append(("kpa.operate", value))
@@ -43,6 +44,15 @@ class FakeKPA:
         if not self.ignore_band:
             self.band = band
         return True
+
+    def set_standby_on_band_change(self, standby: bool) -> bool:
+        self.calls.append(("kpa.standby_on_band_change", standby))
+        self.standby_on_band_change = standby
+        return True
+
+    def read_standby_on_band_change(self) -> bool:
+        self.calls.append(("kpa.read_standby_on_band_change",))
+        return self.standby_on_band_change
 
     def readback(self) -> dict:
         self.calls.append(("kpa.readback",))
@@ -806,6 +816,28 @@ def test_external_flex_band_change_safely_follows_kpa_and_kat_in_receive(monkeyp
     assert not any(call[0] == "manager.refresh" for call in calls[published_at + 1 :])
 
 
+def test_external_flex_allowed_band_change_restores_operator_operate_intent(monkeypatch):
+    station, calls, manager = build_station(monkeypatch, commissioned=True)
+    manager.kpa500.operate = True
+    manager.kpa500.band = "12m"
+    manager.kat500.band = "12m"
+    manager.kat500.frequency_khz = 24915
+    manager.kat500.antenna = 1
+    station.flex_provider().current_rfpower = 25
+    station._manual_operate_requested = True
+
+    followed = asyncio.run(station.follow_observed_radio_route(14.074))
+
+    assert followed is True
+    assert manager.kpa500.band == "20m"
+    assert manager.kat500.band == "20m"
+    assert manager.kat500.frequency_khz == 14074
+    assert manager.kpa500.operate is True
+    assert ("kpa.standby_on_band_change", False) in calls
+    assert ("kpa.read_standby_on_band_change",) in calls
+    assert not any(call[0] == "kpa.operate" for call in calls)
+
+
 def test_fresh_rx_poll_and_exact_standby_proof_skip_duplicate_flex_preflight(monkeypatch):
     station, calls, manager = build_station(monkeypatch, commissioned=True)
     manager.kpa500.band = "12m"
@@ -1126,7 +1158,7 @@ def test_external_flex_drive_override_is_preserved_without_dropping_operate(monk
     assert not any(call[0] == "kpa.operate" for call in calls)
 
 
-def test_external_flex_frequency_follow_restores_manual_operate(monkeypatch):
+def test_external_flex_same_band_frequency_change_never_drops_manual_operate(monkeypatch):
     station, calls, manager = build_station(monkeypatch, commissioned=True)
     manager.kpa500.operate = True
     manager.kat500.frequency_khz = 14074
@@ -1146,15 +1178,11 @@ def test_external_flex_frequency_follow_restores_manual_operate(monkeypatch):
 
     followed = asyncio.run(station.follow_observed_radio_route(14.080))
 
-    assert followed is True
+    assert followed is False
     assert manager.kpa500.operate is True
-    assert manager.kat500.frequency_khz == 14080
-    assert calls.index(("kpa.operate", False)) < calls.index(
-        ("kat.frequency", 14.080)
-    )
-    assert calls.index(("kat.frequency", 14.080)) < calls.index(
-        ("kpa.operate", True)
-    )
+    assert manager.kat500.frequency_khz == 14074
+    assert not any(call[0] == "kpa.operate" for call in calls)
+    assert ("kat.frequency", 14.080) not in calls
 
 
 def test_external_flex_follow_keeps_standby_when_route_prohibits_amplifier(monkeypatch):

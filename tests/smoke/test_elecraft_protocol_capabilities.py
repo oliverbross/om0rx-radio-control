@@ -95,6 +95,14 @@ def test_kpa_no_response_off_state_fails_closed_as_unknown() -> None:
     assert device.commands == ["^ON;"]
 
 
+def test_kpa_band_change_policy_uses_documented_operate_preservation_command() -> None:
+    device = ScriptedKPA({"^BC;": "^BC0;"})
+
+    assert device.set_standby_on_band_change(False) is True
+    assert device.read_standby_on_band_change() is False
+    assert device.commands == ["^BC0;", "^BC;"]
+
+
 def test_kat_tune_lifecycle_uses_documented_commands() -> None:
     device = ScriptedKAT({"TP;": "TP1;"})
 
