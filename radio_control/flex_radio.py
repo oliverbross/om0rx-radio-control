@@ -1218,6 +1218,20 @@ class FlexCtl:
                     levels["tx_frequency"] = transmit["frequency"]
                 if transmit.get("mode"):
                     levels["tx_mode"] = transmit["mode"]
+                # Some FLEX firmware/client combinations publish an aggregate
+                # ``transmit tx_antenna=INVALID`` while the station-bound TX
+                # slice still carries the authoritative ANT1/ANT2/XVTR route.
+                # Use that slice only to replace an unusable aggregate value;
+                # preserve a different valid aggregate port so route safety
+                # checks continue to fail closed on a genuine mismatch.
+                aggregate_tx_ant = str(levels.get("tx_ant") or "").strip().upper()
+                slice_tx_ant = str(transmit.get("tx_antenna") or "").strip().upper()
+                valid_tx_antennas = {"ANT1", "ANT2", "XVTR"}
+                if (
+                    aggregate_tx_ant not in valid_tx_antennas
+                    and slice_tx_ant in valid_tx_antennas
+                ):
+                    levels["tx_ant"] = slice_tx_ant
 
         # Update instance tracking
         if "filter_lo" in levels:

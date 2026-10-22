@@ -127,6 +127,23 @@ class SplitSnapshotFlex(RecordingFlex):
         return True, ""
 
 
+class InvalidAggregateTxAntSnapshotFlex(RecordingFlex):
+    def _send_with_response(self, cmd: str):
+        assert cmd == "slice list"
+        self._record_basic_status_from_line(
+            "S1|slice 0 index_letter=A RF_frequency=18.068960 mode=CW "
+            "active=1 tx=0 in_use=1 client_handle=0xabc txant=ANT1"
+        )
+        self._record_basic_status_from_line(
+            "S1|slice 1 index_letter=B RF_frequency=18.070000 mode=CW "
+            "active=0 tx=1 in_use=1 client_handle=0xabc txant=ANT1"
+        )
+        self._record_basic_status_from_line(
+            "S1|transmit tx_antenna=INVALID rfpower=25 mox=0"
+        )
+        return True, ""
+
+
 def test_add_spot_uses_argb_and_the_acknowledged_command_path():
     flex = RecordingFlex()
 
@@ -665,6 +682,37 @@ def test_snapshot_poll_exposes_exact_split_transmit_route():
     assert levels["tx_frequency"] == 24.945
     assert levels["active_receive"]["index_letter"] == "A"
     assert levels["transmit"]["index_letter"] == "B"
+
+
+def test_snapshot_poll_uses_bound_tx_slice_when_aggregate_tx_port_is_invalid():
+    flex = InvalidAggregateTxAntSnapshotFlex()
+    flex.bound_gui_client_handle = "0xabc"
+    flex.sock = RecordingScriptedSocket([TimeoutError()])
+    flex.last_resubscribe_time = time.time()
+
+    levels = flex.get_current_levels(timeout=0.01, apply_antenna_policy=False)
+
+    assert levels["freq"] == 18.068960
+    assert levels["tx_frequency"] == 18.070000
+    assert levels["transmit"]["index_letter"] == "B"
+    assert levels["transmit"]["tx_antenna"] == "ANT1"
+    assert levels["tx_ant"] == "ANT1"
+    assert flex.current_tx_ant == "ANT1"
+
+
+def test_snapshot_poll_does_not_hide_valid_aggregate_tx_port_mismatch():
+    flex = InvalidAggregateTxAntSnapshotFlex()
+    flex.bound_gui_client_handle = "0xabc"
+    flex.sock = RecordingScriptedSocket(
+        [b"S1|transmit tx_antenna=ANT2 rfpower=25 mox=0\r\n", TimeoutError()]
+    )
+    flex.last_resubscribe_time = time.time()
+
+    levels = flex.get_current_levels(timeout=0.01, apply_antenna_policy=False)
+
+    assert levels["transmit"]["tx_antenna"] == "ANT1"
+    assert levels["tx_ant"] == "ANT2"
+    assert flex.current_tx_ant == "ANT2"
 
 
 def test_antenna_policy_falls_back_to_transmit_tx_antenna_command():
