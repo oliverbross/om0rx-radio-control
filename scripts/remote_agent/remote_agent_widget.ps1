@@ -136,6 +136,35 @@ function Open-AgentSettings {
     }
 }
 
+function Invoke-ClearAccessoryFaults {
+    $choice = [System.Windows.Forms.MessageBox]::Show(
+        "Clear latched KPA500/KAT500 alarms?`r`n`r`nThe Agent will proceed only in Receive, with the KPA500 in standby at 0 W and the KAT500 idle. This does not enable Operate or transmit RF.",
+        "Clear accessory alarms",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    if ($choice -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+    try {
+        $document = Get-Content -LiteralPath $configPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        $token = [string]$document.server.control_token
+        if ([string]::IsNullOrWhiteSpace($token)) { throw "Bearer token is unavailable" }
+        $port = [int]$document.server.bind_port
+        $headers = @{ Authorization = "Bearer $token" }
+        $body = @{ request_id = [Guid]::NewGuid().ToString(); command = "station_clear_faults"; arguments = @{} } | ConvertTo-Json -Depth 4
+        $response = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/v1/commands" -Headers $headers -Method Post -ContentType "application/json" -Body $body -TimeoutSec 30
+        if (-not $response.success) { throw "The Agent rejected the fault-clear request" }
+        Update-Widget
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Accessory alarms were not cleared.`r`n`r`n$($_.Exception.Message)",
+            "OM0RX Remote Station",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+    }
+}
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "OM0RX Station Monitor"
 $form.ClientSize = New-Object System.Drawing.Size(548, 358)
@@ -199,10 +228,23 @@ $routeLabel.BackColor = [System.Drawing.Color]::FromArgb(13, 49, 39)
 $routeLabel.ForeColor = [System.Drawing.Color]::FromArgb(134, 239, 172)
 $form.Controls.AddRange(@($kpaLabel, $katLabel, $routeLabel))
 
-$footerLabel = New-WidgetLabel "Starting..." 14 324 414 24 8
+$footerLabel = New-WidgetLabel "Starting..." 14 324 300 24 8
 $footerLabel.ForeColor = [System.Drawing.Color]::FromArgb(148, 163, 184)
 $footerLabel.Anchor = "Left,Bottom,Right"
 $form.Controls.Add($footerLabel)
+
+$clearFaultsButton = New-Object System.Windows.Forms.Button
+$clearFaultsButton.Text = "Clear alarms"
+$clearFaultsButton.SetBounds(320, 321, 112, 28)
+$clearFaultsButton.Anchor = "Right,Bottom"
+$clearFaultsButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$clearFaultsButton.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(251, 146, 60)
+$clearFaultsButton.BackColor = [System.Drawing.Color]::FromArgb(124, 45, 18)
+$clearFaultsButton.ForeColor = [System.Drawing.Color]::FromArgb(255, 237, 213)
+$clearFaultsButton.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+$clearFaultsButton.Cursor = [System.Windows.Forms.Cursors]::Hand
+$clearFaultsButton.Enabled = $false
+$form.Controls.Add($clearFaultsButton)
 
 $settingsButton = New-Object System.Windows.Forms.Button
 $settingsButton.Text = "Configure"
@@ -395,6 +437,8 @@ function Set-WidgetState([object]$State) {
 
     $alarms = Get-PropertyValue $station "alarms"
     $alarmCount = Get-PropertyValue $alarms "active_count" 0
+    $allowedActions = @(Get-PropertyValue $station "allowed_actions" @())
+    $clearFaultsButton.Enabled = $allowedActions -contains "clear-faults"
     $updated = [DateTime]::Now.ToString("HH:mm:ss")
     $footerLabel.Text = "Updated $updated  |  alarms $alarmCount  |  commissioned $(Get-PropertyValue $station 'commissioned' $false)"
 }
@@ -405,6 +449,7 @@ function Set-WidgetError([string]$Message) {
     $frequencyLabel.Text = "--.---.--- MHz"
     $modeRouteLabel.Text = $Message
     $footerLabel.Text = "Retrying... $([DateTime]::Now.ToString('HH:mm:ss'))"
+    $clearFaultsButton.Enabled = $false
 }
 
 function Update-Widget {
@@ -417,6 +462,7 @@ $topMostItem.add_CheckedChanged({
     Save-WidgetLayout
 })
 $settingsButton.add_Click({ Open-AgentSettings })
+$clearFaultsButton.add_Click({ Invoke-ClearAccessoryFaults })
 $settingsItem.add_Click({ Open-AgentSettings })
 $resetPositionItem.add_Click({
     $form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual

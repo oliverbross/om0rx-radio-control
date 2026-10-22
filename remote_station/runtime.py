@@ -500,6 +500,7 @@ class RemoteStationRuntime:
                         "clear_cw",
                         "add_spot",
                         "station_standby",
+                        "station_clear_faults",
                         "station_operate",
                         "station_tune",
                         "station_cancel",
@@ -943,6 +944,7 @@ class RemoteStationRuntime:
                 return {"watts": watts}
             action_map = {
                 "station_standby": "standby",
+                "station_clear_faults": "clear-faults",
                 "station_operate": "operate",
                 "station_tune": "tune",
                 "station_cancel": "cancel",

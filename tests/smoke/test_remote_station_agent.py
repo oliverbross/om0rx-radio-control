@@ -380,6 +380,10 @@ class FakeCoordinator:
     async def stop(self):
         self.calls.append("stop")
 
+    async def perform(self, action):
+        self.calls.append(("perform", action))
+        return {"allowed_actions": []}
+
 
 class FakeElecraft:
     async def stop(self):
@@ -404,6 +408,16 @@ def _runtime(tmp_path):
 def test_remote_flex_poll_is_fast_enough_for_live_monitoring():
     assert FLEX_SNAPSHOT_WINDOW_SECONDS <= 0.2
     assert FLEX_POLL_IDLE_SECONDS <= 0.05
+
+
+def test_remote_agent_advertises_and_dispatches_guarded_accessory_fault_clear(tmp_path):
+    runtime = _runtime(tmp_path)
+
+    assert "station_clear_faults" in runtime.snapshot()["capabilities"]["commands"]
+    result = run(runtime.execute("clear-faults-0001", "station_clear_faults", {}))
+
+    assert result["result"]["action"] == "clear-faults"
+    assert runtime.coordinator.calls == [("perform", "clear-faults")]
 
 
 def test_accessory_follow_does_not_block_radio_or_queue_obsolete_targets(tmp_path):

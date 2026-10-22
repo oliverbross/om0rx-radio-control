@@ -245,8 +245,11 @@ class FakeManager:
             "kpa500": {
                 "enabled": True,
                 "connected": self.kpa500.connected,
+                "power": True,
                 "operate": self.kpa500.operate,
                 "band": self.kpa500.band,
+                "fault": self.kpa500.fault,
+                "output_power_w": self.kpa500.output_power_w,
             },
             "kat500": {
                 "enabled": True,
@@ -254,6 +257,8 @@ class FakeManager:
                 "band": self.kat500.band,
                 "antenna": self.kat500.antenna,
                 "frequency_khz": self.kat500.frequency_khz,
+                "tuning": self.kat500.tuning,
+                "fault": self.kat500.fault,
             },
         }
 
@@ -1606,6 +1611,52 @@ def test_explicit_operate_clears_latched_kpa_fault_then_reverifies_route(monkeyp
     assert calls.index(("kpa.meter_status",)) < calls.index(("kpa.clear_fault",))
     assert calls.index(("kpa.clear_fault",)) < calls.index(("kpa.operate", True))
     assert calls.count(("kpa.readback",)) >= 3
+
+
+def test_explicit_clear_faults_clears_kpa_and_kat_without_enabling_operate(monkeypatch):
+    station, calls, manager = build_station(monkeypatch, commissioned=True)
+    manager.kpa500.fault = "09"
+    manager.kat500.fault = "3"
+
+    assert "clear-faults" in station.snapshot()["allowed_actions"]
+    state = asyncio.run(station.perform("clear-faults"))
+
+    assert manager.kpa500.fault == "00"
+    assert manager.kat500.fault == "0"
+    assert manager.kpa500.operate is False
+    assert "clear-faults" not in state["allowed_actions"]
+    assert ("kpa.clear_fault",) in calls
+    assert ("kat.clear_fault",) in calls
+    assert ("kpa.operate", True) not in calls
+    assert calls.index(("flex.tx_state",)) < calls.index(("kpa.clear_fault",))
+
+
+@pytest.mark.parametrize(
+    "unsafe_state",
+    ["transmitting", "tuning", "disconnected", "already-operating", "output-present"],
+)
+def test_explicit_clear_faults_never_writes_in_unsafe_state(monkeypatch, unsafe_state):
+    station, calls, manager = build_station(
+        monkeypatch,
+        commissioned=True,
+        tx_confirmed=unsafe_state != "transmitting",
+    )
+    manager.kpa500.fault = "09"
+    if unsafe_state == "tuning":
+        manager.kat500.tuning = True
+    elif unsafe_state == "disconnected":
+        manager.kpa500.connected = False
+    elif unsafe_state == "already-operating":
+        manager.kpa500.operate = True
+    elif unsafe_state == "output-present":
+        manager.kpa500.output_power_w = 5
+
+    with pytest.raises(StationActionError):
+        asyncio.run(station.perform("clear-faults"))
+
+    assert ("kpa.clear_fault",) not in calls
+    assert ("kat.clear_fault",) not in calls
+    assert ("kpa.operate", True) not in calls
 
 
 def test_explicit_operate_refuses_kpa_fault_that_persists_after_clear(monkeypatch):

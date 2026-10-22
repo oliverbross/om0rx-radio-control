@@ -175,7 +175,10 @@ def test_station_widget_covers_live_flex_kpa_and_kat_telemetry():
         assert value in WIDGET
     assert "/api/v1/state" in WIDGET
     assert "-Method Get" in WIDGET
-    assert "/api/v1/commands" not in WIDGET
+    assert "/api/v1/commands" in WIDGET
+    assert "station_clear_faults" in WIDGET
+    assert "Clear alarms" in WIDGET
+    assert "This does not enable Operate or transmit RF" in WIDGET
 
 
 def test_station_widget_has_configuration_access_ascii_safe_routes_and_grouped_frequency():

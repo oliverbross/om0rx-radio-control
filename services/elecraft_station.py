@@ -557,6 +557,31 @@ class StationCoordinator:
             allowed_actions.append("exit-maintenance")
         elif not active and kpa.get("enabled") and kpa.get("connected"):
             allowed_actions.append("standby")
+        interlock = str(radio.get("interlock_state") or "").upper()
+        receive_ready = bool(
+            radio.get("connected")
+            and radio.get("known") is True
+            and radio.get("stale") is False
+            and radio.get("mox") is False
+            and interlock in RECEIVE_INTERLOCK_STATES
+        )
+        kpa_fault = str(kpa.get("fault") or "").strip()
+        kat_fault = str(kat.get("fault") or "").strip()
+        if (
+            self.commissioned
+            and not self._maintenance
+            and not self._recovery_required
+            and not active
+            and receive_ready
+            and kpa.get("enabled")
+            and kpa.get("connected")
+            and kpa.get("operate") is False
+            and kat.get("enabled")
+            and kat.get("connected")
+            and kat.get("tuning") is False
+            and (kpa_fault not in {"", "00"} or kat_fault not in {"", "0"})
+        ):
+            allowed_actions.append("clear-faults")
         if (
             self.commissioned
             and not self._maintenance
@@ -567,13 +592,6 @@ class StationCoordinator:
         ):
             if radio.get("connected") and not radio.get("stale") and radio.get("mox") is False:
                 allowed_actions.append("prepare-route")
-                interlock = str(radio.get("interlock_state") or "").upper()
-                receive_ready = bool(
-                    radio.get("known") is True
-                    and radio.get("stale") is False
-                    and radio.get("mox") is False
-                    and interlock in RECEIVE_INTERLOCK_STATES
-                )
                 if (
                     receive_ready
                     and route.amplifier_allowed
@@ -1654,27 +1672,7 @@ class StationCoordinator:
         if fault == "00":
             return False
 
-        kpa_status = await self._device_readback(kpa)
-        kat_status = await self._device_readback(kat)
-        meter = await self._device_call(kpa, "meter_status")
-        output_power = meter.get("output_power_w") if isinstance(meter, dict) else None
-        safe_to_clear = bool(
-            getattr(kpa, "connected", False)
-            and kpa_status.get("power") is True
-            and kpa_status.get("operate") is False
-            and kat_status.get("tuning") is False
-            and isinstance(meter, dict)
-            and meter.get("meter_complete") is True
-            and not isinstance(output_power, bool)
-            and output_power == 0
-        )
-        if not safe_to_clear:
-            raise StationActionError(
-                "kpa-fault-clear-unsafe",
-                f"KPA500 fault {fault or 'unknown'} cannot be cleared unless the amplifier is "
-                "connected, powered, in standby, the tuner is idle, output is 0 W, and the "
-                "radio is in receive",
-            )
+        await self._require_accessory_fault_clear_safe(kpa, kat, fault)
 
         # Re-prove receive immediately before the serialized KPA write.  The
         # outer action/radio locks remain held across this entire operation.
@@ -1690,6 +1688,75 @@ class StationCoordinator:
                 f"KPA500 fault {cleared_fault or fault}{decoded} remains active after fault clear.",
             )
         return True
+
+    async def _require_accessory_fault_clear_safe(
+        self,
+        kpa: Any,
+        kat: Any,
+        fault: str,
+    ) -> None:
+        """Prove the shared no-RF state required before either fault clear."""
+        await self._fresh_receive_state()
+        kpa_status = await self._device_readback(kpa)
+        kat_status = await self._device_readback(kat)
+        meter = await self._device_call(kpa, "meter_status")
+        output_power = meter.get("output_power_w") if isinstance(meter, dict) else None
+        safe_to_clear = bool(
+            getattr(kpa, "connected", False)
+            and getattr(kat, "connected", False)
+            and kpa_status.get("power") is True
+            and kpa_status.get("operate") is False
+            and kat_status.get("tuning") is False
+            and isinstance(meter, dict)
+            and meter.get("meter_complete") is True
+            and not isinstance(output_power, bool)
+            and output_power == 0
+        )
+        if not safe_to_clear:
+            raise StationActionError(
+                "accessory-fault-clear-unsafe",
+                f"Accessory fault {fault or 'unknown'} cannot be cleared unless both accessories "
+                "are connected, the amplifier is powered and in standby, the tuner is idle, "
+                "KPA500 output is 0 W, and the radio is in receive",
+            )
+
+    async def _clear_accessory_faults(self) -> None:
+        """Clear latched KPA/KAT faults without enabling RF or amplifier operate."""
+        kpa = self.elecraft.kpa500
+        kat = self.elecraft.kat500
+        if kpa is None or kat is None:
+            raise StationActionError(
+                "station-device-missing",
+                "KPA500 and KAT500 are required",
+            )
+
+        await self._fresh_receive_state()
+        kpa_fault = str(await self._device_value(kpa, "read_fault") or "").strip()
+        kat_fault = str(await self._device_value(kat, "read_fault") or "").strip()
+        if kpa_fault == "00" and kat_fault == "0":
+            return
+
+        await self._require_accessory_fault_clear_safe(
+            kpa,
+            kat,
+            kpa_fault if kpa_fault != "00" else kat_fault,
+        )
+        if kpa_fault != "00":
+            await self._fresh_receive_state()
+            await self._device_call(kpa, "clear_fault")
+            cleared_status = await self._device_readback(kpa)
+            cleared_fault = str(cleared_status.get("fault") or "").strip()
+            if cleared_fault != "00":
+                description = KPA500_FAULT_DESCRIPTIONS.get(cleared_fault)
+                decoded = f": {description}" if description else ""
+                raise StationActionError(
+                    "kpa-fault-not-cleared",
+                    f"KPA500 fault {cleared_fault or kpa_fault}{decoded} remains active after fault clear.",
+                )
+        if kat_fault != "0":
+            await self._fresh_receive_state()
+            await self._clear_kat_fault_in_receive(kat)
+        self._route_verified = None
 
     async def _ensure_kat_amp_key_connected_in_receive(
         self,
@@ -2029,6 +2096,8 @@ class StationCoordinator:
                                 route=route,
                                 allow_digital_owner=external_owner,
                             )
+                        elif normalized == "clear-faults":
+                            await self._clear_accessory_faults()
                         elif normalized == "operate":
                             # OPERATE is one atomic coordinator action.  Do not
                             # require browser clients to prepare the route in a
