@@ -783,6 +783,70 @@ def test_route_change_confirms_standby_before_flex_mutation(monkeypatch):
     assert calls.index(("kpa.operate", False)) < calls.index(("flex.qsy", 7.074))
 
 
+def test_guarded_40m_same_band_qsy_preserves_operator_operate(monkeypatch):
+    station, calls, manager = build_station(monkeypatch, commissioned=True)
+    monkeypatch.setattr(
+        config,
+        "FLEX_ANTENNA_POLICY",
+        {"enabled": True, "bands": {"40m": "ANT1"}},
+    )
+    monkeypatch.setattr(config, "STATION_AMPLIFIER_ALLOWED_BANDS", ["40m"])
+    monkeypatch.setattr(config, "STATION_AMPLIFIER_DRIVE_W", {"40m": 25})
+    monkeypatch.setattr(config, "STATION_BAREFOOT_DRIVE_W", {"40m": 100})
+    manager.antenna_policy = {"40m": 2}
+    manager.last_frequency = 7.100
+    manager.kpa500.band = "40m"
+    manager.kpa500.operate = True
+    manager.kat500.band = "40m"
+    manager.kat500.frequency_khz = 7100
+    radio = station.radio_snapshot_provider()
+    radio.update(frequency=7.100, mode="LSB", tx_ant="ANT1")
+    flex = station.flex_provider()
+    flex.current_freq = 7.100
+    flex.current_mode = "LSB"
+
+    def qsy():
+        calls.append(("flex.qsy", 7.110))
+        flex.current_freq = 7.110
+        return True
+
+    changed = asyncio.run(
+        station.execute_flex_route_change(
+            "remote-frequency-a",
+            qsy,
+            target_frequency_mhz=7.110,
+            target_mode="LSB",
+        )
+    )
+
+    assert changed is True
+    assert manager.kpa500.operate is True
+    assert ("kpa.operate", False) not in calls
+    assert calls.index(("flex.tx_state",)) < calls.index(("flex.qsy", 7.110))
+
+
+def test_guarded_qsy_to_disallowed_band_still_forces_standby(monkeypatch):
+    station, calls, manager = build_station(monkeypatch, commissioned=True)
+    manager.kpa500.operate = True
+
+    def qsy():
+        calls.append(("flex.qsy", 18.100))
+        return True
+
+    changed = asyncio.run(
+        station.execute_flex_route_change(
+            "remote-frequency-a",
+            qsy,
+            target_frequency_mhz=18.100,
+            target_mode="USB",
+        )
+    )
+
+    assert changed is True
+    assert manager.kpa500.operate is False
+    assert calls.index(("kpa.operate", False)) < calls.index(("flex.qsy", 18.100))
+
+
 def test_external_flex_band_change_safely_follows_kpa_and_kat_in_receive(monkeypatch, caplog):
     caplog.set_level("INFO")
     station, calls, manager = build_station(monkeypatch, commissioned=True)

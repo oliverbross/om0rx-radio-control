@@ -698,6 +698,8 @@ class RemoteStationRuntime:
                 await self.coordinator.execute_flex_route_change(
                     f"remote-frequency-{vfo.lower()}",
                     lambda: self.flex._send(f"slice tune {slice_id} {frequency_mhz:.6f}"),
+                    target_frequency_mhz=frequency_mhz,
+                    target_mode=str(slice_state.get("mode") or "").upper() or None,
                 )
                 return {"frequency_hz": frequency_hz, "vfo": vfo}
             if normalized in {"set_frequency_mode", "tune_simplex"}:
@@ -772,6 +774,8 @@ class RemoteStationRuntime:
                     await self.coordinator.execute_flex_route_change(
                         "remote-simplex-a" if simplex else f"remote-frequency-mode-{vfo.lower()}",
                         apply_frequency_and_mode,
+                        target_frequency_mhz=frequency_mhz,
+                        target_mode=mode,
                     )
                 except BaseException:
                     # A rejected/partial operation is not a pending success.

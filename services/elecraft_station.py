@@ -1278,8 +1278,18 @@ class StationCoordinator:
         operation: Callable[[], Any],
         *,
         allow_digital_owner: bool = False,
+        target_frequency_mhz: float | None = None,
+        target_mode: str | None = None,
     ) -> bool:
-        """De-escalate to standby before any FLEX frequency/band mutation."""
+        """Apply a guarded FLEX route mutation while the radio is in receive.
+
+        A same-band frequency change does not alter the RF topology.  When the
+        KPA is already in a freshly confirmed, fault-free OPERATE state and the
+        destination route still permits amplification, preserve the operator's
+        explicit selection.  Unknown destinations, band changes, policy
+        changes, or incomplete accessory evidence retain the fail-safe standby
+        behaviour.
+        """
         started = time.monotonic()
         stages: dict[str, float] = {}
         async with self._action_lock:
@@ -1303,16 +1313,73 @@ class StationCoordinator:
                     self._assert_digital_idle()
                 await self._fresh_receive_state()
                 stages["receive_confirmed_ms"] = (time.monotonic() - started) * 1000
-                if not await self._request_fail_safe_standby():
-                    raise StationActionError(
-                        "kpa-standby-not-confirmed",
-                        "KPA500 standby could not be confirmed before changing route",
-                        status_code=503,
+                preserve_operate = False
+                if target_frequency_mhz is not None:
+                    current_route = self._require_fresh_route()
+                    target_route = self._route_for_frequency(
+                        target_frequency_mhz,
+                        target_mode if target_mode is not None else current_route.radio_mode,
                     )
+                    if (
+                        target_route is not None
+                        and target_route.route_id == current_route.route_id
+                        and target_route.amplifier_allowed
+                    ):
+                        kpa = self.elecraft.kpa500
+                        kat = self.elecraft.kat500
+                        if kpa is not None and kat is not None:
+                            kpa_status, kat_status = await asyncio.gather(
+                                self._device_readback(kpa),
+                                self._device_readback(kat),
+                            )
+                            preserve_operate = bool(
+                                verify_exact_target(
+                                    kpa_status,
+                                    {
+                                        "power": True,
+                                        "operate": True,
+                                        "band": current_route.band,
+                                        "fault": "00",
+                                    },
+                                )["verified"]
+                                and verify_exact_target(
+                                    kat_status,
+                                    {
+                                        "power": True,
+                                        "band": current_route.band,
+                                        "antenna": current_route.kat_antenna,
+                                        "tuning": False,
+                                        "fault": "0",
+                                    },
+                                )["verified"]
+                            )
+                if preserve_operate:
+                    self._manual_operate_requested = True
+                    stages["operate_preserved_ms"] = (time.monotonic() - started) * 1000
+                    logger.info(
+                        "Preserving operator-selected KPA500 OPERATE for same-band "
+                        "FLEX route change reason=%s target=%.6f MHz",
+                        reason,
+                        target_frequency_mhz,
+                    )
+                else:
+                    if not await self._request_fail_safe_standby():
+                        raise StationActionError(
+                            "kpa-standby-not-confirmed",
+                            "KPA500 standby could not be confirmed before changing route",
+                            status_code=503,
+                        )
+                    stages["standby_confirmed_ms"] = (time.monotonic() - started) * 1000
                 self._route_verified = None
-                stages["standby_confirmed_ms"] = (time.monotonic() - started) * 1000
-                result = await asyncio.wait_for(run_radio_io(operation), timeout=3.0)
+                try:
+                    result = await asyncio.wait_for(run_radio_io(operation), timeout=3.0)
+                except BaseException:
+                    if preserve_operate:
+                        await self._request_fail_safe_standby()
+                    raise
                 if result is not True:
+                    if preserve_operate:
+                        await self._request_fail_safe_standby()
                     raise StationActionError(
                         "flex-route-command-rejected",
                         f"FLEX rejected route change: {reason}",

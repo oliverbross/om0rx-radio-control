@@ -361,12 +361,14 @@ class FakeFlex:
 class FakeCoordinator:
     def __init__(self):
         self.calls = []
+        self.route_change_options = []
 
     def snapshot(self):
         return {"route": {"active_drive_w": 25}, "commissioned": True}
 
-    async def execute_flex_route_change(self, reason, operation):
+    async def execute_flex_route_change(self, reason, operation, **options):
         self.calls.append(reason)
+        self.route_change_options.append(options)
         return operation()
 
     async def execute_raw_flex_tx(self, action, operation):
@@ -497,6 +499,10 @@ def test_remote_frequency_command_is_guarded_and_idempotent(tmp_path):
     assert second["replayed"] is True
     assert first["state"]["revision"] == runtime.revision == 1
     assert runtime.coordinator.calls == ["remote-frequency-a"]
+    assert runtime.coordinator.route_change_options == [{
+        "target_frequency_mhz": 14.08,
+        "target_mode": "DIGU",
+    }]
     assert runtime.flex.calls == [("send", "slice tune 0 14.080000")]
 
 
@@ -516,6 +522,10 @@ def test_remote_frequency_and_mode_share_one_guarded_route_transaction(tmp_path)
         "vfo": "A",
     }
     assert runtime.coordinator.calls == ["remote-frequency-mode-a"]
+    assert runtime.coordinator.route_change_options == [{
+        "target_frequency_mhz": 3.698,
+        "target_mode": "LSB",
+    }]
     assert runtime.flex.calls == [
         ("send", "slice set 0 mode=LSB"),
         ("send", "slice tune 0 3.698000"),
@@ -628,7 +638,7 @@ def test_simplex_spot_stops_on_first_rejected_command(tmp_path, failure):
         runtime.flex.calls.append(command)
         return failure not in command
     runtime.flex._send = send
-    async def guarded(reason, operation):
+    async def guarded(reason, operation, **_options):
         assert operation() is False
         raise StationActionError("flex-route-failed", "Rejected")
     runtime.coordinator.execute_flex_route_change = guarded
