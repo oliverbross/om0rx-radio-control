@@ -148,6 +148,13 @@ function Format-Boolean([object]$Value, [string]$TrueText, [string]$FalseText) {
     return $FalseText
 }
 
+function Get-PropertyValue([object]$Object, [string]$Name, [object]$Default = $null) {
+    if ($null -eq $Object) { return $Default }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) { return $Default }
+    return $property.Value
+}
+
 function Format-AgentDetails([object]$Snapshot) {
     $lines = [System.Collections.Generic.List[string]]::new()
     $lines.Add("OM0RX Remote Station Agent")
@@ -171,41 +178,52 @@ function Format-AgentDetails([object]$Snapshot) {
     }
 
     $state = $Snapshot.State
-    $radio = $state.radio
-    $station = $state.station
-    $kpa = $state.elecraft.kpa500
-    $kat = $state.elecraft.kat500
-    $alarms = $station.alarms
-    $alarmCodes = @($alarms.items | ForEach-Object { $_.code }) -join ", "
+    $radio = Get-PropertyValue $state "radio"
+    $station = Get-PropertyValue $state "station"
+    $agent = Get-PropertyValue $state "agent"
+    $elecraft = Get-PropertyValue $state "elecraft"
+    $kpa = Get-PropertyValue $elecraft "kpa500"
+    $kat = Get-PropertyValue $elecraft "kat500"
+    $path = Get-PropertyValue $station "path"
+    $alarms = Get-PropertyValue $station "alarms"
+    $alarmCounts = Get-PropertyValue $alarms "counts"
+    $alarmCodes = @(Get-PropertyValue $alarms "items" @() | ForEach-Object { Get-PropertyValue $_ "code" }) -join ", "
     if (-not $alarmCodes) { $alarmCodes = "none" }
-    $routeMismatches = @($station.path.mismatches | ForEach-Object { $_.code }) -join ", "
+    $routeMismatches = @(Get-PropertyValue $path "mismatches" @() | ForEach-Object { Get-PropertyValue $_ "code" }) -join ", "
     if (-not $routeMismatches) { $routeMismatches = "none" }
-    $uptime = [TimeSpan]::FromSeconds([double]$state.agent.uptime_seconds)
+    $uptime = [TimeSpan]::FromSeconds([double](Get-PropertyValue $agent "uptime_seconds" 0))
+    $activeReceive = Get-PropertyValue $radio "active_receive"
+    $transmit = Get-PropertyValue $radio "transmit"
+    $activeSlice = [string](Get-PropertyValue $activeReceive "index_letter" "--")
+    $txSlice = [string](Get-PropertyValue $transmit "index_letter" "--")
+    $stale = Get-PropertyValue $radio "stale"
+    $fresh = if ($null -eq $stale) { "unknown" } else { -not [bool]$stale }
 
     $lines.Add("Local API: authenticated and available")
-    $lines.Add("Protocol: v$($state.protocol_version)   Uptime: $([math]::Floor($uptime.TotalHours))h $($uptime.Minutes)m")
-    $lines.Add("Commissioned: $($station.commissioned)   Transmit authorization: $($station.path.transmit_authorized)")
+    $lines.Add("Protocol: v$(Get-PropertyValue $state 'protocol_version' '--')   Uptime: $([math]::Floor($uptime.TotalHours))h $($uptime.Minutes)m")
+    $lines.Add("Commissioned: $(Get-PropertyValue $station 'commissioned' 'unknown')   Transmit authorization: $(Get-PropertyValue $path 'transmit_authorized' 'unknown')")
     $lines.Add("")
     $lines.Add("FLEX-8400")
-    $lines.Add("  Connected: $($radio.connected)   Fresh: $(-not [bool]$radio.stale)   Maestro bound: $($radio.station_bound)")
-    $lines.Add("  Frequency: $($radio.frequency) MHz   Mode: $($radio.mode)")
-    $lines.Add("  RX antenna: $($radio.rx_ant)   TX antenna: $($radio.tx_ant)")
-    $lines.Add("  Active slice: $($radio.active_receive.index_letter)   TX slice: $($radio.transmit.index_letter)")
-    $lines.Add("  MOX: $($radio.mox)   Interlock: $($radio.interlock_state)")
+    $lines.Add("  Connected: $(Get-PropertyValue $radio 'connected' 'unknown')   Fresh: $fresh   Maestro bound: $(Get-PropertyValue $radio 'station_bound' 'unknown')")
+    $lines.Add("  Frequency: $(Get-PropertyValue $radio 'frequency' '--') MHz   Mode: $(Get-PropertyValue $radio 'mode' '--')")
+    $lines.Add("  RX antenna: $(Get-PropertyValue $radio 'rx_ant' '--')   TX antenna: $(Get-PropertyValue $radio 'tx_ant' '--')")
+    $lines.Add("  Active slice: $activeSlice   TX slice: $txSlice")
+    $lines.Add("  MOX: $(Get-PropertyValue $radio 'mox' 'unknown')   Interlock: $(Get-PropertyValue $radio 'interlock_state' '--')")
     $lines.Add("")
     $lines.Add("KPA500")
-    $lines.Add("  Connected: $($kpa.connected)   Band: $($kpa.band)   State: $(Format-Boolean $kpa.operate 'OPERATE' 'STBY')")
+    $lines.Add("  Connected: $(Get-PropertyValue $kpa 'connected' 'unknown')   Band: $(Get-PropertyValue $kpa 'band' '--')   State: $(Format-Boolean (Get-PropertyValue $kpa 'operate') 'OPERATE' 'STBY')")
     $lines.Add("KAT500")
-    $lines.Add("  Connected: $($kat.connected)   Band: $($kat.band)   Antenna: ANT$($kat.antenna)")
+    $lines.Add("  Connected: $(Get-PropertyValue $kat 'connected' 'unknown')   Band: $(Get-PropertyValue $kat 'band' '--')   Antenna: ANT$(Get-PropertyValue $kat 'antenna' '--')")
     $lines.Add("")
-    $lines.Add("Route: $($station.path.alignment)   Mismatches: $routeMismatches")
-    $lines.Add("Alarms: $($alarms.active_count) (critical $($alarms.counts.critical), warning $($alarms.counts.warning), info $($alarms.counts.info))")
+    $lines.Add("Route: $(Get-PropertyValue $path 'alignment' 'unknown')   Mismatches: $routeMismatches")
+    $lines.Add("Alarms: $(Get-PropertyValue $alarms 'active_count' '--') (critical $(Get-PropertyValue $alarmCounts 'critical' '--'), warning $(Get-PropertyValue $alarmCounts 'warning' '--'), info $(Get-PropertyValue $alarmCounts 'info' '--'))")
     $lines.Add("Alarm codes: $alarmCodes")
-    $allowedActions = @($station.allowed_actions) -join ", "
+    $allowedActions = @(Get-PropertyValue $station "allowed_actions" @()) -join ", "
     if (-not $allowedActions) { $allowedActions = "none" }
     $lines.Add("Allowed station actions: $allowedActions")
-    if ($state.agent.last_error) {
-        $lines.Add("Last agent error: $($state.agent.last_error)")
+    $lastError = Get-PropertyValue $agent "last_error"
+    if ($lastError) {
+        $lines.Add("Last agent error: $lastError")
     }
     $lines.Add("")
     $lines.Add("This tray is status and process control only. It exposes no radio, PTT, tune, antenna, or station-control commands.")
@@ -448,7 +466,8 @@ function Update-AgentStatus {
     $stopItem.Enabled = $running
     $restartItem.Enabled = $running
     $apiAvailable = $null -ne $snapshot.State
-    $allowedActions = if ($apiAvailable) { @($snapshot.State.station.allowed_actions) } else { @() }
+    $stationState = if ($apiAvailable) { Get-PropertyValue $snapshot.State "station" } else { $null }
+    $allowedActions = @(Get-PropertyValue $stationState "allowed_actions" @())
     $standbyButton.Enabled = $allowedActions -contains "standby"
     $standbyItem.Enabled = $allowedActions -contains "standby"
     $cancelTuneButton.Enabled = $allowedActions -contains "cancel"

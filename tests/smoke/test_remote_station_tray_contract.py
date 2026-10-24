@@ -70,6 +70,14 @@ def test_tray_shows_sanitized_station_evidence_without_rendering_the_token():
     )
 
 
+def test_tray_tolerates_partial_radio_state_without_optional_slice_objects():
+    assert "function Get-PropertyValue" in TRAY
+    assert 'Get-PropertyValue $radio "active_receive"' in TRAY
+    assert 'Get-PropertyValue $radio "transmit"' in TRAY
+    assert "$radio.active_receive.index_letter" not in TRAY
+    assert "$radio.transmit.index_letter" not in TRAY
+
+
 def test_tray_surfaces_shared_controller_owner_without_acquiring_the_mutex():
     assert "station-controller-owner.json" in TRAY
     assert "Get-ControllerOwnerInfo" in TRAY
