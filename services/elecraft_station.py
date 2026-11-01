@@ -191,6 +191,13 @@ class StationCoordinator:
         # readback. Route changes temporarily force standby, but only an
         # explicit Standby command clears the request to operate.
         self._manual_operate_requested = False
+        # A KAT protection fault may remain latched after RF ends and leave
+        # the amplifier key relay open even though the KPA still displays
+        # OPERATE.  Recover one such episode automatically per route/fault.
+        # A recurrence is not cleared again: it forces standby and remains
+        # visible for explicit operator review instead of defeating a real
+        # protection condition with an endless clear/retry loop.
+        self._automatic_kat_fault_recovery_attempt: Optional[tuple[str, str]] = None
 
     @property
     def commissioned(self) -> bool:
@@ -954,13 +961,27 @@ class StationCoordinator:
             radio,
             include_drive=False,
         )
+        observed_accessories = self.elecraft.snapshot()
+        observed_kpa = observed_accessories.get("kpa500") or {}
+        observed_kat = observed_accessories.get("kat500") or {}
+        kat_fault = str(observed_kat.get("fault") or "").strip()
+        automatic_fault_recovery = bool(
+            route.amplifier_allowed
+            and observed_kpa.get("connected") is True
+            and observed_kpa.get("power") is True
+            and observed_kpa.get("operate") is True
+            and str(observed_kpa.get("fault") or "").strip() == "00"
+            and observed_kat.get("connected") is True
+            and observed_kat.get("tuning") is False
+            and kat_fault not in {"", "0"}
+        )
         if (
             radio.get("connected") is not True
             or radio.get("known") is not True
             or radio.get("stale") is not False
             or radio.get("mox") is not False
             or observed_khz != round(route.frequency_mhz * 1000)
-            or not any_needs_follow
+            or (not any_needs_follow and not automatic_fault_recovery)
         ):
             return False
 
@@ -1018,8 +1039,66 @@ class StationCoordinator:
                         current_radio,
                         include_drive=False,
                     )
-                    if not any_needs_follow:
+                    current_accessories = self.elecraft.snapshot()
+                    current_kpa = current_accessories.get("kpa500") or {}
+                    current_kat = current_accessories.get("kat500") or {}
+                    current_kat_fault = str(current_kat.get("fault") or "").strip()
+                    automatic_fault_recovery = bool(
+                        current_route.amplifier_allowed
+                        and current_radio.get("mox") is False
+                        and current_kpa.get("connected") is True
+                        and current_kpa.get("power") is True
+                        and current_kpa.get("operate") is True
+                        and str(current_kpa.get("fault") or "").strip() == "00"
+                        and current_kat.get("connected") is True
+                        and current_kat.get("tuning") is False
+                        and current_kat_fault not in {"", "0"}
+                    )
+                    if not any_needs_follow and not automatic_fault_recovery:
                         return False
+                    if automatic_fault_recovery:
+                        recovery_key = (current_route.route_id, current_kat_fault)
+                        self._manual_operate_requested = True
+                        if self._automatic_kat_fault_recovery_attempt == recovery_key:
+                            logger.error(
+                                "KAT500 fault %s repeated after automatic recovery on %s; "
+                                "forcing KPA500 standby and requiring explicit operator review",
+                                current_kat_fault,
+                                current_route.route_id,
+                            )
+                            self._manual_operate_requested = False
+                            await self._request_fail_safe_standby()
+                            self._route_verified = None
+                            return True
+                        self._automatic_kat_fault_recovery_attempt = recovery_key
+                        logger.warning(
+                            "Automatically recovering latched KAT500 fault %s on %s "
+                            "after fresh FLEX receive confirmation",
+                            current_kat_fault,
+                            current_route.route_id,
+                        )
+                        await self._prepare_route(
+                            route=current_route,
+                            allow_digital_owner=True,
+                            follow_generation=follow_generation,
+                            preserve_observed_drive=False,
+                            preserve_kpa_operate=False,
+                        )
+                        follow_stage("fault_route_recovered_ms")
+                        self._assert_follow_current(follow_generation, current_route)
+                        await self._operate(
+                            route=current_route,
+                            allow_digital_owner=True,
+                            preserve_observed_drive=False,
+                        )
+                        follow_stage("fault_operate_restored_ms")
+                        logger.info(
+                            "Recovered KAT500 fault %s once on %s and restored "
+                            "guarded KPA500 OPERATE",
+                            current_kat_fault,
+                            current_route.route_id,
+                        )
+                        return True
                     if topology_needs_follow:
                         # Confirm the exact passive accessory route without
                         # repeating meters, firmware, voltage, and other idle
@@ -2208,6 +2287,7 @@ class StationCoordinator:
                                         allow_digital_owner=external_owner,
                                     )
                                     self._manual_operate_requested = True
+                                    self._automatic_kat_fault_recovery_attempt = None
                                     break
                                 except StationActionError as exc:
                                     retry_receive_collision = bool(

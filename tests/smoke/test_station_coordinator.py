@@ -907,6 +907,72 @@ def test_external_flex_allowed_band_change_restores_operator_operate_intent(monk
     assert not any(call[0] == "kpa.operate" for call in calls)
 
 
+def test_latched_kat_fault_is_automatically_recovered_once_in_receive(monkeypatch):
+    station, calls, manager = build_station(monkeypatch, commissioned=True)
+    manager.kpa500.operate = True
+    manager.kat500.fault = "2"
+    manager.kat500.amp_key_interrupted = True
+    station._manual_operate_requested = True
+
+    followed = asyncio.run(station.follow_observed_radio_route(14.074))
+
+    assert followed is True
+    assert manager.kpa500.operate is True
+    assert manager.kat500.fault == "0"
+    assert manager.kat500.amp_key_interrupted is False
+    assert calls.count(("kat.clear_fault",)) == 1
+    assert calls.index(("kpa.operate", False)) < calls.index(("kat.clear_fault",))
+    assert calls.index(("kat.clear_fault",)) < calls.index(
+        ("kat.set_amp_key_interrupted", False)
+    )
+    assert calls.index(("kat.set_amp_key_interrupted", False)) < calls.index(
+        ("kpa.operate", True)
+    )
+    assert not any(call[0] in {"flex.tune", "flex.mox"} for call in calls)
+
+
+def test_repeated_kat_fault_after_automatic_recovery_forces_standby(monkeypatch):
+    station, calls, manager = build_station(monkeypatch, commissioned=True)
+    manager.kpa500.operate = True
+    manager.kat500.fault = "2"
+    manager.kat500.amp_key_interrupted = True
+    station._manual_operate_requested = True
+
+    assert asyncio.run(station.follow_observed_radio_route(14.074)) is True
+    manager.kat500.fault = "2"
+    manager.kat500.amp_key_interrupted = True
+    station._last_follow_attempt_at = 0.0
+
+    followed = asyncio.run(station.follow_observed_radio_route(14.074))
+
+    assert followed is True
+    assert manager.kpa500.operate is False
+    assert manager.kat500.fault == "2"
+    assert manager.kat500.amp_key_interrupted is True
+    assert calls.count(("kat.clear_fault",)) == 1
+    assert station._manual_operate_requested is False
+    assert not any(call[0] in {"flex.tune", "flex.mox"} for call in calls)
+
+
+def test_latched_kat_fault_is_never_auto_cleared_while_transmitting(monkeypatch):
+    station, calls, manager = build_station(monkeypatch, commissioned=True)
+    manager.kpa500.operate = True
+    manager.kat500.fault = "2"
+    manager.kat500.amp_key_interrupted = True
+    station._manual_operate_requested = True
+    radio = station.radio_snapshot_provider()
+    radio.update(mox=True, interlock_state="TRANSMITTING")
+    station.radio_snapshot_provider = lambda: radio
+
+    followed = asyncio.run(station.follow_observed_radio_route(14.074))
+
+    assert followed is False
+    assert manager.kpa500.operate is True
+    assert manager.kat500.fault == "2"
+    assert ("kat.clear_fault",) not in calls
+    assert not any(call[0] in {"flex.tune", "flex.mox"} for call in calls)
+
+
 def test_fresh_rx_poll_and_exact_standby_proof_skip_duplicate_flex_preflight(monkeypatch):
     station, calls, manager = build_station(monkeypatch, commissioned=True)
     manager.kpa500.band = "12m"
