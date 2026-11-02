@@ -7,11 +7,21 @@ import hmac
 import logging
 import re
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -44,6 +54,7 @@ def create_app(
     *,
     runtime: RemoteStationRuntime | None = None,
     config_path: Path | None = None,
+    request_shutdown: Callable[[], None] | None = None,
 ) -> FastAPI:
     resolved_config = config or load_agent_config(config_path)
     station_runtime = runtime or RemoteStationRuntime(resolved_config)
@@ -149,6 +160,19 @@ def create_app(
     @app.get("/api/v1/state", dependencies=[Depends(authorize)])
     async def state():
         return {"success": True, "state": station_runtime.snapshot()}
+
+    @app.post("/api/v1/process/stop", dependencies=[Depends(authorize)])
+    async def stop_process(request: Request, background_tasks: BackgroundTasks):
+        client_host = request.client.host if request.client else ""
+        if client_host not in {"127.0.0.1", "::1", "testclient"}:
+            raise HTTPException(
+                status_code=403,
+                detail="Agent process control is available only from this Windows computer",
+            )
+        if request_shutdown is None:
+            raise HTTPException(status_code=503, detail="Agent process control is unavailable")
+        background_tasks.add_task(request_shutdown)
+        return {"success": True, "stopping": True}
 
     @app.post("/api/v1/commands", dependencies=[Depends(authorize)])
     async def command(body: CommandRequest):

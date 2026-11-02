@@ -166,6 +166,36 @@ def test_api_requires_bearer_token_and_forwards_idempotent_envelope(tmp_path):
     assert runtime.calls == [("rumlog-0001", "set_frequency_hz", {"frequency_hz": 14_074_000})]
 
 
+def test_local_authenticated_process_stop_requests_graceful_server_shutdown(tmp_path):
+    config = _config(tmp_path)
+    requested = []
+    client = TestClient(
+        create_app(config, runtime=FakeRuntime(), request_shutdown=lambda: requested.append(True))
+    )
+
+    assert client.post("/api/v1/process/stop").status_code == 401
+    response = client.post(
+        "/api/v1/process/stop",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True, "stopping": True}
+    assert requested == [True]
+
+
+def test_process_stop_is_unavailable_without_server_shutdown_hook(tmp_path):
+    config = _config(tmp_path)
+    client = TestClient(create_app(config, runtime=FakeRuntime()))
+
+    response = client.post(
+        "/api/v1/process/stop",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+
+    assert response.status_code == 503
+
+
 def test_profile_applies_separate_policy_to_device_runtime(tmp_path, monkeypatch):
     from radio_control import config as radio_config
 

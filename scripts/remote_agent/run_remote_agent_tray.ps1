@@ -103,6 +103,75 @@ function Wait-AgentApi([int]$TimeoutSeconds) {
     return $false
 }
 
+function Request-AgentShutdown {
+    $document = Get-Content -LiteralPath $configPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    $token = [string]$document.server.control_token
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        throw "The local agent configuration has no bearer token."
+    }
+    $bindPort = [int]$document.server.bind_port
+    $headers = @{ Authorization = "Bearer $token" }
+    $response = Invoke-RestMethod `
+        -Uri "http://127.0.0.1:$bindPort/api/v1/process/stop" `
+        -Headers $headers `
+        -Method Post `
+        -TimeoutSec 5
+    if (-not $response.success -or -not $response.stopping) {
+        throw "The local agent did not accept the shutdown request."
+    }
+}
+
+function Wait-AgentStopped([int]$TimeoutSeconds) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if ($null -eq (Get-AgentSnapshot).State) { return $true }
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 200
+    } while ([DateTime]::UtcNow -lt $deadline)
+    return $false
+}
+
+function Stop-OwnedAgentProcess {
+    $owner = Get-ControllerOwnerInfo
+    if ($null -eq $owner -or $owner.Family -ne "python-remote-station-agent") {
+        throw "The Agent API is unavailable and no verified Python Remote Station Agent owner was found."
+    }
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($owner.Pid)" -ErrorAction Stop
+    if (
+        $null -eq $process -or
+        $process.Name -ne "python.exe" -or
+        [string]$process.CommandLine -notlike "*-m remote_station run*"
+    ) {
+        throw "Refusing to stop PID $($owner.Pid) because it is not the verified Remote Station Agent process."
+    }
+    Stop-Process -Id $owner.Pid -Force -ErrorAction Stop
+}
+
+function Stop-AgentProcess {
+    $snapshot = Get-AgentSnapshot
+    $ownerPresent = $null -ne $snapshot.ControllerOwner
+    if ($null -ne $snapshot.State) {
+        try {
+            Request-AgentShutdown
+            if (Wait-AgentStopped 20) {
+                Stop-ScheduledTask -TaskName $AgentTaskName -ErrorAction SilentlyContinue
+                return
+            }
+        }
+        catch {
+            # Pre-upgrade and wedged Agents do not expose the graceful local
+            # endpoint. Continue to the tightly verified owner-PID fallback.
+        }
+    }
+    Stop-ScheduledTask -TaskName $AgentTaskName -ErrorAction SilentlyContinue
+    if ($ownerPresent -or -not (Wait-AgentStopped 2)) {
+        Stop-OwnedAgentProcess
+        if (-not (Wait-AgentStopped 10)) {
+            throw "The verified Agent process did not stop within 10 seconds."
+        }
+    }
+}
+
 # Task Scheduler reports a process as Running before the Agent has opened its
 # API. Treating that state alone as healthy left a wedged startup impossible to
 # recover from the Start-menu shortcut. The explicit launcher now waits for the
@@ -110,17 +179,12 @@ function Wait-AgentApi([int]$TimeoutSeconds) {
 # process never becomes ready. The passive at-logon tray remains passive.
 if ($EnsureAgentStarted) {
     try {
-        $agentTask = Get-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
-        if ($agentTask.State -ne "Running") {
+        Get-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop | Out-Null
+        if ($null -eq (Get-AgentSnapshot).State) {
             Start-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
         }
         if (-not (Wait-AgentApi 20)) {
-            Stop-ScheduledTask -TaskName $AgentTaskName -ErrorAction SilentlyContinue
-            $deadline = [DateTime]::UtcNow.AddSeconds(10)
-            do {
-                Start-Sleep -Milliseconds 200
-                $agentTask = Get-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
-            } while ($agentTask.State -eq "Running" -and [DateTime]::UtcNow -lt $deadline)
+            Stop-AgentProcess
             Start-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
             if (-not (Wait-AgentApi 30)) {
                 Write-Warning "The Remote Station Agent task started but its local API did not become ready."
@@ -159,9 +223,10 @@ function Format-AgentDetails([object]$Snapshot) {
     $lines = [System.Collections.Generic.List[string]]::new()
     $lines.Add("OM0RX Remote Station Agent")
     $lines.Add("Updated UTC: $([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss'))")
-    $lines.Add("Scheduled task: $($Snapshot.TaskState)")
+    $lines.Add("Task launcher: $($Snapshot.TaskState)")
 
     if ($null -eq $Snapshot.State) {
+        $lines.Add("Agent process: stopped or unavailable")
         $lines.Add("")
         $lines.Add("Local API: unavailable")
         $lines.Add("Reason: $($Snapshot.Error)")
@@ -178,6 +243,7 @@ function Format-AgentDetails([object]$Snapshot) {
     }
 
     $state = $Snapshot.State
+    $lines.Add("Agent process: RUNNING (authenticated local API)")
     $radio = Get-PropertyValue $state "radio"
     $station = Get-PropertyValue $state "station"
     $agent = Get-PropertyValue $state "agent"
@@ -233,17 +299,13 @@ function Format-AgentDetails([object]$Snapshot) {
 function Invoke-AgentTaskAction([ValidateSet("Start", "Stop", "Restart")][string]$Action) {
     try {
         if ($Action -eq "Stop" -or $Action -eq "Restart") {
-            Stop-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
-            if ($Action -eq "Restart") {
-                $deadline = [DateTime]::UtcNow.AddSeconds(10)
-                do {
-                    [System.Windows.Forms.Application]::DoEvents()
-                    Start-Sleep -Milliseconds 200
-                } while ((Get-TaskState) -eq "Running" -and [DateTime]::UtcNow -lt $deadline)
-            }
+            Stop-AgentProcess
         }
         if ($Action -eq "Start" -or $Action -eq "Restart") {
             Start-ScheduledTask -TaskName $AgentTaskName -ErrorAction Stop
+            if (-not (Wait-AgentApi 30)) {
+                throw "The task started but the authenticated local API did not become ready."
+            }
         }
     }
     catch {
@@ -372,9 +434,9 @@ $form.ShowInTaskbar = $true
 
 $actions = New-Object System.Windows.Forms.FlowLayoutPanel
 $actions.Dock = "Bottom"
-$actions.Height = 46
+$actions.Height = 82
 $actions.Padding = New-Object System.Windows.Forms.Padding(6)
-$actions.WrapContents = $false
+$actions.WrapContents = $true
 $form.Controls.Add($actions)
 
 function Add-ActionButton([string]$Text, [int]$Width = 95) {
@@ -393,6 +455,10 @@ $operateButton = Add-ActionButton "Operate..." 90
 $tuneButton = Add-ActionButton "Tune..." 90
 $cancelTuneButton = Add-ActionButton "Cancel tune" 95
 $refreshButton = Add-ActionButton "Refresh" 85
+$startButton = Add-ActionButton "Start agent" 95
+$stopButton = Add-ActionButton "Stop agent..." 100
+$restartButton = Add-ActionButton "Restart agent..." 110
+$quitButton = Add-ActionButton "Quit tray" 85
 
 $details = New-Object System.Windows.Forms.TextBox
 $details.Multiline = $true
@@ -461,10 +527,14 @@ function Update-AgentStatus {
     catch {
         $details.Text = "OM0RX Remote Station Agent`r`n`r`nStatus rendering failed: $($_.Exception.Message)"
     }
-    $running = $snapshot.TaskState -eq "Running"
-    $startItem.Enabled = -not $running -and $snapshot.TaskState -ne "Not installed"
-    $stopItem.Enabled = $running
-    $restartItem.Enabled = $running
+    $running = $null -ne $snapshot.State
+    $processPresent = $running -or $null -ne $snapshot.ControllerOwner -or $snapshot.TaskState -eq "Running"
+    $startItem.Enabled = -not $processPresent -and $snapshot.TaskState -ne "Not installed"
+    $stopItem.Enabled = $processPresent
+    $restartItem.Enabled = $processPresent
+    $startButton.Enabled = $startItem.Enabled
+    $stopButton.Enabled = $stopItem.Enabled
+    $restartButton.Enabled = $restartItem.Enabled
     $apiAvailable = $null -ne $snapshot.State
     $stationState = if ($apiAvailable) { Get-PropertyValue $snapshot.State "station" } else { $null }
     $allowedActions = @(Get-PropertyValue $stationState "allowed_actions" @())
@@ -516,7 +586,17 @@ $tuneButton.add_Click({ Invoke-StationAction "station_tune" })
 $cancelTuneItem.add_Click({ Invoke-StationAction "station_cancel" })
 $cancelTuneButton.add_Click({ Invoke-StationAction "station_cancel" })
 $startItem.add_Click({ Invoke-AgentTaskAction "Start" })
+$startButton.add_Click({ Invoke-AgentTaskAction "Start" })
 $stopItem.add_Click({
+    $choice = [System.Windows.Forms.MessageBox]::Show(
+        "Stop the remote-station agent? The tray will remain available.",
+        "OM0RX Remote Station",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question
+    )
+    if ($choice -eq [System.Windows.Forms.DialogResult]::Yes) { Invoke-AgentTaskAction "Stop" }
+})
+$stopButton.add_Click({
     $choice = [System.Windows.Forms.MessageBox]::Show(
         "Stop the remote-station agent? The tray will remain available.",
         "OM0RX Remote Station",
@@ -534,6 +614,15 @@ $restartItem.add_Click({
     )
     if ($choice -eq [System.Windows.Forms.DialogResult]::Yes) { Invoke-AgentTaskAction "Restart" }
 })
+$restartButton.add_Click({
+    $choice = [System.Windows.Forms.MessageBox]::Show(
+        "Restart the remote-station agent? Startup performs its existing receive-safety recovery before reconnecting.",
+        "OM0RX Remote Station",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Question
+    )
+    if ($choice -eq [System.Windows.Forms.DialogResult]::Yes) { Invoke-AgentTaskAction "Restart" }
+})
 $logItem.add_Click({
     if (Test-Path -LiteralPath $logPath) {
         Start-Process -FilePath "notepad.exe" -ArgumentList @($logPath)
@@ -543,6 +632,11 @@ $logItem.add_Click({
     }
 })
 $quitItem.add_Click({
+    $script:closing = $true
+    $notify.Visible = $false
+    [System.Windows.Forms.Application]::ExitThread()
+})
+$quitButton.add_Click({
     $script:closing = $true
     $notify.Visible = $false
     [System.Windows.Forms.Application]::ExitThread()

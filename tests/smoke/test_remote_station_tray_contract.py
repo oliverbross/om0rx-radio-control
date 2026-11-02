@@ -107,17 +107,37 @@ def test_tray_installer_adds_a_start_menu_entry_that_opens_existing_details():
 def test_start_menu_launcher_starts_only_the_existing_agent_task_when_needed():
     assert "[switch]$EnsureAgentStarted" in TRAY
     assert "if ($EnsureAgentStarted)" in TRAY
-    assert 'if ($agentTask.State -ne "Running")' in TRAY
+    assert 'if ($null -eq (Get-AgentSnapshot).State)' in TRAY
     assert "Start-ScheduledTask -TaskName $AgentTaskName" in TRAY
-    assert "AddSeconds(10)" in TRAY
+    assert "Wait-AgentStopped 20" in TRAY
     assert "New-ScheduledTaskAction" not in TRAY
 
 
 def test_start_menu_launcher_requires_api_health_and_repairs_one_stuck_start():
     assert "function Wait-AgentApi" in TRAY
     assert "if (-not (Wait-AgentApi 20))" in TRAY
-    assert "Stop-ScheduledTask -TaskName $AgentTaskName" in TRAY
+    assert "Stop-AgentProcess" in TRAY
     assert "if (-not (Wait-AgentApi 30))" in TRAY
+
+
+def test_tray_tracks_the_real_api_process_and_stops_it_gracefully():
+    assert "/api/v1/process/stop" in TRAY
+    assert "function Request-AgentShutdown" in TRAY
+    assert "function Wait-AgentStopped" in TRAY
+    assert "function Stop-OwnedAgentProcess" in TRAY
+    assert 'Family -ne "python-remote-station-agent"' in TRAY
+    assert 'CommandLine -notlike "*-m remote_station run*"' in TRAY
+    assert '$running = $null -ne $snapshot.State' in TRAY
+    assert '$processPresent = $running -or $null -ne $snapshot.ControllerOwner' in TRAY
+    assert 'Agent process: RUNNING (authenticated local API)' in TRAY
+
+
+def test_details_window_exposes_process_controls_and_quit_without_clipping():
+    for label in ('"Start agent"', '"Stop agent..."', '"Restart agent..."', '"Quit tray"'):
+        assert f"Add-ActionButton {label}" in TRAY
+    assert '$actions.WrapContents = $true' in TRAY
+    assert '$actions.Height = 82' in TRAY
+    assert "$quitButton.add_Click" in TRAY
 
 
 def test_agent_startup_task_is_not_blocked_or_stopped_by_battery_state():

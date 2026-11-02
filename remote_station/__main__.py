@@ -98,14 +98,25 @@ def main() -> int:
                 "normal startup safety validation remains required.",
                 prior,
             )
-        uvicorn.run(
-            create_app(config),
-            host=config.bind_host,
-            port=config.bind_port,
-            log_level=args.log_level,
-            log_config=None,
-            access_log=False,
+        server_holder: list[uvicorn.Server] = []
+
+        def request_shutdown() -> None:
+            if server_holder:
+                server_holder[0].should_exit = True
+
+        app = create_app(config, request_shutdown=request_shutdown)
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=config.bind_host,
+                port=config.bind_port,
+                log_level=args.log_level,
+                log_config=None,
+                access_log=False,
+            )
         )
+        server_holder.append(server)
+        server.run()
     finally:
         ownership.release()
     return 0
