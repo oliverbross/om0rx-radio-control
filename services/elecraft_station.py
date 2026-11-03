@@ -913,6 +913,7 @@ class StationCoordinator:
                 and kat.get("frequency_khz") != round(route.frequency_mhz * 1000)
             )
             or kat.get("antenna") != route.kat_antenna
+            or kat.get("amp_key_interrupted") is True
             or str(radio.get("tx_ant") or "").upper() != route.flex_tx_ant
             or (
                 include_drive

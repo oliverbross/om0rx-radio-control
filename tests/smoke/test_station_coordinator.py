@@ -259,6 +259,7 @@ class FakeManager:
                 "frequency_khz": self.kat500.frequency_khz,
                 "tuning": self.kat500.tuning,
                 "fault": self.kat500.fault,
+                "amp_key_interrupted": self.kat500.amp_key_interrupted,
             },
         }
 
@@ -905,6 +906,22 @@ def test_external_flex_allowed_band_change_restores_operator_operate_intent(monk
     assert ("kpa.standby_on_band_change", False) in calls
     assert ("kpa.read_standby_on_band_change",) in calls
     assert not any(call[0] == "kpa.operate" for call in calls)
+
+
+def test_open_kat_key_line_is_reconnected_by_receive_only_route_follow(monkeypatch):
+    station, calls, manager = build_station(monkeypatch, commissioned=True)
+    manager.kat500.amp_key_interrupted = True
+
+    followed = asyncio.run(station.follow_observed_radio_route(14.074))
+
+    assert followed is True
+    assert manager.kpa500.operate is False
+    assert manager.kat500.amp_key_interrupted is False
+    assert ("kat.set_amp_key_interrupted", False) in calls
+    assert calls.index(("kpa.operate", False)) < calls.index(
+        ("kat.set_amp_key_interrupted", False)
+    )
+    assert not any(call[0] in {"flex.tune", "flex.mox"} for call in calls)
 
 
 def test_latched_kat_fault_is_automatically_recovered_once_in_receive(monkeypatch):
