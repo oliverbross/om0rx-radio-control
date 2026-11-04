@@ -18,8 +18,8 @@ from remote_station.runtime import (
     RemoteCommandError,
     RemoteStationRuntime,
 )
+from services.elecraft_station import StationActionError, StationCoordinator
 from services.station_alarms import build_station_alarms
-from services.elecraft_station import StationActionError
 
 TOKEN = "test-token-that-is-at-least-thirty-two-characters"
 
@@ -440,6 +440,55 @@ def _runtime(tmp_path):
 def test_remote_flex_poll_is_fast_enough_for_live_monitoring():
     assert FLEX_SNAPSHOT_WINDOW_SECONDS <= 0.2
     assert FLEX_POLL_IDLE_SECONDS <= 0.05
+
+
+def test_startup_does_not_latch_station_controls_on_missing_amplifier_status(tmp_path):
+    class StartupFlex(FakeFlex):
+        def __init__(self, *_args):
+            super().__init__()
+
+        def connect(self):
+            self.calls.append(("connect",))
+
+    class StartingElecraft(FakeElecraft):
+        async def start(self):
+            pass
+
+        def snapshot(self):
+            return {"kpa500": {"connected": True, "operate": None}}
+
+    class StartupCoordinator(StationCoordinator):
+        async def recover_safe_state(self):
+            raise AssertionError("Startup must not force receive/standby or require recovery")
+
+    async def scenario():
+        runtime = RemoteStationRuntime(
+            _config(tmp_path),
+            flex_factory=StartupFlex,
+            elecraft_factory=StartingElecraft,
+            coordinator_factory=StartupCoordinator,
+        )
+        polling = asyncio.Event()
+
+        async def poll_until_stopped():
+            polling.set()
+            await runtime._stop_event.wait()
+
+        runtime._poll_loop = poll_until_stopped
+        await runtime.start()
+        try:
+            await asyncio.wait_for(polling.wait(), timeout=1)
+            # Exercise the real command-admission gate with the same missing
+            # amplifier readback as the reported live startup failure.
+            runtime.coordinator._require_operational()
+            assert runtime.elecraft.snapshot()["kpa500"]["operate"] is None
+            assert runtime.flex.calls == [("connect",)]
+            assert runtime.last_error is None
+        finally:
+            runtime._stop_event.set()
+            await runtime._poll_task
+
+    run(scenario())
 
 
 def test_remote_agent_advertises_and_dispatches_guarded_accessory_fault_clear(tmp_path):

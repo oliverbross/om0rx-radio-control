@@ -91,15 +91,12 @@ class RemoteStationRuntime:
             lambda: self.flex,
             lambda: self.radio_snapshot,
             digital_guard=lambda: None,
-            recovery_required=True,
             policy_source=self.config.station_policy_source(),
         )
-        try:
-            await self.coordinator.recover_safe_state()
-            self.last_error = None
-        except Exception as exc:  # noqa: BLE001 - keep the API alive but TX locked
-            self.last_error = f"Safe startup recovery remains unconfirmed: {exc}"
-            logger.critical(self.last_error)
+        # A device that is still starting must not latch every station command
+        # off for the lifetime of the agent. Each transaction checks current
+        # device state when the operator requests it.
+        self.last_error = None
         self._stop_event.clear()
         self._poll_task = asyncio.create_task(self._poll_loop(), name="remote_station_radio_poll")
         self._revision += 1
