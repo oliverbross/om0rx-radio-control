@@ -22,6 +22,21 @@ STARTUP_INSTALLER = (
 ).read_text(encoding="utf-8")
 
 
+def test_settings_cancel_closes_modeless_form_without_saving():
+    assert '$cancelButton.CausesValidation = $false' in SETTINGS
+    assert '$cancelButton.add_Click({ $form.Close() })' in SETTINGS
+
+
+def test_settings_station_refresh_is_background_read_only_discovery():
+    assert '$stationName.DropDownStyle = "DropDown"' in SETTINGS
+    assert '$refreshStations.Text = "Refresh"' in SETTINGS
+    assert '-m remote_station.station_discovery --host' in SETTINGS
+    assert '$start.CreateNoWindow = $true' in SETTINGS
+    assert 'StandardOutput.ReadToEndAsync()' in SETTINGS
+    assert '$stationName.Text = $previous' in SETTINGS
+    assert '$script:stationDiscovery.Kill()' in SETTINGS
+
+
 def test_tray_exposes_requested_process_controls_and_status_window():
     for label in (
         "Show details",

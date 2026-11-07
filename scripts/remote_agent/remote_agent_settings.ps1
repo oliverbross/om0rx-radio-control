@@ -2,7 +2,8 @@ param(
     [string]$Config = "",
     [string]$Python = "python.exe",
     [string]$AgentTaskName = "OM0RX Remote Station Agent",
-    [switch]$SmokeTest
+    [switch]$SmokeTest,
+    [switch]$PickerSmokeTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -197,10 +198,93 @@ $flexGroup.Controls.Add((New-Label "Slice ID" 590 32 65))
 $sliceId = New-Numeric ([decimal]$document.flex.slice_id) 0 7 660 32
 $flexGroup.Controls.Add($sliceId)
 $flexGroup.Controls.Add((New-Label "GUI station name" 18 70))
-$stationName = New-TextBox ([string]$document.flex.station_name) 165 70 180
+$stationName = New-Object System.Windows.Forms.ComboBox
+$stationName.DropDownStyle = "DropDown"
+$stationName.SetBounds(165, 70, 180, 24)
+$stationName.Text = [string]$document.flex.station_name
 $flexGroup.Controls.Add($stationName)
-$flexAntennaEnabled = New-CheckBox "Enforce per-band FLEX antenna policy" (Get-BooleanProperty $document.flex.antenna_policy "enabled" $true) 380 68 300
+$refreshStations = New-Object System.Windows.Forms.Button
+$refreshStations.Text = "Refresh"
+$refreshStations.SetBounds(355, 68, 80, 28)
+$flexGroup.Controls.Add($refreshStations)
+$flexAntennaEnabled = New-CheckBox "Enforce per-band FLEX antenna policy" (Get-BooleanProperty $document.flex.antenna_policy "enabled" $true) 450 68 340
 $flexGroup.Controls.Add($flexAntennaEnabled)
+
+$script:stationDiscovery = $null
+$script:stationDiscoveryOutput = $null
+$script:stationDiscoveryError = $null
+$script:stationDiscoveryDeadline = [DateTime]::MinValue
+$discoveryTimer = New-Object System.Windows.Forms.Timer
+$discoveryTimer.Interval = 100
+$discoveryTimer.add_Tick({
+    if ($null -eq $script:stationDiscovery) { return }
+    if (-not $script:stationDiscovery.HasExited -and [DateTime]::UtcNow -lt $script:stationDiscoveryDeadline) { return }
+    $discoveryTimer.Stop()
+    try {
+        if (-not $script:stationDiscovery.HasExited) {
+            $script:stationDiscovery.Kill()
+            throw "FLEX discovery timed out. Check the radio address and connection."
+        }
+        $result = $script:stationDiscoveryOutput.GetAwaiter().GetResult() | ConvertFrom-Json
+        if (-not $result.success) { throw [string]$result.error }
+        $previous = $stationName.Text
+        $stationName.Items.Clear()
+        foreach ($station in @($result.stations)) {
+            if (-not $stationName.Items.Contains([string]$station.station_name)) {
+                $stationName.Items.Add([string]$station.station_name) | Out-Null
+            }
+        }
+        $stationName.Text = $previous
+        if ($stationName.Items.Count -gt 0) {
+            $statusLabel.Text = "Found $($stationName.Items.Count) GUI station(s). Choose a name, then Save."
+            $stationName.Focus() | Out-Null
+            $stationName.DroppedDown = $true
+        } else {
+            $statusLabel.Text = "No GUI stations found. Open Maestro, SmartSDR or AetherSDR and Refresh."
+        }
+    } catch {
+        $statusLabel.Text = "Station discovery failed. Check FLEX address/port and try Refresh."
+        [System.Windows.Forms.MessageBox]::Show("Could not discover GUI stations.`r`n$($_.Exception.Message)", "FLEX station discovery") | Out-Null
+    } finally {
+        $script:stationDiscovery.Dispose()
+        $script:stationDiscovery = $null
+        $refreshStations.Enabled = $true
+    }
+})
+$refreshStations.add_Click({
+    try {
+        $start = New-Object System.Diagnostics.ProcessStartInfo
+        $start.FileName = $Python
+        $start.WorkingDirectory = $projectRoot
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        # Pass only an address/port, never the configuration or bearer token.
+        $address = $flexHost.Text.Trim()
+        if ($address -notmatch '^[a-zA-Z0-9.:%_-]+$') { throw "Enter a valid FLEX hostname or IP address." }
+        $start.Arguments = "-m remote_station.station_discovery --host $address --port $([int]$flexPort.Value)"
+        $script:stationDiscovery = [System.Diagnostics.Process]::Start($start)
+        $script:stationDiscoveryOutput = $script:stationDiscovery.StandardOutput.ReadToEndAsync()
+        $script:stationDiscoveryError = $script:stationDiscovery.StandardError.ReadToEndAsync()
+        $script:stationDiscoveryDeadline = [DateTime]::UtcNow.AddSeconds(10)
+        $refreshStations.Enabled = $false
+        $statusLabel.Text = "Looking for connected FLEX GUI stations..."
+        $discoveryTimer.Start()
+    } catch {
+        $statusLabel.Text = "Station discovery could not start."
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "FLEX station discovery") | Out-Null
+    }
+})
+$form.add_FormClosed({
+    $discoveryTimer.Stop()
+    $discoveryTimer.Dispose()
+    if ($null -ne $script:stationDiscovery) {
+        if (-not $script:stationDiscovery.HasExited) { $script:stationDiscovery.Kill() }
+        $script:stationDiscovery.Dispose()
+        $script:stationDiscovery = $null
+    }
+})
 
 $accessoryGroup = New-Object System.Windows.Forms.GroupBox
 $accessoryGroup.Text = "Elecraft accessories"
@@ -353,6 +437,8 @@ $footer.BringToFront()
 $cancelButton = New-Object System.Windows.Forms.Button
 $cancelButton.Text = "Cancel"
 $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+$cancelButton.CausesValidation = $false
+$cancelButton.add_Click({ $form.Close() })
 $cancelButton.SetBounds(850, 14, 105, 32)
 $footer.Controls.Add($cancelButton)
 $form.CancelButton = $cancelButton
@@ -543,4 +629,23 @@ if ($SmokeTest) {
 }
 
 [System.Windows.Forms.Application]::EnableVisualStyles()
+if ($PickerSmokeTest) {
+    # Exercise the real controls/message loop without saving station settings.
+    $script:pickerSmokePassed = $false
+    $pickerTimer = New-Object System.Windows.Forms.Timer
+    $pickerTimer.Interval = 200
+    $pickerTimer.add_Tick({
+        if (-not $refreshStations.Enabled) { return }
+        $pickerTimer.Stop()
+        $script:pickerSmokePassed = $stationName.Items.Count -gt 0
+        Write-Output "Station picker smoke: $($stationName.Items.Count) station(s); $($statusLabel.Text)"
+        $cancelButton.PerformClick()
+    })
+    $form.add_Shown({ $refreshStations.PerformClick(); $pickerTimer.Start() })
+    [System.Windows.Forms.Application]::Run($form)
+    $pickerTimer.Dispose()
+    if (-not $script:pickerSmokePassed -or -not $form.IsDisposed) { exit 1 }
+    Write-Output "Station discovery and Cancel GUI smoke test passed; no settings saved"
+    exit 0
+}
 [System.Windows.Forms.Application]::Run($form)
