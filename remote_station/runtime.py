@@ -501,6 +501,7 @@ class RemoteStationRuntime:
                         "add_spot",
                         "station_standby",
                         "station_clear_faults",
+                        "station_prepare_route",
                         "station_operate",
                         "station_tune",
                         "station_cancel",
@@ -949,6 +950,7 @@ class RemoteStationRuntime:
             action_map = {
                 "station_standby": "standby",
                 "station_clear_faults": "clear-faults",
+                "station_prepare_route": "prepare-route",
                 "station_operate": "operate",
                 "station_tune": "tune",
                 "station_cancel": "cancel",

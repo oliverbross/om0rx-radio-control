@@ -452,6 +452,14 @@ def test_remote_agent_advertises_and_dispatches_guarded_accessory_fault_clear(tm
     assert runtime.coordinator.calls == [("perform", "clear-faults")]
 
 
+def test_remote_agent_exposes_guarded_route_preparation_for_tune(tmp_path):
+    runtime = _runtime(tmp_path)
+    assert "station_prepare_route" in runtime.snapshot()["capabilities"]["commands"]
+    result = run(runtime.execute("prepare-route-0001", "station_prepare_route", {}))
+    assert result["result"]["action"] == "prepare-route"
+    assert runtime.coordinator.calls == [("perform", "prepare-route")]
+
+
 def test_accessory_follow_does_not_block_radio_or_queue_obsolete_targets(tmp_path):
     async def scenario():
         runtime = _runtime(tmp_path)
